@@ -1,0 +1,54 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: __BLUE_PRODUCER_DEPLOYMENT_NAME__
+  labels:
+    app: blue-producer
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: blue-producer
+  template:
+    metadata:
+      labels:
+        app: blue-producer
+    spec:
+      containers:
+        - name: producer
+          image: curlimages/curl:8.6.0
+          env:
+            - name: RABBITMQ_APP_USER
+              valueFrom:
+                secretKeyRef:
+                  name: ${BENCH_PARAM_BLUE_CLUSTER_PREFIX}-admin
+                  key: username
+            - name: RABBITMQ_APP_PASS
+              valueFrom:
+                secretKeyRef:
+                  name: ${BENCH_PARAM_BLUE_CLUSTER_PREFIX}-admin
+                  key: password
+            - name: SEED_COUNT
+              valueFrom:
+                configMapKeyRef:
+                  name: migration-seed
+                  key: seed_count
+          command:
+            - /bin/sh
+            - -c
+            - |
+              set -e
+              base="http://${BENCH_PARAM_BLUE_CLUSTER_PREFIX}:15672/api"
+              auth="${RABBITMQ_APP_USER}:${RABBITMQ_APP_PASS}"
+              i=$((SEED_COUNT + 1))
+              while true; do
+                body=$(printf '{"properties":{"delivery_mode":2},"routing_key":"app-queue","payload":"{\\"id\\":%s}","payload_encoding":"string"}' "$i")
+                curl -s -u "$auth" -H "content-type: application/json" \
+                  -XPOST "$base/exchanges/%2Fapp/amq.default/publish" \
+                  -d "$body" \
+                  | grep -q '"routed":true' \
+                  && echo "blue-producer: published $i" \
+                  || echo "blue-producer: publish failed" >&2
+                i=$((i+1))
+                sleep 1
+              done

@@ -1,0 +1,93 @@
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: es-cluster
+spec:
+  serviceName: es-cluster
+  podManagementPolicy: Parallel
+  replicas: 3
+  updateStrategy:
+    type: OnDelete
+  selector:
+    matchLabels:
+      app: es-cluster
+  template:
+    metadata:
+      labels:
+        app: es-cluster
+    spec:
+      initContainers:
+        - name: install-s3-plugin
+          image: docker.elastic.co/elasticsearch/elasticsearch:8.11.1
+          command:
+            - /bin/sh
+            - -c
+            - |
+              set -e
+              if [ ! -d /usr/share/elasticsearch/plugins/repository-s3 ]; then
+                /usr/share/elasticsearch/bin/elasticsearch-plugin install --batch repository-s3
+              fi
+          volumeMounts:
+            - name: es-plugins
+              mountPath: /usr/share/elasticsearch/plugins
+      containers:
+        - name: elasticsearch
+          image: docker.elastic.co/elasticsearch/elasticsearch:8.11.1
+          env:
+            - name: POD_NAME
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.name
+            - name: ES_JAVA_OPTS
+              value: "-Xms512m -Xmx512m"
+          ports:
+            - containerPort: 9200
+              name: http
+            - containerPort: 9300
+              name: transport
+          readinessProbe:
+            httpGet:
+              path: /_cluster/health?local=true
+              port: http
+            initialDelaySeconds: 10
+            periodSeconds: 5
+            timeoutSeconds: 2
+            failureThreshold: 6
+          volumeMounts:
+            - name: es-config
+              mountPath: /usr/share/elasticsearch/config/elasticsearch.yml
+              subPath: elasticsearch.yml
+            - name: es-plugins
+              mountPath: /usr/share/elasticsearch/plugins
+            - name: secure-settings
+              mountPath: /mnt/secure-settings
+              readOnly: true
+            - name: data
+              mountPath: /usr/share/elasticsearch/data
+          resources:
+            requests:
+              cpu: "500m"
+              memory: "1Gi"
+            limits:
+              cpu: "1"
+              memory: "2Gi"
+      volumes:
+        - name: es-config
+          configMap:
+            name: es-config
+            items:
+              - key: elasticsearch.yml
+                path: elasticsearch.yml
+        - name: es-plugins
+          emptyDir: {}
+        - name: secure-settings
+          secret:
+            secretName: es-secure-settings
+  volumeClaimTemplates:
+    - metadata:
+        name: data
+      spec:
+        accessModes: ["ReadWriteOnce"]
+        resources:
+          requests:
+            storage: 5Gi

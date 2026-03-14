@@ -1,0 +1,170 @@
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: ${BENCH_PARAM_CLUSTER_PREFIX}-runtime-drift
+spec:
+  backoffLimit: 0
+  template:
+    spec:
+      restartPolicy: Never
+      containers:
+        - name: drift-seed
+          image: python:3.11-alpine
+          env:
+            - name: CLUSTER_PREFIX
+              value: ${BENCH_PARAM_CLUSTER_PREFIX}
+            - name: RABBITMQ_ADMIN_USER
+              valueFrom:
+                secretKeyRef:
+                  name: ${BENCH_PARAM_CLUSTER_PREFIX}-admin
+                  key: username
+            - name: RABBITMQ_ADMIN_PASS
+              valueFrom:
+                secretKeyRef:
+                  name: ${BENCH_PARAM_CLUSTER_PREFIX}-admin
+                  key: password
+            - name: CANONICAL_QUEUE
+              value: ${BENCH_PARAM_CANONICAL_QUEUE}
+            - name: STALE_VHOST
+              value: ${BENCH_PARAM_STALE_VHOST}
+            - name: STALE_USER
+              value: ${BENCH_PARAM_STALE_USER}
+            - name: STALE_USER_PASSWORD
+              value: ${BENCH_PARAM_STALE_USER_PASSWORD}
+            - name: STALE_POLICY
+              value: ${BENCH_PARAM_STALE_POLICY}
+            - name: STALE_QUEUE
+              value: ${BENCH_PARAM_STALE_QUEUE}
+            - name: SEED_COUNT
+              value: "${BENCH_PARAM_SEED_MESSAGE_COUNT}"
+          command:
+            - /bin/sh
+            - -c
+            - |
+              python - <<'PY'
+              import base64
+              import json
+              import os
+              import sys
+              import time
+              from urllib.error import HTTPError, URLError
+              from urllib.parse import quote
+              from urllib.request import Request, urlopen
+
+              cluster_prefix = os.environ["CLUSTER_PREFIX"]
+              admin_user = os.environ["RABBITMQ_ADMIN_USER"]
+              admin_pass = os.environ["RABBITMQ_ADMIN_PASS"]
+              canonical_queue = os.environ["CANONICAL_QUEUE"]
+              stale_vhost = os.environ["STALE_VHOST"]
+              stale_user = os.environ["STALE_USER"]
+              stale_user_password = os.environ["STALE_USER_PASSWORD"]
+              stale_policy = os.environ["STALE_POLICY"]
+              stale_queue = os.environ["STALE_QUEUE"]
+              seed_count = int(os.environ["SEED_COUNT"])
+
+              base = f"http://{cluster_prefix}:15672/api"
+              auth = base64.b64encode(f"{admin_user}:{admin_pass}".encode()).decode()
+
+              def req(path, method="GET", body=None, timeout=8):
+                  url = f"{base}{path}"
+                  data = None
+                  headers = {"Authorization": f"Basic {auth}"}
+                  if body is not None:
+                      data = json.dumps(body).encode()
+                      headers["content-type"] = "application/json"
+                  request = Request(url, data=data, method=method, headers=headers)
+                  with urlopen(request, timeout=timeout) as resp:
+                      raw = resp.read().decode()
+                      if not raw:
+                          return {}
+                      try:
+                          return json.loads(raw)
+                      except Exception:
+                          return {}
+
+              def wait_for_overview():
+                  for _ in range(60):
+                      try:
+                          req("/overview")
+                          return
+                      except Exception:
+                          time.sleep(2)
+                  raise RuntimeError("management API not ready")
+
+              wait_for_overview()
+              print("runtime-drift: management API ready", flush=True)
+
+              app_vhost = "%2Fapp"
+              stale_vhost_quoted = quote(stale_vhost, safe="")
+              stale_user_quoted = quote(stale_user, safe="")
+              stale_policy_quoted = quote(stale_policy, safe="")
+              canonical_queue_quoted = quote(canonical_queue, safe="")
+              stale_queue_quoted = quote(stale_queue, safe="")
+
+              req(f"/vhosts/{app_vhost}", method="PUT")
+              req(f"/vhosts/{stale_vhost_quoted}", method="PUT")
+              req(
+                  f"/users/{stale_user_quoted}",
+                  method="PUT",
+                  body={"password": stale_user_password, "tags": ""},
+              )
+              req(
+                  f"/permissions/{stale_vhost_quoted}/{stale_user_quoted}",
+                  method="PUT",
+                  body={"configure": ".*", "write": ".*", "read": ".*"},
+              )
+              req(
+                  f"/policies/{app_vhost}/{stale_policy_quoted}",
+                  method="PUT",
+                  body={
+                      "pattern": f"^{canonical_queue}$",
+                      "definition": {"ha-mode": "all"},
+                      "priority": 0,
+                      "apply-to": "queues",
+                  },
+              )
+              req(
+                  f"/queues/{app_vhost}/{canonical_queue_quoted}",
+                  method="PUT",
+                  body={"durable": True, "auto_delete": False, "arguments": {}},
+              )
+              req(
+                  f"/queues/{stale_vhost_quoted}/{stale_queue_quoted}",
+                  method="PUT",
+                  body={"durable": True, "auto_delete": False, "arguments": {}},
+              )
+              req(f"/queues/{app_vhost}/{canonical_queue_quoted}/contents", method="DELETE")
+              req(f"/queues/{stale_vhost_quoted}/{stale_queue_quoted}/contents", method="DELETE")
+
+              for i in range(1, seed_count + 1):
+                  payload = {"seed_id": i}
+                  routed = req(
+                      f"/exchanges/{app_vhost}/amq.default/publish",
+                      method="POST",
+                      body={
+                          "properties": {"delivery_mode": 2},
+                          "routing_key": canonical_queue,
+                          "payload": json.dumps(payload),
+                          "payload_encoding": "string",
+                      },
+                  ).get("routed")
+                  if not routed:
+                      raise RuntimeError(f"publish not routed for seed_id={i}")
+
+              for i in range(1, 4):
+                  routed = req(
+                      f"/exchanges/{stale_vhost_quoted}/amq.default/publish",
+                      method="POST",
+                      body={
+                          "properties": {},
+                          "routing_key": stale_queue,
+                          "payload": json.dumps({"drift": i}),
+                          "payload_encoding": "string",
+                      },
+                  ).get("routed")
+                  if not routed:
+                      raise RuntimeError(f"stale publish not routed for drift={i}")
+
+              print(f"runtime-drift: seeded {seed_count} messages on /app/{canonical_queue}", flush=True)
+              print(f"runtime-drift: seeded stale runtime objects ({stale_vhost}, {stale_user}, {stale_policy})", flush=True)
+              PY

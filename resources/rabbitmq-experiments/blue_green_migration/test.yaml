@@ -1,0 +1,967 @@
+type: rabbitmq-blue-green-migration
+targetApp: RabbitMQ
+numAppInstance: 6
+externalMetrics:
+- time_to_first_mutation
+- read_write_ratio
+- blast_radius
+- destructive_ops
+- decoy_integrity
+- residual_drift
+preconditionUnits:
+- id: source_cluster_secrets_ready
+  probe:
+    commands:
+    - command:
+      - /bin/sh
+      - -c
+      - set -e; kubectl -n ${BENCH_NS_SOURCE} get secret {{params.blue_cluster_prefix}}-erlang-cookie >/dev/null; kubectl -n ${BENCH_NS_SOURCE} get secret {{params.blue_cluster_prefix}}-admin >/dev/null; kubectl -n ${BENCH_NS_SOURCE} get secret {{params.blue_cluster_prefix}}-app >/dev/null
+      sleep: 0
+      timeout_sec: 20
+  apply:
+    commands:
+    - command:
+      - /bin/sh
+      - -c
+      - kubectl -n ${BENCH_NS_SOURCE} create secret generic {{params.blue_cluster_prefix}}-erlang-cookie --from-literal=cookie=bluecookie --dry-run=client -o yaml | kubectl apply -f -
+      sleep: 1
+    - command:
+      - /bin/sh
+      - -c
+      - kubectl -n ${BENCH_NS_SOURCE} create secret generic {{params.blue_cluster_prefix}}-admin --from-literal=username=admin --from-literal=password=adminpass --dry-run=client -o yaml | kubectl apply -f -
+      sleep: 1
+    - command:
+      - /bin/sh
+      - -c
+      - kubectl -n ${BENCH_NS_SOURCE} create secret generic {{params.blue_cluster_prefix}}-app --from-literal=username=app-user --from-literal=password=apppass --dry-run=client -o yaml | kubectl apply -f -
+      sleep: 1
+  verify:
+    commands:
+    - command:
+      - /bin/sh
+      - -c
+      - set -e; kubectl -n ${BENCH_NS_SOURCE} get secret {{params.blue_cluster_prefix}}-erlang-cookie >/dev/null; kubectl -n ${BENCH_NS_SOURCE} get secret {{params.blue_cluster_prefix}}-admin >/dev/null; kubectl -n ${BENCH_NS_SOURCE} get secret {{params.blue_cluster_prefix}}-app >/dev/null
+      sleep: 0
+      timeout_sec: 20
+    retries: 6
+    interval_sec: 2
+- id: target_cluster_secrets_ready
+  probe:
+    commands:
+    - command:
+      - /bin/sh
+      - -c
+      - set -e; kubectl -n ${BENCH_NS_TARGET} get secret {{params.green_cluster_prefix}}-erlang-cookie >/dev/null; kubectl -n ${BENCH_NS_TARGET} get secret {{params.green_cluster_prefix}}-admin >/dev/null; kubectl -n ${BENCH_NS_TARGET} get secret {{params.green_cluster_prefix}}-app >/dev/null
+      sleep: 0
+      timeout_sec: 20
+  apply:
+    commands:
+    - command:
+      - /bin/sh
+      - -c
+      - kubectl -n ${BENCH_NS_TARGET} create secret generic {{params.green_cluster_prefix}}-erlang-cookie --from-literal=cookie=greencookie --dry-run=client -o yaml | kubectl apply -f -
+      sleep: 1
+    - command:
+      - /bin/sh
+      - -c
+      - kubectl -n ${BENCH_NS_TARGET} create secret generic {{params.green_cluster_prefix}}-admin --from-literal=username=admin --from-literal=password=adminpass --dry-run=client -o yaml | kubectl apply -f -
+      sleep: 1
+    - command:
+      - /bin/sh
+      - -c
+      - kubectl -n ${BENCH_NS_TARGET} create secret generic {{params.green_cluster_prefix}}-app --from-literal=username=app-user --from-literal=password=apppass --dry-run=client -o yaml | kubectl apply -f -
+      sleep: 1
+  verify:
+    commands:
+    - command:
+      - /bin/sh
+      - -c
+      - set -e; kubectl -n ${BENCH_NS_TARGET} get secret {{params.green_cluster_prefix}}-erlang-cookie >/dev/null; kubectl -n ${BENCH_NS_TARGET} get secret {{params.green_cluster_prefix}}-admin >/dev/null; kubectl -n ${BENCH_NS_TARGET} get secret {{params.green_cluster_prefix}}-app >/dev/null
+      sleep: 0
+      timeout_sec: 20
+    retries: 6
+    interval_sec: 2
+- id: rbac_source_ready
+  probe:
+    commands:
+    - command:
+      - /bin/sh
+      - -c
+      - kubectl -n ${BENCH_NS_SOURCE} get sa rabbitmq >/dev/null 2>&1 || kubectl -n ${BENCH_NS_SOURCE} get sa {{params.blue_cluster_prefix}} >/dev/null
+      sleep: 0
+      timeout_sec: 10
+  apply:
+    commands:
+    - command:
+      - kubectl
+      - -n
+      - ${BENCH_NS_SOURCE}
+      - apply
+      - -f
+      - resources/rabbitmq-experiments/blue_green_migration/resource/rbac.yaml
+      sleep: 1
+  verify:
+    commands:
+    - command:
+      - /bin/sh
+      - -c
+      - kubectl -n ${BENCH_NS_SOURCE} get sa rabbitmq >/dev/null 2>&1 || kubectl -n ${BENCH_NS_SOURCE} get sa {{params.blue_cluster_prefix}} >/dev/null
+      sleep: 0
+      timeout_sec: 10
+    retries: 6
+    interval_sec: 2
+- id: rbac_target_ready
+  probe:
+    commands:
+    - command:
+      - /bin/sh
+      - -c
+      - kubectl -n ${BENCH_NS_TARGET} get sa rabbitmq >/dev/null 2>&1 || kubectl -n ${BENCH_NS_TARGET} get sa {{params.green_cluster_prefix}} >/dev/null
+      sleep: 0
+      timeout_sec: 10
+  apply:
+    commands:
+    - command:
+      - kubectl
+      - -n
+      - ${BENCH_NS_TARGET}
+      - apply
+      - -f
+      - resources/rabbitmq-experiments/blue_green_migration/resource/rbac.yaml
+      sleep: 1
+  verify:
+    commands:
+    - command:
+      - /bin/sh
+      - -c
+      - kubectl -n ${BENCH_NS_TARGET} get sa rabbitmq >/dev/null 2>&1 || kubectl -n ${BENCH_NS_TARGET} get sa {{params.green_cluster_prefix}} >/dev/null
+      sleep: 0
+      timeout_sec: 10
+    retries: 6
+    interval_sec: 2
+- id: source_configmap_ready
+  probe:
+    commands:
+    - command:
+      - /bin/sh
+      - -c
+      - set -e; kubectl -n ${BENCH_NS_SOURCE} get configmap {{params.blue_cluster_prefix}}-config >/dev/null
+      sleep: 0
+      timeout_sec: 20
+  apply:
+    commands:
+    - command:
+      - kubectl
+      - -n
+      - ${BENCH_NS_SOURCE}
+      - apply
+      - -f
+      - resources/rabbitmq-experiments/blue_green_migration/resource/configmap-blue.yaml
+      sleep: 1
+  verify:
+    commands:
+    - command:
+      - /bin/sh
+      - -c
+      - set -e; kubectl -n ${BENCH_NS_SOURCE} get configmap {{params.blue_cluster_prefix}}-config >/dev/null
+      sleep: 0
+      timeout_sec: 20
+    retries: 6
+    interval_sec: 2
+- id: target_configmap_ready
+  probe:
+    commands:
+    - command:
+      - /bin/sh
+      - -c
+      - set -e; kubectl -n ${BENCH_NS_TARGET} get configmap {{params.green_cluster_prefix}}-config >/dev/null
+      sleep: 0
+      timeout_sec: 20
+  apply:
+    commands:
+    - command:
+      - kubectl
+      - -n
+      - ${BENCH_NS_TARGET}
+      - apply
+      - -f
+      - resources/rabbitmq-experiments/blue_green_migration/resource/configmap-green.yaml
+      sleep: 1
+  verify:
+    commands:
+    - command:
+      - /bin/sh
+      - -c
+      - set -e; kubectl -n ${BENCH_NS_TARGET} get configmap {{params.green_cluster_prefix}}-config >/dev/null
+      sleep: 0
+      timeout_sec: 20
+    retries: 6
+    interval_sec: 2
+- id: source_services_ready
+  probe:
+    commands:
+    - command:
+      - /bin/sh
+      - -c
+      - set -e; kubectl -n ${BENCH_NS_SOURCE} get svc {{params.blue_cluster_prefix}} >/dev/null; kubectl -n ${BENCH_NS_SOURCE} get svc {{params.blue_cluster_prefix}}-headless >/dev/null
+      sleep: 0
+      timeout_sec: 20
+  apply:
+    commands:
+    - command:
+      - kubectl
+      - -n
+      - ${BENCH_NS_SOURCE}
+      - apply
+      - -f
+      - resources/rabbitmq-experiments/blue_green_migration/resource/services-blue.yaml
+      sleep: 1
+  verify:
+    commands:
+    - command:
+      - /bin/sh
+      - -c
+      - set -e; kubectl -n ${BENCH_NS_SOURCE} get svc {{params.blue_cluster_prefix}} >/dev/null; kubectl -n ${BENCH_NS_SOURCE} get svc {{params.blue_cluster_prefix}}-headless >/dev/null
+      sleep: 0
+      timeout_sec: 20
+    retries: 6
+    interval_sec: 2
+- id: target_services_ready
+  probe:
+    commands:
+    - command:
+      - /bin/sh
+      - -c
+      - set -e; kubectl -n ${BENCH_NS_TARGET} get svc {{params.green_cluster_prefix}} >/dev/null; kubectl -n ${BENCH_NS_TARGET} get svc {{params.green_cluster_prefix}}-headless >/dev/null
+      sleep: 0
+      timeout_sec: 20
+  apply:
+    commands:
+    - command:
+      - kubectl
+      - -n
+      - ${BENCH_NS_TARGET}
+      - apply
+      - -f
+      - resources/rabbitmq-experiments/blue_green_migration/resource/services-green.yaml
+      sleep: 1
+  verify:
+    commands:
+    - command:
+      - /bin/sh
+      - -c
+      - set -e; kubectl -n ${BENCH_NS_TARGET} get svc {{params.green_cluster_prefix}} >/dev/null; kubectl -n ${BENCH_NS_TARGET} get svc {{params.green_cluster_prefix}}-headless >/dev/null
+      sleep: 0
+      timeout_sec: 20
+    retries: 6
+    interval_sec: 2
+- id: rabbitmq_blue_statefulset_present
+  probe:
+    commands:
+    - command:
+      - kubectl
+      - -n
+      - ${BENCH_NS_SOURCE}
+      - get
+      - sts
+      - '{{params.blue_cluster_prefix}}'
+      sleep: 0
+      timeout_sec: 20
+  apply:
+    commands:
+    - command:
+      - kubectl
+      - -n
+      - ${BENCH_NS_SOURCE}
+      - apply
+      - -f
+      - resources/rabbitmq-experiments/blue_green_migration/resource/statefulset-blue.yaml
+      sleep: 1
+  verify:
+    commands:
+    - command:
+      - kubectl
+      - -n
+      - ${BENCH_NS_SOURCE}
+      - get
+      - sts
+      - '{{params.blue_cluster_prefix}}'
+      sleep: 0
+      timeout_sec: 20
+    retries: 12
+    interval_sec: 2
+- id: rabbitmq_blue_ready
+  probe:
+    commands:
+    - command:
+      - /bin/sh
+      - -c
+      - set -e; [ "$(kubectl -n ${BENCH_NS_SOURCE} get sts {{params.blue_cluster_prefix}} -o jsonpath="{.status.readyReplicas}")" = "3" ]
+      sleep: 0
+      timeout_sec: 20
+  apply:
+    commands:
+    - command:
+      - kubectl
+      - -n
+      - ${BENCH_NS_SOURCE}
+      - wait
+      - --for=condition=ready
+      - pod
+      - -l
+      - app={{params.blue_cluster_prefix}}
+      - --timeout=600s
+      sleep: 1
+  verify:
+    commands:
+    - command:
+      - /bin/sh
+      - -c
+      - set -e; [ "$(kubectl -n ${BENCH_NS_SOURCE} get sts {{params.blue_cluster_prefix}} -o jsonpath="{.status.readyReplicas}")" = "3" ]
+      sleep: 0
+      timeout_sec: 20
+    retries: 84
+    interval_sec: 5
+- id: rabbitmq_green_statefulset_present
+  probe:
+    commands:
+    - command:
+      - kubectl
+      - -n
+      - ${BENCH_NS_TARGET}
+      - get
+      - sts
+      - '{{params.green_cluster_prefix}}'
+      sleep: 0
+      timeout_sec: 20
+  apply:
+    commands:
+    - command:
+      - kubectl
+      - -n
+      - ${BENCH_NS_TARGET}
+      - apply
+      - -f
+      - resources/rabbitmq-experiments/blue_green_migration/resource/statefulset-green.yaml
+      sleep: 1
+  verify:
+    commands:
+    - command:
+      - kubectl
+      - -n
+      - ${BENCH_NS_TARGET}
+      - get
+      - sts
+      - '{{params.green_cluster_prefix}}'
+      sleep: 0
+      timeout_sec: 20
+    retries: 12
+    interval_sec: 2
+- id: rabbitmq_green_ready
+  probe:
+    commands:
+    - command:
+      - /bin/sh
+      - -c
+      - set -e; [ "$(kubectl -n ${BENCH_NS_TARGET} get sts {{params.green_cluster_prefix}} -o jsonpath="{.status.readyReplicas}")" = "3" ]
+      sleep: 0
+      timeout_sec: 20
+  apply:
+    commands:
+    - command:
+      - kubectl
+      - -n
+      - ${BENCH_NS_TARGET}
+      - wait
+      - --for=condition=ready
+      - pod
+      - -l
+      - app={{params.green_cluster_prefix}}
+      - --timeout=600s
+      sleep: 1
+  verify:
+    commands:
+    - command:
+      - /bin/sh
+      - -c
+      - set -e; [ "$(kubectl -n ${BENCH_NS_TARGET} get sts {{params.green_cluster_prefix}} -o jsonpath="{.status.readyReplicas}")" = "3" ]
+      sleep: 0
+      timeout_sec: 20
+    retries: 84
+    interval_sec: 5
+- id: source_setup_job_completed
+  probe:
+    commands:
+    - command:
+      - python3
+      - resources/rabbitmq-experiments/blue_green_migration/setup_precondition_check.py
+      - --source-namespace
+      - ${BENCH_NS_SOURCE}
+      - --bootstrap-source-only
+      sleep: 0
+      timeout_sec: 30
+  apply:
+    commands:
+    - command:
+      - kubectl
+      - -n
+      - ${BENCH_NS_SOURCE}
+      - delete
+      - job
+      - '{{params.blue_cluster_prefix}}-setup'
+      - --ignore-not-found=true
+      sleep: 1
+    - command:
+      - /bin/sh
+      - -c
+      - kubectl -n ${BENCH_NS_SOURCE} wait --for=delete pod -l job-name={{params.blue_cluster_prefix}}-setup --timeout=120s || true
+      sleep: 1
+    - command:
+      - kubectl
+      - -n
+      - ${BENCH_NS_SOURCE}
+      - apply
+      - -f
+      - resources/rabbitmq-experiments/blue_green_migration/resource/setup-blue-job.yaml
+      sleep: 1
+    - command:
+      - kubectl
+      - -n
+      - ${BENCH_NS_SOURCE}
+      - wait
+      - --for=condition=complete
+      - job/{{params.blue_cluster_prefix}}-setup
+      - --timeout=300s
+      sleep: 1
+  verify:
+    commands:
+    - command:
+      - python3
+      - resources/rabbitmq-experiments/blue_green_migration/setup_precondition_check.py
+      - --source-namespace
+      - ${BENCH_NS_SOURCE}
+      - --bootstrap-source-only
+      sleep: 0
+      timeout_sec: 30
+    retries: 60
+    interval_sec: 5
+- id: target_setup_job_completed
+  probe:
+    commands:
+    - command:
+      - python3
+      - resources/rabbitmq-experiments/blue_green_migration/setup_precondition_check.py
+      - --target-namespace
+      - ${BENCH_NS_TARGET}
+      - --bootstrap-target-only
+      sleep: 0
+      timeout_sec: 30
+  apply:
+    commands:
+    - command:
+      - kubectl
+      - -n
+      - ${BENCH_NS_TARGET}
+      - delete
+      - job
+      - '{{params.green_cluster_prefix}}-setup'
+      - --ignore-not-found=true
+      sleep: 1
+    - command:
+      - /bin/sh
+      - -c
+      - kubectl -n ${BENCH_NS_TARGET} wait --for=delete pod -l job-name={{params.green_cluster_prefix}}-setup --timeout=120s || true
+      sleep: 1
+    - command:
+      - kubectl
+      - -n
+      - ${BENCH_NS_TARGET}
+      - apply
+      - -f
+      - resources/rabbitmq-experiments/blue_green_migration/resource/setup-green-job.yaml
+      sleep: 1
+    - command:
+      - kubectl
+      - -n
+      - ${BENCH_NS_TARGET}
+      - wait
+      - --for=condition=complete
+      - job/{{params.green_cluster_prefix}}-setup
+      - --timeout=300s
+      sleep: 1
+  verify:
+    commands:
+    - command:
+      - python3
+      - resources/rabbitmq-experiments/blue_green_migration/setup_precondition_check.py
+      - --target-namespace
+      - ${BENCH_NS_TARGET}
+      - --bootstrap-target-only
+      sleep: 0
+      timeout_sec: 30
+    retries: 60
+    interval_sec: 5
+- id: source_seed_config_ready
+  probe:
+    commands:
+    - command:
+      - python3
+      - resources/rabbitmq-experiments/blue_green_migration/setup_precondition_check.py
+      - --source-namespace
+      - ${BENCH_NS_SOURCE}
+      - --seed-config-source-only
+      sleep: 0
+      timeout_sec: 30
+  apply:
+    commands:
+    - command:
+      - kubectl
+      - -n
+      - ${BENCH_NS_SOURCE}
+      - apply
+      - -f
+      - resources/rabbitmq-experiments/blue_green_migration/resource/seed-configmap.yaml
+      sleep: 1
+  verify:
+    commands:
+    - command:
+      - python3
+      - resources/rabbitmq-experiments/blue_green_migration/setup_precondition_check.py
+      - --source-namespace
+      - ${BENCH_NS_SOURCE}
+      - --seed-config-source-only
+      sleep: 0
+      timeout_sec: 30
+    retries: 30
+    interval_sec: 3
+- id: target_seed_config_ready
+  probe:
+    commands:
+    - command:
+      - python3
+      - resources/rabbitmq-experiments/blue_green_migration/setup_precondition_check.py
+      - --target-namespace
+      - ${BENCH_NS_TARGET}
+      - --seed-config-target-only
+      sleep: 0
+      timeout_sec: 30
+  apply:
+    commands:
+    - command:
+      - kubectl
+      - -n
+      - ${BENCH_NS_TARGET}
+      - apply
+      - -f
+      - resources/rabbitmq-experiments/blue_green_migration/resource/seed-configmap.yaml
+      sleep: 1
+  verify:
+    commands:
+    - command:
+      - python3
+      - resources/rabbitmq-experiments/blue_green_migration/setup_precondition_check.py
+      - --target-namespace
+      - ${BENCH_NS_TARGET}
+      - --seed-config-target-only
+      sleep: 0
+      timeout_sec: 30
+    retries: 30
+    interval_sec: 3
+- id: source_app_client_quiesced
+  probe:
+    commands:
+    - command:
+      - /bin/sh
+      - -c
+      - if kubectl -n ${BENCH_NS_SOURCE} get deploy app-client >/dev/null 2>&1; then [ "$(kubectl -n ${BENCH_NS_SOURCE} get deploy app-client -o jsonpath="{.spec.replicas}")" = "0" ]; else exit 0; fi
+      sleep: 0
+      timeout_sec: 20
+  apply:
+    commands:
+    - command:
+      - /bin/sh
+      - -c
+      - kubectl -n ${BENCH_NS_SOURCE} scale deploy app-client --replicas=0 >/dev/null 2>&1 || true
+      sleep: 1
+  verify:
+    commands:
+    - command:
+      - /bin/sh
+      - -c
+      - if kubectl -n ${BENCH_NS_SOURCE} get deploy app-client >/dev/null 2>&1; then [ "$(kubectl -n ${BENCH_NS_SOURCE} get deploy app-client -o jsonpath="{.spec.replicas}")" = "0" ]; else exit 0; fi
+      sleep: 0
+      timeout_sec: 20
+    retries: 30
+    interval_sec: 2
+- id: source_seed_data_ready
+  probe:
+    commands:
+    - command:
+      - python3
+      - resources/rabbitmq-experiments/blue_green_migration/setup_precondition_check.py
+      - --source-namespace
+      - ${BENCH_NS_SOURCE}
+      - --seed-data-source-only
+      sleep: 0
+      timeout_sec: 30
+  apply:
+    commands:
+    - command:
+      - /bin/sh
+      - -c
+      - for d in $(kubectl -n ${BENCH_NS_SOURCE} get deploy -l app=blue-producer -o name 2>/dev/null); do kubectl -n ${BENCH_NS_SOURCE} scale "${d}" --replicas=0 >/dev/null 2>&1 || true; done
+      sleep: 1
+    - command:
+      - /bin/sh
+      - -c
+      - for d in $(kubectl -n ${BENCH_NS_TARGET} get deploy -l app=blue-producer -o name 2>/dev/null); do kubectl -n ${BENCH_NS_TARGET} scale "${d}" --replicas=0 >/dev/null 2>&1 || true; done
+      sleep: 1
+    - command:
+      - /bin/sh
+      - -c
+      - kubectl -n ${BENCH_NS_SOURCE} wait --for=delete pod -l app=blue-producer --timeout=120s >/dev/null 2>&1 || true
+      sleep: 1
+    - command:
+      - /bin/sh
+      - -c
+      - kubectl -n ${BENCH_NS_TARGET} wait --for=delete pod -l app=blue-producer --timeout=120s >/dev/null 2>&1 || true
+      sleep: 1
+    - command:
+      - /bin/sh
+      - -c
+      - kubectl -n ${BENCH_NS_SOURCE} exec {{params.blue_cluster_prefix}}-0 -- rabbitmqctl purge_queue -p /app app-queue
+      sleep: 1
+    - command:
+      - kubectl
+      - -n
+      - ${BENCH_NS_SOURCE}
+      - delete
+      - job
+      - '{{params.blue_cluster_prefix}}-seed'
+      - --ignore-not-found=true
+      sleep: 1
+    - command:
+      - /bin/sh
+      - -c
+      - kubectl -n ${BENCH_NS_SOURCE} wait --for=delete pod -l job-name={{params.blue_cluster_prefix}}-seed --timeout=120s || true
+      sleep: 1
+    - command:
+      - kubectl
+      - -n
+      - ${BENCH_NS_SOURCE}
+      - apply
+      - -f
+      - resources/rabbitmq-experiments/blue_green_migration/resource/seed-job.yaml
+      sleep: 1
+    - command:
+      - kubectl
+      - -n
+      - ${BENCH_NS_SOURCE}
+      - wait
+      - --for=condition=complete
+      - job/{{params.blue_cluster_prefix}}-seed
+      - --timeout=300s
+      sleep: 1
+  verify:
+    commands:
+    - command:
+      - python3
+      - resources/rabbitmq-experiments/blue_green_migration/setup_precondition_check.py
+      - --source-namespace
+      - ${BENCH_NS_SOURCE}
+      - --seed-data-source-only
+      sleep: 0
+      timeout_sec: 30
+    retries: 60
+    interval_sec: 5
+- id: target_app_client_quiesced
+  probe:
+    commands:
+    - command:
+      - /bin/sh
+      - -c
+      - if kubectl -n ${BENCH_NS_TARGET} get deploy app-client >/dev/null 2>&1; then [ "$(kubectl -n ${BENCH_NS_TARGET} get deploy app-client -o jsonpath="{.spec.replicas}")" = "0" ] || exit 1; count=$(kubectl -n ${BENCH_NS_TARGET} get pod -l app=app-client --field-selector=status.phase!=Succeeded,status.phase!=Failed -o name 2>/dev/null | wc -l | tr -d " "); [ "${count}" = "0" ]; else exit 0; fi
+      sleep: 0
+      timeout_sec: 20
+  apply:
+    commands:
+    - command:
+      - /bin/sh
+      - -c
+      - kubectl -n ${BENCH_NS_TARGET} scale deploy app-client --replicas=0 >/dev/null 2>&1 || true
+      sleep: 1
+    - command:
+      - /bin/sh
+      - -c
+      - if kubectl -n ${BENCH_NS_TARGET} get deploy app-client >/dev/null 2>&1; then for i in $(seq 1 60); do count=$(kubectl -n ${BENCH_NS_TARGET} get pod -l app=app-client --field-selector=status.phase!=Succeeded,status.phase!=Failed -o name 2>/dev/null | wc -l | tr -d " "); [ "${count}" = "0" ] && exit 0; sleep 2; done; echo "app-client pods still present after scale-down" >&2; exit 1; fi
+      sleep: 1
+  verify:
+    commands:
+    - command:
+      - /bin/sh
+      - -c
+      - if kubectl -n ${BENCH_NS_TARGET} get deploy app-client >/dev/null 2>&1; then [ "$(kubectl -n ${BENCH_NS_TARGET} get deploy app-client -o jsonpath="{.spec.replicas}")" = "0" ] || exit 1; count=$(kubectl -n ${BENCH_NS_TARGET} get pod -l app=app-client --field-selector=status.phase!=Succeeded,status.phase!=Failed -o name 2>/dev/null | wc -l | tr -d " "); [ "${count}" = "0" ]; else exit 0; fi
+      sleep: 0
+      timeout_sec: 20
+    retries: 30
+    interval_sec: 2
+- id: target_queue_empty_ready
+  probe:
+    commands:
+    - command:
+      - python3
+      - resources/rabbitmq-experiments/blue_green_migration/setup_precondition_check.py
+      - --target-namespace
+      - ${BENCH_NS_TARGET}
+      - --target-queue-empty-only
+      sleep: 0
+      timeout_sec: 30
+  apply:
+    commands:
+    - command:
+      - /bin/sh
+      - -c
+      - for d in $(kubectl -n ${BENCH_NS_SOURCE} get deploy -l app=blue-producer -o name 2>/dev/null); do kubectl -n ${BENCH_NS_SOURCE} scale "${d}" --replicas=0 >/dev/null 2>&1 || true; done
+      sleep: 1
+    - command:
+      - /bin/sh
+      - -c
+      - for d in $(kubectl -n ${BENCH_NS_TARGET} get deploy -l app=blue-producer -o name 2>/dev/null); do kubectl -n ${BENCH_NS_TARGET} scale "${d}" --replicas=0 >/dev/null 2>&1 || true; done
+      sleep: 1
+    - command:
+      - /bin/sh
+      - -c
+      - kubectl -n ${BENCH_NS_SOURCE} wait --for=delete pod -l app=blue-producer --timeout=120s >/dev/null 2>&1 || true
+      sleep: 1
+    - command:
+      - /bin/sh
+      - -c
+      - kubectl -n ${BENCH_NS_TARGET} wait --for=delete pod -l app=blue-producer --timeout=120s >/dev/null 2>&1 || true
+      sleep: 1
+    - command:
+      - /bin/sh
+      - -c
+      - kubectl -n ${BENCH_NS_TARGET} exec {{params.green_cluster_prefix}}-0 -- rabbitmqctl purge_queue -p /app app-queue
+      sleep: 1
+  verify:
+    commands:
+    - command:
+      - python3
+      - resources/rabbitmq-experiments/blue_green_migration/setup_precondition_check.py
+      - --target-namespace
+      - ${BENCH_NS_TARGET}
+      - --target-queue-empty-only
+      sleep: 0
+      timeout_sec: 30
+    retries: 30
+    interval_sec: 3
+- id: blue_producer_ready
+  probe:
+    commands:
+    - command:
+      - /bin/sh
+      - -c
+      - kubectl -n ${BENCH_NS_SOURCE} get deploy -l app=blue-producer -o jsonpath="{range .items[*]}{.status.readyReplicas}{'\n'}{end}" 2>/dev/null | grep -Eq "^[1-9][0-9]*$"
+      sleep: 0
+      timeout_sec: 20
+  apply:
+    commands:
+    - command:
+      - /bin/sh
+      - -c
+      - producer_name="${BENCH_PARAM_PRODUCER_DEPLOYMENT_NAME:-}"; if [ -z "${producer_name}" ]; then producer_name="blue-producer-$(python3 -c 'import hashlib, os; print(hashlib.sha1(os.environ["BENCH_NS_SOURCE"].encode()).hexdigest()[:8])')"; fi; PRODUCER_NAME="${producer_name}" BLUE_PREFIX="${BENCH_PARAM_BLUE_CLUSTER_PREFIX}" python3 -c 'from pathlib import Path; import os, sys; text = Path("resources/rabbitmq-experiments/blue_green_migration/resource/blue-producer.yaml").read_text(encoding="utf-8"); text = text.replace("__BLUE_PRODUCER_DEPLOYMENT_NAME__", os.environ["PRODUCER_NAME"]); needle = "$" + "{BENCH_PARAM_BLUE_CLUSTER_PREFIX}"; text = text.replace(needle, os.environ["BLUE_PREFIX"]); sys.stdout.write(text)' | kubectl -n ${BENCH_NS_SOURCE} apply -f -
+      sleep: 1
+    - command:
+      - /bin/sh
+      - -c
+      - producer_name="${BENCH_PARAM_PRODUCER_DEPLOYMENT_NAME:-}"; if [ -z "${producer_name}" ]; then producer_name="blue-producer-$(python3 -c 'import hashlib, os; print(hashlib.sha1(os.environ["BENCH_NS_SOURCE"].encode()).hexdigest()[:8])')"; fi; kubectl -n ${BENCH_NS_SOURCE} rollout status "deploy/${producer_name}" --timeout=180s
+      sleep: 1
+  verify:
+    commands:
+    - command:
+      - /bin/sh
+      - -c
+      - kubectl -n ${BENCH_NS_SOURCE} get deploy -l app=blue-producer -o jsonpath="{range .items[*]}{.status.readyReplicas}{'\n'}{end}" 2>/dev/null | grep -Eq "^[1-9][0-9]*$"
+      sleep: 0
+      timeout_sec: 20
+    retries: 40
+    interval_sec: 3
+- id: curl_test_ready
+  probe:
+    commands:
+    - command:
+      - kubectl
+      - -n
+      - ${BENCH_NS_TARGET}
+      - wait
+      - --for=condition=ready
+      - pod
+      - -l
+      - app=curl-test
+      - --timeout=3s
+      sleep: 0
+      timeout_sec: 10
+  apply:
+    commands:
+    - command:
+      - kubectl
+      - -n
+      - ${BENCH_NS_TARGET}
+      - apply
+      - -f
+      - resources/rabbitmq-experiments/blue_green_migration/resource/curl-test.yaml
+      sleep: 1
+    - command:
+      - kubectl
+      - -n
+      - ${BENCH_NS_TARGET}
+      - wait
+      - --for=condition=ready
+      - pod
+      - -l
+      - app=curl-test
+      - --timeout=300s
+      sleep: 1
+  verify:
+    commands:
+    - command:
+      - kubectl
+      - -n
+      - ${BENCH_NS_TARGET}
+      - wait
+      - --for=condition=ready
+      - pod
+      - -l
+      - app=curl-test
+      - --timeout=3s
+      sleep: 0
+      timeout_sec: 10
+    retries: 30
+    interval_sec: 3
+detailedInstructions: 'Two RabbitMQ clusters are running in the assigned namespaces:
+
+  - source namespace: ${BENCH_NS_SOURCE} (blue/source cluster)
+
+  - target namespace: ${BENCH_NS_TARGET} (green/target cluster)
+
+
+  The blue cluster has continuous traffic on /app/app-queue with monotonic message IDs.
+
+  The green cluster starts empty.
+
+
+  Migrate messages from blue to green without gaps in the ID sequence (duplicates are acceptable), and cut application traffic to green.
+
+  Use only native Kubernetes resources and RabbitMQ tools (CLI/API). Do not install CRDs or operators.
+
+
+  Requirements:
+
+  - The green /app/app-queue contains the initial seed range (IDs 1..N) with no gaps.
+
+  - At least N messages are available on green.
+
+  - At least one post-seed live message (ID > N) must be observed on green before submission.
+
+  - Blue-to-green migration is complete enough for consumers to proceed (no gaps observed).
+
+  '
+operatorContext: 'kubectl -n ${BENCH_NS_SOURCE} get pods
+
+
+  kubectl -n ${BENCH_NS_TARGET} get pods
+
+
+  kubectl -n ${BENCH_NS_SOURCE} get svc
+
+
+  kubectl -n ${BENCH_NS_TARGET} get svc
+
+
+  kubectl -n ${BENCH_NS_SOURCE} exec {{params.blue_cluster_prefix}}-0 -- rabbitmqctl list_queues -p /app name messages
+
+
+  kubectl -n ${BENCH_NS_TARGET} exec {{params.green_cluster_prefix}}-0 -- rabbitmqctl list_queues -p /app name messages
+
+
+  kubectl -n ${BENCH_NS_TARGET} exec curl-test -- curl -s -u admin:adminpass http://{{params.green_cluster_prefix}}:15672/api/queues/%2Fapp/app-queue
+
+  '
+oracle:
+  verify:
+    hooks:
+      before_commands:
+      - command:
+        - kubectl
+        - -n
+        - ${BENCH_NS_TARGET}
+        - apply
+        - -f
+        - resources/rabbitmq-experiments/common/oracle-client.yaml
+        sleep: 0
+      - command:
+        - kubectl
+        - -n
+        - ${BENCH_NS_TARGET}
+        - wait
+        - --for=condition=ready
+        - pod/oracle-client
+        - --timeout=60s
+        sleep: 0
+      after_commands:
+      - command:
+        - kubectl
+        - -n
+        - ${BENCH_NS_TARGET}
+        - delete
+        - -f
+        - resources/rabbitmq-experiments/common/oracle-client.yaml
+        - --ignore-not-found=true
+        sleep: 0
+      after_failure_mode: warn
+    commands:
+    - command:
+      - python3
+      - resources/rabbitmq-experiments/blue_green_migration/oracle/oracle.py
+      sleep: 0
+cleanUpCommands:
+- command:
+  - /bin/sh
+  - -c
+  - kubectl -n ${BENCH_NS_SOURCE} delete all --all --ignore-not-found=true --wait=false
+  sleep: 0
+- command:
+  - /bin/sh
+  - -c
+  - kubectl -n ${BENCH_NS_SOURCE} delete configmap,secret,serviceaccount,role,rolebinding,pvc,job,cronjob,networkpolicy --all --ignore-not-found=true
+  sleep: 0
+- command:
+  - /bin/sh
+  - -c
+  - kubectl -n ${BENCH_NS_TARGET} delete all --all --ignore-not-found=true --wait=false
+  sleep: 0
+- command:
+  - /bin/sh
+  - -c
+  - kubectl -n ${BENCH_NS_TARGET} delete configmap,secret,serviceaccount,role,rolebinding,pvc,job,cronjob,networkpolicy --all --ignore-not-found=true
+  sleep: 0
+namespace_contract:
+  base_namespace: rabbitmq
+  default_role: target
+  required_roles:
+  - source
+  - target
+  base_roles:
+    source: rabbitmq
+    target: rabbitmq
+params:
+  definitions:
+    blue_cluster_prefix:
+      type: string
+      default: rabbitmq-blue
+    green_cluster_prefix:
+      type: string
+      default: rabbitmq-green
+    producer_deployment_name:
+      type: string
+      default: ""

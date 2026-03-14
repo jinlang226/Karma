@@ -1,0 +1,400 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: spark-skew-scripts
+  namespace: spark-skew
+data:
+  generate_data.py: |
+    #!/usr/bin/env python3
+    """Data Generator for Spark Data Skew Task - Creates skewed data"""
+    import random
+    import os
+    from datetime import datetime, timedelta
+
+    SCALE_FACTOR = float(os.environ.get('SCALE_FACTOR', '0.01'))
+    ORDERS_COUNT = int(500_000 * SCALE_FACTOR)
+    PRODUCTS_COUNT = int(5_000 * SCALE_FACTOR)
+    CUSTOMERS_COUNT = int(30_000 * SCALE_FACTOR)
+    HOT_PRODUCT_IDS = [1, 2, 3, 4, 5]  # These 5 products get 50% of orders
+    OUTPUT_DIR = os.environ.get('DATA_DIR', '/tmp/spark-skew-data')
+
+    def generate_orders(output_path):
+        print(f"Generating {ORDERS_COUNT} orders with SKEWED distribution...")
+        print(f"  Hot products (1-5): ~50% of orders")
+        print(f"  Other products: ~50% of orders")
+        with open(output_path, 'w') as f:
+            f.write("order_id,customer_id,product_id,quantity,price,order_date\n")
+            hot_count = 0
+            for i in range(ORDERS_COUNT):
+                order_id = i + 1
+                customer_id = random.randint(1, max(1, CUSTOMERS_COUNT))
+                # 50% chance of hot product (creates skew!)
+                if random.random() < 0.5:
+                    product_id = random.choice(HOT_PRODUCT_IDS)
+                    hot_count += 1
+                else:
+                    product_id = random.randint(6, max(6, PRODUCTS_COUNT))
+                quantity = random.randint(1, 10)
+                price = round(random.uniform(10.0, 1000.0), 2)
+                days_ago = random.randint(0, 365)
+                order_date = (datetime.now() - timedelta(days=days_ago)).strftime('%Y-%m-%d')
+                f.write(f"{order_id},{customer_id},{product_id},{quantity},{price},{order_date}\n")
+        print(f"Orders saved: {output_path}")
+        print(f"Skew ratio: {hot_count}/{ORDERS_COUNT} = {hot_count/ORDERS_COUNT*100:.1f}% on hot products")
+
+    def generate_products(output_path):
+        print(f"Generating {PRODUCTS_COUNT} products...")
+        categories = ['Electronics', 'Clothing', 'Home', 'Sports', 'Books', 'Food', 'Toys', 'Health']
+        with open(output_path, 'w') as f:
+            f.write("product_id,product_name,category,supplier_id,weight\n")
+            for i in range(PRODUCTS_COUNT):
+                product_id = i + 1
+                product_name = f"Product_{product_id}"
+                category = random.choice(categories)
+                supplier_id = random.randint(1, 100)
+                weight = round(random.uniform(0.1, 50.0), 2)
+                f.write(f"{product_id},{product_name},{category},{supplier_id},{weight}\n")
+        print(f"Products saved: {output_path}")
+
+    def generate_customers(output_path):
+        print(f"Generating {CUSTOMERS_COUNT} customers...")
+        regions = ['North', 'South', 'East', 'West', 'Central']
+        with open(output_path, 'w') as f:
+            f.write("customer_id,customer_name,region,tier\n")
+            for i in range(CUSTOMERS_COUNT):
+                customer_id = i + 1
+                customer_name = f"Customer_{customer_id}"
+                region = random.choice(regions)
+                tier = random.choice(['Bronze', 'Silver', 'Gold', 'Platinum'])
+                f.write(f"{customer_id},{customer_name},{region},{tier}\n")
+        print(f"Customers saved: {output_path}")
+
+    if __name__ == "__main__":
+        os.makedirs(OUTPUT_DIR, exist_ok=True)
+        generate_orders(os.path.join(OUTPUT_DIR, 'orders.csv'))
+        generate_products(os.path.join(OUTPUT_DIR, 'products.csv'))
+        generate_customers(os.path.join(OUTPUT_DIR, 'customers.csv'))
+        print("\nData generation complete!")
+        print("=" * 50)
+
+  baseline_query.py: |
+    #!/usr/bin/env python3
+    """BASELINE Query - No optimization, will be slow due to skew"""
+    import time
+    import os
+    import json
+    from pyspark.sql import SparkSession
+    from pyspark.sql import functions as F
+
+    DATA_DIR = os.environ.get('DATA_DIR', '/tmp/spark-skew-data')
+    RESULTS_DIR = os.environ.get('RESULTS_DIR', '/tmp/spark-skew-results')
+
+    print("=" * 60)
+    print("BASELINE QUERY - NO OPTIMIZATION")
+    print("=" * 60)
+
+    spark = SparkSession.builder \
+        .appName("SkewBaseline") \
+        .config("spark.sql.adaptive.enabled", "false") \
+        .getOrCreate()
+
+    # Load data
+    print("\nLoading data...")
+    orders = spark.read.csv(f"{DATA_DIR}/orders.csv", header=True, inferSchema=True)
+    products = spark.read.csv(f"{DATA_DIR}/products.csv", header=True, inferSchema=True)
+    customers = spark.read.csv(f"{DATA_DIR}/customers.csv", header=True, inferSchema=True)
+
+    print(f"Orders: {orders.count()} rows")
+    print(f"Products: {products.count()} rows")
+    print(f"Customers: {customers.count()} rows")
+
+    # Analyze skew
+    print("\n" + "=" * 60)
+    print("DATA SKEW ANALYSIS")
+    print("=" * 60)
+    order_counts = orders.groupBy("product_id").count().orderBy(F.desc("count"))
+    print("\nTop 10 products by order count:")
+    order_counts.show(10)
+
+    stats = order_counts.agg(
+        F.avg("count").alias("avg"),
+        F.max("count").alias("max"),
+        F.min("count").alias("min")
+    ).collect()[0]
+    skew_ratio = stats["max"] / stats["avg"] if stats["avg"] > 0 else 0
+    print(f"\nSKEW RATIO: {skew_ratio:.2f}x (max/avg)")
+    print(f"This means some partitions have {skew_ratio:.0f}x more data!")
+
+    # Run baseline query
+    print("\n" + "=" * 60)
+    print("RUNNING BASELINE QUERY (this will be slow)...")
+    print("=" * 60)
+
+    start_time = time.time()
+
+    # Standard join without optimization
+    result = orders \
+        .join(products, "product_id") \
+        .join(customers, "customer_id") \
+        .groupBy("category", "region") \
+        .agg(
+            F.sum(F.col("quantity") * F.col("price")).alias("total_revenue"),
+            F.count("*").alias("order_count")
+        ) \
+        .orderBy(F.desc("total_revenue"))
+
+    result.cache()
+    count = result.count()
+    elapsed = time.time() - start_time
+
+    print(f"\nResults: {count} rows")
+    print(f"Time: {elapsed:.2f} seconds")
+    result.show(10)
+
+    # Save results
+    os.makedirs(RESULTS_DIR, exist_ok=True)
+    with open(f"{RESULTS_DIR}/baseline_result.json", 'w') as f:
+        json.dump({
+            "strategy": "baseline",
+            "elapsed_seconds": elapsed,
+            "result_count": count,
+            "skew_ratio": skew_ratio
+        }, f, indent=2)
+
+    print("\n" + "=" * 60)
+    print(f"BASELINE COMPLETED: {elapsed:.2f} seconds")
+    print("=" * 60)
+    print("\nNOTE: This is slow because of data skew!")
+    print("Apply optimization strategies to improve performance.")
+
+    spark.stop()
+
+  broadcast_query.py: |
+    #!/usr/bin/env python3
+    """BROADCAST JOIN Query - Broadcasts small tables to avoid shuffle"""
+    import time
+    import os
+    import json
+    from pyspark.sql import SparkSession
+    from pyspark.sql import functions as F
+
+    DATA_DIR = os.environ.get('DATA_DIR', '/tmp/spark-skew-data')
+    RESULTS_DIR = os.environ.get('RESULTS_DIR', '/tmp/spark-skew-results')
+
+    print("=" * 60)
+    print("BROADCAST JOIN OPTIMIZATION")
+    print("=" * 60)
+    print("\nStrategy: Broadcast smaller tables (products, customers)")
+    print("to each executor, avoiding shuffle on skewed keys.")
+
+    spark = SparkSession.builder \
+        .appName("SkewBroadcast") \
+        .config("spark.sql.adaptive.enabled", "false") \
+        .config("spark.sql.autoBroadcastJoinThreshold", "52428800") \
+        .getOrCreate()
+
+    # Load data
+    print("\nLoading data...")
+    orders = spark.read.csv(f"{DATA_DIR}/orders.csv", header=True, inferSchema=True)
+    products = spark.read.csv(f"{DATA_DIR}/products.csv", header=True, inferSchema=True)
+    customers = spark.read.csv(f"{DATA_DIR}/customers.csv", header=True, inferSchema=True)
+
+    print(f"Orders: {orders.count()} rows")
+    print(f"Products: {products.count()} rows (will be BROADCAST)")
+    print(f"Customers: {customers.count()} rows (will be BROADCAST)")
+
+    # Run optimized query
+    print("\n" + "=" * 60)
+    print("RUNNING BROADCAST JOIN QUERY...")
+    print("=" * 60)
+
+    start_time = time.time()
+
+    # Use broadcast() hint for smaller tables
+    result = orders \
+        .join(F.broadcast(products), "product_id") \
+        .join(F.broadcast(customers), "customer_id") \
+        .groupBy("category", "region") \
+        .agg(
+            F.sum(F.col("quantity") * F.col("price")).alias("total_revenue"),
+            F.count("*").alias("order_count")
+        ) \
+        .orderBy(F.desc("total_revenue"))
+
+    result.cache()
+    count = result.count()
+    elapsed = time.time() - start_time
+
+    print(f"\nResults: {count} rows")
+    print(f"Time: {elapsed:.2f} seconds")
+    result.show(10)
+
+    # Load baseline for comparison
+    baseline_time = None
+    baseline_file = f"{RESULTS_DIR}/baseline_result.json"
+    if os.path.exists(baseline_file):
+        with open(baseline_file) as f:
+            baseline_time = json.load(f).get("elapsed_seconds")
+
+    # Save results
+    os.makedirs(RESULTS_DIR, exist_ok=True)
+    with open(f"{RESULTS_DIR}/broadcast_result.json", 'w') as f:
+        json.dump({
+            "strategy": "broadcast",
+            "elapsed_seconds": elapsed,
+            "result_count": count,
+            "baseline_seconds": baseline_time
+        }, f, indent=2)
+
+    print("\n" + "=" * 60)
+    print(f"BROADCAST JOIN COMPLETED: {elapsed:.2f} seconds")
+    if baseline_time:
+        improvement = ((baseline_time - elapsed) / baseline_time) * 100
+        print(f"vs BASELINE: {baseline_time:.2f}s -> {elapsed:.2f}s ({improvement:+.1f}%)")
+    print("=" * 60)
+
+    spark.stop()
+
+  aqe_query.py: |
+    #!/usr/bin/env python3
+    """AQE Query - Uses Adaptive Query Execution for automatic skew handling"""
+    import time
+    import os
+    import json
+    from pyspark.sql import SparkSession
+    from pyspark.sql import functions as F
+
+    DATA_DIR = os.environ.get('DATA_DIR', '/tmp/spark-skew-data')
+    RESULTS_DIR = os.environ.get('RESULTS_DIR', '/tmp/spark-skew-results')
+
+    print("=" * 60)
+    print("AQE (Adaptive Query Execution) OPTIMIZATION")
+    print("=" * 60)
+    print("\nStrategy: Enable Spark's automatic skew detection and handling.")
+    print("Spark will automatically split skewed partitions at runtime.")
+
+    spark = SparkSession.builder \
+        .appName("SkewAQE") \
+        .config("spark.sql.adaptive.enabled", "true") \
+        .config("spark.sql.adaptive.skewJoin.enabled", "true") \
+        .config("spark.sql.adaptive.skewJoin.skewedPartitionFactor", "5") \
+        .config("spark.sql.adaptive.skewJoin.skewedPartitionThresholdInBytes", "67108864") \
+        .getOrCreate()
+
+    # Load data
+    print("\nLoading data...")
+    orders = spark.read.csv(f"{DATA_DIR}/orders.csv", header=True, inferSchema=True)
+    products = spark.read.csv(f"{DATA_DIR}/products.csv", header=True, inferSchema=True)
+    customers = spark.read.csv(f"{DATA_DIR}/customers.csv", header=True, inferSchema=True)
+
+    print(f"Orders: {orders.count()} rows")
+    print(f"Products: {products.count()} rows")
+    print(f"Customers: {customers.count()} rows")
+
+    # Run optimized query
+    print("\n" + "=" * 60)
+    print("RUNNING AQE OPTIMIZED QUERY...")
+    print("(Spark will auto-detect and handle skew)")
+    print("=" * 60)
+
+    start_time = time.time()
+
+    # Standard join - AQE will optimize automatically
+    result = orders \
+        .join(products, "product_id") \
+        .join(customers, "customer_id") \
+        .groupBy("category", "region") \
+        .agg(
+            F.sum(F.col("quantity") * F.col("price")).alias("total_revenue"),
+            F.count("*").alias("order_count")
+        ) \
+        .orderBy(F.desc("total_revenue"))
+
+    result.cache()
+    count = result.count()
+    elapsed = time.time() - start_time
+
+    print(f"\nResults: {count} rows")
+    print(f"Time: {elapsed:.2f} seconds")
+    result.show(10)
+
+    # Load baseline for comparison
+    baseline_time = None
+    baseline_file = f"{RESULTS_DIR}/baseline_result.json"
+    if os.path.exists(baseline_file):
+        with open(baseline_file) as f:
+            baseline_time = json.load(f).get("elapsed_seconds")
+
+    # Save results
+    os.makedirs(RESULTS_DIR, exist_ok=True)
+    with open(f"{RESULTS_DIR}/aqe_result.json", 'w') as f:
+        json.dump({
+            "strategy": "aqe",
+            "elapsed_seconds": elapsed,
+            "result_count": count,
+            "baseline_seconds": baseline_time
+        }, f, indent=2)
+
+    print("\n" + "=" * 60)
+    print(f"AQE COMPLETED: {elapsed:.2f} seconds")
+    if baseline_time:
+        improvement = ((baseline_time - elapsed) / baseline_time) * 100
+        print(f"vs BASELINE: {baseline_time:.2f}s -> {elapsed:.2f}s ({improvement:+.1f}%)")
+    print("=" * 60)
+
+    spark.stop()
+
+  compare_results.py: |
+    #!/usr/bin/env python3
+    """Compare results from all optimization strategies"""
+    import os
+    import json
+
+    RESULTS_DIR = os.environ.get('RESULTS_DIR', '/tmp/spark-skew-results')
+
+    print("=" * 60)
+    print("PERFORMANCE COMPARISON")
+    print("=" * 60)
+
+    strategies = ['baseline', 'broadcast', 'aqe']
+    results = {}
+
+    for strategy in strategies:
+        result_file = f"{RESULTS_DIR}/{strategy}_result.json"
+        if os.path.exists(result_file):
+            with open(result_file) as f:
+                results[strategy] = json.load(f)
+        else:
+            print(f"WARNING: {strategy} results not found")
+
+    if 'baseline' not in results:
+        print("ERROR: Baseline results required for comparison")
+        exit(1)
+
+    baseline_time = results['baseline']['elapsed_seconds']
+    print(f"\n{'Strategy':<15} {'Time':>10} {'Improvement':>12}")
+    print("-" * 40)
+
+    for strategy in ['baseline', 'broadcast', 'aqe']:
+        if strategy in results:
+            elapsed = results[strategy]['elapsed_seconds']
+            if strategy == 'baseline':
+                improvement = "---"
+            else:
+                imp = ((baseline_time - elapsed) / baseline_time) * 100
+                improvement = f"{imp:+.1f}%"
+            print(f"{strategy:<15} {elapsed:>8.2f}s {improvement:>12}")
+
+    # Find best strategy
+    best = min(
+        [(k, v['elapsed_seconds']) for k, v in results.items() if k != 'baseline'],
+        key=lambda x: x[1],
+        default=None
+    )
+
+    if best:
+        print(f"\nBEST STRATEGY: {best[0]}")
+        best_improvement = ((baseline_time - best[1]) / baseline_time) * 100
+        print(f"Improvement: {best_improvement:.1f}% faster than baseline")
+
+    print("=" * 60)

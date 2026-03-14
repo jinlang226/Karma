@@ -1,0 +1,50 @@
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: ${BENCH_PARAM_CLUSTER_PREFIX}-setup
+spec:
+  backoffLimit: 3
+  template:
+    spec:
+      restartPolicy: OnFailure
+      containers:
+        - name: setup
+          image: curlimages/curl:8.6.0
+          env:
+            - name: RABBITMQ_ADMIN_USER
+              valueFrom:
+                secretKeyRef:
+                  name: ${BENCH_PARAM_CLUSTER_PREFIX}-admin
+                  key: username
+            - name: RABBITMQ_ADMIN_PASS
+              valueFrom:
+                secretKeyRef:
+                  name: ${BENCH_PARAM_CLUSTER_PREFIX}-admin
+                  key: password
+          command:
+            - /bin/sh
+            - -c
+            - |
+              set -e
+              base="http://${BENCH_PARAM_CLUSTER_PREFIX}:15672/api"
+              auth="${RABBITMQ_ADMIN_USER}:${RABBITMQ_ADMIN_PASS}"
+              for i in $(seq 1 60); do
+                if curl -s -u "$auth" "$base/overview" >/dev/null; then
+                  break
+                fi
+                sleep 2
+              done
+              if ! curl -s -u "$auth" "$base/overview" >/dev/null; then
+                echo "${BENCH_PARAM_CLUSTER_PREFIX}-setup: management API not ready"
+                exit 1
+              fi
+              curl -s -u "$auth" -H "content-type: application/json" \
+                -XPUT "$base/vhosts/%2Fapp" -d '{}' >/dev/null
+              curl -s -u "$auth" -H "content-type: application/json" \
+                -XPUT "$base/queues/%2Fapp/app-queue" \
+                -d '{"durable":true,"auto_delete":false,"arguments":{"x-queue-type":"classic"}}' >/dev/null
+              for i in $(seq 1 5); do
+                payload='{"properties":{"delivery_mode":2},"routing_key":"app-queue","payload":"msg-'"$i"'","payload_encoding":"string"}'
+                curl -s -u "$auth" -H "content-type: application/json" \
+                  -XPOST "$base/exchanges/%2Fapp/amq.default/publish" -d "$payload" >/dev/null
+              done

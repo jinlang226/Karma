@@ -1,0 +1,410 @@
+type: operator-certificate-rotation
+targetApp: CockroachDB
+numAppInstance: 3
+params:
+  definitions:
+    cluster_prefix:
+      type: string
+      default: crdb-cluster
+    replica_count:
+      type: int
+      default: 3
+    cert_secret_name:
+      type: string
+      default: crdb-cluster-certs
+    old_cert_configmap_name:
+      type: string
+      default: crdb-old-cert
+    min_rotated_validity_days:
+      type: int
+      default: 300
+maxAttempts: 3
+namespace_contract:
+  base_namespace: cockroachdb
+  default_role: default
+  required_roles:
+  - default
+externalMetrics:
+- time_to_first_mutation
+- destructive_ops
+preconditionUnits:
+- id: rbac_ready
+  probe:
+    commands:
+    - command:
+      - kubectl
+      - -n
+      - ${BENCH_NAMESPACE}
+      - get
+      - serviceaccount
+      - '{{params.cluster_prefix}}-sa'
+      timeout_sec: 15
+  apply:
+    commands:
+    - command:
+      - kubectl
+      - -n
+      - ${BENCH_NAMESPACE}
+      - apply
+      - -f
+      - resources/cockroachdb/certificate-rotation/resource/rbac.yaml
+      sleep: 1
+      timeout_sec: 30
+  verify:
+    commands:
+    - command:
+      - kubectl
+      - -n
+      - ${BENCH_NAMESPACE}
+      - get
+      - serviceaccount
+      - '{{params.cluster_prefix}}-sa'
+      timeout_sec: 15
+    retries: 6
+    interval_sec: 2
+- id: services_ready
+  probe:
+    commands:
+    - command:
+      - /bin/sh
+      - -c
+      - 'set -e
+
+        kubectl -n ${BENCH_NAMESPACE} get service {{params.cluster_prefix}} >/dev/null
+
+        kubectl -n ${BENCH_NAMESPACE} get service {{params.cluster_prefix}}-public
+        >/dev/null
+
+        '
+      timeout_sec: 20
+  apply:
+    commands:
+    - command:
+      - kubectl
+      - -n
+      - ${BENCH_NAMESPACE}
+      - apply
+      - -f
+      - resources/cockroachdb/certificate-rotation/resource/services.yaml
+      sleep: 1
+      timeout_sec: 30
+  verify:
+    commands:
+    - command:
+      - /bin/sh
+      - -c
+      - 'set -e
+
+        kubectl -n ${BENCH_NAMESPACE} get service {{params.cluster_prefix}} >/dev/null
+
+        kubectl -n ${BENCH_NAMESPACE} get service {{params.cluster_prefix}}-public
+        >/dev/null
+
+        '
+      timeout_sec: 20
+    retries: 6
+    interval_sec: 2
+- id: openssl_toolbox_ready
+  probe:
+    commands:
+    - command:
+      - kubectl
+      - -n
+      - ${BENCH_NAMESPACE}
+      - wait
+      - --for=condition=ready
+      - pod/openssl-toolbox
+      - --timeout=3s
+      timeout_sec: 10
+  apply:
+    commands:
+    - command:
+      - kubectl
+      - -n
+      - ${BENCH_NAMESPACE}
+      - apply
+      - -f
+      - resources/cockroachdb/certificate-rotation/resource/openssl-toolbox.yaml
+      sleep: 1
+      timeout_sec: 30
+    - command:
+      - kubectl
+      - -n
+      - ${BENCH_NAMESPACE}
+      - wait
+      - --for=condition=ready
+      - pod/openssl-toolbox
+      - --timeout=120s
+      sleep: 1
+      timeout_sec: 140
+  verify:
+    commands:
+    - command:
+      - kubectl
+      - -n
+      - ${BENCH_NAMESPACE}
+      - wait
+      - --for=condition=ready
+      - pod/openssl-toolbox
+      - --timeout=3s
+      timeout_sec: 10
+    retries: 20
+    interval_sec: 3
+- id: old_tls_material_ready
+  probe:
+    commands:
+    - command:
+      - /bin/sh
+      - -c
+      - 'set -e
+
+        kubectl -n ${BENCH_NAMESPACE} get secret {{params.cert_secret_name}} >/dev/null
+
+        kubectl -n ${BENCH_NAMESPACE} get configmap {{params.old_cert_configmap_name}}
+        >/dev/null
+
+        '
+      timeout_sec: 20
+  apply:
+    commands:
+    - command:
+      - /bin/sh
+      - -c
+      - 'kubectl -n ${BENCH_NAMESPACE} exec openssl-toolbox -- sh -c ''
+
+        set -e
+
+        rm -rf /tmp/certs && mkdir -p /tmp/certs
+
+        cd /tmp/certs
+
+        openssl genrsa -out ca.key 2048
+
+        openssl req -x509 -new -nodes -key ca.key -subj "/CN=CockroachDB CA" -days
+        3650 -out ca.crt
+
+        cat > node.cnf <<EOF_INNER
+
+        [req]
+
+        distinguished_name=req_distinguished_name
+
+        req_extensions=v3_req
+
+        prompt=no
+
+        [req_distinguished_name]
+
+        CN=node
+
+        [v3_req]
+
+        keyUsage=critical,digitalSignature,keyEncipherment
+
+        extendedKeyUsage=serverAuth,clientAuth
+
+        subjectAltName=@alt_names
+
+        [alt_names]
+
+        DNS.1=localhost
+
+        IP.1=127.0.0.1
+
+        DNS.2={{params.cluster_prefix}}
+
+        DNS.3={{params.cluster_prefix}}.${BENCH_NAMESPACE}
+
+        DNS.4={{params.cluster_prefix}}.${BENCH_NAMESPACE}.svc
+
+        DNS.5={{params.cluster_prefix}}.${BENCH_NAMESPACE}.svc.cluster.local
+
+        DNS.6=*.{{params.cluster_prefix}}.${BENCH_NAMESPACE}.svc.cluster.local
+
+        DNS.7={{params.cluster_prefix}}-0.{{params.cluster_prefix}}.${BENCH_NAMESPACE}.svc.cluster.local
+
+        DNS.8={{params.cluster_prefix}}-1.{{params.cluster_prefix}}.${BENCH_NAMESPACE}.svc.cluster.local
+
+        DNS.9={{params.cluster_prefix}}-2.{{params.cluster_prefix}}.${BENCH_NAMESPACE}.svc.cluster.local
+
+        EOF_INNER
+
+        openssl genrsa -out node.key 2048
+
+        openssl req -new -key node.key -out node.csr -config node.cnf
+
+        openssl x509 -req -in node.csr -CA ca.crt -CAkey ca.key -CAcreateserial -out
+        node.crt -days 2 -extensions v3_req -extfile node.cnf
+
+        openssl genrsa -out client.root.key 2048
+
+        openssl req -new -key client.root.key -subj "/CN=root" -out client.root.csr
+
+        openssl x509 -req -in client.root.csr -CA ca.crt -CAkey ca.key -CAcreateserial
+        -out client.root.crt -days 2
+
+        ''
+
+        '
+      sleep: 1
+      timeout_sec: 120
+    - command:
+      - /bin/sh
+      - -c
+      - "set -e\nTMP_DIR=$(mktemp -d)\nkubectl -n ${BENCH_NAMESPACE} cp openssl-toolbox:/tmp/certs\
+        \ \"${TMP_DIR}/certs\"\nkubectl -n ${BENCH_NAMESPACE} create secret generic\
+        \ {{params.cert_secret_name}} \\\n  --from-file=ca.crt=\"${TMP_DIR}/certs/ca.crt\"\
+        \ \\\n  --from-file=node.crt=\"${TMP_DIR}/certs/node.crt\" \\\n  --from-file=node.key=\"\
+        ${TMP_DIR}/certs/node.key\" \\\n  --from-file=client.root.crt=\"${TMP_DIR}/certs/client.root.crt\"\
+        \ \\\n  --from-file=client.root.key=\"${TMP_DIR}/certs/client.root.key\" \\\
+        \n  --dry-run=client -o yaml | kubectl apply -f -\nrm -rf \"${TMP_DIR}\"\n"
+      sleep: 1
+      timeout_sec: 80
+    - command:
+      - /bin/sh
+      - -c
+      - "set -e\nfingerprint=$(kubectl -n ${BENCH_NAMESPACE} exec openssl-toolbox\
+        \ -- sh -c \"openssl x509 -noout -fingerprint -sha256 -in /tmp/certs/node.crt\"\
+        \ | sed 's/.*=//')\nca_fingerprint=$(kubectl -n ${BENCH_NAMESPACE} exec openssl-toolbox\
+        \ -- sh -c \"openssl x509 -noout -fingerprint -sha256 -in /tmp/certs/ca.crt\"\
+        \ | sed 's/.*=//')\nnot_after=$(kubectl -n ${BENCH_NAMESPACE} exec openssl-toolbox\
+        \ -- sh -c \"openssl x509 -noout -enddate -in /tmp/certs/node.crt\" | sed\
+        \ 's/notAfter=//')\nkubectl -n ${BENCH_NAMESPACE} create configmap {{params.old_cert_configmap_name}}\
+        \ \\\n  --from-literal=fingerprint=\"$fingerprint\" \\\n  --from-literal=ca_fingerprint=\"\
+        $ca_fingerprint\" \\\n  --from-literal=not_after=\"$not_after\" \\\n  --dry-run=client\
+        \ -o yaml | kubectl apply -f -\n"
+      sleep: 1
+      timeout_sec: 40
+  verify:
+    commands:
+    - command:
+      - /bin/sh
+      - -c
+      - 'set -e
+
+        kubectl -n ${BENCH_NAMESPACE} get secret {{params.cert_secret_name}} >/dev/null
+
+        kubectl -n ${BENCH_NAMESPACE} get configmap {{params.old_cert_configmap_name}}
+        >/dev/null
+
+        '
+      timeout_sec: 20
+    retries: 6
+    interval_sec: 2
+- id: tls_cluster_ready
+  probe:
+    commands:
+    - command:
+      - /bin/sh
+      - -c
+      - 'set -e
+
+        [ "$(kubectl -n ${BENCH_NAMESPACE} get sts {{params.cluster_prefix}} -o jsonpath=''{.status.readyReplicas}'')"
+        = "3" ]
+
+        kubectl -n ${BENCH_NAMESPACE} exec {{params.cluster_prefix}}-0 -- ./cockroach
+        sql --certs-dir=/cockroach/cockroach-certs -e "SELECT 1;" >/dev/null
+
+        '
+      timeout_sec: 40
+  apply:
+    commands:
+    - command:
+      - kubectl
+      - -n
+      - ${BENCH_NAMESPACE}
+      - apply
+      - -f
+      - resources/cockroachdb/certificate-rotation/resource/statefulset.yaml
+      sleep: 2
+      timeout_sec: 60
+    - command:
+      - kubectl
+      - -n
+      - ${BENCH_NAMESPACE}
+      - wait
+      - --for=jsonpath={.status.phase}=Running
+      - pod
+      - -l
+      - app.kubernetes.io/name=cockroachdb
+      - --timeout=300s
+      sleep: 2
+      timeout_sec: 320
+    - command:
+      - /bin/sh
+      - -c
+      - "set -e\nfor i in $(seq 1 30); do\n  kubectl -n ${BENCH_NAMESPACE} exec {{params.cluster_prefix}}-0\
+        \ -- ./cockroach init --certs-dir=/cockroach/cockroach-certs --host={{params.cluster_prefix}}-0.{{params.cluster_prefix}}.${BENCH_NAMESPACE}.svc.cluster.local\
+        \ && exit 0\n  sleep 3\ndone\nexit 1\n"
+      sleep: 1
+      timeout_sec: 120
+    - command:
+      - kubectl
+      - -n
+      - ${BENCH_NAMESPACE}
+      - wait
+      - --for=condition=ready
+      - pod
+      - -l
+      - app.kubernetes.io/name=cockroachdb
+      - --timeout=300s
+      sleep: 2
+      timeout_sec: 320
+  verify:
+    commands:
+    - command:
+      - /bin/sh
+      - -c
+      - 'set -e
+
+        [ "$(kubectl -n ${BENCH_NAMESPACE} get sts {{params.cluster_prefix}} -o jsonpath=''{.status.readyReplicas}'')"
+        = "3" ]
+
+        kubectl -n ${BENCH_NAMESPACE} exec {{params.cluster_prefix}}-0 -- ./cockroach
+        sql --certs-dir=/cockroach/cockroach-certs -e "SELECT 1;" >/dev/null
+
+        '
+      timeout_sec: 40
+    retries: 30
+    interval_sec: 5
+detailedInstructions: 'Rotate the TLS certificates for the running CockroachDB cluster.
+
+  The new certificates should be valid for at least {{params.min_rotated_validity_days}}
+  days.
+
+  The existing CA key and cert are available in the openssl-toolbox pod at
+
+  /tmp/certs/ca.key and /tmp/certs/ca.crt.
+
+  '
+operatorContext: 'Useful commands:
+
+  ```bash
+
+  kubectl -n ${BENCH_NAMESPACE} exec {{params.cluster_prefix}}-0 -- ./cockroach sql
+  --certs-dir=/cockroach/cockroach-certs -e "SELECT 1;"
+
+  kubectl -n ${BENCH_NAMESPACE} get configmap {{params.old_cert_configmap_name}} -o
+  yaml
+
+  kubectl -n ${BENCH_NAMESPACE} get secret {{params.cert_secret_name}} -o yaml
+
+  ```
+
+  '
+oracle:
+  verify:
+    commands:
+    - command:
+      - /bin/sh
+      - -c
+      - kubectl -n ${BENCH_NAMESPACE} get statefulset {{params.cluster_prefix}} >/dev/null
+    - command:
+      - /bin/sh
+      - -c
+      - kubectl -n ${BENCH_NAMESPACE} get pods -l app.kubernetes.io/name=cockroachdb
+        >/dev/null
+    - command:
+      - python3
+      - resources/cockroachdb/certificate-rotation/oracle/oracle.py
+      timeout_sec: 600

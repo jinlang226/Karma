@@ -1,0 +1,104 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: spark-master
+  namespace: spark-etl
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: spark
+      component: master
+  template:
+    metadata:
+      labels:
+        app: spark
+        component: master
+    spec:
+      serviceAccountName: spark-etl
+      containers:
+      - name: spark-master
+        image: apache/spark:3.5.3
+        command:
+        - /bin/bash
+        - -c
+        - |
+          unset SPARK_MASTER_PORT
+          /opt/spark/sbin/start-master.sh
+          tail -f /opt/spark/logs/*
+        ports:
+        - containerPort: 7077
+          name: spark
+        - containerPort: 8080
+          name: webui
+        resources:
+          requests:
+            cpu: 500m
+            memory: 1Gi
+          limits:
+            cpu: 1000m
+            memory: 2Gi
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: spark-master
+  namespace: spark-etl
+spec:
+  selector:
+    app: spark
+    component: master
+  ports:
+  - name: spark
+    port: 7077
+    targetPort: 7077
+  - name: webui
+    port: 8080
+    targetPort: 8080
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: spark-worker
+  namespace: spark-etl
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: spark
+      component: worker
+  template:
+    metadata:
+      labels:
+        app: spark
+        component: worker
+    spec:
+      serviceAccountName: spark-etl
+      containers:
+      - name: spark-worker
+        image: apache/spark:3.5.3
+        command:
+        - /bin/bash
+        - -c
+        - |
+          /opt/spark/sbin/start-worker.sh spark://spark-master:7077
+          tail -f /opt/spark/logs/*
+        env:
+        - name: SPARK_WORKER_MEMORY
+          value: "512M"
+        - name: SPARK_WORKER_CORES
+          value: "1"
+        resources:
+          requests:
+            cpu: 500m
+            memory: 512Mi
+          limits:
+            cpu: 1000m
+            memory: 768Mi
+        volumeMounts:
+        - name: data-volume
+          mountPath: /data
+      volumes:
+      - name: data-volume
+        persistentVolumeClaim:
+          claimName: etl-data-pvc

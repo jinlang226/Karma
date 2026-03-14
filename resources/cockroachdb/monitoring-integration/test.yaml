@@ -1,0 +1,364 @@
+type: operator-monitoring-integration
+targetApp: CockroachDB
+numAppInstance: 3
+params:
+  definitions:
+    cluster_prefix:
+      type: string
+      default: crdb-cluster
+    metrics_path:
+      type: string
+      default: /_status/vars
+    metrics_port:
+      type: int
+      default: 8080
+    prometheus_service_name:
+      type: string
+      default: prometheus
+    prometheus_service_port:
+      type: int
+      default: 9090
+    service_monitor_name:
+      type: string
+      default: crdb-servicemonitor
+maxAttempts: 3
+namespace_contract:
+  base_namespace: cockroachdb
+  default_role: default
+  required_roles:
+  - default
+  - monitoring
+  base_roles:
+    default: cockroachdb
+    monitoring: monitoring
+externalMetrics:
+- time_to_first_mutation
+preconditionUnits:
+- id: prometheus_stack_ready
+  probe:
+    commands:
+    - command:
+      - /bin/sh
+      - -c
+      - 'set -e
+
+        kubectl -n monitoring get service {{params.prometheus_service_name}} >/dev/null
+
+        kubectl get --raw "/api/v1/namespaces/monitoring/services/{{params.prometheus_service_name}}:{{params.prometheus_service_port}}/proxy/-/ready"
+        | grep -qi "ready"
+
+        kubectl get --raw "/api/v1/namespaces/monitoring/services/{{params.prometheus_service_name}}:{{params.prometheus_service_port}}/proxy/api/v1/targets"
+        | grep -q ''"status":"success"''
+
+        '
+      timeout_sec: 30
+  apply:
+    commands:
+    - command:
+      - /bin/sh
+      - -c
+      - kubectl apply -f resources/cockroachdb/monitoring-integration/resource/monitoring-crds.yaml
+      sleep: 1
+      timeout_sec: 60
+    - command:
+      - kubectl
+      - -n
+      - monitoring
+      - apply
+      - -f
+      - resources/cockroachdb/monitoring-integration/resource/prometheus-operator.yaml
+      sleep: 1
+      timeout_sec: 60
+    - command:
+      - kubectl
+      - -n
+      - monitoring
+      - apply
+      - -f
+      - resources/cockroachdb/monitoring-integration/resource/prometheus-rbac.yaml
+      sleep: 1
+      timeout_sec: 40
+    - command:
+      - kubectl
+      - -n
+      - monitoring
+      - apply
+      - -f
+      - resources/cockroachdb/monitoring-integration/resource/prometheus.yaml
+      sleep: 1
+      timeout_sec: 40
+    - command:
+      - kubectl
+      - -n
+      - monitoring
+      - wait
+      - --for=condition=ready
+      - pod
+      - -l
+      - app=prometheus-operator
+      - --timeout=300s
+      sleep: 1
+      timeout_sec: 320
+    - command:
+      - /bin/sh
+      - -c
+      - "set -e\nfor i in $(seq 1 60); do\n  count=$(kubectl -n monitoring get pod\
+        \ -l prometheus=crdb --no-headers 2>/dev/null | wc -l | tr -d ' ')\n  if [\
+        \ \"${count}\" -ge 1 ]; then\n    kubectl -n monitoring wait --for=condition=ready\
+        \ pod -l prometheus=crdb --timeout=300s\n    exit 0\n  fi\n  sleep 2\ndone\n\
+        exit 1\n"
+      sleep: 1
+      timeout_sec: 340
+  verify:
+    commands:
+    - command:
+      - /bin/sh
+      - -c
+      - 'set -e
+
+        kubectl -n monitoring get service {{params.prometheus_service_name}} >/dev/null
+
+        kubectl get --raw "/api/v1/namespaces/monitoring/services/{{params.prometheus_service_name}}:{{params.prometheus_service_port}}/proxy/-/ready"
+        | grep -qi "ready"
+
+        kubectl get --raw "/api/v1/namespaces/monitoring/services/{{params.prometheus_service_name}}:{{params.prometheus_service_port}}/proxy/api/v1/targets"
+        | grep -q ''"status":"success"''
+
+        '
+      timeout_sec: 30
+    retries: 20
+    interval_sec: 3
+- id: cluster_rbac_ready
+  probe:
+    commands:
+    - command:
+      - kubectl
+      - -n
+      - ${BENCH_NAMESPACE}
+      - get
+      - serviceaccount
+      - '{{params.cluster_prefix}}-sa'
+      timeout_sec: 15
+  apply:
+    commands:
+    - command:
+      - kubectl
+      - -n
+      - ${BENCH_NAMESPACE}
+      - apply
+      - -f
+      - resources/cockroachdb/monitoring-integration/resource/rbac.yaml
+      sleep: 1
+      timeout_sec: 30
+  verify:
+    commands:
+    - command:
+      - kubectl
+      - -n
+      - ${BENCH_NAMESPACE}
+      - get
+      - serviceaccount
+      - '{{params.cluster_prefix}}-sa'
+      timeout_sec: 15
+    retries: 6
+    interval_sec: 2
+- id: cluster_services_ready
+  probe:
+    commands:
+    - command:
+      - /bin/sh
+      - -c
+      - 'set -e
+
+        kubectl -n ${BENCH_NAMESPACE} get service {{params.cluster_prefix}} >/dev/null
+
+        kubectl -n ${BENCH_NAMESPACE} get service {{params.cluster_prefix}}-public
+        >/dev/null
+
+        '
+      timeout_sec: 20
+  apply:
+    commands:
+    - command:
+      - kubectl
+      - -n
+      - ${BENCH_NAMESPACE}
+      - apply
+      - -f
+      - resources/cockroachdb/monitoring-integration/resource/services.yaml
+      sleep: 1
+      timeout_sec: 30
+  verify:
+    commands:
+    - command:
+      - /bin/sh
+      - -c
+      - 'set -e
+
+        kubectl -n ${BENCH_NAMESPACE} get service {{params.cluster_prefix}} >/dev/null
+
+        kubectl -n ${BENCH_NAMESPACE} get service {{params.cluster_prefix}}-public
+        >/dev/null
+
+        '
+      timeout_sec: 20
+    retries: 6
+    interval_sec: 2
+- id: cluster_workload_ready
+  probe:
+    commands:
+    - command:
+      - /bin/sh
+      - -c
+      - 'set -e
+
+        [ "$(kubectl -n ${BENCH_NAMESPACE} get sts {{params.cluster_prefix}} -o jsonpath=''{.status.readyReplicas}'')"
+        = "3" ]
+
+        kubectl -n ${BENCH_NAMESPACE} exec {{params.cluster_prefix}}-0 -- ./cockroach
+        sql --insecure -e "SELECT 1;" >/dev/null
+
+        '
+      timeout_sec: 30
+  apply:
+    commands:
+    - command:
+      - kubectl
+      - -n
+      - ${BENCH_NAMESPACE}
+      - apply
+      - -f
+      - resources/cockroachdb/monitoring-integration/resource/statefulset.yaml
+      sleep: 2
+      timeout_sec: 60
+    - command:
+      - kubectl
+      - -n
+      - ${BENCH_NAMESPACE}
+      - wait
+      - --for=jsonpath={.status.phase}=Running
+      - pod
+      - -l
+      - app.kubernetes.io/name=cockroachdb
+      - --timeout=300s
+      sleep: 2
+      timeout_sec: 320
+    - command:
+      - /bin/sh
+      - -c
+      - "set -e\nfor i in $(seq 1 30); do\n  kubectl -n ${BENCH_NAMESPACE} exec {{params.cluster_prefix}}-0\
+        \ -- ./cockroach init --insecure --host={{params.cluster_prefix}}-0.{{params.cluster_prefix}}.${BENCH_NAMESPACE}.svc.cluster.local\
+        \ && exit 0\n  sleep 3\ndone\nexit 1\n"
+      sleep: 1
+      timeout_sec: 120
+    - command:
+      - kubectl
+      - -n
+      - ${BENCH_NAMESPACE}
+      - wait
+      - --for=condition=ready
+      - pod
+      - -l
+      - app.kubernetes.io/name=cockroachdb
+      - --timeout=300s
+      sleep: 2
+      timeout_sec: 320
+  verify:
+    commands:
+    - command:
+      - /bin/sh
+      - -c
+      - 'set -e
+
+        [ "$(kubectl -n ${BENCH_NAMESPACE} get sts {{params.cluster_prefix}} -o jsonpath=''{.status.readyReplicas}'')"
+        = "3" ]
+
+        kubectl -n ${BENCH_NAMESPACE} exec {{params.cluster_prefix}}-0 -- ./cockroach
+        sql --insecure -e "SELECT 1;" >/dev/null
+
+        '
+      timeout_sec: 30
+    retries: 30
+    interval_sec: 5
+- id: curl_test_ready
+  probe:
+    commands:
+    - command:
+      - kubectl
+      - -n
+      - ${BENCH_NAMESPACE}
+      - wait
+      - --for=condition=ready
+      - pod/curl-test
+      - --timeout=3s
+      timeout_sec: 10
+  apply:
+    commands:
+    - command:
+      - kubectl
+      - -n
+      - ${BENCH_NAMESPACE}
+      - apply
+      - -f
+      - resources/cockroachdb/monitoring-integration/resource/curl-test.yaml
+      sleep: 1
+      timeout_sec: 30
+    - command:
+      - kubectl
+      - -n
+      - ${BENCH_NAMESPACE}
+      - wait
+      - --for=condition=ready
+      - pod/curl-test
+      - --timeout=120s
+      sleep: 1
+      timeout_sec: 140
+  verify:
+    commands:
+    - command:
+      - kubectl
+      - -n
+      - ${BENCH_NAMESPACE}
+      - wait
+      - --for=condition=ready
+      - pod/curl-test
+      - --timeout=3s
+      timeout_sec: 10
+    retries: 20
+    interval_sec: 3
+detailedInstructions: 'Ensure Prometheus in the monitoring namespace scrapes CockroachDB
+  metrics from {{params.metrics_path}} on port {{params.metrics_port}}.
+
+  Preserve existing monitoring if it already works; otherwise bootstrap/fix it.
+
+  ServiceMonitor {{params.service_monitor_name}} is one valid approach when using
+  Prometheus Operator, but equivalent non-CRD wiring is also acceptable.
+
+  '
+operatorContext: 'Useful commands:
+
+  ```bash
+
+  kubectl -n monitoring get prometheus,servicemonitor
+
+  kubectl -n ${BENCH_NAMESPACE} get svc,pods
+
+  ```
+
+  '
+oracle:
+  verify:
+    commands:
+    - command:
+      - /bin/sh
+      - -c
+      - kubectl -n ${BENCH_NAMESPACE} get statefulset {{params.cluster_prefix}} >/dev/null
+    - command:
+      - /bin/sh
+      - -c
+      - kubectl -n ${BENCH_NAMESPACE} get pods -l app.kubernetes.io/name=cockroachdb
+        >/dev/null
+    - command:
+      - python3
+      - resources/cockroachdb/monitoring-integration/oracle/oracle.py
+      timeout_sec: 600

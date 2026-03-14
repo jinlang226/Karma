@@ -1,0 +1,307 @@
+type: certificate-rotation
+targetApp: MongoDB
+numAppInstance: 3
+maxAttempts: 3
+namespace_contract:
+  base_namespace: mongodb
+  default_role: default
+  required_roles:
+  - default
+params:
+  definitions:
+    cluster_prefix:
+      type: string
+      default: mongo-rs
+    service_name:
+      type: string
+      default: mongo
+    replica_set_name:
+      type: string
+      default: rs0
+    expected_replicas:
+      type: int
+      default: 3
+      min: 3
+      max: 9
+    openssl_pod_name:
+      type: string
+      default: openssl-toolbox
+    tls_ca_secret_name:
+      type: string
+      default: mongodb-tls-ca
+    tls_cert_secret_name:
+      type: string
+      default: mongodb-tls-cert
+    old_tls_configmap_name:
+      type: string
+      default: mongodb-tls-old
+    old_cert_valid_days:
+      type: int
+      default: 2
+      min: 1
+      max: 30
+externalMetrics:
+- time_to_first_mutation
+- read_write_ratio
+- blast_radius
+- destructive_ops
+- decoy_integrity
+- residual_drift
+preconditionUnits:
+- id: certificate_rotation_fault_ready
+  probe:
+    commands:
+    - command:
+      - /bin/sh
+      - -c
+      - |
+        set -euo pipefail
+        tls_uri="mongodb://{{params.cluster_prefix}}-0.{{params.service_name}}.${BENCH_NAMESPACE}.svc.cluster.local:27017/?directConnection=true&serverSelectionTimeoutMS=4000&connectTimeoutMS=4000"
+        kubectl -n ${BENCH_NAMESPACE} exec {{params.cluster_prefix}}-0 -- mongosh --quiet "${tls_uri}" --tls --tlsCAFile /etc/mongo-ca/ca.crt --eval 'db.hello().ok' | grep -qx 1
+
+        CM_SERVER_FP=$(kubectl -n ${BENCH_NAMESPACE} get configmap {{params.old_tls_configmap_name}} -o jsonpath='{.data.server_fingerprint_sha256}')
+        CM_CA_FP=$(kubectl -n ${BENCH_NAMESPACE} get configmap {{params.old_tls_configmap_name}} -o jsonpath='{.data.ca_fingerprint_sha256}')
+        [ -n "${CM_SERVER_FP}" ]
+        [ -n "${CM_CA_FP}" ]
+
+        SERVER_PEM_B64=$(kubectl -n ${BENCH_NAMESPACE} get secret {{params.tls_cert_secret_name}} -o jsonpath='{.data.server\.pem}')
+        CA_PEM_B64=$(kubectl -n ${BENCH_NAMESPACE} get secret {{params.tls_ca_secret_name}} -o jsonpath='{.data.ca\.crt}')
+
+        CUR_SERVER_FP=$(printf '%s' "${SERVER_PEM_B64}" | python3 -c 'import base64,sys; sys.stdout.buffer.write(base64.b64decode(sys.stdin.read()))' | kubectl -n ${BENCH_NAMESPACE} exec -i {{params.openssl_pod_name}} -- openssl x509 -noout -fingerprint -sha256 | awk -F= '{print $2}')
+        CUR_CA_FP=$(printf '%s' "${CA_PEM_B64}" | python3 -c 'import base64,sys; sys.stdout.buffer.write(base64.b64decode(sys.stdin.read()))' | kubectl -n ${BENCH_NAMESPACE} exec -i {{params.openssl_pod_name}} -- openssl x509 -noout -fingerprint -sha256 | awk -F= '{print $2}')
+
+        [ "${CUR_SERVER_FP}" = "${CM_SERVER_FP}" ]
+        [ "${CUR_CA_FP}" = "${CM_CA_FP}" ]
+      timeout_sec: 120
+  apply:
+    commands:
+    - command:
+      - kubectl
+      - -n
+      - ${BENCH_NAMESPACE}
+      - delete
+      - sts
+      - '{{params.cluster_prefix}}'
+      - --ignore-not-found=true
+      sleep: 1
+    - command:
+      - kubectl
+      - -n
+      - ${BENCH_NAMESPACE}
+      - delete
+      - svc
+      - '{{params.service_name}}'
+      - --ignore-not-found=true
+      sleep: 1
+    - command:
+      - kubectl
+      - -n
+      - ${BENCH_NAMESPACE}
+      - delete
+      - pod
+      - '{{params.openssl_pod_name}}'
+      - --ignore-not-found=true
+      sleep: 1
+    - command:
+      - kubectl
+      - -n
+      - ${BENCH_NAMESPACE}
+      - delete
+      - secret
+      - '{{params.tls_ca_secret_name}}'
+      - '{{params.tls_cert_secret_name}}'
+      - --ignore-not-found=true
+      sleep: 1
+    - command:
+      - kubectl
+      - -n
+      - ${BENCH_NAMESPACE}
+      - delete
+      - configmap
+      - '{{params.old_tls_configmap_name}}'
+      - --ignore-not-found=true
+      sleep: 1
+    - command:
+      - /bin/sh
+      - -c
+      - |
+        set -euo pipefail
+        for pvc in $(kubectl -n ${BENCH_NAMESPACE} get pvc -o jsonpath='{range .items[*]}{.metadata.name}{"\n"}{end}' | grep '^data-{{params.cluster_prefix}}-' || true); do
+          kubectl -n ${BENCH_NAMESPACE} delete pvc "${pvc}" --ignore-not-found=true
+        done
+      sleep: 2
+    - command:
+      - kubectl
+      - -n
+      - ${BENCH_NAMESPACE}
+      - apply
+      - -f
+      - resources/mongodb/certificate-rotation/resource/services.yaml
+      sleep: 1
+    - command:
+      - kubectl
+      - -n
+      - ${BENCH_NAMESPACE}
+      - apply
+      - -f
+      - resources/mongodb/certificate-rotation/resource/openssl-toolbox.yaml
+      sleep: 1
+    - command:
+      - kubectl
+      - -n
+      - ${BENCH_NAMESPACE}
+      - wait
+      - --for=condition=Ready
+      - pod/{{params.openssl_pod_name}}
+      - --timeout=300s
+      sleep: 1
+    - command:
+      - /bin/sh
+      - -c
+      - |
+        set -euo pipefail
+        TMP_DIR=$(mktemp -d)
+        kubectl -n ${BENCH_NAMESPACE} exec {{params.openssl_pod_name}} -- /bin/sh -c '
+        set -e
+        mkdir -p /tmp/certs
+        cat > /tmp/certs/openssl.cnf <<EOF_CFG
+        distinguished_name=req_distinguished_name
+        req_extensions=v3_req
+        prompt=no
+        [req_distinguished_name]
+        CN={{params.cluster_prefix}}
+        [v3_req]
+        keyUsage=critical,digitalSignature,keyEncipherment
+        extendedKeyUsage=serverAuth,clientAuth
+        subjectAltName=@alt_names
+        [alt_names]
+        DNS.1=localhost
+        DNS.2={{params.service_name}}
+        DNS.3={{params.service_name}}.${BENCH_NAMESPACE}
+        DNS.4={{params.service_name}}.${BENCH_NAMESPACE}.svc
+        DNS.5={{params.service_name}}.${BENCH_NAMESPACE}.svc.cluster.local
+        DNS.6={{params.cluster_prefix}}-0.{{params.service_name}}.${BENCH_NAMESPACE}.svc.cluster.local
+        DNS.7={{params.cluster_prefix}}-1.{{params.service_name}}.${BENCH_NAMESPACE}.svc.cluster.local
+        DNS.8={{params.cluster_prefix}}-2.{{params.service_name}}.${BENCH_NAMESPACE}.svc.cluster.local
+        EOF_CFG
+        openssl genrsa -out /tmp/certs/ca.key 2048
+        openssl req -x509 -new -nodes -key /tmp/certs/ca.key -sha256 -days 3650 -subj "/CN=mongo-ca" -out /tmp/certs/ca.crt
+        openssl genrsa -out /tmp/certs/server.key 2048
+        openssl req -new -key /tmp/certs/server.key -out /tmp/certs/server.csr -config /tmp/certs/openssl.cnf
+        openssl x509 -req -in /tmp/certs/server.csr -CA /tmp/certs/ca.crt -CAkey /tmp/certs/ca.key -CAcreateserial -out /tmp/certs/server.crt -days {{params.old_cert_valid_days}} -extensions v3_req -extfile /tmp/certs/openssl.cnf
+        cat /tmp/certs/server.crt /tmp/certs/server.key > /tmp/certs/server.pem
+        '
+        kubectl -n ${BENCH_NAMESPACE} cp {{params.openssl_pod_name}}:/tmp/certs "${TMP_DIR}/certs"
+
+        kubectl -n ${BENCH_NAMESPACE} create secret generic {{params.tls_ca_secret_name}} \
+          --from-file=ca.crt="${TMP_DIR}/certs/ca.crt" \
+          --from-file=ca.key="${TMP_DIR}/certs/ca.key" \
+          --dry-run=client -o yaml | kubectl -n ${BENCH_NAMESPACE} apply -f -
+
+        kubectl -n ${BENCH_NAMESPACE} create secret generic {{params.tls_cert_secret_name}} \
+          --from-file=server.pem="${TMP_DIR}/certs/server.pem" \
+          --dry-run=client -o yaml | kubectl -n ${BENCH_NAMESPACE} apply -f -
+
+        SERVER_FP=$(openssl x509 -noout -fingerprint -sha256 -in "${TMP_DIR}/certs/server.crt" | cut -d= -f2)
+        CA_FP=$(openssl x509 -noout -fingerprint -sha256 -in "${TMP_DIR}/certs/ca.crt" | cut -d= -f2)
+
+        kubectl -n ${BENCH_NAMESPACE} create configmap {{params.old_tls_configmap_name}} \
+          --from-literal=server_fingerprint_sha256="${SERVER_FP}" \
+          --from-literal=ca_fingerprint_sha256="${CA_FP}" \
+          --dry-run=client -o yaml | kubectl -n ${BENCH_NAMESPACE} apply -f -
+      sleep: 1
+    - command:
+      - kubectl
+      - -n
+      - ${BENCH_NAMESPACE}
+      - apply
+      - -f
+      - resources/mongodb/certificate-rotation/resource/statefulset.yaml
+      sleep: 2
+    - command:
+      - kubectl
+      - -n
+      - ${BENCH_NAMESPACE}
+      - wait
+      - --for=jsonpath={.status.readyReplicas}={{params.expected_replicas}}
+      - sts/{{params.cluster_prefix}}
+      - --timeout=360s
+      sleep: 1
+    - command:
+      - /bin/sh
+      - -c
+      - |
+        set -euo pipefail
+        tls_uri="mongodb://{{params.cluster_prefix}}-0.{{params.service_name}}.${BENCH_NAMESPACE}.svc.cluster.local:27017/?directConnection=true&serverSelectionTimeoutMS=4000&connectTimeoutMS=4000"
+        kubectl -n ${BENCH_NAMESPACE} exec {{params.cluster_prefix}}-0 -- mongosh --quiet "${tls_uri}" --tls --tlsCAFile /etc/mongo-ca/ca.crt --eval 'rs.initiate({_id:"{{params.replica_set_name}}",members:[{_id:0,host:"{{params.cluster_prefix}}-0.{{params.service_name}}.${BENCH_NAMESPACE}.svc.cluster.local:27017"},{_id:1,host:"{{params.cluster_prefix}}-1.{{params.service_name}}.${BENCH_NAMESPACE}.svc.cluster.local:27017"},{_id:2,host:"{{params.cluster_prefix}}-2.{{params.service_name}}.${BENCH_NAMESPACE}.svc.cluster.local:27017"}]})'
+      sleep: 2
+    - command:
+      - /bin/sh
+      - -c
+      - |
+        set -euo pipefail
+        tls_uri="mongodb://{{params.cluster_prefix}}-0.{{params.service_name}}.${BENCH_NAMESPACE}.svc.cluster.local:27017/?directConnection=true&serverSelectionTimeoutMS=4000&connectTimeoutMS=4000"
+        for _ in $(seq 1 40); do
+          kubectl -n ${BENCH_NAMESPACE} exec {{params.cluster_prefix}}-0 -- mongosh --quiet "${tls_uri}" --tls --tlsCAFile /etc/mongo-ca/ca.crt --eval 'db.hello().isWritablePrimary' | grep -qx true && exit 0
+          sleep 3
+        done
+        exit 1
+      sleep: 1
+  verify:
+    commands:
+    - command:
+      - /bin/sh
+      - -c
+      - |
+        set -euo pipefail
+        tls_uri="mongodb://{{params.cluster_prefix}}-0.{{params.service_name}}.${BENCH_NAMESPACE}.svc.cluster.local:27017/?directConnection=true&serverSelectionTimeoutMS=4000&connectTimeoutMS=4000"
+        kubectl -n ${BENCH_NAMESPACE} exec {{params.cluster_prefix}}-0 -- mongosh --quiet "${tls_uri}" --tls --tlsCAFile /etc/mongo-ca/ca.crt --eval 'db.hello().ok' | grep -qx 1
+        CM_SERVER_FP=$(kubectl -n ${BENCH_NAMESPACE} get configmap {{params.old_tls_configmap_name}} -o jsonpath='{.data.server_fingerprint_sha256}')
+        SERVER_PEM_B64=$(kubectl -n ${BENCH_NAMESPACE} get secret {{params.tls_cert_secret_name}} -o jsonpath='{.data.server\.pem}')
+        CUR_SERVER_FP=$(printf '%s' "${SERVER_PEM_B64}" | python3 -c 'import base64,sys; sys.stdout.buffer.write(base64.b64decode(sys.stdin.read()))' | kubectl -n ${BENCH_NAMESPACE} exec -i {{params.openssl_pod_name}} -- openssl x509 -noout -fingerprint -sha256 | awk -F= '{print $2}')
+        [ "${CUR_SERVER_FP}" = "${CM_SERVER_FP}" ]
+      timeout_sec: 120
+    retries: 8
+    interval_sec: 5
+detailedInstructions: |
+  MongoDB is running with TLS, but server certificates are still the old expiring set.
+
+  Task:
+  - Rotate only the server certificate in `{{params.tls_cert_secret_name}}`.
+  - Keep CA trust unchanged (`{{params.tls_ca_secret_name}}` must remain same CA).
+  - Ensure rotated cert validity is about one year.
+  - Keep cluster healthy with TLS connectivity.
+
+  Context:
+  - Previous (old) fingerprints are recorded in ConfigMap `{{params.old_tls_configmap_name}}`.
+
+  Constraints:
+  - Operate only in `${BENCH_NAMESPACE}`.
+  - Do not recreate the namespace.
+operatorContext: |
+  Namespace: ${BENCH_NAMESPACE}
+  StatefulSet: {{params.cluster_prefix}}
+  Service: {{params.service_name}}
+  Openssl Pod: {{params.openssl_pod_name}}
+oracle:
+  verify:
+    commands:
+    - command:
+      - python3
+      - resources/mongodb/certificate-rotation/oracle/oracle.py
+      - --check
+      - fingerprints
+      timeout_sec: 120
+    - command:
+      - python3
+      - resources/mongodb/certificate-rotation/oracle/oracle.py
+      - --check
+      - validity
+      timeout_sec: 120
+    - command:
+      - python3
+      - resources/mongodb/certificate-rotation/oracle/oracle.py
+      - --check
+      - tls
+      timeout_sec: 120
+cleanUpCommands: []

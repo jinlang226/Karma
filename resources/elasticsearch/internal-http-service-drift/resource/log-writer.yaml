@@ -1,0 +1,37 @@
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: log-writer
+spec:
+  backoffLimit: 3
+  template:
+    spec:
+      restartPolicy: Never
+      containers:
+        - name: writer
+          image: curlimages/curl:8.5.0
+          command:
+            - /bin/sh
+            - -c
+            - |
+              set -e
+              ready=0
+              for i in $(seq 1 30); do
+                if curl -s --max-time 5 \
+                  'http://search-direct:9200/_cluster/health?wait_for_status=yellow&timeout=5s' \
+                  | grep -q '"status"'; then
+                  ready=1
+                  break
+                fi
+                sleep 2
+              done
+              if [ "$ready" -ne 1 ]; then
+                echo "log-writer: cluster not ready"
+                exit 1
+              fi
+              for i in $(seq 1 5); do
+                curl -s -f --max-time 5 \
+                  -H 'Content-Type: application/json' \
+                  -XPOST "http://search-direct:9200/app-logs/_doc?refresh=true" \
+                  -d "{\"msg\":\"seed\",\"n\":${i}}" >/dev/null
+              done

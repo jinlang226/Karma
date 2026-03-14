@@ -1,0 +1,329 @@
+type: operator-version-check
+targetApp: CockroachDB
+numAppInstance: 3
+params:
+  definitions:
+    cluster_prefix:
+      type: string
+      default: crdb-cluster
+    from_version:
+      type: string
+      default: 23.2.0
+    to_version:
+      type: string
+      default: 24.1.0
+    report_configmap_name:
+      type: string
+      default: crdb-version-report
+    report_key:
+      type: string
+      default: db_version
+maxAttempts: 3
+namespace_contract:
+  base_namespace: cockroachdb
+  default_role: default
+  required_roles:
+  - default
+externalMetrics:
+- time_to_first_mutation
+preconditionUnits:
+- id: rbac_ready
+  probe:
+    commands:
+    - command:
+      - kubectl
+      - -n
+      - ${BENCH_NAMESPACE}
+      - get
+      - serviceaccount
+      - '{{params.cluster_prefix}}-sa'
+      timeout_sec: 15
+  apply:
+    commands:
+    - command:
+      - kubectl
+      - -n
+      - ${BENCH_NAMESPACE}
+      - apply
+      - -f
+      - resources/cockroachdb/version-check/resource/rbac.yaml
+      sleep: 1
+      timeout_sec: 30
+  verify:
+    commands:
+    - command:
+      - kubectl
+      - -n
+      - ${BENCH_NAMESPACE}
+      - get
+      - serviceaccount
+      - '{{params.cluster_prefix}}-sa'
+      timeout_sec: 15
+    retries: 6
+    interval_sec: 2
+- id: services_ready
+  probe:
+    commands:
+    - command:
+      - /bin/sh
+      - -c
+      - 'set -e
+
+        kubectl -n ${BENCH_NAMESPACE} get service {{params.cluster_prefix}} >/dev/null
+
+        kubectl -n ${BENCH_NAMESPACE} get service {{params.cluster_prefix}}-public
+        >/dev/null
+
+        '
+      timeout_sec: 20
+  apply:
+    commands:
+    - command:
+      - kubectl
+      - -n
+      - ${BENCH_NAMESPACE}
+      - apply
+      - -f
+      - resources/cockroachdb/version-check/resource/services.yaml
+      sleep: 1
+      timeout_sec: 30
+  verify:
+    commands:
+    - command:
+      - /bin/sh
+      - -c
+      - 'set -e
+
+        kubectl -n ${BENCH_NAMESPACE} get service {{params.cluster_prefix}} >/dev/null
+
+        kubectl -n ${BENCH_NAMESPACE} get service {{params.cluster_prefix}}-public
+        >/dev/null
+
+        '
+      timeout_sec: 20
+    retries: 6
+    interval_sec: 2
+- id: cluster_ready_on_232
+  probe:
+    commands:
+    - command:
+      - /bin/sh
+      - -c
+      - 'set -e
+
+        [ "$(kubectl -n ${BENCH_NAMESPACE} get sts {{params.cluster_prefix}} -o jsonpath=''{.spec.replicas}'')"
+        = "3" ]
+
+        [ "$(kubectl -n ${BENCH_NAMESPACE} get sts {{params.cluster_prefix}} -o jsonpath=''{.status.readyReplicas}'')"
+        = "3" ]
+
+        v=$(kubectl -n ${BENCH_NAMESPACE} exec {{params.cluster_prefix}}-0 -- ./cockroach
+        sql --insecure --format=tsv -e "SHOW CLUSTER SETTING cluster.preserve_downgrade_option;"
+        | tail -n1)
+
+        [ "$v" = "23.2" ]
+
+        '
+      timeout_sec: 30
+  apply:
+    commands:
+    - command:
+      - kubectl
+      - -n
+      - ${BENCH_NAMESPACE}
+      - apply
+      - -f
+      - resources/cockroachdb/version-check/resource/statefulset.yaml
+      sleep: 2
+      timeout_sec: 60
+    - command:
+      - kubectl
+      - -n
+      - ${BENCH_NAMESPACE}
+      - wait
+      - --for=jsonpath={.status.phase}=Running
+      - pod
+      - -l
+      - app.kubernetes.io/name=cockroachdb
+      - --timeout=300s
+      sleep: 2
+      timeout_sec: 320
+    - command:
+      - /bin/sh
+      - -c
+      - "set -e\nfor i in $(seq 1 30); do\n  kubectl -n ${BENCH_NAMESPACE} exec {{params.cluster_prefix}}-0\
+        \ -- ./cockroach init --insecure --host={{params.cluster_prefix}}-0.{{params.cluster_prefix}}.${BENCH_NAMESPACE}.svc.cluster.local\
+        \ && exit 0\n  sleep 3\ndone\nexit 1\n"
+      sleep: 1
+      timeout_sec: 120
+    - command:
+      - kubectl
+      - -n
+      - ${BENCH_NAMESPACE}
+      - wait
+      - --for=condition=ready
+      - pod
+      - -l
+      - app.kubernetes.io/name=cockroachdb
+      - --timeout=300s
+      sleep: 2
+      timeout_sec: 320
+    - command:
+      - kubectl
+      - -n
+      - ${BENCH_NAMESPACE}
+      - exec
+      - '{{params.cluster_prefix}}-0'
+      - --
+      - ./cockroach
+      - sql
+      - --insecure
+      - -e
+      - SET CLUSTER SETTING cluster.preserve_downgrade_option = '23.2';
+      sleep: 1
+      timeout_sec: 30
+  verify:
+    commands:
+    - command:
+      - /bin/sh
+      - -c
+      - 'set -e
+
+        [ "$(kubectl -n ${BENCH_NAMESPACE} get sts {{params.cluster_prefix}} -o jsonpath=''{.spec.replicas}'')"
+        = "3" ]
+
+        [ "$(kubectl -n ${BENCH_NAMESPACE} get sts {{params.cluster_prefix}} -o jsonpath=''{.status.readyReplicas}'')"
+        = "3" ]
+
+        v=$(kubectl -n ${BENCH_NAMESPACE} exec {{params.cluster_prefix}}-0 -- ./cockroach
+        sql --insecure --format=tsv -e "SHOW CLUSTER SETTING cluster.preserve_downgrade_option;"
+        | tail -n1)
+
+        [ "$v" = "23.2" ]
+
+        '
+      timeout_sec: 30
+    retries: 30
+    interval_sec: 5
+- id: mixed_version_binary_state_ready
+  probe:
+    commands:
+    - command:
+      - /bin/sh
+      - -c
+      - 'set -e
+
+        imgs=$(kubectl -n ${BENCH_NAMESPACE} get pods -l app.kubernetes.io/name=cockroachdb
+        -o jsonpath=''{.items[*].spec.containers[0].image}'')
+
+        target="cockroachdb/cockroach:v{{params.to_version}}"
+
+        updated=$(printf ''%s'' "$imgs" | tr '' '' ''\n'' | awk -v t="$target" ''$0==t{c++}
+        END{print c+0}'')
+
+        [ "$updated" = "3" ]
+
+        '
+      timeout_sec: 30
+  apply:
+    commands:
+    - command:
+      - kubectl
+      - -n
+      - ${BENCH_NAMESPACE}
+      - set
+      - image
+      - sts/{{params.cluster_prefix}}
+      - db=cockroachdb/cockroach:v{{params.to_version}}
+      sleep: 2
+      timeout_sec: 40
+    - command:
+      - kubectl
+      - -n
+      - ${BENCH_NAMESPACE}
+      - rollout
+      - status
+      - statefulset/{{params.cluster_prefix}}
+      - --timeout=900s
+      sleep: 2
+      timeout_sec: 920
+    - command:
+      - /bin/sh
+      - -c
+      - "set -e\nfor i in $(seq 1 120); do\n  images=$(kubectl -n ${BENCH_NAMESPACE}\
+        \ get pods -l app.kubernetes.io/name=cockroachdb -o jsonpath='{.items[*].spec.containers[0].image}'\
+        \ 2>/dev/null)\n  total=$(echo \"${images}\" | wc -w | tr -d ' ')\n  target=\"\
+        cockroachdb/cockroach:v{{params.to_version}}\"\n  updated=$(echo \"${images}\"\
+        \ | tr ' ' '\\n' | awk -v t=\"$target\" '$0==t{c++} END{print c+0}')\n  if\
+        \ [ \"${total}\" -eq 3 ] && [ \"${updated}\" -eq 3 ]; then\n    exit 0\n \
+        \ fi\n  sleep 5\ndone\nexit 1\n"
+      sleep: 1
+      timeout_sec: 620
+    - command:
+      - kubectl
+      - -n
+      - ${BENCH_NAMESPACE}
+      - wait
+      - --for=condition=ready
+      - pod
+      - -l
+      - app.kubernetes.io/name=cockroachdb
+      - --timeout=300s
+      sleep: 2
+      timeout_sec: 320
+  verify:
+    commands:
+    - command:
+      - /bin/sh
+      - -c
+      - 'set -e
+
+        imgs=$(kubectl -n ${BENCH_NAMESPACE} get pods -l app.kubernetes.io/name=cockroachdb
+        -o jsonpath=''{.items[*].spec.containers[0].image}'')
+
+        target="cockroachdb/cockroach:v{{params.to_version}}"
+
+        updated=$(printf ''%s'' "$imgs" | tr '' '' ''\n'' | awk -v t="$target" ''$0==t{c++}
+        END{print c+0}'')
+
+        [ "$updated" = "3" ]
+
+        '
+      timeout_sec: 30
+    retries: 12
+    interval_sec: 5
+detailedInstructions: 'Determine which feature set the cluster is currently operating
+  under. and record it in ConfigMap
+
+  {{params.report_configmap_name}} under key {{params.report_key}}.
+
+  '
+operatorContext: 'Useful commands:
+
+  ```bash
+
+  kubectl -n ${BENCH_NAMESPACE} exec {{params.cluster_prefix}}-0 -- ./cockroach sql
+  --insecure -e "SHOW CLUSTER SETTING version;"
+
+  kubectl -n ${BENCH_NAMESPACE} exec {{params.cluster_prefix}}-0 -- ./cockroach sql
+  --insecure -e "SELECT version();"
+
+  ```
+
+  '
+oracle:
+  verify:
+    commands:
+    - command:
+      - /bin/sh
+      - -c
+      - kubectl -n ${BENCH_NAMESPACE} get statefulset {{params.cluster_prefix}} >/dev/null
+    - command:
+      - /bin/sh
+      - -c
+      - kubectl -n ${BENCH_NAMESPACE} get pods -l app.kubernetes.io/name=cockroachdb
+        >/dev/null
+    - command:
+      - python3
+      - resources/cockroachdb/version-check/oracle/oracle.py
+      timeout_sec: 600

@@ -1,0 +1,382 @@
+type: operator-expose-ingress
+targetApp: CockroachDB
+numAppInstance: 3
+params:
+  definitions:
+    cluster_prefix:
+      type: string
+      default: crdb-cluster
+    ui_host:
+      type: string
+      default: crdb-ui.example.com
+    sql_port:
+      type: int
+      default: 26257
+    ingress_class_name:
+      type: string
+      default: nginx
+    tls_secret_name:
+      type: string
+      default: crdb-ui-tls
+maxAttempts: 3
+namespace_contract:
+  base_namespace: cockroachdb
+  default_role: default
+  required_roles:
+  - default
+  - ingress
+  base_roles:
+    default: cockroachdb
+    ingress: ingress-nginx
+externalMetrics:
+- time_to_first_mutation
+preconditionUnits:
+- id: ingress_controller_ready
+  probe:
+    commands:
+    - command:
+      - /bin/sh
+      - -c
+      - 'set -e
+
+        kubectl -n ingress-nginx get deployment ingress-nginx-controller >/dev/null
+
+        [ "$(kubectl -n ingress-nginx get deployment ingress-nginx-controller -o jsonpath=''{.status.availableReplicas}'')"
+        -ge 1 ]
+
+        '
+      timeout_sec: 30
+  apply:
+    commands:
+    - command:
+      - /bin/sh
+      - -c
+      - kubectl apply -f https://raw.githubusercontent.com/kubernetes/ingress-nginx/main/deploy/static/provider/kind/deploy.yaml
+      sleep: 3
+      timeout_sec: 180
+    - command:
+      - kubectl
+      - -n
+      - ingress-nginx
+      - rollout
+      - status
+      - deploy/ingress-nginx-controller
+      - --timeout=120s
+      sleep: 1
+      timeout_sec: 140
+    - command:
+      - /bin/sh
+      - -c
+      - "set -e\nargs=$(kubectl -n ingress-nginx get deployment ingress-nginx-controller\
+        \ -o jsonpath='{.spec.template.spec.containers[0].args}')\nif ! printf '%s'\
+        \ \"$args\" | grep -q -- '--watch-ingress-without-class=false'; then\n  kubectl\
+        \ -n ingress-nginx patch deployment ingress-nginx-controller --type=json -p='[{\"\
+        op\":\"add\",\"path\":\"/spec/template/spec/containers/0/args/-\",\"value\"\
+        :\"--watch-ingress-without-class=false\"}]'\nfi\n"
+      sleep: 1
+      timeout_sec: 40
+    - command:
+      - kubectl
+      - -n
+      - ingress-nginx
+      - rollout
+      - status
+      - deploy/ingress-nginx-controller
+      - --timeout=120s
+      sleep: 1
+      timeout_sec: 140
+  verify:
+    commands:
+    - command:
+      - /bin/sh
+      - -c
+      - 'set -e
+
+        kubectl -n ingress-nginx get deployment ingress-nginx-controller >/dev/null
+
+        [ "$(kubectl -n ingress-nginx get deployment ingress-nginx-controller -o jsonpath=''{.status.availableReplicas}'')"
+        -ge 1 ]
+
+        '
+      timeout_sec: 30
+    retries: 20
+    interval_sec: 3
+- id: cluster_rbac_ready
+  probe:
+    commands:
+    - command:
+      - kubectl
+      - -n
+      - ${BENCH_NAMESPACE}
+      - get
+      - serviceaccount
+      - '{{params.cluster_prefix}}-sa'
+      timeout_sec: 15
+  apply:
+    commands:
+    - command:
+      - kubectl
+      - -n
+      - ${BENCH_NAMESPACE}
+      - apply
+      - -f
+      - resources/cockroachdb/expose-ingress/resource/rbac.yaml
+      sleep: 1
+      timeout_sec: 30
+  verify:
+    commands:
+    - command:
+      - kubectl
+      - -n
+      - ${BENCH_NAMESPACE}
+      - get
+      - serviceaccount
+      - '{{params.cluster_prefix}}-sa'
+      timeout_sec: 15
+    retries: 6
+    interval_sec: 2
+- id: cluster_services_ready
+  probe:
+    commands:
+    - command:
+      - /bin/sh
+      - -c
+      - 'set -e
+
+        kubectl -n ${BENCH_NAMESPACE} get service {{params.cluster_prefix}} >/dev/null
+
+        kubectl -n ${BENCH_NAMESPACE} get service {{params.cluster_prefix}}-public
+        >/dev/null
+
+        '
+      timeout_sec: 20
+  apply:
+    commands:
+    - command:
+      - kubectl
+      - -n
+      - ${BENCH_NAMESPACE}
+      - apply
+      - -f
+      - resources/cockroachdb/expose-ingress/resource/services.yaml
+      sleep: 1
+      timeout_sec: 30
+  verify:
+    commands:
+    - command:
+      - /bin/sh
+      - -c
+      - 'set -e
+
+        kubectl -n ${BENCH_NAMESPACE} get service {{params.cluster_prefix}} >/dev/null
+
+        kubectl -n ${BENCH_NAMESPACE} get service {{params.cluster_prefix}}-public
+        >/dev/null
+
+        '
+      timeout_sec: 20
+    retries: 6
+    interval_sec: 2
+- id: cluster_workload_ready
+  probe:
+    commands:
+    - command:
+      - /bin/sh
+      - -c
+      - 'set -e
+
+        [ "$(kubectl -n ${BENCH_NAMESPACE} get sts {{params.cluster_prefix}} -o jsonpath=''{.status.readyReplicas}'')"
+        = "3" ]
+
+        kubectl -n ${BENCH_NAMESPACE} exec {{params.cluster_prefix}}-0 -- ./cockroach
+        sql --insecure -e "SELECT 1;" >/dev/null
+
+        '
+      timeout_sec: 30
+  apply:
+    commands:
+    - command:
+      - kubectl
+      - -n
+      - ${BENCH_NAMESPACE}
+      - apply
+      - -f
+      - resources/cockroachdb/expose-ingress/resource/statefulset.yaml
+      sleep: 2
+      timeout_sec: 60
+    - command:
+      - kubectl
+      - -n
+      - ${BENCH_NAMESPACE}
+      - wait
+      - --for=jsonpath={.status.phase}=Running
+      - pod
+      - -l
+      - app.kubernetes.io/name=cockroachdb
+      - --timeout=300s
+      sleep: 2
+      timeout_sec: 320
+    - command:
+      - /bin/sh
+      - -c
+      - "set -e\nfor i in $(seq 1 30); do\n  kubectl -n ${BENCH_NAMESPACE} exec {{params.cluster_prefix}}-0\
+        \ -- ./cockroach init --insecure --host={{params.cluster_prefix}}-0.{{params.cluster_prefix}}.${BENCH_NAMESPACE}.svc.cluster.local\
+        \ && exit 0\n  sleep 3\ndone\nexit 1\n"
+      sleep: 1
+      timeout_sec: 120
+    - command:
+      - kubectl
+      - -n
+      - ${BENCH_NAMESPACE}
+      - wait
+      - --for=condition=ready
+      - pod
+      - -l
+      - app.kubernetes.io/name=cockroachdb
+      - --timeout=300s
+      sleep: 2
+      timeout_sec: 320
+  verify:
+    commands:
+    - command:
+      - /bin/sh
+      - -c
+      - 'set -e
+
+        [ "$(kubectl -n ${BENCH_NAMESPACE} get sts {{params.cluster_prefix}} -o jsonpath=''{.status.readyReplicas}'')"
+        = "3" ]
+
+        kubectl -n ${BENCH_NAMESPACE} exec {{params.cluster_prefix}}-0 -- ./cockroach
+        sql --insecure -e "SELECT 1;" >/dev/null
+
+        '
+      timeout_sec: 30
+    retries: 30
+    interval_sec: 5
+- id: ui_tls_secret_ready
+  probe:
+    commands:
+    - command:
+      - kubectl
+      - -n
+      - ${BENCH_NAMESPACE}
+      - get
+      - secret
+      - '{{params.tls_secret_name}}'
+      timeout_sec: 15
+  apply:
+    commands:
+    - command:
+      - kubectl
+      - -n
+      - ${BENCH_NAMESPACE}
+      - apply
+      - -f
+      - resources/cockroachdb/expose-ingress/resource/tls-secret.yaml
+      sleep: 1
+      timeout_sec: 30
+  verify:
+    commands:
+    - command:
+      - kubectl
+      - -n
+      - ${BENCH_NAMESPACE}
+      - get
+      - secret
+      - '{{params.tls_secret_name}}'
+      timeout_sec: 15
+    retries: 6
+    interval_sec: 2
+- id: curl_test_ready
+  probe:
+    commands:
+    - command:
+      - kubectl
+      - -n
+      - ${BENCH_NAMESPACE}
+      - wait
+      - --for=condition=Ready
+      - pod/curl-test
+      - --timeout=3s
+      timeout_sec: 10
+  apply:
+    commands:
+    - command:
+      - kubectl
+      - -n
+      - ${BENCH_NAMESPACE}
+      - apply
+      - -f
+      - resources/cockroachdb/expose-ingress/resource/curl-test.yaml
+      sleep: 1
+      timeout_sec: 30
+    - command:
+      - kubectl
+      - -n
+      - ${BENCH_NAMESPACE}
+      - wait
+      - --for=condition=Ready
+      - pod/curl-test
+      - --timeout=60s
+      sleep: 1
+      timeout_sec: 80
+  verify:
+    commands:
+    - command:
+      - kubectl
+      - -n
+      - ${BENCH_NAMESPACE}
+      - wait
+      - --for=condition=Ready
+      - pod/curl-test
+      - --timeout=3s
+      timeout_sec: 10
+    retries: 20
+    interval_sec: 3
+detailedInstructions: 'A 3-node CockroachDB cluster is running in the ${BENCH_NAMESPACE}
+  namespace. The
+
+  ingress-nginx controller is already installed and running in ingress-nginx.
+
+
+  Your task:
+
+  - Make the DB Console reachable at https://{{params.ui_host}} (TLS required).
+
+  - Expose SQL traffic via ingress-nginx on TCP port {{params.sql_port}}.
+
+
+  Notes:
+
+  - Use the {{params.ingress_class_name}} ingress class.
+
+  - SQL uses a TCP protocol (not HTTP).
+
+  '
+operatorContext: 'Useful commands:
+
+  ```bash
+
+  kubectl -n ${BENCH_NAMESPACE} get svc,ingress
+
+  kubectl -n ingress-nginx get cm
+
+  ```
+
+  '
+oracle:
+  verify:
+    commands:
+    - command:
+      - /bin/sh
+      - -c
+      - kubectl -n ${BENCH_NAMESPACE} get statefulset {{params.cluster_prefix}} >/dev/null
+    - command:
+      - /bin/sh
+      - -c
+      - kubectl -n ${BENCH_NAMESPACE} get pods -l app.kubernetes.io/name=cockroachdb
+        >/dev/null
+    - command:
+      - python3
+      - resources/cockroachdb/expose-ingress/oracle/oracle.py
+      timeout_sec: 600

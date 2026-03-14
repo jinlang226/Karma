@@ -1,0 +1,460 @@
+type: manual-skip-upgrade
+targetApp: RabbitMQ
+numAppInstance: 3
+params:
+  definitions:
+    cluster_prefix:
+      type: string
+      default: rabbitmq
+    from_version:
+      type: string
+      default: '3.9'
+    to_version:
+      type: string
+      default: '4.1'
+externalMetrics:
+- time_to_first_mutation
+- read_write_ratio
+- blast_radius
+- destructive_ops
+- decoy_integrity
+- residual_drift
+preconditionUnits:
+- id: rabbitmq_secrets_ready
+  probe:
+    commands:
+    - command:
+      - /bin/sh
+      - -c
+      - set -e; kubectl -n ${BENCH_NAMESPACE} get secret {{params.cluster_prefix}}-erlang-cookie >/dev/null; kubectl -n ${BENCH_NAMESPACE} get secret {{params.cluster_prefix}}-admin >/dev/null
+      sleep: 0
+      timeout_sec: 20
+  apply:
+    commands:
+    - command:
+      - /bin/sh
+      - -c
+      - kubectl -n ${BENCH_NAMESPACE} create secret generic {{params.cluster_prefix}}-erlang-cookie --from-literal=cookie=supersecretcookie --dry-run=client -o yaml | kubectl apply -f -
+      sleep: 1
+    - command:
+      - /bin/sh
+      - -c
+      - kubectl -n ${BENCH_NAMESPACE} create secret generic {{params.cluster_prefix}}-admin --from-literal=username=admin --from-literal=password=adminpass --dry-run=client -o yaml | kubectl apply -f -
+      sleep: 1
+  verify:
+    commands:
+    - command:
+      - /bin/sh
+      - -c
+      - set -e; kubectl -n ${BENCH_NAMESPACE} get secret {{params.cluster_prefix}}-erlang-cookie >/dev/null; kubectl -n ${BENCH_NAMESPACE} get secret {{params.cluster_prefix}}-admin >/dev/null
+      sleep: 0
+      timeout_sec: 20
+    retries: 6
+    interval_sec: 2
+- id: rbac_ready
+  probe:
+    commands:
+    - command:
+      - kubectl
+      - -n
+      - ${BENCH_NAMESPACE}
+      - get
+      - sa
+      - '{{params.cluster_prefix}}'
+      sleep: 0
+      timeout_sec: 10
+  apply:
+    commands:
+    - command:
+      - kubectl
+      - -n
+      - ${BENCH_NAMESPACE}
+      - apply
+      - -f
+      - resources/rabbitmq-experiments/manual_skip_upgrade/resource/rbac.yaml
+      sleep: 1
+  verify:
+    commands:
+    - command:
+      - kubectl
+      - -n
+      - ${BENCH_NAMESPACE}
+      - get
+      - sa
+      - '{{params.cluster_prefix}}'
+      sleep: 0
+      timeout_sec: 10
+    retries: 6
+    interval_sec: 2
+- id: config_ready
+  probe:
+    commands:
+    - command:
+      - kubectl
+      - -n
+      - ${BENCH_NAMESPACE}
+      - get
+      - configmap
+      - '{{params.cluster_prefix}}-config'
+      sleep: 0
+      timeout_sec: 10
+  apply:
+    commands:
+    - command:
+      - kubectl
+      - -n
+      - ${BENCH_NAMESPACE}
+      - apply
+      - -f
+      - resources/rabbitmq-experiments/manual_skip_upgrade/resource/configmap.yaml
+      sleep: 1
+  verify:
+    commands:
+    - command:
+      - kubectl
+      - -n
+      - ${BENCH_NAMESPACE}
+      - get
+      - configmap
+      - '{{params.cluster_prefix}}-config'
+      sleep: 0
+      timeout_sec: 10
+    retries: 6
+    interval_sec: 2
+- id: services_ready
+  probe:
+    commands:
+    - command:
+      - /bin/sh
+      - -c
+      - set -e; kubectl -n ${BENCH_NAMESPACE} get svc {{params.cluster_prefix}} >/dev/null; kubectl -n ${BENCH_NAMESPACE} get svc {{params.cluster_prefix}}-headless >/dev/null
+      sleep: 0
+      timeout_sec: 20
+  apply:
+    commands:
+    - command:
+      - kubectl
+      - -n
+      - ${BENCH_NAMESPACE}
+      - apply
+      - -f
+      - resources/rabbitmq-experiments/manual_skip_upgrade/resource/services.yaml
+      sleep: 1
+  verify:
+    commands:
+    - command:
+      - /bin/sh
+      - -c
+      - set -e; kubectl -n ${BENCH_NAMESPACE} get svc {{params.cluster_prefix}} >/dev/null; kubectl -n ${BENCH_NAMESPACE} get svc {{params.cluster_prefix}}-headless >/dev/null
+      sleep: 0
+      timeout_sec: 20
+    retries: 6
+    interval_sec: 2
+- id: rabbitmq_statefulset_present
+  probe:
+    commands:
+    - command:
+      - kubectl
+      - -n
+      - ${BENCH_NAMESPACE}
+      - get
+      - sts
+      - '{{params.cluster_prefix}}'
+      sleep: 0
+      timeout_sec: 20
+  apply:
+    commands:
+    - command:
+      - kubectl
+      - -n
+      - ${BENCH_NAMESPACE}
+      - apply
+      - -f
+      - resources/rabbitmq-experiments/manual_skip_upgrade/resource/statefulset.yaml
+      sleep: 1
+  verify:
+    commands:
+    - command:
+      - kubectl
+      - -n
+      - ${BENCH_NAMESPACE}
+      - get
+      - sts
+      - '{{params.cluster_prefix}}'
+      sleep: 0
+      timeout_sec: 20
+    retries: 12
+    interval_sec: 2
+- id: rabbitmq_cluster_ready
+  probe:
+    commands:
+    - command:
+      - /bin/sh
+      - -c
+      - set -e; [ "$(kubectl -n ${BENCH_NAMESPACE} get sts {{params.cluster_prefix}} -o jsonpath="{.status.readyReplicas}")" = "3" ]
+      sleep: 0
+      timeout_sec: 20
+  apply:
+    commands:
+    - command:
+      - kubectl
+      - -n
+      - ${BENCH_NAMESPACE}
+      - wait
+      - --for=condition=ready
+      - pod
+      - -l
+      - app={{params.cluster_prefix}}
+      - --timeout=600s
+      sleep: 1
+  verify:
+    commands:
+    - command:
+      - /bin/sh
+      - -c
+      - set -e; [ "$(kubectl -n ${BENCH_NAMESPACE} get sts {{params.cluster_prefix}} -o jsonpath="{.status.readyReplicas}")" = "3" ]
+      sleep: 0
+      timeout_sec: 20
+    retries: 84
+    interval_sec: 5
+- id: setup_job_completed
+  probe:
+    commands:
+    - command:
+      - python3
+      - resources/rabbitmq-experiments/manual_skip_upgrade/setup_precondition_check.py
+      - --namespace
+      - ${BENCH_NAMESPACE}
+      - --cluster-prefix
+      - '{{params.cluster_prefix}}'
+      - --bootstrap-only
+      sleep: 0
+      timeout_sec: 30
+  apply:
+    commands:
+    - command:
+      - kubectl
+      - -n
+      - ${BENCH_NAMESPACE}
+      - delete
+      - job
+      - '{{params.cluster_prefix}}-setup'
+      - --ignore-not-found=true
+      sleep: 1
+    - command:
+      - /bin/sh
+      - -c
+      - kubectl -n ${BENCH_NAMESPACE} wait --for=delete pod -l job-name={{params.cluster_prefix}}-setup --timeout=120s || true
+      sleep: 1
+    - command:
+      - kubectl
+      - -n
+      - ${BENCH_NAMESPACE}
+      - apply
+      - -f
+      - resources/rabbitmq-experiments/manual_skip_upgrade/resource/setup-job.yaml
+      sleep: 1
+    - command:
+      - kubectl
+      - -n
+      - ${BENCH_NAMESPACE}
+      - wait
+      - --for=condition=complete
+      - job/{{params.cluster_prefix}}-setup
+      - --timeout=300s
+      sleep: 1
+  verify:
+    commands:
+    - command:
+      - python3
+      - resources/rabbitmq-experiments/manual_skip_upgrade/setup_precondition_check.py
+      - --namespace
+      - ${BENCH_NAMESPACE}
+      - --cluster-prefix
+      - '{{params.cluster_prefix}}'
+      - --bootstrap-only
+      sleep: 0
+      timeout_sec: 30
+    retries: 60
+    interval_sec: 5
+- id: curl_test_ready
+  probe:
+    commands:
+    - command:
+      - kubectl
+      - -n
+      - ${BENCH_NAMESPACE}
+      - wait
+      - --for=condition=ready
+      - pod
+      - -l
+      - app=curl-test
+      - --timeout=3s
+      sleep: 0
+      timeout_sec: 10
+  apply:
+    commands:
+    - command:
+      - kubectl
+      - -n
+      - ${BENCH_NAMESPACE}
+      - apply
+      - -f
+      - resources/rabbitmq-experiments/manual_skip_upgrade/resource/curl-test.yaml
+      sleep: 1
+    - command:
+      - kubectl
+      - -n
+      - ${BENCH_NAMESPACE}
+      - wait
+      - --for=condition=ready
+      - pod
+      - -l
+      - app=curl-test
+      - --timeout=300s
+      sleep: 1
+  verify:
+    commands:
+    - command:
+      - kubectl
+      - -n
+      - ${BENCH_NAMESPACE}
+      - wait
+      - --for=condition=ready
+      - pod
+      - -l
+      - app=curl-test
+      - --timeout=3s
+      sleep: 0
+      timeout_sec: 10
+    retries: 30
+    interval_sec: 3
+- id: skip_upgrade_baseline_ready
+  probe:
+    commands:
+    - command:
+      - python3
+      - resources/rabbitmq-experiments/manual_skip_upgrade/setup_precondition_check.py
+      - --namespace
+      - ${BENCH_NAMESPACE}
+      - --min-ready
+      - '3'
+      - --cluster-prefix
+      - '{{params.cluster_prefix}}'
+      - --from-version
+      - '{{params.from_version}}'
+      sleep: 0
+      timeout_sec: 40
+  apply:
+    commands:
+    - command:
+      - /bin/sh
+      - -c
+      - 'true'
+      sleep: 0
+      timeout_sec: 5
+  verify:
+    commands:
+    - command:
+      - python3
+      - resources/rabbitmq-experiments/manual_skip_upgrade/setup_precondition_check.py
+      - --namespace
+      - ${BENCH_NAMESPACE}
+      - --min-ready
+      - '3'
+      - --cluster-prefix
+      - '{{params.cluster_prefix}}'
+      - --from-version
+      - '{{params.from_version}}'
+      sleep: 0
+      timeout_sec: 40
+    retries: 24
+    interval_sec: 5
+detailedInstructions: 'A healthy 3-node RabbitMQ cluster is running in the ${BENCH_NAMESPACE} namespace on RabbitMQ {{params.from_version}}.
+
+
+  Upgrade the cluster to RabbitMQ version {{params.to_version}} using only native Kubernetes resources (StatefulSet, Service, PVC, Secret, ConfigMap, etc). Do not use any CRD, Operator, or third-party controller.
+
+
+  Requirements:
+
+  - Preserve existing queue data.
+
+  - Keep the cluster healthy with 3 nodes.
+
+
+  Goal:
+
+  - All nodes run RabbitMQ version {{params.to_version}} (or a patch release within that version family).
+
+  - /app vhost and app-queue still exist with messages.
+
+  - Cluster remains healthy.
+
+  '
+operatorContext: 'kubectl -n ${BENCH_NAMESPACE} get pods
+
+  kubectl -n ${BENCH_NAMESPACE} get svc
+
+  kubectl -n ${BENCH_NAMESPACE} get pvc
+
+  kubectl -n ${BENCH_NAMESPACE} logs <pod>
+
+  '
+oracle:
+  verify:
+    hooks:
+      before_commands:
+      - command:
+        - kubectl
+        - -n
+        - ${BENCH_NAMESPACE}
+        - apply
+        - -f
+        - resources/rabbitmq-experiments/common/oracle-client.yaml
+        sleep: 0
+      - command:
+        - kubectl
+        - -n
+        - ${BENCH_NAMESPACE}
+        - wait
+        - --for=condition=ready
+        - pod/oracle-client
+        - --timeout=60s
+        sleep: 0
+      after_commands:
+      - command:
+        - kubectl
+        - -n
+        - ${BENCH_NAMESPACE}
+        - delete
+        - -f
+        - resources/rabbitmq-experiments/common/oracle-client.yaml
+        - --ignore-not-found=true
+        sleep: 0
+      after_failure_mode: warn
+    commands:
+    - command:
+      - python3
+      - resources/rabbitmq-experiments/manual_skip_upgrade/oracle/oracle.py
+      - --cluster-prefix
+      - '{{params.cluster_prefix}}'
+      - --to-version
+      - '{{params.to_version}}'
+      sleep: 0
+cleanUpCommands:
+- command:
+  - /bin/sh
+  - -c
+  - kubectl -n ${BENCH_NAMESPACE} delete all --all --ignore-not-found=true --wait=false
+  sleep: 0
+- command:
+  - /bin/sh
+  - -c
+  - kubectl -n ${BENCH_NAMESPACE} delete configmap,secret,serviceaccount,role,rolebinding,pvc,job,cronjob,networkpolicy --all --ignore-not-found=true
+  sleep: 0
+namespace_contract:
+  base_namespace: rabbitmq
+  default_role: default
+  required_roles:
+  - default

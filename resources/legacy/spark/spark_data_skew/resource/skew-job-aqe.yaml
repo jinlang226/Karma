@@ -1,0 +1,76 @@
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: spark-skew-aqe
+  namespace: spark-skew
+spec:
+  backoffLimit: 0
+  template:
+    metadata:
+      labels:
+        app: spark-skew-aqe
+        strategy: aqe
+    spec:
+      serviceAccountName: spark-skew
+      containers:
+      - name: spark-submit
+        image: apache/spark:3.5.3
+        command:
+        - /bin/bash
+        - -c
+        - |
+          echo "=============================================="
+          echo "  Spark Data Skew - AQE Optimization"
+          echo "=============================================="
+
+          # Wait for Spark master
+          echo "Waiting for Spark master..."
+          until nc -z spark-master 7077; do
+            sleep 2
+          done
+          echo "Spark master is ready"
+          sleep 5
+
+          echo ""
+          echo "Running query with AQE (Adaptive Query Execution)..."
+          echo "Strategy: Spark automatically detects and handles skewed partitions"
+          echo ""
+
+          /opt/spark/bin/spark-submit \
+            --master spark://spark-master:7077 \
+            --deploy-mode client \
+            --driver-memory 1g \
+            --executor-memory 1g \
+            --conf spark.sql.shuffle.partitions=200 \
+            --conf spark.sql.adaptive.enabled=true \
+            --conf spark.sql.adaptive.skewJoin.enabled=true \
+            --conf spark.sql.adaptive.skewJoin.skewedPartitionFactor=5 \
+            --conf spark.sql.adaptive.skewJoin.skewedPartitionThresholdInBytes=67108864 \
+            /scripts/aqe_query.py
+
+          EXIT_CODE=$?
+          echo ""
+          echo "AQE job finished with exit code: $EXIT_CODE"
+          exit $EXIT_CODE
+        env:
+        - name: DATA_DIR
+          value: "/tmp/spark-skew-data"
+        - name: RESULTS_DIR
+          value: "/tmp/spark-skew-results"
+        - name: PYTHONUNBUFFERED
+          value: "1"
+        volumeMounts:
+        - name: spark-scripts
+          mountPath: /scripts
+        resources:
+          requests:
+            cpu: 200m
+            memory: 512Mi
+          limits:
+            cpu: 1
+            memory: 1536Mi
+      volumes:
+      - name: spark-scripts
+        configMap:
+          name: spark-skew-scripts
+      restartPolicy: Never

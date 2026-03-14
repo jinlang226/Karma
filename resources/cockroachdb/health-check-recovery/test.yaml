@@ -1,0 +1,263 @@
+type: operator-health-check-recovery
+targetApp: CockroachDB
+numAppInstance: 3
+params:
+  definitions:
+    cluster_prefix:
+      type: string
+      default: crdb-cluster
+    replica_count:
+      type: int
+      default: 3
+    fault_http_addr:
+      type: string
+      default: 127.0.0.1:8080
+maxAttempts: 3
+namespace_contract:
+  base_namespace: cockroachdb
+  default_role: default
+  required_roles:
+  - default
+externalMetrics:
+- time_to_first_mutation
+- destructive_ops
+preconditionUnits:
+- id: rbac_ready
+  probe:
+    commands:
+    - command:
+      - kubectl
+      - -n
+      - ${BENCH_NAMESPACE}
+      - get
+      - serviceaccount
+      - '{{params.cluster_prefix}}-sa'
+      timeout_sec: 15
+  apply:
+    commands:
+    - command:
+      - kubectl
+      - -n
+      - ${BENCH_NAMESPACE}
+      - apply
+      - -f
+      - resources/cockroachdb/health-check-recovery/resource/rbac.yaml
+      sleep: 1
+      timeout_sec: 30
+  verify:
+    commands:
+    - command:
+      - kubectl
+      - -n
+      - ${BENCH_NAMESPACE}
+      - get
+      - serviceaccount
+      - '{{params.cluster_prefix}}-sa'
+      timeout_sec: 15
+    retries: 6
+    interval_sec: 2
+- id: services_ready
+  probe:
+    commands:
+    - command:
+      - /bin/sh
+      - -c
+      - 'set -e
+
+        kubectl -n ${BENCH_NAMESPACE} get service {{params.cluster_prefix}} >/dev/null
+
+        kubectl -n ${BENCH_NAMESPACE} get service {{params.cluster_prefix}}-public
+        >/dev/null
+
+        '
+      timeout_sec: 20
+  apply:
+    commands:
+    - command:
+      - kubectl
+      - -n
+      - ${BENCH_NAMESPACE}
+      - apply
+      - -f
+      - resources/cockroachdb/health-check-recovery/resource/services.yaml
+      sleep: 1
+      timeout_sec: 30
+  verify:
+    commands:
+    - command:
+      - /bin/sh
+      - -c
+      - 'set -e
+
+        kubectl -n ${BENCH_NAMESPACE} get service {{params.cluster_prefix}} >/dev/null
+
+        kubectl -n ${BENCH_NAMESPACE} get service {{params.cluster_prefix}}-public
+        >/dev/null
+
+        '
+      timeout_sec: 20
+    retries: 6
+    interval_sec: 2
+- id: base_cluster_ready
+  probe:
+    commands:
+    - command:
+      - /bin/sh
+      - -c
+      - 'set -e
+
+        kubectl -n ${BENCH_NAMESPACE} get sts {{params.cluster_prefix}} >/dev/null
+
+        kubectl -n ${BENCH_NAMESPACE} exec {{params.cluster_prefix}}-0 -- ./cockroach
+        sql --insecure -e "SELECT 1;" >/dev/null
+
+        '
+      timeout_sec: 30
+  apply:
+    commands:
+    - command:
+      - kubectl
+      - -n
+      - ${BENCH_NAMESPACE}
+      - apply
+      - -f
+      - resources/cockroachdb/health-check-recovery/resource/statefulset.yaml
+      sleep: 2
+      timeout_sec: 60
+    - command:
+      - kubectl
+      - -n
+      - ${BENCH_NAMESPACE}
+      - wait
+      - --for=jsonpath={.status.phase}=Running
+      - pod
+      - -l
+      - app.kubernetes.io/name=cockroachdb
+      - --timeout=300s
+      sleep: 2
+      timeout_sec: 320
+    - command:
+      - /bin/sh
+      - -c
+      - "set -e\nfor i in $(seq 1 30); do\n  kubectl -n ${BENCH_NAMESPACE} exec {{params.cluster_prefix}}-0\
+        \ -- ./cockroach init --insecure --host={{params.cluster_prefix}}-0.{{params.cluster_prefix}}.${BENCH_NAMESPACE}.svc.cluster.local\
+        \ && exit 0\n  sleep 3\ndone\nexit 1\n"
+      sleep: 1
+      timeout_sec: 120
+    - command:
+      - kubectl
+      - -n
+      - ${BENCH_NAMESPACE}
+      - wait
+      - --for=condition=ready
+      - pod
+      - -l
+      - app.kubernetes.io/name=cockroachdb
+      - --timeout=300s
+      sleep: 2
+      timeout_sec: 320
+  verify:
+    commands:
+    - command:
+      - /bin/sh
+      - -c
+      - 'set -e
+
+        kubectl -n ${BENCH_NAMESPACE} get sts {{params.cluster_prefix}} >/dev/null
+
+        kubectl -n ${BENCH_NAMESPACE} exec {{params.cluster_prefix}}-0 -- ./cockroach
+        sql --insecure -e "SELECT 1;" >/dev/null
+
+        '
+      timeout_sec: 30
+    retries: 30
+    interval_sec: 5
+- id: degraded_health_fault_ready
+  probe:
+    commands:
+    - command:
+      - /bin/sh
+      - -c
+      - 'set -e
+
+        cmd=$(kubectl -n ${BENCH_NAMESPACE} get sts {{params.cluster_prefix}} -o jsonpath=''{.spec.template.spec.containers[0].command[2]}'')
+
+        printf ''%s'' "$cmd" | grep -q "{{params.fault_http_addr}}"
+
+        '
+      timeout_sec: 20
+  apply:
+    commands:
+    - command:
+      - kubectl
+      - -n
+      - ${BENCH_NAMESPACE}
+      - apply
+      - -f
+      - resources/cockroachdb/health-check-recovery/fault/statefulset.yaml
+      sleep: 2
+      timeout_sec: 60
+    - command:
+      - kubectl
+      - -n
+      - ${BENCH_NAMESPACE}
+      - delete
+      - pod
+      - '{{params.cluster_prefix}}-1'
+      - --ignore-not-found=true
+      sleep: 1
+      timeout_sec: 30
+  verify:
+    commands:
+    - command:
+      - /bin/sh
+      - -c
+      - 'set -e
+
+        cmd=$(kubectl -n ${BENCH_NAMESPACE} get sts {{params.cluster_prefix}} -o jsonpath=''{.spec.template.spec.containers[0].command[2]}'')
+
+        printf ''%s'' "$cmd" | grep -q "{{params.fault_http_addr}}"
+
+        '
+      timeout_sec: 20
+    retries: 10
+    interval_sec: 3
+detailedInstructions: 'A {{params.replica_count}}-node CockroachDB cluster is running
+  in the ${BENCH_NAMESPACE} namespace. One pod is
+
+  failing health checks and the cluster is degraded.
+
+
+  Your task:
+
+  Restore full cluster health so all pods are Ready and the cluster is healthy.
+
+  '
+operatorContext: "Agent task: Health Checking and Auto-Recovery\nFile: pkg/healthchecker/healthchecker.go\n\
+  \nHealth checking components:\n1. Kubernetes readiness probe:\n   - Checks /health?ready=1\
+  \ endpoint\n   - Pod removed from service if failing\n   - Triggers pod restart\
+  \ if failing for too long\n\n2. Liveness probe:\n   - Checks /health endpoint\n\
+  \   - Kills pod if failing\n   - Kubernetes restarts pod automatically\n\n3. HealthChecker.Probe():\n\
+  \   - Used during rolling updates\n   - Checks ranges_underreplicated metric\n \
+  \  - Waits until metric = 0 before continuing\n   - Ensures cluster healthy after\
+  \ each pod restart\n\nHealth endpoints:\n- /health: Basic liveness check\n- /health?ready=1:\
+  \ Readiness check (considers cluster status)\n- /_status/vars: Prometheus metrics\
+  \ including under-replicated ranges\n\nRecovery process:\n1. Readiness probe fails\
+  \ for one pod\n2. Pod removed from Service (no new connections)\n3. Operator waits\
+  \ for readiness to recover\n4. Pod rejoins cluster and health checks pass\n"
+oracle:
+  verify:
+    commands:
+    - command:
+      - /bin/sh
+      - -c
+      - kubectl -n ${BENCH_NAMESPACE} get statefulset {{params.cluster_prefix}} >/dev/null
+    - command:
+      - /bin/sh
+      - -c
+      - kubectl -n ${BENCH_NAMESPACE} get pods -l app.kubernetes.io/name=cockroachdb
+        >/dev/null
+    - command:
+      - python3
+      - resources/cockroachdb/health-check-recovery/oracle/oracle.py
+      timeout_sec: 600
