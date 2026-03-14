@@ -1,0 +1,64 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: app-producer
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: app-producer
+  template:
+    metadata:
+      labels:
+        app: app-producer
+    spec:
+      containers:
+        - name: producer
+          image: curlimages/curl:8.6.0
+          env:
+            - name: APP_USER
+              valueFrom:
+                secretKeyRef:
+                  name: ${BENCH_PARAM_CLUSTER_PREFIX}-app
+                  key: username
+            - name: APP_PASS
+              valueFrom:
+                secretKeyRef:
+                  name: ${BENCH_PARAM_CLUSTER_PREFIX}-app
+                  key: password
+          command:
+            - /bin/sh
+            - -c
+            - |
+              set -e
+              base="http://${BENCH_PARAM_CLUSTER_PREFIX}:15672/api"
+              vhost="%2Fapp"
+              queue="app-queue"
+              auth="${APP_USER}:${APP_PASS}"
+              for i in $(seq 1 60); do
+                if curl -s -u "$auth" "$base/vhosts" >/dev/null; then
+                  break
+                fi
+                sleep 2
+              done
+              payload='{"durable":true,"auto_delete":false,"arguments":{"x-queue-type":"classic","x-queue-mode":"lazy"}}'
+              code=$(curl -s -o /tmp/resp -w "%{http_code}" -u "$auth" \
+                -H "content-type: application/json" \
+                -XPUT "$base/queues/${vhost}/${queue}" -d "$payload")
+              if [ "$code" -ge 300 ]; then
+                echo "app-producer: failed to declare queue in vhost /app: $(cat /tmp/resp)"
+                exit 1
+              fi
+              i=0
+              while true; do
+                body='{"properties":{},"routing_key":"'"${queue}"'","payload":"msg-'"${i}"'","payload_encoding":"string"}'
+                code=$(curl -s -o /tmp/pubresp -w "%{http_code}" -u "$auth" \
+                  -H "content-type: application/json" \
+                  -XPOST "$base/exchanges/${vhost}/amq.default/publish" -d "$body")
+                if [ "$code" -ne 200 ]; then
+                  echo "app-producer: publish failed: $(cat /tmp/pubresp)"
+                  exit 1
+                fi
+                i=$((i+1))
+                sleep 2
+              done

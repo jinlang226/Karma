@@ -1,0 +1,585 @@
+type: manual-backup-restore
+targetApp: RabbitMQ
+numAppInstance: 3
+externalMetrics:
+- time_to_first_mutation
+- read_write_ratio
+- blast_radius
+- destructive_ops
+- decoy_integrity
+- residual_drift
+preconditionUnits:
+- id: rabbitmq_secrets_ready
+  probe:
+    commands:
+    - command:
+      - /bin/sh
+      - -c
+      - set -e; kubectl -n ${BENCH_NAMESPACE} get secret {{params.cluster_prefix}}-erlang-cookie
+        >/dev/null; kubectl -n ${BENCH_NAMESPACE} get secret {{params.cluster_prefix}}-admin
+        >/dev/null
+      sleep: 0
+      timeout_sec: 20
+  apply:
+    commands:
+    - command:
+      - /bin/sh
+      - -c
+      - "kubectl -n ${BENCH_NAMESPACE} create secret generic {{params.cluster_prefix}}-erlang-cookie\
+        \ \\\n  --from-literal=cookie=supersecretcookie \\\n  --dry-run=client -o\
+        \ yaml | kubectl apply -f -\n"
+      sleep: 1
+    - command:
+      - /bin/sh
+      - -c
+      - "kubectl -n ${BENCH_NAMESPACE} create secret generic {{params.cluster_prefix}}-admin\
+        \ \\\n  --from-literal=username=admin \\\n  --from-literal=password=adminpass\
+        \ \\\n  --dry-run=client -o yaml | kubectl apply -f -\n"
+      sleep: 1
+  verify:
+    commands:
+    - command:
+      - /bin/sh
+      - -c
+      - set -e; kubectl -n ${BENCH_NAMESPACE} get secret {{params.cluster_prefix}}-erlang-cookie
+        >/dev/null; kubectl -n ${BENCH_NAMESPACE} get secret {{params.cluster_prefix}}-admin
+        >/dev/null
+      sleep: 0
+      timeout_sec: 20
+    retries: 6
+    interval_sec: 2
+- id: rbac_ready
+  probe:
+    commands:
+    - command:
+      - kubectl
+      - -n
+      - ${BENCH_NAMESPACE}
+      - get
+      - sa
+      - '{{params.cluster_prefix}}'
+      sleep: 0
+      timeout_sec: 10
+  apply:
+    commands:
+    - command:
+      - kubectl
+      - -n
+      - ${BENCH_NAMESPACE}
+      - apply
+      - -f
+      - resources/rabbitmq-experiments/manual_backup_restore/resource/rbac.yaml
+      sleep: 1
+  verify:
+    commands:
+    - command:
+      - kubectl
+      - -n
+      - ${BENCH_NAMESPACE}
+      - get
+      - sa
+      - '{{params.cluster_prefix}}'
+      sleep: 0
+      timeout_sec: 10
+    retries: 6
+    interval_sec: 2
+- id: config_ready
+  probe:
+    commands:
+    - command:
+      - kubectl
+      - -n
+      - ${BENCH_NAMESPACE}
+      - get
+      - configmap
+      - '{{params.cluster_prefix}}-config'
+      sleep: 0
+      timeout_sec: 10
+  apply:
+    commands:
+    - command:
+      - kubectl
+      - -n
+      - ${BENCH_NAMESPACE}
+      - apply
+      - -f
+      - resources/rabbitmq-experiments/manual_backup_restore/resource/configmap.yaml
+      sleep: 1
+  verify:
+    commands:
+    - command:
+      - kubectl
+      - -n
+      - ${BENCH_NAMESPACE}
+      - get
+      - configmap
+      - '{{params.cluster_prefix}}-config'
+      sleep: 0
+      timeout_sec: 10
+    retries: 6
+    interval_sec: 2
+- id: services_ready
+  probe:
+    commands:
+    - command:
+      - /bin/sh
+      - -c
+      - set -e; kubectl -n ${BENCH_NAMESPACE} get svc {{params.cluster_prefix}} >/dev/null;
+        kubectl -n ${BENCH_NAMESPACE} get svc {{params.cluster_prefix}}-headless >/dev/null
+      sleep: 0
+      timeout_sec: 20
+  apply:
+    commands:
+    - command:
+      - kubectl
+      - -n
+      - ${BENCH_NAMESPACE}
+      - apply
+      - -f
+      - resources/rabbitmq-experiments/manual_backup_restore/resource/services.yaml
+      sleep: 1
+  verify:
+    commands:
+    - command:
+      - /bin/sh
+      - -c
+      - set -e; kubectl -n ${BENCH_NAMESPACE} get svc {{params.cluster_prefix}} >/dev/null;
+        kubectl -n ${BENCH_NAMESPACE} get svc {{params.cluster_prefix}}-headless >/dev/null
+      sleep: 0
+      timeout_sec: 20
+    retries: 6
+    interval_sec: 2
+- id: backup_pvc_ready
+  probe:
+    commands:
+    - command:
+      - /bin/sh
+      - -c
+      - set -e; p=$(kubectl -n ${BENCH_NAMESPACE} get pvc {{params.cluster_prefix}}-backup
+        -o jsonpath="{.status.phase}"); [ "$p" = "Bound" ] || [ "$p" = "Pending" ]
+      sleep: 0
+      timeout_sec: 20
+  apply:
+    commands:
+    - command:
+      - kubectl
+      - -n
+      - ${BENCH_NAMESPACE}
+      - apply
+      - -f
+      - resources/rabbitmq-experiments/manual_backup_restore/resource/backup-pvc.yaml
+      sleep: 1
+  verify:
+    commands:
+    - command:
+      - /bin/sh
+      - -c
+      - set -e; p=$(kubectl -n ${BENCH_NAMESPACE} get pvc {{params.cluster_prefix}}-backup
+        -o jsonpath="{.status.phase}"); [ "$p" = "Bound" ] || [ "$p" = "Pending" ]
+      sleep: 0
+      timeout_sec: 20
+    retries: 18
+    interval_sec: 3
+- id: seed_material_ready
+  probe:
+    commands:
+    - command:
+      - python3
+      - resources/rabbitmq-experiments/manual_backup_restore/setup_precondition_check.py
+      - --namespace
+      - ${BENCH_NAMESPACE}
+      - --mode
+      - seed-material
+      sleep: 0
+      timeout_sec: 30
+  apply:
+    commands:
+    - command:
+      - kubectl
+      - -n
+      - ${BENCH_NAMESPACE}
+      - delete
+      - job
+      - '{{params.cluster_prefix}}-seed'
+      - --ignore-not-found=true
+      sleep: 1
+    - command:
+      - /bin/sh
+      - -c
+      - kubectl -n ${BENCH_NAMESPACE} wait --for=delete pod -l job-name={{params.cluster_prefix}}-seed
+        --timeout=120s || true
+      sleep: 1
+    - command:
+      - kubectl
+      - -n
+      - ${BENCH_NAMESPACE}
+      - apply
+      - -f
+      - resources/rabbitmq-experiments/manual_backup_restore/resource/statefulset.yaml
+      sleep: 1
+    - command:
+      - kubectl
+      - -n
+      - ${BENCH_NAMESPACE}
+      - wait
+      - --for=jsonpath={.status.readyReplicas}=3
+      - sts/{{params.cluster_prefix}}
+      - --timeout=600s
+      sleep: 1
+    - command:
+      - kubectl
+      - -n
+      - ${BENCH_NAMESPACE}
+      - apply
+      - -f
+      - resources/rabbitmq-experiments/manual_backup_restore/resource/seed-job.yaml
+      sleep: 1
+    - command:
+      - kubectl
+      - -n
+      - ${BENCH_NAMESPACE}
+      - wait
+      - --for=condition=complete
+      - job/{{params.cluster_prefix}}-seed
+      - --timeout=300s
+      sleep: 1
+  verify:
+    commands:
+    - command:
+      - python3
+      - resources/rabbitmq-experiments/manual_backup_restore/setup_precondition_check.py
+      - --namespace
+      - ${BENCH_NAMESPACE}
+      - --mode
+      - seed-material
+      sleep: 0
+      timeout_sec: 30
+    retries: 84
+    interval_sec: 5
+- id: backup_snapshot_ready
+  probe:
+    commands:
+    - command:
+      - python3
+      - resources/rabbitmq-experiments/manual_backup_restore/setup_precondition_check.py
+      - --namespace
+      - ${BENCH_NAMESPACE}
+      - --mode
+      - backup-snapshot
+      sleep: 0
+      timeout_sec: 120
+  apply:
+    commands:
+    - command:
+      - kubectl
+      - -n
+      - ${BENCH_NAMESPACE}
+      - delete
+      - job
+      - '{{params.cluster_prefix}}-backup'
+      - --ignore-not-found=true
+      sleep: 1
+    - command:
+      - /bin/sh
+      - -c
+      - kubectl -n ${BENCH_NAMESPACE} wait --for=delete pod -l job-name={{params.cluster_prefix}}-backup
+        --timeout=120s || true
+      sleep: 1
+    - command:
+      - kubectl
+      - -n
+      - ${BENCH_NAMESPACE}
+      - scale
+      - sts/{{params.cluster_prefix}}
+      - --replicas=0
+      sleep: 1
+    - command:
+      - kubectl
+      - -n
+      - ${BENCH_NAMESPACE}
+      - wait
+      - --for=delete
+      - pod/{{params.cluster_prefix}}-0
+      - pod/{{params.cluster_prefix}}-1
+      - pod/{{params.cluster_prefix}}-2
+      - --timeout=600s
+      sleep: 1
+    - command:
+      - kubectl
+      - -n
+      - ${BENCH_NAMESPACE}
+      - apply
+      - -f
+      - resources/rabbitmq-experiments/manual_backup_restore/resource/job-backup.yaml
+      sleep: 1
+    - command:
+      - kubectl
+      - -n
+      - ${BENCH_NAMESPACE}
+      - wait
+      - --for=condition=complete
+      - job/{{params.cluster_prefix}}-backup
+      - --timeout=300s
+      sleep: 1
+    - command:
+      - kubectl
+      - -n
+      - ${BENCH_NAMESPACE}
+      - delete
+      - job
+      - '{{params.cluster_prefix}}-backup'
+      - --ignore-not-found=true
+      sleep: 1
+    - command:
+      - kubectl
+      - -n
+      - ${BENCH_NAMESPACE}
+      - wait
+      - --for=delete
+      - pod
+      - -l
+      - job-name={{params.cluster_prefix}}-backup
+      - --timeout=120s
+      sleep: 1
+  verify:
+    commands:
+    - command:
+      - python3
+      - resources/rabbitmq-experiments/manual_backup_restore/setup_precondition_check.py
+      - --namespace
+      - ${BENCH_NAMESPACE}
+      - --mode
+      - backup-snapshot
+      sleep: 0
+      timeout_sec: 120
+    retries: 84
+    interval_sec: 5
+- id: restore_data_pvc_ready
+  probe:
+    commands:
+    - command:
+      - python3
+      - resources/rabbitmq-experiments/manual_backup_restore/setup_precondition_check.py
+      - --namespace
+      - ${BENCH_NAMESPACE}
+      - --mode
+      - restore-pvc
+      sleep: 0
+      timeout_sec: 30
+  apply:
+    commands:
+    - command:
+      - kubectl
+      - -n
+      - ${BENCH_NAMESPACE}
+      - delete
+      - pvc
+      - data-{{params.cluster_prefix}}-0
+      - data-{{params.cluster_prefix}}-1
+      - data-{{params.cluster_prefix}}-2
+      sleep: 1
+    - command:
+      - kubectl
+      - -n
+      - ${BENCH_NAMESPACE}
+      - apply
+      - -f
+      - resources/rabbitmq-experiments/manual_backup_restore/resource/data-pvc-0.yaml
+      sleep: 1
+  verify:
+    commands:
+    - command:
+      - python3
+      - resources/rabbitmq-experiments/manual_backup_restore/setup_precondition_check.py
+      - --namespace
+      - ${BENCH_NAMESPACE}
+      - --mode
+      - restore-pvc
+      sleep: 0
+      timeout_sec: 30
+    retries: 30
+    interval_sec: 3
+- id: curl_test_ready
+  probe:
+    commands:
+    - command:
+      - kubectl
+      - -n
+      - ${BENCH_NAMESPACE}
+      - wait
+      - --for=condition=ready
+      - pod
+      - -l
+      - app=curl-test
+      - --timeout=3s
+      sleep: 0
+      timeout_sec: 10
+  apply:
+    commands:
+    - command:
+      - kubectl
+      - -n
+      - ${BENCH_NAMESPACE}
+      - apply
+      - -f
+      - resources/rabbitmq-experiments/manual_backup_restore/resource/curl-test.yaml
+      sleep: 1
+    - command:
+      - kubectl
+      - -n
+      - ${BENCH_NAMESPACE}
+      - wait
+      - --for=condition=ready
+      - pod
+      - -l
+      - app=curl-test
+      - --timeout=300s
+      sleep: 1
+  verify:
+    commands:
+    - command:
+      - kubectl
+      - -n
+      - ${BENCH_NAMESPACE}
+      - wait
+      - --for=condition=ready
+      - pod
+      - -l
+      - app=curl-test
+      - --timeout=3s
+      sleep: 0
+      timeout_sec: 10
+    retries: 30
+    interval_sec: 3
+- id: backup_restore_baseline_ready
+  probe:
+    commands:
+    - command:
+      - python3
+      - resources/rabbitmq-experiments/manual_backup_restore/setup_precondition_check.py
+      - --namespace
+      - ${BENCH_NAMESPACE}
+      - --min-ready
+      - '1'
+      sleep: 0
+      timeout_sec: 45
+  apply:
+    commands:
+    - command:
+      - /bin/sh
+      - -c
+      - 'true'
+      sleep: 0
+      timeout_sec: 5
+  verify:
+    commands:
+    - command:
+      - python3
+      - resources/rabbitmq-experiments/manual_backup_restore/setup_precondition_check.py
+      - --namespace
+      - ${BENCH_NAMESPACE}
+      - --min-ready
+      - '1'
+      sleep: 0
+      timeout_sec: 45
+    retries: 24
+    interval_sec: 5
+detailedInstructions: 'A 3-node RabbitMQ cluster was backed up, then the primary node
+  data ({{params.cluster_prefix}}-0) was lost.
+
+  A backup tarball exists on PVC `{{params.cluster_prefix}}-backup`, and an empty
+  PVC `data-{{params.cluster_prefix}}-0` has been created.
+
+
+  Restore the cluster using only native Kubernetes resources (StatefulSet, Service,
+  PVC, Secret, ConfigMap, Job).
+
+  Do not use any CRD, Operator, or third-party controller.
+
+
+  Goal:
+
+  - Bring the 3-node cluster back online.
+
+  - Restore queue data so `app-backup` exists in vhost `/app` with at least 20 messages.
+
+
+  Hint:
+
+  - Use `resources/rabbitmq-experiments/manual_backup_restore/resource/job-restore.yaml`
+  to restore from the backup PVC.
+
+  '
+operatorContext: 'kubectl -n ${BENCH_NAMESPACE} get pods
+
+  kubectl -n ${BENCH_NAMESPACE} get svc
+
+  kubectl -n ${BENCH_NAMESPACE} get pvc
+
+  kubectl -n ${BENCH_NAMESPACE} get jobs
+
+  kubectl -n ${BENCH_NAMESPACE} logs <pod>
+
+  kubectl -n ${BENCH_NAMESPACE} exec {{params.cluster_prefix}}-0 -- rabbitmqctl list_queues
+  -p /app name messages
+
+  '
+oracle:
+  verify:
+    hooks:
+      before_commands:
+      - command:
+        - kubectl
+        - -n
+        - ${BENCH_NAMESPACE}
+        - apply
+        - -f
+        - resources/rabbitmq-experiments/common/oracle-client.yaml
+        sleep: 0
+      - command:
+        - kubectl
+        - -n
+        - ${BENCH_NAMESPACE}
+        - wait
+        - --for=condition=ready
+        - pod/oracle-client
+        - --timeout=60s
+        sleep: 0
+      after_commands:
+      - command:
+        - kubectl
+        - -n
+        - ${BENCH_NAMESPACE}
+        - delete
+        - -f
+        - resources/rabbitmq-experiments/common/oracle-client.yaml
+        - --ignore-not-found=true
+        sleep: 0
+      after_failure_mode: warn
+    commands:
+    - command:
+      - python3
+      - resources/rabbitmq-experiments/manual_backup_restore/oracle/oracle.py
+      sleep: 0
+cleanUpCommands:
+- command:
+  - /bin/sh
+  - -c
+  - kubectl -n ${BENCH_NAMESPACE} delete all --all --ignore-not-found=true --wait=false
+  sleep: 0
+- command:
+  - /bin/sh
+  - -c
+  - kubectl -n ${BENCH_NAMESPACE} delete configmap,secret,serviceaccount,role,rolebinding,pvc,job,cronjob,networkpolicy
+    --all --ignore-not-found=true
+  sleep: 0
+namespace_contract:
+  base_namespace: rabbitmq
+  default_role: default
+  required_roles:
+  - default
+params:
+  definitions:
+    cluster_prefix:
+      type: string
+      default: rabbitmq

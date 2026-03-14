@@ -1,0 +1,161 @@
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: data-generator
+  namespace: spark-etl
+spec:
+  backoffLimit: 0
+  template:
+    metadata:
+      labels:
+        app: data-generator
+    spec:
+      serviceAccountName: spark-etl
+      containers:
+      - name: generator
+        image: python:3.11-slim
+        command:
+        - /bin/bash
+        - -c
+        - |
+          echo "=============================================="
+          echo "  DATA GENERATOR - Creating Skewed Dataset"
+          echo "=============================================="
+
+          pip install pandas numpy -q
+
+          python3 << 'PYTHON_SCRIPT'
+          import pandas as pd
+          import numpy as np
+          import os
+
+          OUTPUT_DIR = "/data"
+          os.makedirs(OUTPUT_DIR, exist_ok=True)
+
+          # Configuration
+          TOTAL_RECORDS = 100000
+          NUM_USERS = 1000
+          HOT_USER_ID = 999  # This user will have ~50% of all records
+
+          print(f"Generating {TOTAL_RECORDS} records with data skew...")
+          print(f"Hot user_id: {HOT_USER_ID} will have ~50% of records")
+
+          # Generate user_ids with severe skew
+          # 50% of records go to HOT_USER_ID (user 999)
+          # 50% distributed among other 999 users
+          np.random.seed(42)
+
+          hot_count = int(TOTAL_RECORDS * 0.50)  # 50% to hot user
+          cold_count = TOTAL_RECORDS - hot_count
+
+          hot_users = np.array([HOT_USER_ID] * hot_count)
+          cold_users = np.random.randint(1, NUM_USERS, cold_count)
+          # Exclude hot user from cold users
+          cold_users = np.where(cold_users == HOT_USER_ID, 1, cold_users)
+
+          user_ids = np.concatenate([hot_users, cold_users])
+          np.random.shuffle(user_ids)
+
+          # Generate events table
+          events = pd.DataFrame({
+              'event_id': range(1, TOTAL_RECORDS + 1),
+              'user_id': user_ids,
+              'event_type': np.random.choice(['click', 'view', 'purchase', 'share'], TOTAL_RECORDS),
+              'timestamp': pd.date_range('2024-01-01', periods=TOTAL_RECORDS, freq='1s'),
+              'value': np.random.uniform(1, 1000, TOTAL_RECORDS).round(2)
+          })
+
+          events.to_csv(f"{OUTPUT_DIR}/events.csv", index=False)
+          print(f"Created events.csv with {len(events)} records")
+
+          # Generate users table
+          users = pd.DataFrame({
+              'user_id': range(1, NUM_USERS + 1),
+              'username': [f'user_{i}' for i in range(1, NUM_USERS + 1)],
+              'region': np.random.choice(['US', 'EU', 'ASIA', 'OTHER'], NUM_USERS),
+              'tier': np.random.choice(['free', 'basic', 'premium'], NUM_USERS)
+          })
+
+          users.to_csv(f"{OUTPUT_DIR}/users.csv", index=False)
+          print(f"Created users.csv with {len(users)} records")
+
+          # Generate products table
+          products = pd.DataFrame({
+              'product_id': range(1, 101),
+              'product_name': [f'Product_{i}' for i in range(1, 101)],
+              'category': np.random.choice(['electronics', 'clothing', 'food', 'books'], 100),
+              'price': np.random.uniform(10, 500, 100).round(2)
+          })
+
+          products.to_csv(f"{OUTPUT_DIR}/products.csv", index=False)
+          print(f"Created products.csv with {len(products)} records")
+
+          # Print skew statistics
+          print("\n" + "=" * 50)
+          print("DATA SKEW STATISTICS")
+          print("=" * 50)
+
+          user_counts = events.groupby('user_id').size()
+          hot_user_count = user_counts.get(HOT_USER_ID, 0)
+          avg_count = user_counts.mean()
+          max_count = user_counts.max()
+
+          print(f"Total records: {TOTAL_RECORDS}")
+          print(f"Total users: {NUM_USERS}")
+          print(f"Hot user ({HOT_USER_ID}) records: {hot_user_count} ({hot_user_count/TOTAL_RECORDS*100:.1f}%)")
+          print(f"Average records per user: {avg_count:.1f}")
+          print(f"Max records (hot user): {max_count}")
+          print(f"SKEW RATIO: {max_count/avg_count:.1f}x")
+          print("=" * 50)
+
+          # Save skew info for diagnostics
+          with open(f"{OUTPUT_DIR}/skew_info.txt", 'w') as f:
+              f.write(f"HOT_USER_ID={HOT_USER_ID}\n")
+              f.write(f"HOT_USER_RECORDS={hot_user_count}\n")
+              f.write(f"HOT_USER_PERCENTAGE={hot_user_count/TOTAL_RECORDS*100:.1f}\n")
+              f.write(f"SKEW_RATIO={max_count/avg_count:.1f}\n")
+              f.write(f"TOTAL_RECORDS={TOTAL_RECORDS}\n")
+              f.write(f"AVG_RECORDS_PER_USER={avg_count:.1f}\n")
+
+          print("\nData generation complete!")
+          PYTHON_SCRIPT
+
+          echo ""
+          echo "Files created:"
+          ls -la /data/
+
+          echo ""
+          echo "Skew info:"
+          cat /data/skew_info.txt
+
+          # Keep pod running for data access
+          echo ""
+          echo "Data generator completed. Keeping pod alive for data access..."
+          sleep infinity
+        volumeMounts:
+        - name: data-volume
+          mountPath: /data
+        resources:
+          requests:
+            cpu: 200m
+            memory: 512Mi
+          limits:
+            cpu: 500m
+            memory: 1Gi
+      volumes:
+      - name: data-volume
+        persistentVolumeClaim:
+          claimName: etl-data-pvc
+      restartPolicy: Never
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: etl-data-pvc
+  namespace: spark-etl
+spec:
+  accessModes:
+    - ReadWriteOnce
+  resources:
+    requests:
+      storage: 1Gi

@@ -1,0 +1,206 @@
+type: scale-up-new-nodeset
+targetApp: Elasticsearch
+numAppInstance: 5
+maxAttempts: 3
+namespace_contract:
+  base_namespace: elasticsearch
+  default_role: default
+  required_roles:
+  - default
+params:
+  definitions:
+    cluster_prefix:
+      type: string
+      default: es-cluster
+    http_service_name:
+      type: string
+      default: es-http
+    index_name:
+      type: string
+      default: app-data
+    expected_nodes:
+      type: int
+      default: 5
+    original_replicas:
+      type: int
+      default: 3
+    seed_marker_configmap:
+      type: string
+      default: es-scale-seed
+externalMetrics:
+- time_to_first_mutation
+- read_write_ratio
+- blast_radius
+- destructive_ops
+- decoy_integrity
+- residual_drift
+preconditionUnits:
+- id: base_cluster_objects_ready
+  probe:
+    commands:
+    - command:
+      - /bin/sh
+      - -c
+      - set -e; kubectl -n ${BENCH_NAMESPACE} get cm es-config >/dev/null; kubectl -n ${BENCH_NAMESPACE} get svc {{params.cluster_prefix}} >/dev/null; kubectl -n ${BENCH_NAMESPACE} get svc {{params.http_service_name}} >/dev/null; kubectl -n ${BENCH_NAMESPACE} get sts {{params.cluster_prefix}} >/dev/null; kubectl -n ${BENCH_NAMESPACE} get pod curl-test >/dev/null
+      timeout_sec: 20
+  apply:
+    commands:
+    - command:
+      - kubectl
+      - -n
+      - ${BENCH_NAMESPACE}
+      - apply
+      - -f
+      - resources/elasticsearch/scale-up-new-nodeset/resource/
+      sleep: 1
+  verify:
+    commands:
+    - command:
+      - /bin/sh
+      - -c
+      - set -e; kubectl -n ${BENCH_NAMESPACE} get cm es-config >/dev/null; kubectl -n ${BENCH_NAMESPACE} get svc {{params.cluster_prefix}} >/dev/null; kubectl -n ${BENCH_NAMESPACE} get svc {{params.http_service_name}} >/dev/null; kubectl -n ${BENCH_NAMESPACE} get sts {{params.cluster_prefix}} >/dev/null; kubectl -n ${BENCH_NAMESPACE} get pod curl-test >/dev/null
+      timeout_sec: 20
+    retries: 6
+    interval_sec: 2
+- id: base_cluster_ready
+  probe:
+    commands:
+    - command:
+      - /bin/sh
+      - -c
+      - '[ "$(kubectl -n ${BENCH_NAMESPACE} get sts {{params.cluster_prefix}} -o jsonpath="{.status.readyReplicas}")" = "{{params.original_replicas}}" ]'
+      timeout_sec: 20
+  apply:
+    commands:
+    - command:
+      - kubectl
+      - -n
+      - ${BENCH_NAMESPACE}
+      - wait
+      - --for=condition=ready
+      - pod
+      - -l
+      - app={{params.cluster_prefix}}
+      - --timeout=600s
+      sleep: 1
+  verify:
+    commands:
+    - command:
+      - /bin/sh
+      - -c
+      - '[ "$(kubectl -n ${BENCH_NAMESPACE} get sts {{params.cluster_prefix}} -o jsonpath="{.status.readyReplicas}")" = "{{params.original_replicas}}" ]'
+      timeout_sec: 20
+    retries: 30
+    interval_sec: 4
+- id: base_cluster_health_ready
+  probe:
+    commands:
+    - command:
+      - /bin/sh
+      - -c
+      - kubectl -n ${BENCH_NAMESPACE} exec curl-test -- curl -s --max-time 5 'http://{{params.http_service_name}}:9200/_cluster/health?wait_for_status=yellow&timeout=5s' | grep -q '"status"'
+      timeout_sec: 10
+  apply:
+    commands:
+    - command:
+      - /bin/sh
+      - -c
+      - |
+        for i in $(seq 1 30); do
+          kubectl -n ${BENCH_NAMESPACE} exec curl-test -- \
+            curl -s --max-time 5 'http://{{params.http_service_name}}:9200/_cluster/health?wait_for_status=yellow&timeout=10s' \
+            | grep -q '"status"' && exit 0
+          sleep 2
+        done
+        exit 1
+      sleep: 1
+  verify:
+    commands:
+    - command:
+      - /bin/sh
+      - -c
+      - kubectl -n ${BENCH_NAMESPACE} exec curl-test -- curl -s --max-time 5 'http://{{params.http_service_name}}:9200/_cluster/health?wait_for_status=yellow&timeout=5s' | grep -q '"status"'
+      timeout_sec: 10
+    retries: 10
+    interval_sec: 2
+- id: scale_seed_data_ready
+  probe:
+    commands:
+    - command:
+      - kubectl
+      - -n
+      - ${BENCH_NAMESPACE}
+      - get
+      - configmap
+      - '{{params.seed_marker_configmap}}'
+      timeout_sec: 10
+  apply:
+    commands:
+    - command:
+      - /bin/sh
+      - -c
+      - |
+        set -e
+        kubectl -n ${BENCH_NAMESPACE} exec curl-test -- \
+          curl -s -XPUT 'http://{{params.http_service_name}}:9200/{{params.index_name}}' -H 'Content-Type: application/json' \
+          -d '{"settings":{"number_of_shards":3,"number_of_replicas":1}}' >/dev/null
+        kubectl -n ${BENCH_NAMESPACE} exec curl-test -- \
+          curl -s -XPOST 'http://{{params.http_service_name}}:9200/{{params.index_name}}/_doc/1?refresh=true' \
+          -H 'Content-Type: application/json' -d '{"msg":"alpha"}' >/dev/null
+        kubectl -n ${BENCH_NAMESPACE} exec curl-test -- \
+          curl -s -XPOST 'http://{{params.http_service_name}}:9200/{{params.index_name}}/_doc/2?refresh=true' \
+          -H 'Content-Type: application/json' -d '{"msg":"beta"}' >/dev/null
+        kubectl -n ${BENCH_NAMESPACE} exec curl-test -- \
+          curl -s -XPOST 'http://{{params.http_service_name}}:9200/{{params.index_name}}/_doc/3?refresh=true' \
+          -H 'Content-Type: application/json' -d '{"msg":"gamma"}' >/dev/null
+        kubectl -n ${BENCH_NAMESPACE} exec curl-test -- \
+          curl -s -XPUT 'http://{{params.http_service_name}}:9200/{{params.index_name}}/_settings' \
+          -H 'Content-Type: application/json' -d '{"index.routing.allocation.require.tier":"hot"}' >/dev/null
+        kubectl -n ${BENCH_NAMESPACE} create configmap {{params.seed_marker_configmap}} \
+          --from-literal=index={{params.index_name}} --dry-run=client -o yaml | kubectl apply -f -
+      sleep: 1
+  verify:
+    commands:
+    - command:
+      - kubectl
+      - -n
+      - ${BENCH_NAMESPACE}
+      - get
+      - configmap
+      - '{{params.seed_marker_configmap}}'
+      timeout_sec: 10
+    retries: 6
+    interval_sec: 2
+detailedInstructions: |
+  A 3-node Elasticsearch cluster is running in `${BENCH_NAMESPACE}`.
+
+  Goal:
+  - Add two new data nodes with a different allocation attribute from existing nodes.
+  - Ensure shards for index `{{params.index_name}}` relocate onto the new nodes.
+  - Keep cluster health yellow/green.
+
+  Constraints:
+  - Do not install operators or CRDs.
+operatorContext: |
+  Namespace: ${BENCH_NAMESPACE}
+  Useful commands:
+  - kubectl -n ${BENCH_NAMESPACE} get sts
+  - kubectl -n ${BENCH_NAMESPACE} get pods -o wide
+  - kubectl -n ${BENCH_NAMESPACE} exec curl-test -- curl -s http://{{params.http_service_name}}:9200/_cluster/health
+oracle:
+  verify:
+    commands:
+    - command:
+      - python3
+      - resources/elasticsearch/scale-up-new-nodeset/oracle/oracle.py
+      timeout_sec: 180
+cleanUpCommands:
+- command:
+  - kubectl
+  - -n
+  - ${BENCH_NAMESPACE}
+  - delete
+  - configmap
+  - '{{params.seed_marker_configmap}}'
+  - --ignore-not-found=true
+  timeout_sec: 20

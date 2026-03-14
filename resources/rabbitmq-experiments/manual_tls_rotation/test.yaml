@@ -1,0 +1,516 @@
+type: manual-tls-rotation
+targetApp: RabbitMQ
+numAppInstance: 3
+params:
+  definitions:
+    cluster_prefix:
+      type: string
+      default: rabbitmq
+    baseline_max_leaf_validity_days:
+      type: int
+      default: 10
+      min: 1
+    min_rotated_leaf_validity_days:
+      type: int
+      default: 300
+      min: 30
+externalMetrics:
+- time_to_first_mutation
+- read_write_ratio
+- blast_radius
+- destructive_ops
+- decoy_integrity
+- residual_drift
+preconditionUnits:
+- id: rabbitmq_secrets_ready
+  probe:
+    commands:
+    - command:
+      - /bin/sh
+      - -c
+      - set -e; kubectl -n ${BENCH_NAMESPACE} get secret {{params.cluster_prefix}}-erlang-cookie
+        >/dev/null; kubectl -n ${BENCH_NAMESPACE} get secret {{params.cluster_prefix}}-admin
+        >/dev/null
+      sleep: 0
+      timeout_sec: 20
+  apply:
+    commands:
+    - command:
+      - /bin/sh
+      - -c
+      - "kubectl -n ${BENCH_NAMESPACE} create secret generic {{params.cluster_prefix}}-erlang-cookie\
+        \ \\\n  --from-literal=cookie=supersecretcookie \\\n  --dry-run=client -o\
+        \ yaml | kubectl apply -f -\n"
+      sleep: 1
+    - command:
+      - /bin/sh
+      - -c
+      - "kubectl -n ${BENCH_NAMESPACE} create secret generic {{params.cluster_prefix}}-admin\
+        \ \\\n  --from-literal=username=admin \\\n  --from-literal=password=adminpass\
+        \ \\\n  --dry-run=client -o yaml | kubectl apply -f -\n"
+      sleep: 1
+  verify:
+    commands:
+    - command:
+      - /bin/sh
+      - -c
+      - set -e; kubectl -n ${BENCH_NAMESPACE} get secret {{params.cluster_prefix}}-erlang-cookie
+        >/dev/null; kubectl -n ${BENCH_NAMESPACE} get secret {{params.cluster_prefix}}-admin
+        >/dev/null
+      sleep: 0
+      timeout_sec: 20
+    retries: 6
+    interval_sec: 2
+- id: rbac_ready
+  probe:
+    commands:
+    - command:
+      - kubectl
+      - -n
+      - ${BENCH_NAMESPACE}
+      - get
+      - sa
+      - '{{params.cluster_prefix}}'
+      sleep: 0
+      timeout_sec: 10
+  apply:
+    commands:
+    - command:
+      - kubectl
+      - -n
+      - ${BENCH_NAMESPACE}
+      - apply
+      - -f
+      - resources/rabbitmq-experiments/manual_tls_rotation/resource/rbac.yaml
+      sleep: 1
+  verify:
+    commands:
+    - command:
+      - kubectl
+      - -n
+      - ${BENCH_NAMESPACE}
+      - get
+      - sa
+      - '{{params.cluster_prefix}}'
+      sleep: 0
+      timeout_sec: 10
+    retries: 6
+    interval_sec: 2
+- id: config_ready
+  probe:
+    commands:
+    - command:
+      - /bin/sh
+      - -c
+      - "set -e\nCFG=$(kubectl -n ${BENCH_NAMESPACE} get configmap {{params.cluster_prefix}}-config\
+        \ -o jsonpath='{.data.rabbitmq\\.conf}')\nprintf '%s\\n' \"$CFG\" | grep\
+        \ -q 'listeners\\.ssl\\.default = 5671'\nprintf '%s\\n' \"$CFG\" | grep\
+        \ -q 'ssl_options\\.certfile = /etc/rabbitmq/tls/tls.crt'\n"
+      sleep: 0
+      timeout_sec: 20
+  apply:
+    commands:
+    - command:
+      - kubectl
+      - -n
+      - ${BENCH_NAMESPACE}
+      - apply
+      - -f
+      - resources/rabbitmq-experiments/manual_tls_rotation/resource/configmap.yaml
+      sleep: 1
+  verify:
+    commands:
+    - command:
+      - /bin/sh
+      - -c
+      - "set -e\nCFG=$(kubectl -n ${BENCH_NAMESPACE} get configmap {{params.cluster_prefix}}-config\
+        \ -o jsonpath='{.data.rabbitmq\\.conf}')\nprintf '%s\\n' \"$CFG\" | grep\
+        \ -q 'listeners\\.ssl\\.default = 5671'\nprintf '%s\\n' \"$CFG\" | grep\
+        \ -q 'ssl_options\\.certfile = /etc/rabbitmq/tls/tls.crt'\n"
+      sleep: 0
+      timeout_sec: 20
+    retries: 6
+    interval_sec: 2
+- id: services_ready
+  probe:
+    commands:
+    - command:
+      - /bin/sh
+      - -c
+      - "set -e\nfor SVC in {{params.cluster_prefix}} {{params.cluster_prefix}}-headless;\
+        \ do\n  PORTS=$(kubectl -n ${BENCH_NAMESPACE} get svc \"$SVC\" -o jsonpath='{range\
+        \ .spec.ports[*]}{.port}{\" \"}{end}')\n  printf '%s\\n' \"$PORTS\" | grep\
+        \ -Eq '(^| )5671( |$)'\ndone\n"
+      sleep: 0
+      timeout_sec: 20
+  apply:
+    commands:
+    - command:
+      - kubectl
+      - -n
+      - ${BENCH_NAMESPACE}
+      - apply
+      - -f
+      - resources/rabbitmq-experiments/manual_tls_rotation/resource/service.yaml
+      sleep: 1
+  verify:
+    commands:
+    - command:
+      - /bin/sh
+      - -c
+      - "set -e\nfor SVC in {{params.cluster_prefix}} {{params.cluster_prefix}}-headless;\
+        \ do\n  PORTS=$(kubectl -n ${BENCH_NAMESPACE} get svc \"$SVC\" -o jsonpath='{range\
+        \ .spec.ports[*]}{.port}{\" \"}{end}')\n  printf '%s\\n' \"$PORTS\" | grep\
+        \ -Eq '(^| )5671( |$)'\ndone\n"
+      sleep: 0
+      timeout_sec: 20
+    retries: 6
+    interval_sec: 2
+- id: openssl_toolbox_ready
+  probe:
+    commands:
+    - command:
+      - kubectl
+      - -n
+      - ${BENCH_NAMESPACE}
+      - wait
+      - --for=condition=ready
+      - pod
+      - -l
+      - app=openssl-toolbox
+      - --timeout=3s
+      sleep: 0
+      timeout_sec: 10
+  apply:
+    commands:
+    - command:
+      - kubectl
+      - -n
+      - ${BENCH_NAMESPACE}
+      - apply
+      - -f
+      - resources/rabbitmq-experiments/manual_tls_rotation/resource/openssl-toolbox.yaml
+      sleep: 1
+    - command:
+      - kubectl
+      - -n
+      - ${BENCH_NAMESPACE}
+      - wait
+      - --for=condition=ready
+      - pod
+      - -l
+      - app=openssl-toolbox
+      - --timeout=300s
+      sleep: 1
+  verify:
+    commands:
+    - command:
+      - kubectl
+      - -n
+      - ${BENCH_NAMESPACE}
+      - wait
+      - --for=condition=ready
+      - pod
+      - -l
+      - app=openssl-toolbox
+      - --timeout=3s
+      sleep: 0
+      timeout_sec: 10
+    retries: 30
+    interval_sec: 3
+- id: tls_material_ready
+  probe:
+    commands:
+    - command:
+      - python3
+      - resources/rabbitmq-experiments/manual_tls_rotation/setup_precondition_check.py
+      - --namespace
+      - ${BENCH_NAMESPACE}
+      - --baseline-max-leaf-validity-days
+      - '{{params.baseline_max_leaf_validity_days}}'
+      - --tls-material-only
+      sleep: 0
+      timeout_sec: 45
+  apply:
+    commands:
+    - command:
+      - /bin/sh
+      - -c
+      - "set -e\nTMP_DIR=$(mktemp -d)\nkubectl -n ${BENCH_NAMESPACE} exec openssl-toolbox\
+        \ -- /bin/sh -c '\nset -e\nmkdir -p /tmp/certs\ncat > /tmp/certs/openssl.cnf\
+        \ <<EOF\ndistinguished_name=req_distinguished_name\nreq_extensions=v3_req\n\
+        prompt=no\n[req_distinguished_name]\nCN={{params.cluster_prefix}}\n[v3_req]\n\
+        keyUsage=critical,digitalSignature,keyEncipherment\nextendedKeyUsage=serverAuth,clientAuth\n\
+        subjectAltName=@alt_names\n[alt_names]\nDNS.1={{params.cluster_prefix}}\n\
+        DNS.2={{params.cluster_prefix}}.{{params.cluster_prefix}}\nDNS.3={{params.cluster_prefix}}.{{params.cluster_prefix}}.svc\n\
+        DNS.4={{params.cluster_prefix}}.${BENCH_NAMESPACE}.svc.cluster.local\nDNS.5={{params.cluster_prefix}}-headless\n\
+        DNS.6={{params.cluster_prefix}}-headless.{{params.cluster_prefix}}\nDNS.7={{params.cluster_prefix}}-headless.{{params.cluster_prefix}}.svc\n\
+        DNS.8={{params.cluster_prefix}}-headless.${BENCH_NAMESPACE}.svc.cluster.local\n\
+        DNS.9={{params.cluster_prefix}}-0.{{params.cluster_prefix}}-headless.${BENCH_NAMESPACE}.svc.cluster.local\n\
+        DNS.10={{params.cluster_prefix}}-1.{{params.cluster_prefix}}-headless.${BENCH_NAMESPACE}.svc.cluster.local\n\
+        DNS.11={{params.cluster_prefix}}-2.{{params.cluster_prefix}}-headless.${BENCH_NAMESPACE}.svc.cluster.local\n\
+        EOF\nopenssl genrsa -out /tmp/certs/ca.key 2048\nopenssl req -x509 -new -nodes\
+        \ -key /tmp/certs/ca.key -sha256 -days 730 \\\n  -subj \"/CN=rabbitmq-ca\"\
+        \ -out /tmp/certs/ca.crt\nopenssl genrsa -out /tmp/certs/tls.key 2048\nopenssl\
+        \ req -new -key /tmp/certs/tls.key -out /tmp/certs/tls.csr \\\n  -config /tmp/certs/openssl.cnf\n\
+        openssl x509 -req -in /tmp/certs/tls.csr -CA /tmp/certs/ca.crt \\\n  -CAkey\
+        \ /tmp/certs/ca.key -CAcreateserial -out /tmp/certs/tls.crt \\\n  -days 1\
+        \ -extensions v3_req -extfile /tmp/certs/openssl.cnf\n'\nkubectl -n ${BENCH_NAMESPACE}\
+        \ cp openssl-toolbox:/tmp/certs \"${TMP_DIR}/certs\"\nkubectl -n ${BENCH_NAMESPACE}\
+        \ create secret generic {{params.cluster_prefix}}-tls \\\n  --from-file=ca.crt=\"\
+        ${TMP_DIR}/certs/ca.crt\" \\\n  --from-file=tls.crt=\"${TMP_DIR}/certs/tls.crt\"\
+        \ \\\n  --from-file=tls.key=\"${TMP_DIR}/certs/tls.key\" \\\n  --dry-run=client\
+        \ -o yaml | kubectl apply -f -\nCA_FP=$(openssl x509 -noout -fingerprint -sha256\
+        \ -in \"${TMP_DIR}/certs/ca.crt\" | cut -d= -f2)\nLEAF_FP=$(openssl x509 -noout\
+        \ -fingerprint -sha256 -in \"${TMP_DIR}/certs/tls.crt\" | cut -d= -f2)\nkubectl\
+        \ -n ${BENCH_NAMESPACE} create configmap {{params.cluster_prefix}}-tls-old\
+        \ \\\n  --from-literal=ca_fingerprint_sha256=\"${CA_FP}\" \\\n  --from-literal=leaf_fingerprint_sha256=\"\
+        ${LEAF_FP}\" \\\n  --dry-run=client -o yaml | kubectl apply -f -\n"
+      sleep: 1
+  verify:
+    commands:
+    - command:
+      - python3
+      - resources/rabbitmq-experiments/manual_tls_rotation/setup_precondition_check.py
+      - --namespace
+      - ${BENCH_NAMESPACE}
+      - --baseline-max-leaf-validity-days
+      - '{{params.baseline_max_leaf_validity_days}}'
+      - --tls-material-only
+      sleep: 0
+      timeout_sec: 45
+    retries: 24
+    interval_sec: 5
+- id: rabbitmq_statefulset_present
+  probe:
+    commands:
+    - command:
+      - kubectl
+      - -n
+      - ${BENCH_NAMESPACE}
+      - get
+      - sts
+      - '{{params.cluster_prefix}}'
+      sleep: 0
+      timeout_sec: 20
+  apply:
+    commands:
+    - command:
+      - kubectl
+      - -n
+      - ${BENCH_NAMESPACE}
+      - apply
+      - -f
+      - resources/rabbitmq-experiments/manual_tls_rotation/resource/statefulset.yaml
+      sleep: 1
+  verify:
+    commands:
+    - command:
+      - kubectl
+      - -n
+      - ${BENCH_NAMESPACE}
+      - get
+      - sts
+      - '{{params.cluster_prefix}}'
+      sleep: 0
+      timeout_sec: 20
+    retries: 12
+    interval_sec: 3
+- id: rabbitmq_tls_statefulset_ready
+  probe:
+    commands:
+    - command:
+      - python3
+      - resources/rabbitmq-experiments/manual_tls_rotation/setup_precondition_check.py
+      - --namespace
+      - ${BENCH_NAMESPACE}
+      - --tls-statefulset-only
+      sleep: 0
+      timeout_sec: 30
+  apply:
+    commands:
+    - command:
+      - /bin/sh
+      - -c
+      - "kubectl -n ${BENCH_NAMESPACE} patch statefulset {{params.cluster_prefix}} --type=strategic -p '{\"spec\":{\"template\":{\"spec\":{\"volumes\":[{\"name\":\"tls-secret\",\"secret\":{\"secretName\":\"{{params.cluster_prefix}}-tls\"}}],\"containers\":[{\"name\":\"rabbitmq\",\"volumeMounts\":[{\"name\":\"tls-secret\",\"mountPath\":\"/etc/rabbitmq/tls\",\"readOnly\":true}]}]}}}}'"
+      sleep: 1
+      timeout_sec: 60
+  verify:
+    commands:
+    - command:
+      - python3
+      - resources/rabbitmq-experiments/manual_tls_rotation/setup_precondition_check.py
+      - --namespace
+      - ${BENCH_NAMESPACE}
+      - --tls-statefulset-only
+      sleep: 0
+      timeout_sec: 30
+    retries: 24
+    interval_sec: 5
+- id: rabbitmq_cluster_ready
+  probe:
+    commands:
+    - command:
+      - /bin/sh
+      - -c
+      - set -e; [ "$(kubectl -n ${BENCH_NAMESPACE} get sts {{params.cluster_prefix}}
+        -o jsonpath="{.status.readyReplicas}")" = "3" ]
+      sleep: 0
+      timeout_sec: 20
+  apply:
+    commands:
+    - command:
+      - kubectl
+      - -n
+      - ${BENCH_NAMESPACE}
+      - wait
+      - --for=condition=ready
+      - pod
+      - -l
+      - app={{params.cluster_prefix}}
+      - --timeout=600s
+      sleep: 1
+  verify:
+    commands:
+    - command:
+      - /bin/sh
+      - -c
+      - set -e; [ "$(kubectl -n ${BENCH_NAMESPACE} get sts {{params.cluster_prefix}}
+        -o jsonpath="{.status.readyReplicas}")" = "3" ]
+      sleep: 0
+      timeout_sec: 20
+    retries: 84
+    interval_sec: 5
+- id: tls_rotation_baseline_ready
+  probe:
+    commands:
+    - command:
+      - python3
+      - resources/rabbitmq-experiments/manual_tls_rotation/setup_precondition_check.py
+      - --namespace
+      - ${BENCH_NAMESPACE}
+      - --min-ready
+      - '3'
+      - --baseline-max-leaf-validity-days
+      - '{{params.baseline_max_leaf_validity_days}}'
+      sleep: 0
+      timeout_sec: 45
+  apply:
+    commands:
+    - command:
+      - /bin/sh
+      - -c
+      - 'true'
+      sleep: 0
+      timeout_sec: 5
+  verify:
+    commands:
+    - command:
+      - python3
+      - resources/rabbitmq-experiments/manual_tls_rotation/setup_precondition_check.py
+      - --namespace
+      - ${BENCH_NAMESPACE}
+      - --min-ready
+      - '3'
+      - --baseline-max-leaf-validity-days
+      - '{{params.baseline_max_leaf_validity_days}}'
+      sleep: 0
+      timeout_sec: 45
+    retries: 24
+    interval_sec: 5
+detailedInstructions: 'A 3-node RabbitMQ cluster is running in the ${BENCH_NAMESPACE}
+  namespace with TLS enabled.
+
+
+  The current leaf certificate expires soon (near-expiry baseline). Rotate only the
+  leaf certificate (keep the CA unchanged).
+
+  The new leaf certificate must be valid for at least {{params.min_rotated_leaf_validity_days}}
+  days.
+
+
+  Requirements:
+
+  - Use only native Kubernetes resources (StatefulSet, Service, PVC, Secret, ConfigMap,
+  etc). Do not use any CRD, Operator, or third-party controller.
+
+  - Keep the CA unchanged.
+
+  - Apply the new leaf certificate to all nodes.
+
+
+  Goal:
+
+  - All nodes remain in a healthy cluster.
+
+  - TLS connections still succeed.
+
+  - The leaf certificate is rotated and valid for at least {{params.min_rotated_leaf_validity_days}}
+  days.
+
+  '
+operatorContext: 'kubectl -n ${BENCH_NAMESPACE} get pods
+
+  kubectl -n ${BENCH_NAMESPACE} get svc
+
+  kubectl -n ${BENCH_NAMESPACE} logs <pod>
+
+  kubectl -n ${BENCH_NAMESPACE} exec {{params.cluster_prefix}}-0 -- rabbitmqctl cluster_status
+
+  '
+oracle:
+  verify:
+    hooks:
+      before_commands:
+      - command:
+        - kubectl
+        - -n
+        - ${BENCH_NAMESPACE}
+        - apply
+        - -f
+        - resources/rabbitmq-experiments/common/oracle-client.yaml
+        sleep: 0
+      - command:
+        - kubectl
+        - -n
+        - ${BENCH_NAMESPACE}
+        - wait
+        - --for=condition=ready
+        - pod/oracle-client
+        - --timeout=60s
+        sleep: 0
+      after_commands:
+      - command:
+        - kubectl
+        - -n
+        - ${BENCH_NAMESPACE}
+        - delete
+        - -f
+        - resources/rabbitmq-experiments/common/oracle-client.yaml
+        - --ignore-not-found=true
+        sleep: 0
+      after_failure_mode: warn
+    commands:
+    - command:
+      - python3
+      - resources/rabbitmq-experiments/manual_tls_rotation/oracle/oracle.py
+      - --min-rotated-leaf-validity-days
+      - '{{params.min_rotated_leaf_validity_days}}'
+      sleep: 0
+cleanUpCommands:
+- command:
+  - /bin/sh
+  - -c
+  - kubectl -n ${BENCH_NAMESPACE} delete all --all --ignore-not-found=true --wait=false
+  sleep: 0
+- command:
+  - /bin/sh
+  - -c
+  - kubectl -n ${BENCH_NAMESPACE} delete configmap,secret,serviceaccount,role,rolebinding,pvc,job,cronjob,networkpolicy
+    --all --ignore-not-found=true
+  sleep: 0
+namespace_contract:
+  base_namespace: rabbitmq
+  default_role: default
+  required_roles:
+  - default

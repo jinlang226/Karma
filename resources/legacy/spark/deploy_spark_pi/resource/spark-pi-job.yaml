@@ -1,0 +1,62 @@
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: spark-pi
+  namespace: spark-pi
+spec:
+  backoffLimit: 0
+  template:
+    metadata:
+      labels:
+        app: spark-pi
+        component: driver
+    spec:
+      # BUG 1: Wrong serviceAccountName - should be "spark-pi"
+      serviceAccountName: spark-nonexistent
+      containers:
+      - name: spark-submit
+        # BUG 2: Wrong image name - should be "apache/spark:3.5.3"
+        image: apache/spark:3.5.3-nonexistent
+        command:
+        - /bin/bash
+        - -c
+        - |
+          echo "=============================================="
+          echo "  SparkPi - Monte Carlo Pi Estimation"
+          echo "=============================================="
+
+          # Wait for Spark master to be ready
+          echo "Waiting for Spark master..."
+          until nc -z spark-master 7077; do
+            sleep 2
+          done
+          echo "Spark master is ready"
+
+          # Wait for workers
+          echo "Waiting for workers to register..."
+          sleep 10
+
+          # Submit SparkPi job
+          echo "Submitting SparkPi job..."
+          /opt/spark/bin/spark-submit \
+            --master spark://spark-master:7077 \
+            --deploy-mode client \
+            # BUG 3: Wrong memory format - should be "512m"
+            --driver-memory 512 \
+            --executor-memory 512 \
+            --class org.apache.spark.examples.SparkPi \
+            /opt/spark/examples/jars/spark-examples_2.12-3.5.3.jar \
+            100
+
+          EXIT_CODE=$?
+          echo "SparkPi job finished with exit code: $EXIT_CODE"
+          exit $EXIT_CODE
+        resources:
+          requests:
+            cpu: 200m
+            # BUG 4: Wrong memory request - missing unit
+            memory: 512
+          limits:
+            cpu: 500m
+            memory: 1Gi
+      restartPolicy: Never

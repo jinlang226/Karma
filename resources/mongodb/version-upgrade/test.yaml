@@ -1,0 +1,313 @@
+type: version-upgrade
+targetApp: MongoDB
+numAppInstance: 3
+maxAttempts: 3
+namespace_contract:
+  base_namespace: mongodb
+  default_role: default
+  required_roles:
+  - default
+params:
+  definitions:
+    cluster_prefix:
+      type: string
+      default: mongodb-replica
+    service_name:
+      type: string
+      default: mongodb-replica-svc
+    replica_set_name:
+      type: string
+      default: mongodb-replica
+    expected_replicas:
+      type: int
+      default: 3
+      min: 3
+      max: 3
+    from_image:
+      type: string
+      default: mongo:5.0.18
+    to_image:
+      type: string
+      default: mongo:6.0.5
+    from_version_prefix:
+      type: string
+      default: "5.0"
+    to_version_prefix:
+      type: string
+      default: "6.0"
+    from_fcv:
+      type: string
+      default: "5.0"
+    to_fcv:
+      type: string
+      default: "6.0"
+    admin_secret_name:
+      type: string
+      default: admin-user-password
+    keyfile_secret_name:
+      type: string
+      default: mongo-keyfile
+    admin_username:
+      type: string
+      default: admin-user
+    app_database:
+      type: string
+      default: testdb
+    app_collection:
+      type: string
+      default: data
+    seed_min_docs:
+      type: int
+      default: 1
+      min: 1
+      max: 1000
+externalMetrics:
+- time_to_first_mutation
+- read_write_ratio
+- blast_radius
+- destructive_ops
+- decoy_integrity
+- residual_drift
+preconditionUnits:
+- id: version_upgrade_seed_cluster_ready
+  probe:
+    commands:
+    - command:
+      - /bin/sh
+      - -c
+      - |
+        set -euo pipefail
+        ready=$(kubectl -n ${BENCH_NAMESPACE} get sts {{params.cluster_prefix}} -o jsonpath='{.status.readyReplicas}' 2>/dev/null || echo 0)
+        [ "${ready:-0}" -eq {{params.expected_replicas}} ]
+        [ "$(kubectl -n ${BENCH_NAMESPACE} get sts {{params.cluster_prefix}} -o jsonpath='{.spec.template.spec.containers[0].image}' 2>/dev/null || true)" = "{{params.from_image}}" ]
+        admin_pw=$(kubectl -n ${BENCH_NAMESPACE} get secret {{params.admin_secret_name}} -o jsonpath='{.data.password}' | base64 --decode)
+        kubectl -n ${BENCH_NAMESPACE} exec {{params.cluster_prefix}}-0 -- mongosh --quiet "mongodb://{{params.admin_username}}:${admin_pw}@localhost:27017/admin" --eval '
+        (() => {
+          try {
+            const s = rs.status();
+            if (!s.members || s.members.length !== {{params.expected_replicas}}) return false;
+            const p = s.members.filter(m => m.stateStr === "PRIMARY").length;
+            const sec = s.members.filter(m => m.stateStr === "SECONDARY").length;
+            if (p !== 1 || sec !== {{params.expected_replicas}} - 1) return false;
+            const fcv = db.adminCommand({getParameter:1,featureCompatibilityVersion:1}).featureCompatibilityVersion.version;
+            if (fcv !== "{{params.from_fcv}}") return false;
+            return db.getSiblingDB("{{params.app_database}}").{{params.app_collection}}.countDocuments({}) >= {{params.seed_min_docs}};
+          } catch (e) {
+            return false;
+          }
+        })()' | grep -qx true
+      timeout_sec: 90
+  apply:
+    commands:
+    - command:
+      - kubectl
+      - -n
+      - ${BENCH_NAMESPACE}
+      - delete
+      - sts
+      - '{{params.cluster_prefix}}'
+      - --ignore-not-found=true
+      sleep: 1
+    - command:
+      - kubectl
+      - -n
+      - ${BENCH_NAMESPACE}
+      - delete
+      - svc
+      - '{{params.service_name}}'
+      - --ignore-not-found=true
+      sleep: 1
+    - command:
+      - kubectl
+      - -n
+      - ${BENCH_NAMESPACE}
+      - delete
+      - secret
+      - '{{params.admin_secret_name}}'
+      - '{{params.keyfile_secret_name}}'
+      - --ignore-not-found=true
+      sleep: 1
+    - command:
+      - /bin/sh
+      - -c
+      - |
+        set -euo pipefail
+        for pvc in $(kubectl -n ${BENCH_NAMESPACE} get pvc -o jsonpath='{range .items[*]}{.metadata.name}{"\n"}{end}' | grep '^data-volume-{{params.cluster_prefix}}-' || true); do
+          kubectl -n ${BENCH_NAMESPACE} delete pvc "${pvc}" --ignore-not-found=true
+        done
+      sleep: 1
+    - command:
+      - kubectl
+      - -n
+      - ${BENCH_NAMESPACE}
+      - apply
+      - -f
+      - resources/mongodb/version-upgrade/resource/secrets.yaml
+      sleep: 1
+    - command:
+      - kubectl
+      - -n
+      - ${BENCH_NAMESPACE}
+      - apply
+      - -f
+      - resources/mongodb/version-upgrade/resource/services.yaml
+      sleep: 1
+    - command:
+      - kubectl
+      - -n
+      - ${BENCH_NAMESPACE}
+      - apply
+      - -f
+      - resources/mongodb/version-upgrade/resource/statefulset.yaml
+      sleep: 2
+    - command:
+      - kubectl
+      - -n
+      - ${BENCH_NAMESPACE}
+      - set
+      - image
+      - sts/{{params.cluster_prefix}}
+      - mongod={{params.from_image}}
+      sleep: 1
+    - command:
+      - kubectl
+      - -n
+      - ${BENCH_NAMESPACE}
+      - wait
+      - --for=jsonpath={.status.readyReplicas}={{params.expected_replicas}}
+      - sts/{{params.cluster_prefix}}
+      - --timeout=420s
+      sleep: 1
+    - command:
+      - kubectl
+      - -n
+      - ${BENCH_NAMESPACE}
+      - exec
+      - '{{params.cluster_prefix}}-0'
+      - --
+      - mongosh
+      - --quiet
+      - --eval
+      - 'rs.initiate({_id:"{{params.replica_set_name}}",members:[{_id:0,host:"{{params.cluster_prefix}}-0.{{params.service_name}}.${BENCH_NAMESPACE}.svc.cluster.local:27017"},{_id:1,host:"{{params.cluster_prefix}}-1.{{params.service_name}}.${BENCH_NAMESPACE}.svc.cluster.local:27017"},{_id:2,host:"{{params.cluster_prefix}}-2.{{params.service_name}}.${BENCH_NAMESPACE}.svc.cluster.local:27017"}]})'
+      sleep: 4
+    - command:
+      - /bin/sh
+      - -c
+      - |
+        set -euo pipefail
+        for _ in $(seq 1 40); do
+          kubectl -n ${BENCH_NAMESPACE} exec {{params.cluster_prefix}}-0 -- mongosh --quiet --eval 'db.hello().isWritablePrimary' | grep -qx true && exit 0
+          sleep 3
+        done
+        exit 1
+      sleep: 1
+    - command:
+      - kubectl
+      - -n
+      - ${BENCH_NAMESPACE}
+      - exec
+      - '{{params.cluster_prefix}}-0'
+      - --
+      - mongosh
+      - --quiet
+      - --eval
+      - 'try { db.getSiblingDB("admin").createUser({user:"{{params.admin_username}}",pwd:"admin123password",roles:[{role:"clusterAdmin",db:"admin"},{role:"userAdminAnyDatabase",db:"admin"},{role:"readWriteAnyDatabase",db:"admin"}]}); } catch (e) { if (!String(e).includes("already exists")) throw e; }'
+      sleep: 1
+    - command:
+      - kubectl
+      - -n
+      - ${BENCH_NAMESPACE}
+      - exec
+      - '{{params.cluster_prefix}}-0'
+      - --
+      - mongosh
+      - --quiet
+      - mongodb://{{params.admin_username}}:admin123password@localhost:27017/admin
+      - --eval
+      - 'db.adminCommand({setFeatureCompatibilityVersion: "{{params.from_fcv}}"})'
+      sleep: 1
+    - command:
+      - kubectl
+      - -n
+      - ${BENCH_NAMESPACE}
+      - exec
+      - '{{params.cluster_prefix}}-0'
+      - --
+      - mongosh
+      - --quiet
+      - mongodb://{{params.admin_username}}:admin123password@localhost:27017/admin
+      - --eval
+      - 'db.getSiblingDB("{{params.app_database}}").{{params.app_collection}}.deleteMany({}); db.getSiblingDB("{{params.app_database}}").{{params.app_collection}}.insertOne({version:"{{params.from_version_prefix}}",ts:new Date()});'
+      sleep: 1
+  verify:
+    commands:
+    - command:
+      - /bin/sh
+      - -c
+      - |
+        set -euo pipefail
+        ready=$(kubectl -n ${BENCH_NAMESPACE} get sts {{params.cluster_prefix}} -o jsonpath='{.status.readyReplicas}' 2>/dev/null || echo 0)
+        [ "${ready:-0}" -eq {{params.expected_replicas}} ]
+        [ "$(kubectl -n ${BENCH_NAMESPACE} get sts {{params.cluster_prefix}} -o jsonpath='{.spec.template.spec.containers[0].image}' 2>/dev/null || true)" = "{{params.from_image}}" ]
+        admin_pw=$(kubectl -n ${BENCH_NAMESPACE} get secret {{params.admin_secret_name}} -o jsonpath='{.data.password}' | base64 --decode)
+        kubectl -n ${BENCH_NAMESPACE} exec {{params.cluster_prefix}}-0 -- mongosh --quiet "mongodb://{{params.admin_username}}:${admin_pw}@localhost:27017/admin" --eval '
+        (() => {
+          try {
+            const fcv = db.adminCommand({getParameter:1,featureCompatibilityVersion:1}).featureCompatibilityVersion.version;
+            if (fcv !== "{{params.from_fcv}}") return false;
+            return db.getSiblingDB("{{params.app_database}}").{{params.app_collection}}.countDocuments({}) >= {{params.seed_min_docs}};
+          } catch (e) {
+            return false;
+          }
+        })()' | grep -qx true
+      timeout_sec: 90
+    retries: 12
+    interval_sec: 5
+detailedInstructions: |
+  A {{params.expected_replicas}}-member MongoDB replica set is running in `${BENCH_NAMESPACE}` at {{params.from_version_prefix}}.x with FCV {{params.from_fcv}}.
+
+  Task:
+  - Upgrade the cluster to image `{{params.to_image}}`.
+  - Finalize Feature Compatibility Version to `{{params.to_fcv}}`.
+  - Keep the replica set healthy and preserve existing data.
+
+  Constraints:
+  - Operate only in `${BENCH_NAMESPACE}`.
+  - Do not recreate the namespace.
+operatorContext: |
+  Namespace: ${BENCH_NAMESPACE}
+  StatefulSet: {{params.cluster_prefix}}
+  Headless Service: {{params.service_name}}
+  Admin User: {{params.admin_username}}
+
+  Useful commands:
+  - kubectl -n ${BENCH_NAMESPACE} get sts {{params.cluster_prefix}} -o jsonpath='{.spec.template.spec.containers[0].image}'
+  - kubectl -n ${BENCH_NAMESPACE} exec {{params.cluster_prefix}}-0 -- mongosh --quiet "mongodb://{{params.admin_username}}:admin123password@localhost:27017/admin" --eval 'db.adminCommand({getParameter:1,featureCompatibilityVersion:1})'
+oracle:
+  verify:
+    commands:
+    - command:
+      - python3
+      - resources/mongodb/version-upgrade/oracle/oracle.py
+      - --check
+      - workload
+      timeout_sec: 120
+    - command:
+      - python3
+      - resources/mongodb/version-upgrade/oracle/oracle.py
+      - --check
+      - version
+      timeout_sec: 120
+    - command:
+      - python3
+      - resources/mongodb/version-upgrade/oracle/oracle.py
+      - --check
+      - topology
+      timeout_sec: 120
+    - command:
+      - python3
+      - resources/mongodb/version-upgrade/oracle/oracle.py
+      - --check
+      - data
+      timeout_sec: 120
+cleanUpCommands: []

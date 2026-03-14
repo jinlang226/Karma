@@ -1,0 +1,103 @@
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: mongodb-replica
+spec:
+  serviceName: mongodb-replica-svc
+  podManagementPolicy: Parallel
+  replicas: 3
+  selector:
+    matchLabels:
+      app: mongodb-replica
+  template:
+    metadata:
+      labels:
+        app: mongodb-replica
+    spec:
+      securityContext:
+        runAsUser: 0
+        runAsGroup: 0
+      containers:
+        - name: mongod
+          image: mongo:6.0.5
+          command:
+            - mongod
+            - --replSet
+            - mongodb-replica
+            - --bind_ip_all
+            - --auth
+            - --keyFile=/etc/mongo-keyfile/keyfile
+          env:
+            - name: POD_NAME
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.name
+          ports:
+            - containerPort: 27017
+              name: mongodb
+              protocol: TCP
+          readinessProbe:
+            exec:
+              command:
+                - /usr/local/bin/health-check.sh
+            initialDelaySeconds: 60
+            periodSeconds: 10
+            timeoutSeconds: 5
+            failureThreshold: 6
+          livenessProbe:
+            exec:
+              command:
+                - /usr/local/bin/health-check.sh
+            initialDelaySeconds: 90
+            periodSeconds: 10
+            timeoutSeconds: 5
+            failureThreshold: 10
+          volumeMounts:
+            - name: data-volume
+              mountPath: /data/db
+            - name: mongo-keyfile
+              mountPath: /etc/mongo-keyfile
+              readOnly: true
+            - name: health-script
+              mountPath: /usr/local/bin/health-check.sh
+              subPath: health-check.sh
+              readOnly: true
+            - name: health-secret
+              mountPath: /etc/health
+              readOnly: true
+            - name: health-overrides
+              mountPath: /etc/health/overrides
+              readOnly: true
+          resources:
+            requests:
+              cpu: "0.5"
+              memory: "512Mi"
+            limits:
+              cpu: "1"
+              memory: "1Gi"
+      volumes:
+        - name: mongo-keyfile
+          secret:
+            secretName: mongo-keyfile
+            defaultMode: 256
+        - name: health-secret
+          secret:
+            secretName: health-user-password
+            items:
+              - key: password
+                path: health-password
+        - name: health-overrides
+          configMap:
+            name: health-overrides
+        - name: health-script
+          configMap:
+            name: health-check-script
+            defaultMode: 493
+  volumeClaimTemplates:
+    - metadata:
+        name: data-volume
+      spec:
+        accessModes: ["ReadWriteOnce"]
+        resources:
+          requests:
+            storage: 10Gi

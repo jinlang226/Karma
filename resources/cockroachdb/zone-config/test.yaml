@@ -1,0 +1,315 @@
+type: operator-zone-config
+targetApp: CockroachDB
+numAppInstance: 3
+params:
+  definitions:
+    cluster_prefix:
+      type: string
+      default: crdb-cluster
+    target_schema:
+      type: string
+      default: tenant_b
+    protected_schema:
+      type: string
+      default: tenant_a
+    num_replicas:
+      type: int
+      default: 3
+    gc_ttl_seconds:
+      type: int
+      default: 14400
+    range_min_bytes:
+      type: int
+      default: 134217728
+    range_max_bytes:
+      type: int
+      default: 536870912
+maxAttempts: 3
+namespace_contract:
+  base_namespace: cockroachdb
+  default_role: default
+  required_roles:
+  - default
+externalMetrics:
+- time_to_first_mutation
+- read_write_ratio
+preconditionUnits:
+- id: rbac_ready
+  probe:
+    commands:
+    - command:
+      - kubectl
+      - -n
+      - ${BENCH_NAMESPACE}
+      - get
+      - serviceaccount
+      - '{{params.cluster_prefix}}-sa'
+      timeout_sec: 15
+  apply:
+    commands:
+    - command:
+      - kubectl
+      - -n
+      - ${BENCH_NAMESPACE}
+      - apply
+      - -f
+      - resources/cockroachdb/zone-config/resource/rbac.yaml
+      sleep: 1
+      timeout_sec: 30
+  verify:
+    commands:
+    - command:
+      - kubectl
+      - -n
+      - ${BENCH_NAMESPACE}
+      - get
+      - serviceaccount
+      - '{{params.cluster_prefix}}-sa'
+      timeout_sec: 15
+    retries: 6
+    interval_sec: 2
+- id: services_ready
+  probe:
+    commands:
+    - command:
+      - /bin/sh
+      - -c
+      - 'set -e
+
+        kubectl -n ${BENCH_NAMESPACE} get service {{params.cluster_prefix}} >/dev/null
+
+        kubectl -n ${BENCH_NAMESPACE} get service {{params.cluster_prefix}}-public
+        >/dev/null
+
+        '
+      timeout_sec: 20
+  apply:
+    commands:
+    - command:
+      - kubectl
+      - -n
+      - ${BENCH_NAMESPACE}
+      - apply
+      - -f
+      - resources/cockroachdb/zone-config/resource/services.yaml
+      sleep: 1
+      timeout_sec: 30
+  verify:
+    commands:
+    - command:
+      - /bin/sh
+      - -c
+      - 'set -e
+
+        kubectl -n ${BENCH_NAMESPACE} get service {{params.cluster_prefix}} >/dev/null
+
+        kubectl -n ${BENCH_NAMESPACE} get service {{params.cluster_prefix}}-public
+        >/dev/null
+
+        '
+      timeout_sec: 20
+    retries: 6
+    interval_sec: 2
+- id: cluster_ready
+  probe:
+    commands:
+    - command:
+      - /bin/sh
+      - -c
+      - 'set -e
+
+        [ "$(kubectl -n ${BENCH_NAMESPACE} get sts {{params.cluster_prefix}} -o jsonpath=''{.status.readyReplicas}'')"
+        = "3" ]
+
+        kubectl -n ${BENCH_NAMESPACE} exec {{params.cluster_prefix}}-0 -- ./cockroach
+        sql --insecure -e "SELECT 1;" >/dev/null
+
+        '
+      timeout_sec: 30
+  apply:
+    commands:
+    - command:
+      - kubectl
+      - -n
+      - ${BENCH_NAMESPACE}
+      - apply
+      - -f
+      - resources/cockroachdb/zone-config/resource/statefulset.yaml
+      sleep: 2
+      timeout_sec: 60
+    - command:
+      - kubectl
+      - -n
+      - ${BENCH_NAMESPACE}
+      - wait
+      - --for=jsonpath={.status.phase}=Running
+      - pod
+      - -l
+      - app.kubernetes.io/name=cockroachdb
+      - --timeout=300s
+      sleep: 2
+      timeout_sec: 320
+    - command:
+      - /bin/sh
+      - -c
+      - "set -e\nfor i in $(seq 1 30); do\n  kubectl -n ${BENCH_NAMESPACE} exec {{params.cluster_prefix}}-0\
+        \ -- ./cockroach init --insecure --host={{params.cluster_prefix}}-0.{{params.cluster_prefix}}.${BENCH_NAMESPACE}.svc.cluster.local\
+        \ && exit 0\n  sleep 3\ndone\nexit 1\n"
+      sleep: 1
+      timeout_sec: 120
+    - command:
+      - kubectl
+      - -n
+      - ${BENCH_NAMESPACE}
+      - wait
+      - --for=condition=ready
+      - pod
+      - -l
+      - app.kubernetes.io/name=cockroachdb
+      - --timeout=300s
+      sleep: 2
+      timeout_sec: 320
+  verify:
+    commands:
+    - command:
+      - /bin/sh
+      - -c
+      - 'set -e
+
+        [ "$(kubectl -n ${BENCH_NAMESPACE} get sts {{params.cluster_prefix}} -o jsonpath=''{.status.readyReplicas}'')"
+        = "3" ]
+
+        kubectl -n ${BENCH_NAMESPACE} exec {{params.cluster_prefix}}-0 -- ./cockroach
+        sql --insecure -e "SELECT 1;" >/dev/null
+
+        '
+      timeout_sec: 30
+    retries: 30
+    interval_sec: 5
+- id: tenant_tables_seeded
+  probe:
+    commands:
+    - command:
+      - /bin/sh
+      - -c
+      - 'set -e
+
+        kubectl -n ${BENCH_NAMESPACE} exec {{params.cluster_prefix}}-0 -- ./cockroach
+        sql --insecure --database=defaultdb --format=tsv -e "SELECT count(*) FROM
+        {{params.protected_schema}}.table_a;" | tail -n1 | grep -q ''^[0-9]\+$''
+
+        kubectl -n ${BENCH_NAMESPACE} exec {{params.cluster_prefix}}-0 -- ./cockroach
+        sql --insecure --database=defaultdb --format=tsv -e "SELECT count(*) FROM
+        {{params.target_schema}}.table_c;" | tail -n1 | grep -q ''^[0-9]\+$''
+
+        '
+      timeout_sec: 40
+  apply:
+    commands:
+    - command:
+      - /bin/sh
+      - -c
+      - 'kubectl -n ${BENCH_NAMESPACE} exec {{params.cluster_prefix}}-0 -- ./cockroach
+        sql --insecure --database=defaultdb -e "
+
+        CREATE SCHEMA IF NOT EXISTS {{params.protected_schema}};
+
+        CREATE SCHEMA IF NOT EXISTS {{params.target_schema}};
+
+        CREATE TABLE IF NOT EXISTS {{params.protected_schema}}.table_a (id INT PRIMARY
+        KEY, value STRING);
+
+        CREATE TABLE IF NOT EXISTS {{params.protected_schema}}.table_b (id INT PRIMARY
+        KEY, value STRING);
+
+        CREATE TABLE IF NOT EXISTS {{params.target_schema}}.table_c (id INT PRIMARY
+        KEY, value STRING);
+
+        CREATE TABLE IF NOT EXISTS {{params.target_schema}}.table_d (id INT PRIMARY
+        KEY, value STRING);
+
+        INSERT INTO {{params.protected_schema}}.table_a VALUES (1, ''a'') ON CONFLICT
+        DO NOTHING;
+
+        INSERT INTO {{params.target_schema}}.table_c VALUES (1, ''b'') ON CONFLICT
+        DO NOTHING;
+
+        INSERT INTO {{params.target_schema}}.table_d VALUES (1, ''d'') ON CONFLICT
+        DO NOTHING;
+
+        "
+
+        '
+      sleep: 1
+      timeout_sec: 60
+  verify:
+    commands:
+    - command:
+      - /bin/sh
+      - -c
+      - 'set -e
+
+        kubectl -n ${BENCH_NAMESPACE} exec {{params.cluster_prefix}}-0 -- ./cockroach
+        sql --insecure --database=defaultdb --format=tsv -e "SELECT count(*) FROM
+        {{params.protected_schema}}.table_a;" | tail -n1 | grep -q ''^[0-9]\+$''
+
+        kubectl -n ${BENCH_NAMESPACE} exec {{params.cluster_prefix}}-0 -- ./cockroach
+        sql --insecure --database=defaultdb --format=tsv -e "SELECT count(*) FROM
+        {{params.target_schema}}.table_c;" | tail -n1 | grep -q ''^[0-9]\+$''
+
+        '
+      timeout_sec: 40
+    retries: 10
+    interval_sec: 3
+detailedInstructions: 'A 3-node CockroachDB cluster is running in ${BENCH_NAMESPACE}.
+
+
+  Tables are organized by tenant using schemas:
+
+  - {{params.protected_schema}}.* belongs to Tenant A
+
+  - {{params.target_schema}}.* belongs to Tenant B
+
+
+  Your task:
+
+  Apply a zone configuration to all {{params.target_schema}} tables only with:
+
+  - num_replicas = {{params.num_replicas}}
+
+  - gc.ttlseconds = {{params.gc_ttl_seconds}}
+
+  - range_min_bytes = {{params.range_min_bytes}}
+
+  - range_max_bytes = {{params.range_max_bytes}}
+
+
+  Do not modify zone configs for {{params.protected_schema}} tables.
+
+  '
+operatorContext: 'Useful commands:
+
+  ```bash
+
+  kubectl -n ${BENCH_NAMESPACE} exec {{params.cluster_prefix}}-0 -- ./cockroach sql
+  --insecure --database=defaultdb -e "SHOW TABLES FROM {{params.target_schema}};"
+
+  ```
+
+  '
+oracle:
+  verify:
+    commands:
+    - command:
+      - /bin/sh
+      - -c
+      - kubectl -n ${BENCH_NAMESPACE} get statefulset {{params.cluster_prefix}} >/dev/null
+    - command:
+      - /bin/sh
+      - -c
+      - kubectl -n ${BENCH_NAMESPACE} get pods -l app.kubernetes.io/name=cockroachdb
+        >/dev/null
+    - command:
+      - python3
+      - resources/cockroachdb/zone-config/oracle/oracle.py
+      timeout_sec: 600

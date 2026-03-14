@@ -1,0 +1,124 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: etl-scripts
+  namespace: spark-etl
+data:
+  etl_job.py: |
+    #!/usr/bin/env python3
+    """
+    ETL Pipeline with 3 Stages
+
+    Stage 1: Load raw data (events, users, products)
+    Stage 2: Clean and transform data
+    Stage 3: Aggregate by user_id (THIS STAGE FAILS DUE TO DATA SKEW)
+
+    The job will fail in Stage 3 because:
+    - user_id 999 has ~50% of all records
+    - This causes one partition to be 50x larger than average
+    - With limited executor memory (512m), this causes OOM
+    """
+
+    import sys
+    import time
+    from pyspark.sql import SparkSession
+    from pyspark.sql import functions as F
+
+    def main():
+        print("=" * 60)
+        print("ETL PIPELINE STARTING")
+        print("=" * 60)
+
+        spark = SparkSession.builder \
+            .appName("ETL-Pipeline-Skew") \
+            .getOrCreate()
+
+        # ============================================
+        # STAGE 1: Load Raw Data
+        # ============================================
+        print("\n" + "=" * 60)
+        print("[STAGE 1] Loading Raw Data")
+        print("=" * 60)
+
+        start_time = time.time()
+
+        events = spark.read.csv("/data/events.csv", header=True, inferSchema=True)
+        users = spark.read.csv("/data/users.csv", header=True, inferSchema=True)
+        products = spark.read.csv("/data/products.csv", header=True, inferSchema=True)
+
+        events_count = events.count()
+        users_count = users.count()
+        products_count = products.count()
+
+        print(f"Events loaded: {events_count} records")
+        print(f"Users loaded: {users_count} records")
+        print(f"Products loaded: {products_count} records")
+        print(f"Stage 1 completed in {time.time() - start_time:.2f}s")
+
+        # ============================================
+        # STAGE 2: Clean and Transform
+        # ============================================
+        print("\n" + "=" * 60)
+        print("[STAGE 2] Clean and Transform")
+        print("=" * 60)
+
+        start_time = time.time()
+
+        # Add computed columns
+        events_transformed = events \
+            .withColumn("event_date", F.to_date("timestamp")) \
+            .withColumn("event_hour", F.hour("timestamp")) \
+            .withColumn("is_purchase", F.when(F.col("event_type") == "purchase", 1).otherwise(0))
+
+        # Join with users
+        events_with_users = events_transformed.join(users, "user_id", "left")
+
+        print(f"Transformed events: {events_with_users.count()} records")
+        print(f"Stage 2 completed in {time.time() - start_time:.2f}s")
+
+        # ============================================
+        # STAGE 3: Aggregate by user_id (FAILS HERE!)
+        # ============================================
+        print("\n" + "=" * 60)
+        print("[STAGE 3] Aggregate by user_id")
+        print("=" * 60)
+        print("WARNING: This stage will FAIL due to data skew!")
+        print("One user_id has ~50% of all records, causing OOM")
+
+        start_time = time.time()
+
+        # This aggregation will fail because:
+        # - user_id 999 has 50% of records
+        # - All records for user 999 go to ONE partition
+        # - That partition exceeds executor memory (512MB)
+
+        user_aggregates = events_with_users.groupBy("user_id", "region", "tier") \
+            .agg(
+                F.count("*").alias("total_events"),
+                F.sum("value").alias("total_value"),
+                F.sum("is_purchase").alias("purchase_count"),
+                F.avg("value").alias("avg_value"),
+                F.collect_list("event_type").alias("event_types"),  # This makes it worse - collects all events
+                F.min("timestamp").alias("first_event"),
+                F.max("timestamp").alias("last_event")
+            )
+
+        # Force execution - this triggers the OOM
+        print("Executing aggregation...")
+        result_count = user_aggregates.count()
+
+        print(f"Aggregated users: {result_count}")
+        print(f"Stage 3 completed in {time.time() - start_time:.2f}s")
+
+        # Save results
+        user_aggregates.write.mode("overwrite").parquet("/data/output/user_aggregates")
+        print("Results saved to /data/output/user_aggregates")
+
+        print("\n" + "=" * 60)
+        print("ETL PIPELINE COMPLETED SUCCESSFULLY")
+        print("=" * 60)
+
+        spark.stop()
+
+    if __name__ == "__main__":
+        main()

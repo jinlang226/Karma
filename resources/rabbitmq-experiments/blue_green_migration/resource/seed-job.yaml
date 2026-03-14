@@ -1,0 +1,102 @@
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: ${BENCH_PARAM_BLUE_CLUSTER_PREFIX}-seed
+spec:
+  backoffLimit: 0
+  template:
+    spec:
+      restartPolicy: Never
+      containers:
+        - name: seed
+          image: python:3.11-alpine
+          env:
+            - name: RABBITMQ_APP_USER
+              valueFrom:
+                secretKeyRef:
+                  name: ${BENCH_PARAM_BLUE_CLUSTER_PREFIX}-admin
+                  key: username
+            - name: RABBITMQ_APP_PASS
+              valueFrom:
+                secretKeyRef:
+                  name: ${BENCH_PARAM_BLUE_CLUSTER_PREFIX}-admin
+                  key: password
+            - name: SEED_COUNT
+              valueFrom:
+                configMapKeyRef:
+                  name: migration-seed
+                  key: seed_count
+          command:
+            - /bin/sh
+            - -c
+            - |
+              python - <<'PY'
+              import base64, json, os, sys, time
+              from urllib.request import Request, urlopen
+              from urllib.error import URLError, HTTPError
+              
+              base = "http://${BENCH_PARAM_BLUE_CLUSTER_PREFIX}:15672/api"
+              user = os.environ["RABBITMQ_APP_USER"]
+              pw = os.environ["RABBITMQ_APP_PASS"]
+              seed = int(os.environ["SEED_COUNT"])
+              auth = base64.b64encode(f"{user}:{pw}".encode()).decode()
+              
+              def req(path, method="GET", body=None, timeout=5):
+                  url = f"{base}{path}"
+                  data = None
+                  headers = {"Authorization": f"Basic {auth}"}
+                  if body is not None:
+                      data = json.dumps(body).encode()
+                      headers["content-type"] = "application/json"
+                  r = Request(url, data=data, method=method, headers=headers)
+                  with urlopen(r, timeout=timeout) as resp:
+                      return resp.read().decode()
+              
+              def wait_for(fn, label, retries=60, delay=2):
+                  for i in range(1, retries + 1):
+                      try:
+                          if fn():
+                              return True
+                      except Exception:
+                          pass
+                      print(f"seed: waiting for {label} ({i}/{retries})", file=sys.stderr, flush=True)
+                      time.sleep(delay)
+                  return False
+              
+              print(f"seed: starting (SEED_COUNT={seed})", file=sys.stderr, flush=True)
+              
+              if not wait_for(lambda: req("/overview") is not None, "management API"):
+                  print("seed: management API not ready after retries", file=sys.stderr, flush=True)
+                  sys.exit(1)
+              
+              if not wait_for(lambda: '"name":"app-queue"' in req("/queues/%2Fapp/app-queue"), "/app/app-queue"):
+                  print("seed: queue /app/app-queue not ready after retries", file=sys.stderr, flush=True)
+                  sys.exit(1)
+              
+              for i in range(1, seed + 1):
+                  payload = {"id": i}
+                  ok = False
+                  for _ in range(10):
+                      try:
+                          resp = req(
+                              "/exchanges/%2Fapp/amq.default/publish",
+                              method="POST",
+                              body={
+                                  "properties": {"delivery_mode": 2},
+                                  "routing_key": "app-queue",
+                                  "payload": json.dumps(payload),
+                                  "payload_encoding": "string",
+                              },
+                          )
+                          if '"routed":true' in resp:
+                              ok = True
+                              break
+                      except (HTTPError, URLError):
+                          pass
+                      time.sleep(1)
+                  if not ok:
+                      print(f"seed: failed to publish id {i}", file=sys.stderr, flush=True)
+                      sys.exit(1)
+                  if i % 10 == 0:
+                      print(f"seed: published {i}/{seed}", file=sys.stderr, flush=True)
+              PY
