@@ -154,3 +154,42 @@ def test_workflow_run_profile_command_mismatch_is_rejected():
 
         assert failed is True
         assert code == 2
+
+
+def test_shipped_workflow_profiles_load_successfully():
+    repo_root = Path(__file__).resolve().parents[2]
+    profiles_dir = repo_root / "profiles"
+    profile_names = ("debug.yaml", "codex.yaml")
+
+    for profile_name in profile_names:
+        profile_path = profiles_dir / profile_name
+        assert profile_path.exists(), f"missing shipped profile: {profile_name}"
+
+        captured = {}
+
+        def _run_workflow(_app, args):
+            captured["profile"] = Path(args.profile).name
+            captured["workflow"] = args.workflow
+            captured["agent"] = args.agent
+            captured["sandbox"] = args.sandbox
+            captured["agent_build"] = args.agent_build
+            captured["agent_cmd"] = args.agent_cmd
+            return {"status": "ok"}
+
+        _invoke_main(
+            [
+                "workflow-run",
+                "--profile",
+                str(profile_path),
+                "--workflow",
+                "workflows/workflow-demo.yaml",
+            ],
+            _run_workflow,
+        )
+
+        assert captured["profile"] == profile_name
+        assert captured["workflow"] == "workflows/workflow-demo.yaml"
+        assert captured["agent"] == "cli-runner"
+        assert captured["sandbox"] == "docker"
+        assert captured["agent_build"] is True
+        assert str(captured["agent_cmd"] or "").strip()
