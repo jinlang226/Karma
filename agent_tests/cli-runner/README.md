@@ -23,7 +23,7 @@ python3 orchestrator.py run \
   --agent cli-runner \
   --agent-build \
   --service nginx-ingress \
-  --case create_ingress \
+  --case ingress_route_ready \
   --max-attempts 1 \
   --agent-auth-path ~/.codex/auth.json \
   --agent-cmd 'bash -c "cat /opt/agent/system_prompt.txt /workspace/PROMPT.md > /tmp/codex_prompt.txt; codex --dangerously-bypass-approvals-and-sandbox exec -C /workspace --skip-git-repo-check \"$(cat /tmp/codex_prompt.txt)\""'

@@ -1,0 +1,262 @@
+type: spark-multi-tenant-job-execution
+targetApp: Apache-Spark
+numAppInstance: 0
+maxAttempts: 1
+
+params:
+  definitions:
+    tenant_count:
+      type: int
+      default: 2
+      min: 2
+      max: 4
+    service_account_prefix:
+      type: string
+      default: spark-team
+    job_name_prefix:
+      type: string
+      default: spark-pi-team
+    spark_image:
+      type: string
+      default: apache/spark:3.5.3
+    driver_memory:
+      type: string
+      default: 512m
+    iterations:
+      type: int
+      default: 1000
+      min: 10
+      max: 100000
+
+namespace_contract:
+  base_namespace: spark-team
+  default_role: team_a
+  required_roles:
+  - team_a
+  - team_b
+  optional_roles:
+  - team_c
+  - team_d
+
+preconditionUnits:
+  - id: tenant_rbac_ready
+    probe:
+      commands:
+        - command:
+            [
+              "python3",
+              "resources/spark/spark_multi_tenant_job_execution/case_helper.py",
+              "--action",
+              "rbac-probe",
+              "--tenant-count",
+              "{{params.tenant_count}}",
+              "--service-account-prefix",
+              "{{params.service_account_prefix}}",
+              "--job-name-prefix",
+              "{{params.job_name_prefix}}",
+            ]
+          timeout_sec: 20
+    apply:
+      commands:
+        - command:
+            [
+              "python3",
+              "resources/spark/spark_multi_tenant_job_execution/case_helper.py",
+              "--action",
+              "rbac-apply",
+              "--tenant-count",
+              "{{params.tenant_count}}",
+              "--service-account-prefix",
+              "{{params.service_account_prefix}}",
+              "--job-name-prefix",
+              "{{params.job_name_prefix}}",
+            ]
+          timeout_sec: 30
+    verify:
+      commands:
+        - command:
+            [
+              "python3",
+              "resources/spark/spark_multi_tenant_job_execution/case_helper.py",
+              "--action",
+              "rbac-probe",
+              "--tenant-count",
+              "{{params.tenant_count}}",
+              "--service-account-prefix",
+              "{{params.service_account_prefix}}",
+              "--job-name-prefix",
+              "{{params.job_name_prefix}}",
+            ]
+          timeout_sec: 20
+      retries: 3
+      interval_sec: 2
+
+  - id: tenant_job_baseline_ready
+    probe:
+      commands:
+        - command:
+            [
+              "python3",
+              "resources/spark/spark_multi_tenant_job_execution/case_helper.py",
+              "--action",
+              "job-baseline-probe",
+              "--tenant-count",
+              "{{params.tenant_count}}",
+              "--service-account-prefix",
+              "{{params.service_account_prefix}}",
+              "--job-name-prefix",
+              "{{params.job_name_prefix}}",
+            ]
+          timeout_sec: 20
+    apply:
+      commands:
+        - command:
+            [
+              "python3",
+              "resources/spark/spark_multi_tenant_job_execution/case_helper.py",
+              "--action",
+              "job-baseline-apply",
+              "--tenant-count",
+              "{{params.tenant_count}}",
+              "--service-account-prefix",
+              "{{params.service_account_prefix}}",
+              "--job-name-prefix",
+              "{{params.job_name_prefix}}",
+            ]
+          timeout_sec: 40
+    verify:
+      commands:
+        - command:
+            [
+              "python3",
+              "resources/spark/spark_multi_tenant_job_execution/case_helper.py",
+              "--action",
+              "job-baseline-probe",
+              "--tenant-count",
+              "{{params.tenant_count}}",
+              "--service-account-prefix",
+              "{{params.service_account_prefix}}",
+              "--job-name-prefix",
+              "{{params.job_name_prefix}}",
+            ]
+          timeout_sec: 20
+
+detailedInstructions: |
+  Run one healthy SparkPi job in each active tenant namespace.
+
+  Active tenants are the first `{{params.tenant_count}}` roles from this ordered set:
+  - `team_a` -> `${BENCH_NS_TEAM_A}` -> ServiceAccount `{{params.service_account_prefix}}-a`, Job `{{params.job_name_prefix}}-a`
+  - `team_b` -> `${BENCH_NS_TEAM_B}` -> ServiceAccount `{{params.service_account_prefix}}-b`, Job `{{params.job_name_prefix}}-b`
+  - `team_c` -> `${BENCH_NS_TEAM_C}` -> ServiceAccount `{{params.service_account_prefix}}-c`, Job `{{params.job_name_prefix}}-c`
+  - `team_d` -> `${BENCH_NS_TEAM_D}` -> ServiceAccount `{{params.service_account_prefix}}-d`, Job `{{params.job_name_prefix}}-d`
+
+  Requirements:
+  - Create one SparkPi Job in each active tenant namespace using the matching per-tenant ServiceAccount and Job name.
+  - Every active tenant job must use image `{{params.spark_image}}`.
+  - Every active tenant job must complete successfully and log a Pi value near `3.14`.
+
+  A good solve flow is:
+  ```bash
+  index=0
+  for role in team_a team_b team_c team_d; do
+    index=$((index + 1))
+    [ "${index}" -le "{{params.tenant_count}}" ] || break
+    case "${role}" in
+      team_a) ns="${BENCH_NS_TEAM_A}"; suffix="a"; label="team-a" ;;
+      team_b) ns="${BENCH_NS_TEAM_B}"; suffix="b"; label="team-b" ;;
+      team_c) ns="${BENCH_NS_TEAM_C}"; suffix="c"; label="team-c" ;;
+      team_d) ns="${BENCH_NS_TEAM_D}"; suffix="d"; label="team-d" ;;
+    esac
+    sed \
+      -e "s/__NAMESPACE__/${ns}/g" \
+      -e "s/__JOB_NAME__/{{params.job_name_prefix}}-${suffix}/g" \
+      -e "s/__SERVICE_ACCOUNT__/{{params.service_account_prefix}}-${suffix}/g" \
+      -e "s#__SPARK_IMAGE__#{{params.spark_image}}#g" \
+      -e "s/__DRIVER_MEMORY__/{{params.driver_memory}}/g" \
+      -e "s/__ITERATIONS__/{{params.iterations}}/g" \
+      -e "s/__TENANT_LABEL__/${label}/g" \
+      resources/spark/spark_multi_tenant_job_execution/resource/spark-pi-job.yaml | kubectl apply -f -
+    kubectl -n "${ns}" wait --for=condition=complete job/{{params.job_name_prefix}}-${suffix} --timeout=300s
+  done
+  ```
+
+operatorContext: |
+  Helpful commands:
+  ```bash
+  kubectl -n ${BENCH_NS_TEAM_A} get job,pod,serviceaccount
+  kubectl -n ${BENCH_NS_TEAM_B} get job,pod,serviceaccount
+  kubectl -n ${BENCH_NS_TEAM_C} get job,pod,serviceaccount
+  kubectl -n ${BENCH_NS_TEAM_D} get job,pod,serviceaccount
+  kubectl -n ${BENCH_NS_TEAM_A} logs job/{{params.job_name_prefix}}-a --tail=100
+  kubectl -n ${BENCH_NS_TEAM_B} logs job/{{params.job_name_prefix}}-b --tail=100
+  kubectl -n ${BENCH_NS_TEAM_C} logs job/{{params.job_name_prefix}}-c --tail=100
+  kubectl -n ${BENCH_NS_TEAM_D} logs job/{{params.job_name_prefix}}-d --tail=100
+  ```
+
+oracle:
+  verify:
+    commands:
+      - command:
+          [
+            "python3",
+            "resources/spark/spark_multi_tenant_job_execution/oracle/oracle.py",
+            "--check",
+            "job-spec",
+            "--tenant-count",
+            "{{params.tenant_count}}",
+            "--service-account-prefix",
+            "{{params.service_account_prefix}}",
+            "--job-name-prefix",
+            "{{params.job_name_prefix}}",
+            "--expected-image",
+            "{{params.spark_image}}",
+          ]
+        timeout_sec: 30
+      - command:
+          [
+            "python3",
+            "resources/spark/spark_multi_tenant_job_execution/oracle/oracle.py",
+            "--check",
+            "job-status",
+            "--tenant-count",
+            "{{params.tenant_count}}",
+            "--service-account-prefix",
+            "{{params.service_account_prefix}}",
+            "--job-name-prefix",
+            "{{params.job_name_prefix}}",
+            "--expected-image",
+            "{{params.spark_image}}",
+          ]
+        timeout_sec: 30
+      - command:
+          [
+            "python3",
+            "resources/spark/spark_multi_tenant_job_execution/oracle/oracle.py",
+            "--check",
+            "logs",
+            "--tenant-count",
+            "{{params.tenant_count}}",
+            "--service-account-prefix",
+            "{{params.service_account_prefix}}",
+            "--job-name-prefix",
+            "{{params.job_name_prefix}}",
+            "--expected-image",
+            "{{params.spark_image}}",
+          ]
+        timeout_sec: 30
+
+cleanUpCommands:
+  - command:
+      [
+        "python3",
+        "resources/spark/spark_multi_tenant_job_execution/case_helper.py",
+        "--action",
+        "cleanup",
+        "--tenant-count",
+        "{{params.tenant_count}}",
+        "--service-account-prefix",
+        "{{params.service_account_prefix}}",
+        "--job-name-prefix",
+        "{{params.job_name_prefix}}",
+      ]
+    timeout_sec: 60

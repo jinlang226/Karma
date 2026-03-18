@@ -1,0 +1,286 @@
+type: spark-history-server-ready
+targetApp: Apache-Spark
+numAppInstance: 1
+maxAttempts: 1
+
+namespace_contract:
+  base_namespace: spark-history
+  default_role: default
+  required_roles:
+  - default
+
+params:
+  definitions:
+    service_account_name:
+      type: string
+      default: spark-history
+    deployment_name:
+      type: string
+      default: spark-history-server
+    service_name:
+      type: string
+      default: spark-history-server
+    pvc_name:
+      type: string
+      default: spark-history-pvc
+    spark_image:
+      type: string
+      default: apache/spark:3.5.3
+    log_dir:
+      type: string
+      default: /mnt/spark-logs
+    service_port:
+      type: int
+      default: 18080
+      min: 1
+      max: 65535
+    server_replicas:
+      type: int
+      default: 1
+      min: 1
+      max: 3
+
+preconditionUnits:
+  - id: history_rbac_ready
+    probe:
+      commands:
+        - command: ["kubectl", "-n", "${BENCH_NAMESPACE}", "get", "serviceaccount", "{{params.service_account_name}}"]
+          timeout_sec: 10
+    apply:
+      commands:
+        - command:
+            [
+              "/bin/sh",
+              "-c",
+              "sed -e 's/__NAMESPACE__/${BENCH_NAMESPACE}/g' -e 's/__SERVICE_ACCOUNT__/{{params.service_account_name}}/g' resources/spark/common/resource/rbac.yaml | kubectl apply -f -",
+            ]
+          timeout_sec: 20
+    verify:
+      commands:
+        - command: ["kubectl", "-n", "${BENCH_NAMESPACE}", "get", "serviceaccount", "{{params.service_account_name}}"]
+          timeout_sec: 10
+      retries: 3
+      interval_sec: 2
+
+  - id: history_storage_ready
+    probe:
+      commands:
+        - command: ["kubectl", "-n", "${BENCH_NAMESPACE}", "get", "pvc", "{{params.pvc_name}}"]
+          timeout_sec: 10
+    apply:
+      commands:
+        - command:
+            [
+              "/bin/sh",
+              "-c",
+              "sed -e 's/__NAMESPACE__/${BENCH_NAMESPACE}/g' -e 's/__PVC_NAME__/{{params.pvc_name}}/g' resources/spark/spark_history_server_ready/resource/history-storage.yaml | kubectl apply -f -",
+            ]
+          timeout_sec: 20
+    verify:
+      commands:
+        - command: ["kubectl", "-n", "${BENCH_NAMESPACE}", "get", "pvc", "{{params.pvc_name}}"]
+          timeout_sec: 10
+
+  - id: history_service_baseline_ready
+    probe:
+      commands:
+        - command:
+            [
+              "/bin/sh",
+              "-c",
+              "kubectl -n ${BENCH_NAMESPACE} get service {{params.service_name}} >/dev/null 2>&1 && exit 1 || exit 0",
+            ]
+          timeout_sec: 10
+    apply:
+      commands:
+        - command: ["kubectl", "-n", "${BENCH_NAMESPACE}", "delete", "service", "{{params.service_name}}", "--ignore-not-found=true"]
+          timeout_sec: 20
+    verify:
+      commands:
+        - command:
+            [
+              "/bin/sh",
+              "-c",
+              "kubectl -n ${BENCH_NAMESPACE} get service {{params.service_name}} >/dev/null 2>&1 && exit 1 || exit 0",
+            ]
+          timeout_sec: 10
+
+  - id: history_server_baseline_ready
+    probe:
+      commands:
+        - command:
+            [
+              "/bin/sh",
+              "-c",
+              "kubectl -n ${BENCH_NAMESPACE} get deployment {{params.deployment_name}} >/dev/null 2>&1 && exit 1 || exit 0",
+            ]
+          timeout_sec: 10
+    apply:
+      commands:
+        - command: ["kubectl", "-n", "${BENCH_NAMESPACE}", "delete", "deployment", "{{params.deployment_name}}", "--ignore-not-found=true"]
+          timeout_sec: 20
+    verify:
+      commands:
+        - command:
+            [
+              "/bin/sh",
+              "-c",
+              "kubectl -n ${BENCH_NAMESPACE} get deployment {{params.deployment_name}} >/dev/null 2>&1 && exit 1 || exit 0",
+            ]
+          timeout_sec: 10
+
+detailedInstructions: |
+  Ensure a healthy Spark History Server is running in `${BENCH_NAMESPACE}`.
+
+  Requirements:
+  - PVC `{{params.pvc_name}}` must exist.
+  - Service `{{params.service_name}}` must expose port `{{params.service_port}}`.
+  - Deployment `{{params.deployment_name}}` must have `{{params.server_replicas}}` ready replica(s).
+  - The history server must read event logs from `{{params.log_dir}}`.
+
+  A good solve flow is:
+  ```bash
+  sed \
+    -e "s/__NAMESPACE__/${BENCH_NAMESPACE}/g" \
+    -e "s/__PVC_NAME__/{{params.pvc_name}}/g" \
+    resources/spark/spark_history_server_ready/resource/history-storage.yaml | kubectl apply -f -
+  sed \
+    -e "s/__NAMESPACE__/${BENCH_NAMESPACE}/g" \
+    -e "s/__SERVICE_NAME__/{{params.service_name}}/g" \
+    -e "s/__DEPLOYMENT_NAME__/{{params.deployment_name}}/g" \
+    -e "s/__SERVICE_PORT__/{{params.service_port}}/g" \
+    resources/spark/spark_history_server_ready/resource/history-service.yaml | kubectl apply -f -
+  sed \
+    -e "s/__NAMESPACE__/${BENCH_NAMESPACE}/g" \
+    -e "s/__DEPLOYMENT_NAME__/{{params.deployment_name}}/g" \
+    -e "s/__SERVICE_ACCOUNT__/{{params.service_account_name}}/g" \
+    -e "s#__SPARK_IMAGE__#{{params.spark_image}}#g" \
+    -e "s/__LOG_DIR__/{{params.log_dir}}/g" \
+    -e "s/__PVC_NAME__/{{params.pvc_name}}/g" \
+    -e "s/__SERVICE_PORT__/{{params.service_port}}/g" \
+    -e "s/__SERVER_REPLICAS__/{{params.server_replicas}}/g" \
+    resources/spark/spark_history_server_ready/resource/history-deployment.yaml | kubectl apply -f -
+  kubectl -n ${BENCH_NAMESPACE} rollout status deployment/{{params.deployment_name}} --timeout=180s
+  ```
+
+operatorContext: |
+  Helpful commands:
+  ```bash
+  kubectl -n ${BENCH_NAMESPACE} get deploy,svc,pvc,pod
+  kubectl -n ${BENCH_NAMESPACE} describe deployment/{{params.deployment_name}}
+  kubectl -n ${BENCH_NAMESPACE} logs deploy/{{params.deployment_name}} --tail=100
+  ```
+
+oracle:
+  verify:
+    commands:
+      - command:
+          [
+            "python3",
+            "resources/spark/spark_history_server_ready/oracle/oracle.py",
+            "--check",
+            "storage",
+            "--deployment-name",
+            "{{params.deployment_name}}",
+            "--service-name",
+            "{{params.service_name}}",
+            "--pvc-name",
+            "{{params.pvc_name}}",
+            "--expected-service-account",
+            "{{params.service_account_name}}",
+            "--expected-image",
+            "{{params.spark_image}}",
+            "--expected-log-dir",
+            "{{params.log_dir}}",
+            "--expected-service-port",
+            "{{params.service_port}}",
+            "--expected-replicas",
+            "{{params.server_replicas}}",
+          ]
+        timeout_sec: 30
+      - command:
+          [
+            "python3",
+            "resources/spark/spark_history_server_ready/oracle/oracle.py",
+            "--check",
+            "service",
+            "--deployment-name",
+            "{{params.deployment_name}}",
+            "--service-name",
+            "{{params.service_name}}",
+            "--pvc-name",
+            "{{params.pvc_name}}",
+            "--expected-service-account",
+            "{{params.service_account_name}}",
+            "--expected-image",
+            "{{params.spark_image}}",
+            "--expected-log-dir",
+            "{{params.log_dir}}",
+            "--expected-service-port",
+            "{{params.service_port}}",
+            "--expected-replicas",
+            "{{params.server_replicas}}",
+          ]
+        timeout_sec: 30
+      - command:
+          [
+            "python3",
+            "resources/spark/spark_history_server_ready/oracle/oracle.py",
+            "--check",
+            "deployment",
+            "--deployment-name",
+            "{{params.deployment_name}}",
+            "--service-name",
+            "{{params.service_name}}",
+            "--pvc-name",
+            "{{params.pvc_name}}",
+            "--expected-service-account",
+            "{{params.service_account_name}}",
+            "--expected-image",
+            "{{params.spark_image}}",
+            "--expected-log-dir",
+            "{{params.log_dir}}",
+            "--expected-service-port",
+            "{{params.service_port}}",
+            "--expected-replicas",
+            "{{params.server_replicas}}",
+          ]
+        timeout_sec: 30
+      - command:
+          [
+            "python3",
+            "resources/spark/spark_history_server_ready/oracle/oracle.py",
+            "--check",
+            "wiring",
+            "--deployment-name",
+            "{{params.deployment_name}}",
+            "--service-name",
+            "{{params.service_name}}",
+            "--pvc-name",
+            "{{params.pvc_name}}",
+            "--expected-service-account",
+            "{{params.service_account_name}}",
+            "--expected-image",
+            "{{params.spark_image}}",
+            "--expected-log-dir",
+            "{{params.log_dir}}",
+            "--expected-service-port",
+            "{{params.service_port}}",
+            "--expected-replicas",
+            "{{params.server_replicas}}",
+          ]
+        timeout_sec: 30
+
+cleanUpCommands:
+  - command: ["kubectl", "-n", "${BENCH_NAMESPACE}", "delete", "deployment", "{{params.deployment_name}}", "--ignore-not-found=true"]
+    timeout_sec: 20
+  - command: ["kubectl", "-n", "${BENCH_NAMESPACE}", "delete", "service", "{{params.service_name}}", "--ignore-not-found=true"]
+    timeout_sec: 20
+  - command: ["kubectl", "-n", "${BENCH_NAMESPACE}", "delete", "pvc", "{{params.pvc_name}}", "--ignore-not-found=true"]
+    timeout_sec: 20
+  - command: ["kubectl", "-n", "${BENCH_NAMESPACE}", "delete", "rolebinding", "{{params.service_account_name}}-role-binding", "--ignore-not-found=true"]
+    timeout_sec: 20
+  - command: ["kubectl", "-n", "${BENCH_NAMESPACE}", "delete", "role", "{{params.service_account_name}}-role", "--ignore-not-found=true"]
+    timeout_sec: 20
+  - command: ["kubectl", "-n", "${BENCH_NAMESPACE}", "delete", "serviceaccount", "{{params.service_account_name}}", "--ignore-not-found=true"]
+    timeout_sec: 20

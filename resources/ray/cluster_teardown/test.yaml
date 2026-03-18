@@ -1,0 +1,176 @@
+type: ray-cluster-teardown
+targetApp: Ray
+numAppInstance: 1
+maxAttempts: 1
+namespace_contract:
+  base_namespace: ray
+  default_role: default
+  required_roles:
+  - default
+
+params:
+  definitions:
+    cluster_prefix:
+      type: string
+      default: ray
+    ray_image:
+      type: string
+      default: rayproject/ray:2.9.0
+    worker_replicas:
+      type: int
+      default: 2
+      min: 1
+      max: 10
+
+preconditionUnits:
+  - id: ray_head_service_ready
+    probe:
+      commands:
+        - command:
+            [
+              "/bin/sh",
+              "-c",
+              "set -e; kubectl -n ${BENCH_NAMESPACE} get service {{params.cluster_prefix}}-head -o jsonpath='{range .spec.ports[*]}{.port}{\"\\n\"}{end}' | grep -qx '6379'",
+            ]
+          timeout_sec: 10
+    apply:
+      commands:
+        - command:
+            [
+              "/bin/sh",
+              "-c",
+              "sed -e 's/__CLUSTER_PREFIX__/{{params.cluster_prefix}}/g' resources/ray/cluster_teardown/resource/ray-head-service.yaml | kubectl -n ${BENCH_NAMESPACE} apply -f -",
+            ]
+          timeout_sec: 20
+    verify:
+      commands:
+        - command:
+            [
+              "/bin/sh",
+              "-c",
+              "set -e; kubectl -n ${BENCH_NAMESPACE} get service {{params.cluster_prefix}}-head -o jsonpath='{range .spec.ports[*]}{.port}{\"\\n\"}{end}' | grep -qx '6379'",
+            ]
+          timeout_sec: 10
+
+  - id: ray_head_ready
+    probe:
+      commands:
+        - command:
+            [
+              "/bin/sh",
+              "-c",
+              "set -e; kubectl -n ${BENCH_NAMESPACE} rollout status deployment/{{params.cluster_prefix}}-head --timeout=5s >/dev/null; ready=$(kubectl -n ${BENCH_NAMESPACE} get deployment {{params.cluster_prefix}}-head -o jsonpath='{.status.readyReplicas}'); test ${ready:-0} -ge 1",
+            ]
+          timeout_sec: 10
+    apply:
+      commands:
+        - command:
+            [
+              "/bin/sh",
+              "-c",
+              "sed -e 's/__CLUSTER_PREFIX__/{{params.cluster_prefix}}/g' -e 's#__RAY_IMAGE__#{{params.ray_image}}#g' resources/ray/cluster_teardown/resource/ray-head.yaml | kubectl -n ${BENCH_NAMESPACE} apply -f -",
+            ]
+          timeout_sec: 20
+    verify:
+      commands:
+        - command:
+            [
+              "/bin/sh",
+              "-c",
+              "set -e; kubectl -n ${BENCH_NAMESPACE} rollout status deployment/{{params.cluster_prefix}}-head --timeout=60s >/dev/null; ready=$(kubectl -n ${BENCH_NAMESPACE} get deployment {{params.cluster_prefix}}-head -o jsonpath='{.status.readyReplicas}'); test ${ready:-0} -ge 1",
+            ]
+          timeout_sec: 70
+      retries: 3
+      interval_sec: 2
+
+  - id: ray_worker_ready
+    probe:
+      commands:
+        - command:
+            [
+              "/bin/sh",
+              "-c",
+              "set -e; kubectl -n ${BENCH_NAMESPACE} rollout status deployment/{{params.cluster_prefix}}-worker --timeout=5s >/dev/null; ready=$(kubectl -n ${BENCH_NAMESPACE} get deployment {{params.cluster_prefix}}-worker -o jsonpath='{.status.readyReplicas}'); test ${ready:-0} -ge {{params.worker_replicas}}",
+            ]
+          timeout_sec: 10
+    apply:
+      commands:
+        - command:
+            [
+              "/bin/sh",
+              "-c",
+              "sed -e 's/__CLUSTER_PREFIX__/{{params.cluster_prefix}}/g' -e 's#__RAY_IMAGE__#{{params.ray_image}}#g' -e 's/__WORKER_REPLICAS__/{{params.worker_replicas}}/g' resources/ray/cluster_teardown/resource/ray-worker.yaml | kubectl -n ${BENCH_NAMESPACE} apply -f -",
+            ]
+          timeout_sec: 20
+    verify:
+      commands:
+        - command:
+            [
+              "/bin/sh",
+              "-c",
+              "set -e; kubectl -n ${BENCH_NAMESPACE} rollout status deployment/{{params.cluster_prefix}}-worker --timeout=60s >/dev/null; ready=$(kubectl -n ${BENCH_NAMESPACE} get deployment {{params.cluster_prefix}}-worker -o jsonpath='{.status.readyReplicas}'); test ${ready:-0} -ge {{params.worker_replicas}}",
+            ]
+          timeout_sec: 70
+      retries: 3
+      interval_sec: 2
+
+detailedInstructions: |
+  Remove the Ray cluster resources from `${BENCH_NAMESPACE}` while keeping the
+  namespace itself.
+
+  Requirements:
+  - Delete Deployment `{{params.cluster_prefix}}-head`.
+  - Delete Deployment `{{params.cluster_prefix}}-worker`.
+  - Delete Service `{{params.cluster_prefix}}-head`.
+  - Do not delete the namespace.
+
+operatorContext: |
+  Helpful commands:
+  ```bash
+  kubectl -n ${BENCH_NAMESPACE} get deploy,svc,pod
+  kubectl get namespace ${BENCH_NAMESPACE}
+  ```
+
+oracle:
+  verify:
+    commands:
+      - command:
+          [
+            "python3",
+            "resources/ray/cluster_teardown/oracle/oracle.py",
+            "--check",
+            "namespace",
+          ]
+        timeout_sec: 20
+      - command:
+          [
+            "python3",
+            "resources/ray/cluster_teardown/oracle/oracle.py",
+            "--check",
+            "head-missing",
+          ]
+        timeout_sec: 20
+      - command:
+          [
+            "python3",
+            "resources/ray/cluster_teardown/oracle/oracle.py",
+            "--check",
+            "worker-missing",
+          ]
+        timeout_sec: 20
+      - command:
+          [
+            "python3",
+            "resources/ray/cluster_teardown/oracle/oracle.py",
+            "--check",
+            "service-missing",
+          ]
+        timeout_sec: 20
+
+cleanUpCommands:
+  - command: ["kubectl", "-n", "${BENCH_NAMESPACE}", "delete", "deployment", "{{params.cluster_prefix}}-head", "--ignore-not-found=true"]
+    timeout_sec: 20
+  - command: ["kubectl", "-n", "${BENCH_NAMESPACE}", "delete", "deployment", "{{params.cluster_prefix}}-worker", "--ignore-not-found=true"]
+    timeout_sec: 20
+  - command: ["kubectl", "-n", "${BENCH_NAMESPACE}", "delete", "service", "{{params.cluster_prefix}}-head", "--ignore-not-found=true"]
+    timeout_sec: 20
