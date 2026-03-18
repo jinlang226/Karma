@@ -1,0 +1,236 @@
+type: ray-worker-scaling
+targetApp: Ray
+numAppInstance: 1
+maxAttempts: 1
+namespace_contract:
+  base_namespace: ray
+  default_role: default
+  required_roles:
+  - default
+
+params:
+  definitions:
+    cluster_prefix:
+      type: string
+      default: ray
+    ray_image:
+      type: string
+      default: rayproject/ray:2.9.0
+    source_worker_replicas:
+      type: int
+      default: 1
+      min: 1
+      max: 10
+    target_worker_replicas:
+      type: int
+      default: 3
+      min: 1
+      max: 10
+
+preconditionUnits:
+  - id: ray_client_ready
+    probe:
+      commands:
+        - command:
+            [
+              "kubectl",
+              "-n",
+              "${BENCH_NAMESPACE}",
+              "wait",
+              "--for=condition=Ready",
+              "pod/{{params.cluster_prefix}}-client",
+              "--timeout=5s",
+            ]
+          timeout_sec: 10
+    apply:
+      commands:
+        - command:
+            [
+              "/bin/sh",
+              "-c",
+              "sed -e 's/__CLUSTER_PREFIX__/{{params.cluster_prefix}}/g' -e 's#__RAY_IMAGE__#{{params.ray_image}}#g' resources/ray/worker_scaling/resource/ray-client.yaml | kubectl -n ${BENCH_NAMESPACE} apply -f -",
+            ]
+          timeout_sec: 20
+    verify:
+      commands:
+        - command:
+            [
+              "kubectl",
+              "-n",
+              "${BENCH_NAMESPACE}",
+              "wait",
+              "--for=condition=Ready",
+              "pod/{{params.cluster_prefix}}-client",
+              "--timeout=60s",
+            ]
+          timeout_sec: 70
+      retries: 3
+      interval_sec: 2
+
+  - id: ray_head_service_ready
+    probe:
+      commands:
+        - command:
+            [
+              "/bin/sh",
+              "-c",
+              "set -e; kubectl -n ${BENCH_NAMESPACE} get service {{params.cluster_prefix}}-head -o jsonpath='{range .spec.ports[*]}{.port}{\"\\n\"}{end}' | grep -qx '6379'",
+            ]
+          timeout_sec: 10
+    apply:
+      commands:
+        - command:
+            [
+              "/bin/sh",
+              "-c",
+              "sed -e 's/__CLUSTER_PREFIX__/{{params.cluster_prefix}}/g' resources/ray/worker_scaling/resource/ray-head-service.yaml | kubectl -n ${BENCH_NAMESPACE} apply -f -",
+            ]
+          timeout_sec: 20
+    verify:
+      commands:
+        - command:
+            [
+              "/bin/sh",
+              "-c",
+              "set -e; kubectl -n ${BENCH_NAMESPACE} get service {{params.cluster_prefix}}-head -o jsonpath='{range .spec.ports[*]}{.port}{\"\\n\"}{end}' | grep -qx '6379'",
+            ]
+          timeout_sec: 10
+
+  - id: ray_head_ready
+    probe:
+      commands:
+        - command:
+            [
+              "/bin/sh",
+              "-c",
+              "set -e; kubectl -n ${BENCH_NAMESPACE} rollout status deployment/{{params.cluster_prefix}}-head --timeout=5s >/dev/null; ready=$(kubectl -n ${BENCH_NAMESPACE} get deployment {{params.cluster_prefix}}-head -o jsonpath='{.status.readyReplicas}'); test ${ready:-0} -ge 1",
+            ]
+          timeout_sec: 10
+    apply:
+      commands:
+        - command:
+            [
+              "/bin/sh",
+              "-c",
+              "sed -e 's/__CLUSTER_PREFIX__/{{params.cluster_prefix}}/g' -e 's#__RAY_IMAGE__#{{params.ray_image}}#g' resources/ray/worker_scaling/resource/ray-head.yaml | kubectl -n ${BENCH_NAMESPACE} apply -f -",
+            ]
+          timeout_sec: 20
+    verify:
+      commands:
+        - command:
+            [
+              "/bin/sh",
+              "-c",
+              "set -e; kubectl -n ${BENCH_NAMESPACE} rollout status deployment/{{params.cluster_prefix}}-head --timeout=60s >/dev/null; ready=$(kubectl -n ${BENCH_NAMESPACE} get deployment {{params.cluster_prefix}}-head -o jsonpath='{.status.readyReplicas}'); test ${ready:-0} -ge 1",
+            ]
+          timeout_sec: 70
+      retries: 3
+      interval_sec: 2
+
+  - id: ray_worker_baseline_ready
+    probe:
+      commands:
+        - command:
+            [
+              "/bin/sh",
+              "-c",
+              "set -e; kubectl -n ${BENCH_NAMESPACE} rollout status deployment/{{params.cluster_prefix}}-worker --timeout=5s >/dev/null; spec=$(kubectl -n ${BENCH_NAMESPACE} get deployment {{params.cluster_prefix}}-worker -o jsonpath='{.spec.replicas}'); ready=$(kubectl -n ${BENCH_NAMESPACE} get deployment {{params.cluster_prefix}}-worker -o jsonpath='{.status.readyReplicas}'); test ${spec:-0} -eq {{params.source_worker_replicas}}; test ${ready:-0} -eq {{params.source_worker_replicas}}",
+            ]
+          timeout_sec: 10
+    apply:
+      commands:
+        - command:
+            [
+              "/bin/sh",
+              "-c",
+              "sed -e 's/__CLUSTER_PREFIX__/{{params.cluster_prefix}}/g' -e 's#__RAY_IMAGE__#{{params.ray_image}}#g' -e 's/__WORKER_REPLICAS__/{{params.source_worker_replicas}}/g' resources/ray/worker_scaling/resource/ray-worker.yaml | kubectl -n ${BENCH_NAMESPACE} apply -f -",
+            ]
+          timeout_sec: 20
+    verify:
+      commands:
+        - command:
+            [
+              "/bin/sh",
+              "-c",
+              "set -e; kubectl -n ${BENCH_NAMESPACE} rollout status deployment/{{params.cluster_prefix}}-worker --timeout=60s >/dev/null; spec=$(kubectl -n ${BENCH_NAMESPACE} get deployment {{params.cluster_prefix}}-worker -o jsonpath='{.spec.replicas}'); ready=$(kubectl -n ${BENCH_NAMESPACE} get deployment {{params.cluster_prefix}}-worker -o jsonpath='{.status.readyReplicas}'); test ${spec:-0} -eq {{params.source_worker_replicas}}; test ${ready:-0} -eq {{params.source_worker_replicas}}",
+            ]
+          timeout_sec: 70
+      retries: 3
+      interval_sec: 2
+
+detailedInstructions: |
+  Scale the Ray worker deployment in `${BENCH_NAMESPACE}` to
+  `{{params.target_worker_replicas}}` replicas.
+
+  Requirements:
+  - Update Deployment `{{params.cluster_prefix}}-worker` in place.
+  - Wait for rollout completion.
+  - Keep the head Service and head Deployment healthy.
+
+  A good solve flow is:
+  ```bash
+  kubectl -n ${BENCH_NAMESPACE} scale deployment/{{params.cluster_prefix}}-worker --replicas={{params.target_worker_replicas}}
+  kubectl -n ${BENCH_NAMESPACE} rollout status deployment/{{params.cluster_prefix}}-worker --timeout=120s
+  ```
+
+operatorContext: |
+  Helpful commands:
+  ```bash
+  kubectl -n ${BENCH_NAMESPACE} get deploy,pod
+  kubectl -n ${BENCH_NAMESPACE} exec {{params.cluster_prefix}}-client -- \
+    python -c "import ray; ray.init(address='{{params.cluster_prefix}}-head:6379'); print(len([n for n in ray.nodes() if n.get('Alive')])); ray.shutdown()"
+  ```
+
+oracle:
+  verify:
+    commands:
+      - command:
+          [
+            "python3",
+            "resources/ray/worker_scaling/oracle/oracle.py",
+            "--check",
+            "head",
+            "--expected-workers",
+            "{{params.target_worker_replicas}}",
+          ]
+        timeout_sec: 30
+      - command:
+          [
+            "python3",
+            "resources/ray/worker_scaling/oracle/oracle.py",
+            "--check",
+            "worker-spec",
+            "--expected-workers",
+            "{{params.target_worker_replicas}}",
+          ]
+        timeout_sec: 30
+      - command:
+          [
+            "python3",
+            "resources/ray/worker_scaling/oracle/oracle.py",
+            "--check",
+            "worker-ready",
+            "--expected-workers",
+            "{{params.target_worker_replicas}}",
+          ]
+        timeout_sec: 30
+      - command:
+          [
+            "python3",
+            "resources/ray/worker_scaling/oracle/oracle.py",
+            "--check",
+            "connectivity",
+            "--expected-workers",
+            "{{params.target_worker_replicas}}",
+          ]
+        timeout_sec: 60
+
+cleanUpCommands:
+  - command: ["kubectl", "-n", "${BENCH_NAMESPACE}", "delete", "pod", "{{params.cluster_prefix}}-client", "--ignore-not-found=true"]
+    timeout_sec: 20
+  - command: ["kubectl", "-n", "${BENCH_NAMESPACE}", "delete", "deployment", "{{params.cluster_prefix}}-head", "--ignore-not-found=true"]
+    timeout_sec: 20
+  - command: ["kubectl", "-n", "${BENCH_NAMESPACE}", "delete", "deployment", "{{params.cluster_prefix}}-worker", "--ignore-not-found=true"]
+    timeout_sec: 20
+  - command: ["kubectl", "-n", "${BENCH_NAMESPACE}", "delete", "service", "{{params.cluster_prefix}}-head", "--ignore-not-found=true"]
+    timeout_sec: 20

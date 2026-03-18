@@ -1,0 +1,292 @@
+type: spark-multi-tenant-job-execution
+targetApp: Apache-Spark
+numAppInstance: 2
+maxAttempts: 1
+
+params:
+  definitions:
+    team_a_service_account_name:
+      type: string
+      default: spark-team-a
+    team_b_service_account_name:
+      type: string
+      default: spark-team-b
+    team_a_job_name:
+      type: string
+      default: spark-pi-team-a
+    team_b_job_name:
+      type: string
+      default: spark-pi-team-b
+    spark_image:
+      type: string
+      default: apache/spark:3.5.3
+    driver_memory:
+      type: string
+      default: 512m
+    iterations:
+      type: int
+      default: 1000
+      min: 10
+      max: 100000
+
+namespace_contract:
+  base_namespace: spark-team
+  default_role: team_a
+  required_roles:
+  - team_a
+  - team_b
+
+preconditionUnits:
+  - id: team_a_rbac_ready
+    probe:
+      commands:
+        - command: ["kubectl", "-n", "${BENCH_NS_TEAM_A}", "get", "serviceaccount", "{{params.team_a_service_account_name}}"]
+          timeout_sec: 10
+    apply:
+      commands:
+        - command:
+            [
+              "/bin/sh",
+              "-c",
+              "sed -e 's/__NAMESPACE__/${BENCH_NS_TEAM_A}/g' -e 's/__SERVICE_ACCOUNT__/{{params.team_a_service_account_name}}/g' resources/spark/common/resource/rbac.yaml | kubectl apply -f -",
+            ]
+          timeout_sec: 20
+    verify:
+      commands:
+        - command: ["kubectl", "-n", "${BENCH_NS_TEAM_A}", "get", "serviceaccount", "{{params.team_a_service_account_name}}"]
+          timeout_sec: 10
+      retries: 3
+      interval_sec: 2
+
+  - id: team_b_rbac_ready
+    probe:
+      commands:
+        - command: ["kubectl", "-n", "${BENCH_NS_TEAM_B}", "get", "serviceaccount", "{{params.team_b_service_account_name}}"]
+          timeout_sec: 10
+    apply:
+      commands:
+        - command:
+            [
+              "/bin/sh",
+              "-c",
+              "sed -e 's/__NAMESPACE__/${BENCH_NS_TEAM_B}/g' -e 's/__SERVICE_ACCOUNT__/{{params.team_b_service_account_name}}/g' resources/spark/common/resource/rbac.yaml | kubectl apply -f -",
+            ]
+          timeout_sec: 20
+    verify:
+      commands:
+        - command: ["kubectl", "-n", "${BENCH_NS_TEAM_B}", "get", "serviceaccount", "{{params.team_b_service_account_name}}"]
+          timeout_sec: 10
+      retries: 3
+      interval_sec: 2
+
+  - id: team_a_job_baseline_ready
+    probe:
+      commands:
+        - command:
+            [
+              "/bin/sh",
+              "-c",
+              "kubectl -n ${BENCH_NS_TEAM_A} get job {{params.team_a_job_name}} >/dev/null 2>&1 && exit 1 || exit 0",
+            ]
+          timeout_sec: 10
+    apply:
+      commands:
+        - command: ["kubectl", "-n", "${BENCH_NS_TEAM_A}", "delete", "job", "{{params.team_a_job_name}}", "--ignore-not-found=true", "--wait=true"]
+          timeout_sec: 30
+    verify:
+      commands:
+        - command:
+            [
+              "/bin/sh",
+              "-c",
+              "kubectl -n ${BENCH_NS_TEAM_A} get job {{params.team_a_job_name}} >/dev/null 2>&1 && exit 1 || exit 0",
+            ]
+          timeout_sec: 10
+
+  - id: team_b_job_baseline_ready
+    probe:
+      commands:
+        - command:
+            [
+              "/bin/sh",
+              "-c",
+              "kubectl -n ${BENCH_NS_TEAM_B} get job {{params.team_b_job_name}} >/dev/null 2>&1 && exit 1 || exit 0",
+            ]
+          timeout_sec: 10
+    apply:
+      commands:
+        - command: ["kubectl", "-n", "${BENCH_NS_TEAM_B}", "delete", "job", "{{params.team_b_job_name}}", "--ignore-not-found=true", "--wait=true"]
+          timeout_sec: 30
+    verify:
+      commands:
+        - command:
+            [
+              "/bin/sh",
+              "-c",
+              "kubectl -n ${BENCH_NS_TEAM_B} get job {{params.team_b_job_name}} >/dev/null 2>&1 && exit 1 || exit 0",
+            ]
+          timeout_sec: 10
+
+detailedInstructions: |
+  Run one healthy SparkPi job in each assigned tenant namespace.
+
+  Namespaces:
+  - team-a: `${BENCH_NS_TEAM_A}`
+  - team-b: `${BENCH_NS_TEAM_B}`
+
+  Requirements:
+  - Create Job `{{params.team_a_job_name}}` in `${BENCH_NS_TEAM_A}` with ServiceAccount `{{params.team_a_service_account_name}}`.
+  - Create Job `{{params.team_b_job_name}}` in `${BENCH_NS_TEAM_B}` with ServiceAccount `{{params.team_b_service_account_name}}`.
+  - Both jobs must use image `{{params.spark_image}}`.
+  - Both jobs must complete successfully and log a Pi value near `3.14`.
+
+  A good solve flow is:
+  ```bash
+  sed \
+    -e "s/__NAMESPACE__/${BENCH_NS_TEAM_A}/g" \
+    -e "s/__JOB_NAME__/{{params.team_a_job_name}}/g" \
+    -e "s/__SERVICE_ACCOUNT__/{{params.team_a_service_account_name}}/g" \
+    -e "s#__SPARK_IMAGE__#{{params.spark_image}}#g" \
+    -e "s/__DRIVER_MEMORY__/{{params.driver_memory}}/g" \
+    -e "s/__ITERATIONS__/{{params.iterations}}/g" \
+    -e "s/__TENANT_LABEL__/team-a/g" \
+    resources/spark/spark_multi_tenant_job_execution/resource/spark-pi-job.yaml | kubectl apply -f -
+  sed \
+    -e "s/__NAMESPACE__/${BENCH_NS_TEAM_B}/g" \
+    -e "s/__JOB_NAME__/{{params.team_b_job_name}}/g" \
+    -e "s/__SERVICE_ACCOUNT__/{{params.team_b_service_account_name}}/g" \
+    -e "s#__SPARK_IMAGE__#{{params.spark_image}}#g" \
+    -e "s/__DRIVER_MEMORY__/{{params.driver_memory}}/g" \
+    -e "s/__ITERATIONS__/{{params.iterations}}/g" \
+    -e "s/__TENANT_LABEL__/team-b/g" \
+    resources/spark/spark_multi_tenant_job_execution/resource/spark-pi-job.yaml | kubectl apply -f -
+  kubectl -n ${BENCH_NS_TEAM_A} wait --for=condition=complete job/{{params.team_a_job_name}} --timeout=300s
+  kubectl -n ${BENCH_NS_TEAM_B} wait --for=condition=complete job/{{params.team_b_job_name}} --timeout=300s
+  ```
+
+operatorContext: |
+  Helpful commands:
+  ```bash
+  kubectl -n ${BENCH_NS_TEAM_A} get job,pod,serviceaccount
+  kubectl -n ${BENCH_NS_TEAM_B} get job,pod,serviceaccount
+  kubectl -n ${BENCH_NS_TEAM_A} logs job/{{params.team_a_job_name}} --tail=100
+  kubectl -n ${BENCH_NS_TEAM_B} logs job/{{params.team_b_job_name}} --tail=100
+  ```
+
+oracle:
+  verify:
+    commands:
+      - command:
+          [
+            "python3",
+            "resources/spark/spark_multi_tenant_job_execution/oracle/oracle.py",
+            "--check",
+            "job-spec",
+            "--namespace",
+            "${BENCH_NS_TEAM_A}",
+            "--job-name",
+            "{{params.team_a_job_name}}",
+            "--expected-service-account",
+            "{{params.team_a_service_account_name}}",
+            "--expected-image",
+            "{{params.spark_image}}",
+          ]
+        timeout_sec: 30
+      - command:
+          [
+            "python3",
+            "resources/spark/spark_multi_tenant_job_execution/oracle/oracle.py",
+            "--check",
+            "job-status",
+            "--namespace",
+            "${BENCH_NS_TEAM_A}",
+            "--job-name",
+            "{{params.team_a_job_name}}",
+            "--expected-service-account",
+            "{{params.team_a_service_account_name}}",
+            "--expected-image",
+            "{{params.spark_image}}",
+          ]
+        timeout_sec: 30
+      - command:
+          [
+            "python3",
+            "resources/spark/spark_multi_tenant_job_execution/oracle/oracle.py",
+            "--check",
+            "logs",
+            "--namespace",
+            "${BENCH_NS_TEAM_A}",
+            "--job-name",
+            "{{params.team_a_job_name}}",
+            "--expected-service-account",
+            "{{params.team_a_service_account_name}}",
+            "--expected-image",
+            "{{params.spark_image}}",
+          ]
+        timeout_sec: 30
+      - command:
+          [
+            "python3",
+            "resources/spark/spark_multi_tenant_job_execution/oracle/oracle.py",
+            "--check",
+            "job-spec",
+            "--namespace",
+            "${BENCH_NS_TEAM_B}",
+            "--job-name",
+            "{{params.team_b_job_name}}",
+            "--expected-service-account",
+            "{{params.team_b_service_account_name}}",
+            "--expected-image",
+            "{{params.spark_image}}",
+          ]
+        timeout_sec: 30
+      - command:
+          [
+            "python3",
+            "resources/spark/spark_multi_tenant_job_execution/oracle/oracle.py",
+            "--check",
+            "job-status",
+            "--namespace",
+            "${BENCH_NS_TEAM_B}",
+            "--job-name",
+            "{{params.team_b_job_name}}",
+            "--expected-service-account",
+            "{{params.team_b_service_account_name}}",
+            "--expected-image",
+            "{{params.spark_image}}",
+          ]
+        timeout_sec: 30
+      - command:
+          [
+            "python3",
+            "resources/spark/spark_multi_tenant_job_execution/oracle/oracle.py",
+            "--check",
+            "logs",
+            "--namespace",
+            "${BENCH_NS_TEAM_B}",
+            "--job-name",
+            "{{params.team_b_job_name}}",
+            "--expected-service-account",
+            "{{params.team_b_service_account_name}}",
+            "--expected-image",
+            "{{params.spark_image}}",
+          ]
+        timeout_sec: 30
+
+cleanUpCommands:
+  - command: ["kubectl", "-n", "${BENCH_NS_TEAM_A}", "delete", "job", "{{params.team_a_job_name}}", "--ignore-not-found=true", "--wait=true"]
+    timeout_sec: 30
+  - command: ["kubectl", "-n", "${BENCH_NS_TEAM_B}", "delete", "job", "{{params.team_b_job_name}}", "--ignore-not-found=true", "--wait=true"]
+    timeout_sec: 30
+  - command: ["kubectl", "-n", "${BENCH_NS_TEAM_A}", "delete", "rolebinding", "{{params.team_a_service_account_name}}-role-binding", "--ignore-not-found=true"]
+    timeout_sec: 20
+  - command: ["kubectl", "-n", "${BENCH_NS_TEAM_A}", "delete", "role", "{{params.team_a_service_account_name}}-role", "--ignore-not-found=true"]
+    timeout_sec: 20
+  - command: ["kubectl", "-n", "${BENCH_NS_TEAM_A}", "delete", "serviceaccount", "{{params.team_a_service_account_name}}", "--ignore-not-found=true"]
+    timeout_sec: 20
+  - command: ["kubectl", "-n", "${BENCH_NS_TEAM_B}", "delete", "rolebinding", "{{params.team_b_service_account_name}}-role-binding", "--ignore-not-found=true"]
+    timeout_sec: 20
+  - command: ["kubectl", "-n", "${BENCH_NS_TEAM_B}", "delete", "role", "{{params.team_b_service_account_name}}-role", "--ignore-not-found=true"]
+    timeout_sec: 20
+  - command: ["kubectl", "-n", "${BENCH_NS_TEAM_B}", "delete", "serviceaccount", "{{params.team_b_service_account_name}}", "--ignore-not-found=true"]
+    timeout_sec: 20

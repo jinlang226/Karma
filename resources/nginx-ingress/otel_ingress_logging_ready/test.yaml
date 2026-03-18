@@ -1,0 +1,281 @@
+type: nginx-otel-ingress-logging-ready
+targetApp: NGINX-Ingress
+numAppInstance: 1
+maxAttempts: 1
+
+namespace_contract:
+  base_namespace: nginx
+  default_role: app
+  required_roles:
+  - ingress
+  - app
+  - otel
+
+params:
+  definitions:
+    app_deployment_name:
+      type: string
+      default: otel-echo
+    ingress_name:
+      type: string
+      default: otel-echo
+    curl_pod_name:
+      type: string
+      default: curl-test
+    host:
+      type: string
+      default: otel.example.com
+    path:
+      type: string
+      default: /otel-check
+    collector_service_name:
+      type: string
+      default: otel-collector
+    collector_port:
+      type: string
+      default: "4317"
+    baseline_log_format:
+      type: string
+      default: $request $status
+    otel_log_format:
+      type: string
+      default: $remote_addr - $remote_user [$time_local] "$request" $status $body_bytes_sent "$http_referer" "$http_user_agent" otel_trace_id=$opentelemetry_trace_id otel_span_id=$opentelemetry_span_id
+
+preconditionUnits:
+  - id: ingress_controller_ready
+    probe:
+      commands:
+        - command: ["kubectl", "-n", "${BENCH_NS_INGRESS}", "rollout", "status", "deployment/ingress-nginx-controller", "--timeout=5s"]
+          timeout_sec: 10
+    apply:
+      commands:
+        - command:
+            - /bin/sh
+            - -c
+            - >
+              set -e;
+              awk 'BEGIN{skip=1} /^---$/{if(skip){skip=0; next}} !skip {print}'
+              resources/nginx-ingress/create_ingress/resource/deploy.yaml |
+              sed "s/namespace: ingress-nginx/namespace: ${BENCH_NS_INGRESS}/g" |
+              kubectl apply -f -
+          timeout_sec: 40
+    verify:
+      commands:
+        - command: ["kubectl", "-n", "${BENCH_NS_INGRESS}", "rollout", "status", "deployment/ingress-nginx-controller", "--timeout=120s"]
+          timeout_sec: 130
+      retries: 3
+      interval_sec: 3
+
+  - id: otel_collector_ready
+    probe:
+      commands:
+        - command: ["kubectl", "-n", "${BENCH_NS_OTEL}", "rollout", "status", "deployment/{{params.collector_service_name}}", "--timeout=5s"]
+          timeout_sec: 10
+    apply:
+      commands:
+        - command:
+            - /bin/sh
+            - -c
+            - >
+              sed "s/namespace: otel/namespace: ${BENCH_NS_OTEL}/g"
+              resources/nginx-ingress/otel_log_format/resource/otel-collector.yaml |
+              kubectl apply -f -
+          timeout_sec: 20
+    verify:
+      commands:
+        - command: ["kubectl", "-n", "${BENCH_NS_OTEL}", "rollout", "status", "deployment/{{params.collector_service_name}}", "--timeout=60s"]
+          timeout_sec: 70
+      retries: 3
+      interval_sec: 2
+
+  - id: otel_echo_ready
+    probe:
+      commands:
+        - command: ["kubectl", "-n", "${BENCH_NS_APP}", "rollout", "status", "deployment/{{params.app_deployment_name}}", "--timeout=5s"]
+          timeout_sec: 10
+    apply:
+      commands:
+        - command:
+            - /bin/sh
+            - -c
+            - >
+              sed "s/namespace: demo/namespace: ${BENCH_NS_APP}/g"
+              resources/nginx-ingress/otel_log_format/resource/otel-echo.yaml |
+              kubectl apply -f -
+          timeout_sec: 20
+    verify:
+      commands:
+        - command: ["kubectl", "-n", "${BENCH_NS_APP}", "rollout", "status", "deployment/{{params.app_deployment_name}}", "--timeout=60s"]
+          timeout_sec: 70
+      retries: 3
+      interval_sec: 2
+
+  - id: curl_test_ready
+    probe:
+      commands:
+        - command: ["kubectl", "-n", "${BENCH_NS_APP}", "wait", "--for=condition=Ready", "pod/{{params.curl_pod_name}}", "--timeout=5s"]
+          timeout_sec: 10
+    apply:
+      commands:
+        - command:
+            - /bin/sh
+            - -c
+            - >
+              sed "s/namespace: demo/namespace: ${BENCH_NS_APP}/g"
+              resources/nginx-ingress/otel_log_format/resource/curl-test.yaml |
+              kubectl apply -f -
+          timeout_sec: 20
+    verify:
+      commands:
+        - command: ["kubectl", "-n", "${BENCH_NS_APP}", "wait", "--for=condition=Ready", "pod/{{params.curl_pod_name}}", "--timeout=60s"]
+          timeout_sec: 70
+      retries: 3
+      interval_sec: 2
+
+  - id: otel_ingress_ready
+    probe:
+      commands:
+        - command: ["kubectl", "-n", "${BENCH_NS_APP}", "get", "ingress", "{{params.ingress_name}}"]
+          timeout_sec: 10
+    apply:
+      commands:
+        - command:
+            - /bin/sh
+            - -c
+            - >
+              sed "s/namespace: demo/namespace: ${BENCH_NS_APP}/g"
+              resources/nginx-ingress/otel_log_format/resource/otel-ingress.yaml |
+              kubectl apply -f -
+          timeout_sec: 20
+    verify:
+      commands:
+        - command: ["kubectl", "-n", "${BENCH_NS_APP}", "get", "ingress", "{{params.ingress_name}}"]
+          timeout_sec: 10
+
+  - id: otel_baseline_ready
+    probe:
+      commands:
+        - command:
+            - /bin/sh
+            - -c
+            - >
+              set -e;
+              value=$(kubectl -n ${BENCH_NS_INGRESS} get configmap ingress-nginx-controller -o jsonpath='{.data.enable-opentelemetry}');
+              test "${value:-false}" != "true";
+              format=$(kubectl -n ${BENCH_NS_INGRESS} get configmap ingress-nginx-controller -o jsonpath='{.data.log-format-upstream}');
+              printf '%s' "${format}" | grep -q '\$opentelemetry_trace_id' && exit 1 || true;
+              kubectl -n ${BENCH_NS_APP} get ingress {{params.ingress_name}} -o yaml |
+              grep -q 'nginx.ingress.kubernetes.io/enable-opentelemetry' && exit 1 || true
+          timeout_sec: 15
+    apply:
+      commands:
+        - command:
+            - kubectl
+            - -n
+            - ${BENCH_NS_INGRESS}
+            - patch
+            - configmap
+            - ingress-nginx-controller
+            - --type=merge
+            - -p
+            - |
+              {"data":{"enable-opentelemetry":"false","otlp-collector-host":"","otlp-collector-port":"","otel-sampler":"AlwaysOff","otel-sampler-ratio":"0.0","log-format-upstream":"{{params.baseline_log_format}}"}}
+          timeout_sec: 20
+        - command:
+            - /bin/sh
+            - -c
+            - >
+              kubectl -n ${BENCH_NS_APP} annotate ingress {{params.ingress_name}}
+              nginx.ingress.kubernetes.io/enable-opentelemetry- --overwrite || true
+          timeout_sec: 20
+    verify:
+      commands:
+        - command:
+            - /bin/sh
+            - -c
+            - >
+              set -e;
+              value=$(kubectl -n ${BENCH_NS_INGRESS} get configmap ingress-nginx-controller -o jsonpath='{.data.enable-opentelemetry}');
+              test "${value:-false}" != "true";
+              format=$(kubectl -n ${BENCH_NS_INGRESS} get configmap ingress-nginx-controller -o jsonpath='{.data.log-format-upstream}');
+              printf '%s' "${format}" | grep -q '\$opentelemetry_trace_id' && exit 1 || true;
+              kubectl -n ${BENCH_NS_APP} get ingress {{params.ingress_name}} -o yaml |
+              grep -q 'nginx.ingress.kubernetes.io/enable-opentelemetry' && exit 1 || true
+          timeout_sec: 15
+
+detailedInstructions: |
+  Enable ingress-scoped OpenTelemetry logging and export in the assigned namespaces.
+
+  Namespaces:
+  - controller: `${BENCH_NS_INGRESS}`
+  - application: `${BENCH_NS_APP}`
+  - collector: `${BENCH_NS_OTEL}`
+
+  Current baseline:
+  - Ingress `{{params.ingress_name}}` already routes traffic to a healthy backend.
+  - OpenTelemetry collector `{{params.collector_service_name}}` is already running.
+  - The controller ConfigMap does not enable OpenTelemetry yet.
+  - The ingress does not enable OpenTelemetry yet.
+
+  Requirements:
+  - Enable OpenTelemetry in ConfigMap `ingress-nginx-controller`.
+  - Point the controller at `{{params.collector_service_name}}.${BENCH_NS_OTEL}.svc.cluster.local:{{params.collector_port}}`.
+  - Configure sampling so trace data is emitted for requests.
+  - Update `log-format-upstream` so it includes trace and span IDs, for example:
+    `{{params.otel_log_format}}`
+  - Enable OpenTelemetry on Ingress `{{params.ingress_name}}`.
+
+  You may need to restart the controller Deployment after changing the ConfigMap.
+
+  A good validation command is:
+  ```bash
+  kubectl -n ${BENCH_NS_APP} exec {{params.curl_pod_name}} -- \
+    curl -sS -H "Host: {{params.host}}" \
+    http://ingress-nginx-controller.${BENCH_NS_INGRESS}.svc.cluster.local{{params.path}}
+  kubectl -n ${BENCH_NS_INGRESS} logs deploy/ingress-nginx-controller --tail=200
+  kubectl -n ${BENCH_NS_OTEL} logs deploy/{{params.collector_service_name}} --tail=200
+  ```
+
+operatorContext: |
+  Helpful commands:
+  ```bash
+  kubectl -n ${BENCH_NS_INGRESS} get configmap ingress-nginx-controller -o yaml
+  kubectl -n ${BENCH_NS_APP} get ingress,svc,deploy,pod -o yaml
+  kubectl -n ${BENCH_NS_OTEL} get deploy,svc,pod
+  ```
+
+oracle:
+  verify:
+    commands:
+      - command: ["python3", "resources/nginx-ingress/otel_ingress_logging_ready/oracle/oracle.py", "--check", "annotation", "--ingress-name", "{{params.ingress_name}}", "--curl-pod-name", "{{params.curl_pod_name}}", "--host", "{{params.host}}", "--path", "{{params.path}}", "--collector-service-name", "{{params.collector_service_name}}", "--collector-port", "{{params.collector_port}}"]
+        timeout_sec: 30
+      - command: ["python3", "resources/nginx-ingress/otel_ingress_logging_ready/oracle/oracle.py", "--check", "configmap", "--ingress-name", "{{params.ingress_name}}", "--curl-pod-name", "{{params.curl_pod_name}}", "--host", "{{params.host}}", "--path", "{{params.path}}", "--collector-service-name", "{{params.collector_service_name}}", "--collector-port", "{{params.collector_port}}"]
+        timeout_sec: 30
+      - command: ["python3", "resources/nginx-ingress/otel_ingress_logging_ready/oracle/oracle.py", "--check", "telemetry", "--ingress-name", "{{params.ingress_name}}", "--curl-pod-name", "{{params.curl_pod_name}}", "--host", "{{params.host}}", "--path", "{{params.path}}", "--collector-service-name", "{{params.collector_service_name}}", "--collector-port", "{{params.collector_port}}"]
+        timeout_sec: 60
+
+cleanUpCommands:
+  - command: ["kubectl", "-n", "${BENCH_NS_APP}", "delete", "ingress", "{{params.ingress_name}}", "--ignore-not-found=true"]
+    timeout_sec: 20
+  - command: ["kubectl", "-n", "${BENCH_NS_APP}", "delete", "pod", "{{params.curl_pod_name}}", "--ignore-not-found=true"]
+    timeout_sec: 20
+  - command: ["kubectl", "-n", "${BENCH_NS_APP}", "delete", "service", "{{params.app_deployment_name}}", "--ignore-not-found=true"]
+    timeout_sec: 20
+  - command: ["kubectl", "-n", "${BENCH_NS_APP}", "delete", "deployment", "{{params.app_deployment_name}}", "--ignore-not-found=true"]
+    timeout_sec: 20
+  - command: ["kubectl", "-n", "${BENCH_NS_OTEL}", "delete", "service", "{{params.collector_service_name}}", "--ignore-not-found=true"]
+    timeout_sec: 20
+  - command: ["kubectl", "-n", "${BENCH_NS_OTEL}", "delete", "deployment", "{{params.collector_service_name}}", "--ignore-not-found=true"]
+    timeout_sec: 20
+  - command: ["kubectl", "-n", "${BENCH_NS_OTEL}", "delete", "configmap", "{{params.collector_service_name}}-config", "--ignore-not-found=true"]
+    timeout_sec: 20
+  - command:
+      - /bin/sh
+      - -c
+      - >
+        set -e;
+        awk 'BEGIN{skip=1} /^---$/{if(skip){skip=0; next}} !skip {print}'
+        resources/nginx-ingress/create_ingress/resource/deploy.yaml |
+        sed "s/namespace: ingress-nginx/namespace: ${BENCH_NS_INGRESS}/g" |
+        kubectl delete --ignore-not-found=true -f - || true
+    timeout_sec: 40

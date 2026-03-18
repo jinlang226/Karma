@@ -1,0 +1,398 @@
+type: spark-runtime-bundle-ready
+targetApp: Apache-Spark
+numAppInstance: 1
+maxAttempts: 1
+
+namespace_contract:
+  base_namespace: spark-runtime
+  default_role: default
+  required_roles:
+  - default
+
+params:
+  definitions:
+    service_account_name:
+      type: string
+      default: spark-runtime
+    configmap_name:
+      type: string
+      default: spark-config
+    secret_name:
+      type: string
+      default: spark-credentials
+    monitor_deployment_name:
+      type: string
+      default: spark-monitor
+    job_name:
+      type: string
+      default: spark-batch-processor
+    spark_image:
+      type: string
+      default: apache/spark:3.5.3
+    executor_memory:
+      type: string
+      default: 512m
+    driver_memory:
+      type: string
+      default: 512m
+    api_key:
+      type: string
+      default: sk-valid-key-12345
+
+preconditionUnits:
+  - id: runtime_rbac_ready
+    probe:
+      commands:
+        - command: ["kubectl", "-n", "${BENCH_NAMESPACE}", "get", "serviceaccount", "{{params.service_account_name}}"]
+          timeout_sec: 10
+    apply:
+      commands:
+        - command:
+            [
+              "/bin/sh",
+              "-c",
+              "sed -e 's/__NAMESPACE__/${BENCH_NAMESPACE}/g' -e 's/__SERVICE_ACCOUNT__/{{params.service_account_name}}/g' resources/spark/common/resource/rbac.yaml | kubectl apply -f -",
+            ]
+          timeout_sec: 20
+    verify:
+      commands:
+        - command: ["kubectl", "-n", "${BENCH_NAMESPACE}", "get", "serviceaccount", "{{params.service_account_name}}"]
+          timeout_sec: 10
+      retries: 3
+      interval_sec: 2
+
+  - id: runtime_config_ready
+    probe:
+      commands:
+        - command:
+            [
+              "/bin/sh",
+              "-c",
+              "set -e; exec_mem=$(kubectl -n ${BENCH_NAMESPACE} get configmap {{params.configmap_name}} -o jsonpath='{.data.spark\\.executor\\.memory}'); drv_mem=$(kubectl -n ${BENCH_NAMESPACE} get configmap {{params.configmap_name}} -o jsonpath='{.data.spark\\.driver\\.memory}'); test \"$exec_mem\" = '{{params.executor_memory}}'; test \"$drv_mem\" = '{{params.driver_memory}}'",
+            ]
+          timeout_sec: 10
+    apply:
+      commands:
+        - command:
+            [
+              "/bin/sh",
+              "-c",
+              "sed -e 's/__NAMESPACE__/${BENCH_NAMESPACE}/g' -e 's/__CONFIGMAP_NAME__/{{params.configmap_name}}/g' -e 's/__EXECUTOR_MEMORY__/{{params.executor_memory}}/g' -e 's/__DRIVER_MEMORY__/{{params.driver_memory}}/g' resources/spark/spark_runtime_bundle_ready/resource/spark-config.yaml | kubectl apply -f -",
+            ]
+          timeout_sec: 20
+    verify:
+      commands:
+        - command:
+            [
+              "/bin/sh",
+              "-c",
+              "set -e; exec_mem=$(kubectl -n ${BENCH_NAMESPACE} get configmap {{params.configmap_name}} -o jsonpath='{.data.spark\\.executor\\.memory}'); drv_mem=$(kubectl -n ${BENCH_NAMESPACE} get configmap {{params.configmap_name}} -o jsonpath='{.data.spark\\.driver\\.memory}'); test \"$exec_mem\" = '{{params.executor_memory}}'; test \"$drv_mem\" = '{{params.driver_memory}}'",
+            ]
+          timeout_sec: 10
+
+  - id: runtime_secret_ready
+    probe:
+      commands:
+        - command:
+            [
+              "/bin/sh",
+              "-c",
+              "set -e; actual=$(kubectl -n ${BENCH_NAMESPACE} get secret {{params.secret_name}} -o jsonpath='{.data.api-key}' | python3 -c 'import base64,sys; print(base64.b64decode(sys.stdin.read().strip() or \"\").decode(\"utf-8\"))'); test \"$actual\" = '{{params.api_key}}'",
+            ]
+          timeout_sec: 10
+    apply:
+      commands:
+        - command:
+            [
+              "/bin/sh",
+              "-c",
+              "sed -e 's/__NAMESPACE__/${BENCH_NAMESPACE}/g' -e 's/__SECRET_NAME__/{{params.secret_name}}/g' -e 's/__API_KEY__/{{params.api_key}}/g' resources/spark/spark_runtime_bundle_ready/resource/spark-credentials.yaml | kubectl apply -f -",
+            ]
+          timeout_sec: 20
+    verify:
+      commands:
+        - command:
+            [
+              "/bin/sh",
+              "-c",
+              "set -e; actual=$(kubectl -n ${BENCH_NAMESPACE} get secret {{params.secret_name}} -o jsonpath='{.data.api-key}' | python3 -c 'import base64,sys; print(base64.b64decode(sys.stdin.read().strip() or \"\").decode(\"utf-8\"))'); test \"$actual\" = '{{params.api_key}}'",
+            ]
+          timeout_sec: 10
+
+  - id: runtime_monitor_ready
+    probe:
+      commands:
+        - command:
+            [
+              "/bin/sh",
+              "-c",
+              "set -e; kubectl -n ${BENCH_NAMESPACE} rollout status deployment/{{params.monitor_deployment_name}} --timeout=5s >/dev/null; ready=$(kubectl -n ${BENCH_NAMESPACE} get deployment {{params.monitor_deployment_name}} -o jsonpath='{.status.readyReplicas}'); test ${ready:-0} -eq 1",
+            ]
+          timeout_sec: 10
+    apply:
+      commands:
+        - command:
+            [
+              "/bin/sh",
+              "-c",
+              "sed -e 's/__NAMESPACE__/${BENCH_NAMESPACE}/g' -e 's/__DEPLOYMENT_NAME__/{{params.monitor_deployment_name}}/g' -e 's/__SERVICE_ACCOUNT__/{{params.service_account_name}}/g' -e 's#__SPARK_IMAGE__#{{params.spark_image}}#g' resources/spark/spark_runtime_bundle_ready/resource/spark-monitor.yaml | kubectl apply -f -",
+            ]
+          timeout_sec: 20
+    verify:
+      commands:
+        - command:
+            [
+              "/bin/sh",
+              "-c",
+              "set -e; kubectl -n ${BENCH_NAMESPACE} rollout status deployment/{{params.monitor_deployment_name}} --timeout=120s >/dev/null; ready=$(kubectl -n ${BENCH_NAMESPACE} get deployment {{params.monitor_deployment_name}} -o jsonpath='{.status.readyReplicas}'); test ${ready:-0} -eq 1",
+            ]
+          timeout_sec: 130
+      retries: 3
+      interval_sec: 2
+
+  - id: runtime_batch_baseline_ready
+    probe:
+      commands:
+        - command:
+            [
+              "/bin/sh",
+              "-c",
+              "kubectl -n ${BENCH_NAMESPACE} get job {{params.job_name}} >/dev/null 2>&1 && exit 1 || exit 0",
+            ]
+          timeout_sec: 10
+    apply:
+      commands:
+        - command: ["kubectl", "-n", "${BENCH_NAMESPACE}", "delete", "job", "{{params.job_name}}", "--ignore-not-found=true", "--wait=true"]
+          timeout_sec: 30
+    verify:
+      commands:
+        - command:
+            [
+              "/bin/sh",
+              "-c",
+              "kubectl -n ${BENCH_NAMESPACE} get job {{params.job_name}} >/dev/null 2>&1 && exit 1 || exit 0",
+            ]
+          timeout_sec: 10
+
+detailedInstructions: |
+  Ensure the Spark runtime support bundle is healthy in `${BENCH_NAMESPACE}` and then run the batch processor job.
+
+  Requirements:
+  - ConfigMap `{{params.configmap_name}}` must set executor memory to `{{params.executor_memory}}` and driver memory to `{{params.driver_memory}}`.
+  - Secret `{{params.secret_name}}` must carry the API key `{{params.api_key}}`.
+  - Deployment `{{params.monitor_deployment_name}}` must be Available.
+  - Job `{{params.job_name}}` must complete successfully and confirm the runtime bundle in its logs.
+
+  A good solve flow is:
+  ```bash
+  sed \
+    -e "s/__NAMESPACE__/${BENCH_NAMESPACE}/g" \
+    -e "s/__CONFIGMAP_NAME__/{{params.configmap_name}}/g" \
+    -e "s/__EXECUTOR_MEMORY__/{{params.executor_memory}}/g" \
+    -e "s/__DRIVER_MEMORY__/{{params.driver_memory}}/g" \
+    resources/spark/spark_runtime_bundle_ready/resource/spark-config.yaml | kubectl apply -f -
+  sed \
+    -e "s/__NAMESPACE__/${BENCH_NAMESPACE}/g" \
+    -e "s/__SECRET_NAME__/{{params.secret_name}}/g" \
+    -e "s/__API_KEY__/{{params.api_key}}/g" \
+    resources/spark/spark_runtime_bundle_ready/resource/spark-credentials.yaml | kubectl apply -f -
+  sed \
+    -e "s/__NAMESPACE__/${BENCH_NAMESPACE}/g" \
+    -e "s/__DEPLOYMENT_NAME__/{{params.monitor_deployment_name}}/g" \
+    -e "s/__SERVICE_ACCOUNT__/{{params.service_account_name}}/g" \
+    -e "s#__SPARK_IMAGE__#{{params.spark_image}}#g" \
+    resources/spark/spark_runtime_bundle_ready/resource/spark-monitor.yaml | kubectl apply -f -
+  sed \
+    -e "s/__NAMESPACE__/${BENCH_NAMESPACE}/g" \
+    -e "s/__JOB_NAME__/{{params.job_name}}/g" \
+    -e "s/__SERVICE_ACCOUNT__/{{params.service_account_name}}/g" \
+    -e "s#__SPARK_IMAGE__#{{params.spark_image}}#g" \
+    -e "s/__CONFIGMAP_NAME__/{{params.configmap_name}}/g" \
+    -e "s/__SECRET_NAME__/{{params.secret_name}}/g" \
+    resources/spark/spark_runtime_bundle_ready/resource/spark-batch-job.yaml | kubectl apply -f -
+  kubectl -n ${BENCH_NAMESPACE} wait --for=condition=complete job/{{params.job_name}} --timeout=300s
+  ```
+
+operatorContext: |
+  Helpful commands:
+  ```bash
+  kubectl -n ${BENCH_NAMESPACE} get configmap,secret,deploy,job,pod
+  kubectl -n ${BENCH_NAMESPACE} logs deploy/{{params.monitor_deployment_name}} --tail=50
+  kubectl -n ${BENCH_NAMESPACE} logs job/{{params.job_name}} --tail=100
+  ```
+
+oracle:
+  verify:
+    commands:
+      - command:
+          [
+            "python3",
+            "resources/spark/spark_runtime_bundle_ready/oracle/oracle.py",
+            "--check",
+            "config",
+            "--configmap-name",
+            "{{params.configmap_name}}",
+            "--secret-name",
+            "{{params.secret_name}}",
+            "--deployment-name",
+            "{{params.monitor_deployment_name}}",
+            "--job-name",
+            "{{params.job_name}}",
+            "--expected-service-account",
+            "{{params.service_account_name}}",
+            "--expected-image",
+            "{{params.spark_image}}",
+            "--expected-executor-memory",
+            "{{params.executor_memory}}",
+            "--expected-driver-memory",
+            "{{params.driver_memory}}",
+            "--expected-api-key",
+            "{{params.api_key}}",
+          ]
+        timeout_sec: 30
+      - command:
+          [
+            "python3",
+            "resources/spark/spark_runtime_bundle_ready/oracle/oracle.py",
+            "--check",
+            "secret",
+            "--configmap-name",
+            "{{params.configmap_name}}",
+            "--secret-name",
+            "{{params.secret_name}}",
+            "--deployment-name",
+            "{{params.monitor_deployment_name}}",
+            "--job-name",
+            "{{params.job_name}}",
+            "--expected-service-account",
+            "{{params.service_account_name}}",
+            "--expected-image",
+            "{{params.spark_image}}",
+            "--expected-executor-memory",
+            "{{params.executor_memory}}",
+            "--expected-driver-memory",
+            "{{params.driver_memory}}",
+            "--expected-api-key",
+            "{{params.api_key}}",
+          ]
+        timeout_sec: 30
+      - command:
+          [
+            "python3",
+            "resources/spark/spark_runtime_bundle_ready/oracle/oracle.py",
+            "--check",
+            "monitor",
+            "--configmap-name",
+            "{{params.configmap_name}}",
+            "--secret-name",
+            "{{params.secret_name}}",
+            "--deployment-name",
+            "{{params.monitor_deployment_name}}",
+            "--job-name",
+            "{{params.job_name}}",
+            "--expected-service-account",
+            "{{params.service_account_name}}",
+            "--expected-image",
+            "{{params.spark_image}}",
+            "--expected-executor-memory",
+            "{{params.executor_memory}}",
+            "--expected-driver-memory",
+            "{{params.driver_memory}}",
+            "--expected-api-key",
+            "{{params.api_key}}",
+          ]
+        timeout_sec: 30
+      - command:
+          [
+            "python3",
+            "resources/spark/spark_runtime_bundle_ready/oracle/oracle.py",
+            "--check",
+            "job-spec",
+            "--configmap-name",
+            "{{params.configmap_name}}",
+            "--secret-name",
+            "{{params.secret_name}}",
+            "--deployment-name",
+            "{{params.monitor_deployment_name}}",
+            "--job-name",
+            "{{params.job_name}}",
+            "--expected-service-account",
+            "{{params.service_account_name}}",
+            "--expected-image",
+            "{{params.spark_image}}",
+            "--expected-executor-memory",
+            "{{params.executor_memory}}",
+            "--expected-driver-memory",
+            "{{params.driver_memory}}",
+            "--expected-api-key",
+            "{{params.api_key}}",
+          ]
+        timeout_sec: 30
+      - command:
+          [
+            "python3",
+            "resources/spark/spark_runtime_bundle_ready/oracle/oracle.py",
+            "--check",
+            "job-status",
+            "--configmap-name",
+            "{{params.configmap_name}}",
+            "--secret-name",
+            "{{params.secret_name}}",
+            "--deployment-name",
+            "{{params.monitor_deployment_name}}",
+            "--job-name",
+            "{{params.job_name}}",
+            "--expected-service-account",
+            "{{params.service_account_name}}",
+            "--expected-image",
+            "{{params.spark_image}}",
+            "--expected-executor-memory",
+            "{{params.executor_memory}}",
+            "--expected-driver-memory",
+            "{{params.driver_memory}}",
+            "--expected-api-key",
+            "{{params.api_key}}",
+          ]
+        timeout_sec: 30
+      - command:
+          [
+            "python3",
+            "resources/spark/spark_runtime_bundle_ready/oracle/oracle.py",
+            "--check",
+            "logs",
+            "--configmap-name",
+            "{{params.configmap_name}}",
+            "--secret-name",
+            "{{params.secret_name}}",
+            "--deployment-name",
+            "{{params.monitor_deployment_name}}",
+            "--job-name",
+            "{{params.job_name}}",
+            "--expected-service-account",
+            "{{params.service_account_name}}",
+            "--expected-image",
+            "{{params.spark_image}}",
+            "--expected-executor-memory",
+            "{{params.executor_memory}}",
+            "--expected-driver-memory",
+            "{{params.driver_memory}}",
+            "--expected-api-key",
+            "{{params.api_key}}",
+          ]
+        timeout_sec: 30
+
+cleanUpCommands:
+  - command: ["kubectl", "-n", "${BENCH_NAMESPACE}", "delete", "job", "{{params.job_name}}", "--ignore-not-found=true", "--wait=true"]
+    timeout_sec: 30
+  - command: ["kubectl", "-n", "${BENCH_NAMESPACE}", "delete", "deployment", "{{params.monitor_deployment_name}}", "--ignore-not-found=true"]
+    timeout_sec: 20
+  - command: ["kubectl", "-n", "${BENCH_NAMESPACE}", "delete", "configmap", "{{params.configmap_name}}", "--ignore-not-found=true"]
+    timeout_sec: 20
+  - command: ["kubectl", "-n", "${BENCH_NAMESPACE}", "delete", "secret", "{{params.secret_name}}", "--ignore-not-found=true"]
+    timeout_sec: 20
+  - command: ["kubectl", "-n", "${BENCH_NAMESPACE}", "delete", "rolebinding", "{{params.service_account_name}}-role-binding", "--ignore-not-found=true"]
+    timeout_sec: 20
+  - command: ["kubectl", "-n", "${BENCH_NAMESPACE}", "delete", "role", "{{params.service_account_name}}-role", "--ignore-not-found=true"]
+    timeout_sec: 20
+  - command: ["kubectl", "-n", "${BENCH_NAMESPACE}", "delete", "serviceaccount", "{{params.service_account_name}}", "--ignore-not-found=true"]
+    timeout_sec: 20
