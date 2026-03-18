@@ -88,3 +88,62 @@ def test_stage_oracle_stateless_runs_after_hooks_when_before_fails():
     assert out["reason"] == "before-hook exit=2"
     assert len(calls) == 2
     assert calls[1] == verify_cfg["after_commands"]
+
+
+def test_build_single_case_workflow_plan_expands_multi_role_namespace_contract():
+    captured = {}
+
+    class _FakeApp:
+        def get_case(self, _case_id):
+            return {
+                "service": "spark",
+                "case": "spark_multi_tenant_job_execution",
+            }
+
+    case_data = {
+        "namespace_contract": {
+            "base_namespace": "spark-team",
+            "default_role": "team_a",
+            "required_roles": ["team_a", "team_b"],
+        }
+    }
+
+    def _fake_load_stage_case_row(_app, _stage):
+        return {
+            "case_data": case_data,
+            "resolved_params": {},
+            "param_warnings": [],
+        }
+
+    def _fake_build_single_stage_plan(case_id, _case_data, _args, **kwargs):
+        captured["namespace_context"] = kwargs.get("namespace_context")
+        return {
+            "stages": [
+                {
+                    "id": "stage_single",
+                    "case_id": case_id,
+                    "service": "spark",
+                    "case": "spark_multi_tenant_job_execution",
+                    "max_attempts": 1,
+                }
+            ]
+        }
+
+    with patch.object(runtime_glue, "_load_stage_case_row", side_effect=_fake_load_stage_case_row), patch.object(
+        runtime_glue,
+        "_execution_plan_build_single_stage_plan",
+        side_effect=_fake_build_single_stage_plan,
+    ):
+        runtime_glue._build_single_case_workflow_plan(
+            _FakeApp(),
+            "spark|spark_multi_tenant_job_execution|test.yaml",
+            SimpleNamespace(max_attempts=1),
+        )
+
+    assert captured["namespace_context"] == {
+        "default_role": "team_a",
+        "roles": {
+            "team_a": "spark-team-team-a",
+            "team_b": "spark-team-team-b",
+        },
+    }

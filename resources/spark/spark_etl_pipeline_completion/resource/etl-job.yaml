@@ -1,0 +1,63 @@
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: __JOB_NAME__
+  namespace: __NAMESPACE__
+spec:
+  backoffLimit: 0
+  template:
+    metadata:
+      labels:
+        app: __JOB_NAME__
+    spec:
+      serviceAccountName: __SERVICE_ACCOUNT__
+      restartPolicy: Never
+      volumes:
+      - name: etl-data
+        persistentVolumeClaim:
+          claimName: __PVC_NAME__
+      containers:
+      - name: spark-etl
+        image: __SPARK_IMAGE__
+        volumeMounts:
+        - name: etl-data
+          mountPath: __DATA_MOUNT__
+        command:
+        - /bin/bash
+        - -c
+        - |
+          set -e
+          export SPARK_LOCAL_IP=$(hostname -i)
+          mkdir -p __DATA_MOUNT__/input __DATA_MOUNT__/output
+          cat > __DATA_MOUNT__/input/orders.csv <<'CSV'
+          customer,amount,status
+          alice,10,paid
+          alice,20,paid
+          bob,5,cancelled
+          carol,15,paid
+          CSV
+          cat > /tmp/etl.sql <<'SQL'
+          CREATE OR REPLACE TEMP VIEW orders
+          USING csv
+          OPTIONS (
+            path '__DATA_MOUNT__/input/orders.csv',
+            header 'true'
+          );
+          SELECT concat(customer, ':', CAST(SUM(CAST(amount AS INT)) AS STRING)) AS summary
+          FROM orders
+          WHERE status = 'paid'
+          GROUP BY customer
+          ORDER BY customer;
+          SQL
+          output=$(/opt/spark/bin/spark-sql --master local[2] -f /tmp/etl.sql 2>&1)
+          echo "${output}" | tee __DATA_MOUNT__/output/report.txt
+          echo "${output}" | grep -q 'alice:30'
+          echo "${output}" | grep -q 'carol:15'
+          echo "spark_etl_pipeline_verified"
+        resources:
+          requests:
+            cpu: 200m
+            memory: 512Mi
+          limits:
+            cpu: 500m
+            memory: 1Gi

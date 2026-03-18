@@ -1,0 +1,216 @@
+type: ray-dashboard-reachable
+targetApp: Ray
+numAppInstance: 1
+maxAttempts: 1
+namespace_contract:
+  base_namespace: ray
+  default_role: default
+  required_roles:
+  - default
+
+params:
+  definitions:
+    cluster_prefix:
+      type: string
+      default: ray
+    ray_image:
+      type: string
+      default: rayproject/ray:2.9.0
+    worker_replicas:
+      type: int
+      default: 2
+      min: 1
+      max: 10
+    dashboard_port:
+      type: int
+      default: 8265
+      min: 1
+      max: 65535
+
+preconditionUnits:
+  - id: ray_head_service_dashboard_baseline_ready
+    probe:
+      commands:
+        - command:
+            [
+              "/bin/sh",
+              "-c",
+              "set -e; ports=$(kubectl -n ${BENCH_NAMESPACE} get service {{params.cluster_prefix}}-head -o jsonpath='{range .spec.ports[*]}{.port}{\"\\n\"}{end}'); printf '%s\n' \"$ports\" | grep -qx '6379'; if printf '%s\n' \"$ports\" | grep -qx '{{params.dashboard_port}}'; then exit 1; fi",
+            ]
+          timeout_sec: 10
+    apply:
+      commands:
+        - command:
+            [
+              "/bin/sh",
+              "-c",
+              "sed -e 's/__CLUSTER_PREFIX__/{{params.cluster_prefix}}/g' resources/ray/dashboard_reachable/resource/ray-head-service.yaml | kubectl -n ${BENCH_NAMESPACE} apply -f -",
+            ]
+          timeout_sec: 20
+    verify:
+      commands:
+        - command:
+            [
+              "/bin/sh",
+              "-c",
+              "set -e; ports=$(kubectl -n ${BENCH_NAMESPACE} get service {{params.cluster_prefix}}-head -o jsonpath='{range .spec.ports[*]}{.port}{\"\\n\"}{end}'); printf '%s\n' \"$ports\" | grep -qx '6379'; if printf '%s\n' \"$ports\" | grep -qx '{{params.dashboard_port}}'; then exit 1; fi",
+            ]
+          timeout_sec: 10
+
+  - id: ray_head_ready
+    probe:
+      commands:
+        - command:
+            [
+              "/bin/sh",
+              "-c",
+              "set -e; kubectl -n ${BENCH_NAMESPACE} rollout status deployment/{{params.cluster_prefix}}-head --timeout=5s >/dev/null; ready=$(kubectl -n ${BENCH_NAMESPACE} get deployment {{params.cluster_prefix}}-head -o jsonpath='{.status.readyReplicas}'); test ${ready:-0} -ge 1",
+            ]
+          timeout_sec: 10
+    apply:
+      commands:
+        - command:
+            [
+              "/bin/sh",
+              "-c",
+              "sed -e 's/__CLUSTER_PREFIX__/{{params.cluster_prefix}}/g' -e 's#__RAY_IMAGE__#{{params.ray_image}}#g' resources/ray/dashboard_reachable/resource/ray-head.yaml | kubectl -n ${BENCH_NAMESPACE} apply -f -",
+            ]
+          timeout_sec: 20
+    verify:
+      commands:
+        - command:
+            [
+              "/bin/sh",
+              "-c",
+              "set -e; kubectl -n ${BENCH_NAMESPACE} rollout status deployment/{{params.cluster_prefix}}-head --timeout=60s >/dev/null; ready=$(kubectl -n ${BENCH_NAMESPACE} get deployment {{params.cluster_prefix}}-head -o jsonpath='{.status.readyReplicas}'); test ${ready:-0} -ge 1",
+            ]
+          timeout_sec: 70
+      retries: 3
+      interval_sec: 2
+
+  - id: ray_worker_ready
+    probe:
+      commands:
+        - command:
+            [
+              "/bin/sh",
+              "-c",
+              "set -e; kubectl -n ${BENCH_NAMESPACE} rollout status deployment/{{params.cluster_prefix}}-worker --timeout=5s >/dev/null; ready=$(kubectl -n ${BENCH_NAMESPACE} get deployment {{params.cluster_prefix}}-worker -o jsonpath='{.status.readyReplicas}'); test ${ready:-0} -ge {{params.worker_replicas}}",
+            ]
+          timeout_sec: 10
+    apply:
+      commands:
+        - command:
+            [
+              "/bin/sh",
+              "-c",
+              "sed -e 's/__CLUSTER_PREFIX__/{{params.cluster_prefix}}/g' -e 's#__RAY_IMAGE__#{{params.ray_image}}#g' -e 's/__WORKER_REPLICAS__/{{params.worker_replicas}}/g' resources/ray/dashboard_reachable/resource/ray-worker.yaml | kubectl -n ${BENCH_NAMESPACE} apply -f -",
+            ]
+          timeout_sec: 20
+    verify:
+      commands:
+        - command:
+            [
+              "/bin/sh",
+              "-c",
+              "set -e; kubectl -n ${BENCH_NAMESPACE} rollout status deployment/{{params.cluster_prefix}}-worker --timeout=60s >/dev/null; ready=$(kubectl -n ${BENCH_NAMESPACE} get deployment {{params.cluster_prefix}}-worker -o jsonpath='{.status.readyReplicas}'); test ${ready:-0} -ge {{params.worker_replicas}}",
+            ]
+          timeout_sec: 70
+      retries: 3
+      interval_sec: 2
+
+  - id: curl_test_ready
+    probe:
+      commands:
+        - command:
+            [
+              "kubectl",
+              "-n",
+              "${BENCH_NAMESPACE}",
+              "wait",
+              "--for=condition=Ready",
+              "pod/{{params.cluster_prefix}}-curl-test",
+              "--timeout=5s",
+            ]
+          timeout_sec: 10
+    apply:
+      commands:
+        - command:
+            [
+              "/bin/sh",
+              "-c",
+              "sed -e 's/__CLUSTER_PREFIX__/{{params.cluster_prefix}}/g' resources/ray/dashboard_reachable/resource/curl-test.yaml | kubectl -n ${BENCH_NAMESPACE} apply -f -",
+            ]
+          timeout_sec: 20
+    verify:
+      commands:
+        - command:
+            [
+              "kubectl",
+              "-n",
+              "${BENCH_NAMESPACE}",
+              "wait",
+              "--for=condition=Ready",
+              "pod/{{params.cluster_prefix}}-curl-test",
+              "--timeout=60s",
+            ]
+          timeout_sec: 70
+      retries: 3
+      interval_sec: 2
+
+detailedInstructions: |
+  Make the Ray dashboard reachable through the head Service in `${BENCH_NAMESPACE}`.
+
+  Requirements:
+  - Expose port `{{params.dashboard_port}}` on Service `{{params.cluster_prefix}}-head`.
+  - Keep the existing head and worker deployments running.
+  - Confirm the endpoint becomes reachable from inside the cluster.
+
+  A good validation command is:
+  ```bash
+  kubectl -n ${BENCH_NAMESPACE} exec {{params.cluster_prefix}}-curl-test -- \
+    curl -sS -o /dev/null -w "%{http_code}" \
+    http://{{params.cluster_prefix}}-head:{{params.dashboard_port}}/api/cluster_status
+  ```
+
+operatorContext: |
+  Helpful commands:
+  ```bash
+  kubectl -n ${BENCH_NAMESPACE} get svc {{params.cluster_prefix}}-head -o yaml
+  kubectl -n ${BENCH_NAMESPACE} get deploy,pod
+  kubectl -n ${BENCH_NAMESPACE} logs deploy/{{params.cluster_prefix}}-head --tail=200
+  ```
+
+oracle:
+  verify:
+    commands:
+      - command:
+          [
+            "python3",
+            "resources/ray/dashboard_reachable/oracle/oracle.py",
+            "--check",
+            "service-port",
+            "--expected-port",
+            "{{params.dashboard_port}}",
+          ]
+        timeout_sec: 30
+      - command:
+          [
+            "python3",
+            "resources/ray/dashboard_reachable/oracle/oracle.py",
+            "--check",
+            "http",
+            "--expected-port",
+            "{{params.dashboard_port}}",
+          ]
+        timeout_sec: 60
+
+cleanUpCommands:
+  - command: ["kubectl", "-n", "${BENCH_NAMESPACE}", "delete", "pod", "{{params.cluster_prefix}}-curl-test", "--ignore-not-found=true"]
+    timeout_sec: 20
+  - command: ["kubectl", "-n", "${BENCH_NAMESPACE}", "delete", "deployment", "{{params.cluster_prefix}}-head", "--ignore-not-found=true"]
+    timeout_sec: 20
+  - command: ["kubectl", "-n", "${BENCH_NAMESPACE}", "delete", "deployment", "{{params.cluster_prefix}}-worker", "--ignore-not-found=true"]
+    timeout_sec: 20
+  - command: ["kubectl", "-n", "${BENCH_NAMESPACE}", "delete", "service", "{{params.cluster_prefix}}-head", "--ignore-not-found=true"]
+    timeout_sec: 20

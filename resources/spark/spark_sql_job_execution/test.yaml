@@ -1,0 +1,162 @@
+type: spark-sql-job-execution
+targetApp: Apache-Spark
+numAppInstance: 1
+maxAttempts: 1
+
+namespace_contract:
+  base_namespace: spark-sql
+  default_role: default
+  required_roles:
+  - default
+
+params:
+  definitions:
+    service_account_name:
+      type: string
+      default: spark-sql
+    job_name:
+      type: string
+      default: spark-sql-job
+    spark_image:
+      type: string
+      default: apache/spark:3.5.3
+    expected_summary:
+      type: string
+      default: spark_sql_ok:10
+
+preconditionUnits:
+  - id: spark_rbac_ready
+    probe:
+      commands:
+        - command: ["kubectl", "-n", "${BENCH_NAMESPACE}", "get", "serviceaccount", "{{params.service_account_name}}"]
+          timeout_sec: 10
+    apply:
+      commands:
+        - command:
+            [
+              "/bin/sh",
+              "-c",
+              "sed -e 's/__NAMESPACE__/${BENCH_NAMESPACE}/g' -e 's/__SERVICE_ACCOUNT__/{{params.service_account_name}}/g' resources/spark/common/resource/rbac.yaml | kubectl apply -f -",
+            ]
+          timeout_sec: 20
+    verify:
+      commands:
+        - command: ["kubectl", "-n", "${BENCH_NAMESPACE}", "get", "serviceaccount", "{{params.service_account_name}}"]
+          timeout_sec: 10
+      retries: 3
+      interval_sec: 2
+
+  - id: sql_job_baseline_ready
+    probe:
+      commands:
+        - command:
+            [
+              "/bin/sh",
+              "-c",
+              "kubectl -n ${BENCH_NAMESPACE} get job {{params.job_name}} >/dev/null 2>&1 && exit 1 || exit 0",
+            ]
+          timeout_sec: 10
+    apply:
+      commands:
+        - command: ["kubectl", "-n", "${BENCH_NAMESPACE}", "delete", "job", "{{params.job_name}}", "--ignore-not-found=true", "--wait=true"]
+          timeout_sec: 30
+    verify:
+      commands:
+        - command:
+            [
+              "/bin/sh",
+              "-c",
+              "kubectl -n ${BENCH_NAMESPACE} get job {{params.job_name}} >/dev/null 2>&1 && exit 1 || exit 0",
+            ]
+          timeout_sec: 10
+
+detailedInstructions: |
+  Execute a healthy Spark SQL job in `${BENCH_NAMESPACE}`.
+
+  Requirements:
+  - Create Job `{{params.job_name}}`.
+  - Use ServiceAccount `{{params.service_account_name}}`.
+  - Use image `{{params.spark_image}}`.
+  - The job must complete successfully and emit summary `{{params.expected_summary}}`.
+
+  A good solve flow is:
+  ```bash
+  sed \
+    -e "s/__NAMESPACE__/${BENCH_NAMESPACE}/g" \
+    -e "s/__JOB_NAME__/{{params.job_name}}/g" \
+    -e "s/__SERVICE_ACCOUNT__/{{params.service_account_name}}/g" \
+    -e "s#__SPARK_IMAGE__#{{params.spark_image}}#g" \
+    resources/spark/spark_sql_job_execution/resource/sql-job.yaml | kubectl apply -f -
+  kubectl -n ${BENCH_NAMESPACE} wait --for=condition=complete job/{{params.job_name}} --timeout=300s
+  kubectl -n ${BENCH_NAMESPACE} logs job/{{params.job_name}}
+  ```
+
+operatorContext: |
+  Helpful commands:
+  ```bash
+  kubectl -n ${BENCH_NAMESPACE} get job,pod,serviceaccount
+  kubectl -n ${BENCH_NAMESPACE} logs job/{{params.job_name}} --tail=100
+  kubectl -n ${BENCH_NAMESPACE} describe job/{{params.job_name}}
+  ```
+
+oracle:
+  verify:
+    commands:
+      - command:
+          [
+            "python3",
+            "resources/spark/spark_sql_job_execution/oracle/oracle.py",
+            "--check",
+            "job-spec",
+            "--job-name",
+            "{{params.job_name}}",
+            "--expected-service-account",
+            "{{params.service_account_name}}",
+            "--expected-image",
+            "{{params.spark_image}}",
+            "--expected-summary",
+            "{{params.expected_summary}}",
+          ]
+        timeout_sec: 30
+      - command:
+          [
+            "python3",
+            "resources/spark/spark_sql_job_execution/oracle/oracle.py",
+            "--check",
+            "job-status",
+            "--job-name",
+            "{{params.job_name}}",
+            "--expected-service-account",
+            "{{params.service_account_name}}",
+            "--expected-image",
+            "{{params.spark_image}}",
+            "--expected-summary",
+            "{{params.expected_summary}}",
+          ]
+        timeout_sec: 30
+      - command:
+          [
+            "python3",
+            "resources/spark/spark_sql_job_execution/oracle/oracle.py",
+            "--check",
+            "logs",
+            "--job-name",
+            "{{params.job_name}}",
+            "--expected-service-account",
+            "{{params.service_account_name}}",
+            "--expected-image",
+            "{{params.spark_image}}",
+            "--expected-summary",
+            "{{params.expected_summary}}",
+          ]
+        timeout_sec: 30
+
+cleanUpCommands:
+  - command: ["kubectl", "-n", "${BENCH_NAMESPACE}", "delete", "job", "{{params.job_name}}", "--ignore-not-found=true", "--wait=true"]
+    timeout_sec: 30
+  - command: ["kubectl", "-n", "${BENCH_NAMESPACE}", "delete", "rolebinding", "{{params.service_account_name}}-role-binding", "--ignore-not-found=true"]
+    timeout_sec: 20
+  - command: ["kubectl", "-n", "${BENCH_NAMESPACE}", "delete", "role", "{{params.service_account_name}}-role", "--ignore-not-found=true"]
+    timeout_sec: 20
+  - command: ["kubectl", "-n", "${BENCH_NAMESPACE}", "delete", "serviceaccount", "{{params.service_account_name}}", "--ignore-not-found=true"]
+    timeout_sec: 20

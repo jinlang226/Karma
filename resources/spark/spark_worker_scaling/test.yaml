@@ -1,0 +1,262 @@
+type: spark-worker-scaling
+targetApp: Apache-Spark
+numAppInstance: 1
+maxAttempts: 1
+
+namespace_contract:
+  base_namespace: spark-scaling
+  default_role: default
+  required_roles:
+  - default
+
+params:
+  definitions:
+    cluster_prefix:
+      type: string
+      default: spark
+    service_account_name:
+      type: string
+      default: spark
+    spark_image:
+      type: string
+      default: apache/spark:3.5.3
+    source_worker_replicas:
+      type: int
+      default: 1
+      min: 1
+      max: 6
+    target_worker_replicas:
+      type: int
+      default: 2
+      min: 1
+      max: 6
+    worker_memory:
+      type: string
+      default: 512m
+
+preconditionUnits:
+  - id: spark_rbac_ready
+    probe:
+      commands:
+        - command: ["kubectl", "-n", "${BENCH_NAMESPACE}", "get", "serviceaccount", "{{params.service_account_name}}"]
+          timeout_sec: 10
+    apply:
+      commands:
+        - command:
+            [
+              "/bin/sh",
+              "-c",
+              "sed -e 's/__NAMESPACE__/${BENCH_NAMESPACE}/g' -e 's/__SERVICE_ACCOUNT__/{{params.service_account_name}}/g' resources/spark/common/resource/rbac.yaml | kubectl apply -f -",
+            ]
+          timeout_sec: 20
+    verify:
+      commands:
+        - command: ["kubectl", "-n", "${BENCH_NAMESPACE}", "get", "serviceaccount", "{{params.service_account_name}}"]
+          timeout_sec: 10
+      retries: 3
+      interval_sec: 2
+
+  - id: spark_master_service_ready
+    probe:
+      commands:
+        - command:
+            [
+              "/bin/sh",
+              "-c",
+              "set -e; ports=$(kubectl -n ${BENCH_NAMESPACE} get service {{params.cluster_prefix}}-master -o jsonpath='{range .spec.ports[*]}{.port}{\"\\n\"}{end}'); echo \"$ports\" | grep -qx '7077'; echo \"$ports\" | grep -qx '8080'",
+            ]
+          timeout_sec: 10
+    apply:
+      commands:
+        - command:
+            [
+              "/bin/sh",
+              "-c",
+              "sed -e 's/__NAMESPACE__/${BENCH_NAMESPACE}/g' -e 's/__CLUSTER_PREFIX__/{{params.cluster_prefix}}/g' resources/spark/spark_worker_scaling/resource/spark-master-service.yaml | kubectl apply -f -",
+            ]
+          timeout_sec: 20
+    verify:
+      commands:
+        - command:
+            [
+              "/bin/sh",
+              "-c",
+              "set -e; ports=$(kubectl -n ${BENCH_NAMESPACE} get service {{params.cluster_prefix}}-master -o jsonpath='{range .spec.ports[*]}{.port}{\"\\n\"}{end}'); echo \"$ports\" | grep -qx '7077'; echo \"$ports\" | grep -qx '8080'",
+            ]
+          timeout_sec: 10
+
+  - id: spark_master_ready
+    probe:
+      commands:
+        - command:
+            [
+              "/bin/sh",
+              "-c",
+              "set -e; kubectl -n ${BENCH_NAMESPACE} rollout status deployment/{{params.cluster_prefix}}-master --timeout=5s >/dev/null; ready=$(kubectl -n ${BENCH_NAMESPACE} get deployment {{params.cluster_prefix}}-master -o jsonpath='{.status.readyReplicas}'); test ${ready:-0} -eq 1",
+            ]
+          timeout_sec: 10
+    apply:
+      commands:
+        - command:
+            [
+              "/bin/sh",
+              "-c",
+              "sed -e 's/__NAMESPACE__/${BENCH_NAMESPACE}/g' -e 's/__CLUSTER_PREFIX__/{{params.cluster_prefix}}/g' -e 's/__SERVICE_ACCOUNT__/{{params.service_account_name}}/g' -e 's#__SPARK_IMAGE__#{{params.spark_image}}#g' resources/spark/spark_worker_scaling/resource/spark-master.yaml | kubectl apply -f -",
+            ]
+          timeout_sec: 20
+    verify:
+      commands:
+        - command:
+            [
+              "/bin/sh",
+              "-c",
+              "set -e; kubectl -n ${BENCH_NAMESPACE} rollout status deployment/{{params.cluster_prefix}}-master --timeout=120s >/dev/null; ready=$(kubectl -n ${BENCH_NAMESPACE} get deployment {{params.cluster_prefix}}-master -o jsonpath='{.status.readyReplicas}'); test ${ready:-0} -eq 1",
+            ]
+          timeout_sec: 130
+      retries: 3
+      interval_sec: 2
+
+  - id: spark_worker_baseline_ready
+    probe:
+      commands:
+        - command:
+            [
+              "/bin/sh",
+              "-c",
+              "set -e; kubectl -n ${BENCH_NAMESPACE} rollout status deployment/{{params.cluster_prefix}}-worker --timeout=5s >/dev/null; spec=$(kubectl -n ${BENCH_NAMESPACE} get deployment {{params.cluster_prefix}}-worker -o jsonpath='{.spec.replicas}'); ready=$(kubectl -n ${BENCH_NAMESPACE} get deployment {{params.cluster_prefix}}-worker -o jsonpath='{.status.readyReplicas}'); test ${spec:-0} -eq {{params.source_worker_replicas}}; test ${ready:-0} -eq {{params.source_worker_replicas}}",
+            ]
+          timeout_sec: 10
+    apply:
+      commands:
+        - command:
+            [
+              "/bin/sh",
+              "-c",
+              "sed -e 's/__NAMESPACE__/${BENCH_NAMESPACE}/g' -e 's/__CLUSTER_PREFIX__/{{params.cluster_prefix}}/g' -e 's/__SERVICE_ACCOUNT__/{{params.service_account_name}}/g' -e 's#__SPARK_IMAGE__#{{params.spark_image}}#g' -e 's/__WORKER_REPLICAS__/{{params.source_worker_replicas}}/g' -e 's/__WORKER_MEMORY__/{{params.worker_memory}}/g' resources/spark/spark_worker_scaling/resource/spark-worker.yaml | kubectl apply -f -",
+            ]
+          timeout_sec: 20
+    verify:
+      commands:
+        - command:
+            [
+              "/bin/sh",
+              "-c",
+              "set -e; kubectl -n ${BENCH_NAMESPACE} rollout status deployment/{{params.cluster_prefix}}-worker --timeout=120s >/dev/null; spec=$(kubectl -n ${BENCH_NAMESPACE} get deployment {{params.cluster_prefix}}-worker -o jsonpath='{.spec.replicas}'); ready=$(kubectl -n ${BENCH_NAMESPACE} get deployment {{params.cluster_prefix}}-worker -o jsonpath='{.status.readyReplicas}'); test ${spec:-0} -eq {{params.source_worker_replicas}}; test ${ready:-0} -eq {{params.source_worker_replicas}}",
+            ]
+          timeout_sec: 130
+      retries: 3
+      interval_sec: 2
+
+detailedInstructions: |
+  Scale the Spark worker deployment in `${BENCH_NAMESPACE}` to
+  `{{params.target_worker_replicas}}` replicas.
+
+  Requirements:
+  - Keep Service `{{params.cluster_prefix}}-master` healthy.
+  - Keep Deployment `{{params.cluster_prefix}}-master` healthy.
+  - Update Deployment `{{params.cluster_prefix}}-worker` in place.
+  - Wait until all target workers are ready.
+
+  A good solve flow is:
+  ```bash
+  kubectl -n ${BENCH_NAMESPACE} scale deployment/{{params.cluster_prefix}}-worker --replicas={{params.target_worker_replicas}}
+  kubectl -n ${BENCH_NAMESPACE} rollout status deployment/{{params.cluster_prefix}}-worker --timeout=180s
+  ```
+
+operatorContext: |
+  Helpful commands:
+  ```bash
+  kubectl -n ${BENCH_NAMESPACE} get deploy,svc,pod
+  kubectl -n ${BENCH_NAMESPACE} logs deploy/{{params.cluster_prefix}}-master --tail=100
+  kubectl -n ${BENCH_NAMESPACE} logs deploy/{{params.cluster_prefix}}-worker --tail=100
+  ```
+
+oracle:
+  verify:
+    commands:
+      - command:
+          [
+            "python3",
+            "resources/spark/spark_worker_scaling/oracle/oracle.py",
+            "--check",
+            "service",
+            "--cluster-prefix",
+            "{{params.cluster_prefix}}",
+            "--expected-service-account",
+            "{{params.service_account_name}}",
+            "--expected-image",
+            "{{params.spark_image}}",
+            "--expected-workers",
+            "{{params.target_worker_replicas}}",
+            "--expected-worker-memory",
+            "{{params.worker_memory}}",
+          ]
+        timeout_sec: 30
+      - command:
+          [
+            "python3",
+            "resources/spark/spark_worker_scaling/oracle/oracle.py",
+            "--check",
+            "master",
+            "--cluster-prefix",
+            "{{params.cluster_prefix}}",
+            "--expected-service-account",
+            "{{params.service_account_name}}",
+            "--expected-image",
+            "{{params.spark_image}}",
+            "--expected-workers",
+            "{{params.target_worker_replicas}}",
+            "--expected-worker-memory",
+            "{{params.worker_memory}}",
+          ]
+        timeout_sec: 30
+      - command:
+          [
+            "python3",
+            "resources/spark/spark_worker_scaling/oracle/oracle.py",
+            "--check",
+            "worker-spec",
+            "--cluster-prefix",
+            "{{params.cluster_prefix}}",
+            "--expected-service-account",
+            "{{params.service_account_name}}",
+            "--expected-image",
+            "{{params.spark_image}}",
+            "--expected-workers",
+            "{{params.target_worker_replicas}}",
+            "--expected-worker-memory",
+            "{{params.worker_memory}}",
+          ]
+        timeout_sec: 30
+      - command:
+          [
+            "python3",
+            "resources/spark/spark_worker_scaling/oracle/oracle.py",
+            "--check",
+            "worker-ready",
+            "--cluster-prefix",
+            "{{params.cluster_prefix}}",
+            "--expected-service-account",
+            "{{params.service_account_name}}",
+            "--expected-image",
+            "{{params.spark_image}}",
+            "--expected-workers",
+            "{{params.target_worker_replicas}}",
+            "--expected-worker-memory",
+            "{{params.worker_memory}}",
+          ]
+        timeout_sec: 30
+
+cleanUpCommands:
+  - command: ["kubectl", "-n", "${BENCH_NAMESPACE}", "delete", "deployment", "{{params.cluster_prefix}}-worker", "--ignore-not-found=true"]
+    timeout_sec: 20
+  - command: ["kubectl", "-n", "${BENCH_NAMESPACE}", "delete", "deployment", "{{params.cluster_prefix}}-master", "--ignore-not-found=true"]
+    timeout_sec: 20
+  - command: ["kubectl", "-n", "${BENCH_NAMESPACE}", "delete", "service", "{{params.cluster_prefix}}-master", "--ignore-not-found=true"]
+    timeout_sec: 20
+  - command: ["kubectl", "-n", "${BENCH_NAMESPACE}", "delete", "rolebinding", "{{params.service_account_name}}-role-binding", "--ignore-not-found=true"]
+    timeout_sec: 20
+  - command: ["kubectl", "-n", "${BENCH_NAMESPACE}", "delete", "role", "{{params.service_account_name}}-role", "--ignore-not-found=true"]
+    timeout_sec: 20
+  - command: ["kubectl", "-n", "${BENCH_NAMESPACE}", "delete", "serviceaccount", "{{params.service_account_name}}", "--ignore-not-found=true"]
+    timeout_sec: 20

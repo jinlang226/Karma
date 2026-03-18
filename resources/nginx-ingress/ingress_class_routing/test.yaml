@@ -1,0 +1,222 @@
+type: nginx-ingress-class-routing
+targetApp: NGINX-Ingress
+numAppInstance: 1
+maxAttempts: 1
+
+namespace_contract:
+  base_namespace: nginx
+  default_role: app
+  required_roles:
+  - ingress
+  - app
+
+params:
+  definitions:
+    app_deployment_name:
+      type: string
+      default: demo-app
+    service_name:
+      type: string
+      default: demo-app
+    ingress_name:
+      type: string
+      default: demo-app
+    curl_pod_name:
+      type: string
+      default: curl-test
+    host:
+      type: string
+      default: class.example.com
+    path:
+      type: string
+      default: /
+    ingress_class_name:
+      type: string
+      default: nginx
+    expected_body:
+      type: string
+      default: hello
+
+preconditionUnits:
+  - id: ingress_controller_ready
+    probe:
+      commands:
+        - command:
+            - /bin/sh
+            - -c
+            - >
+              set -e;
+              kubectl -n ${BENCH_NS_INGRESS} rollout status deployment/ingress-nginx-controller --timeout=5s >/dev/null;
+              kubectl -n ${BENCH_NS_INGRESS} get deployment ingress-nginx-controller -o yaml |
+              grep -q -- '--watch-ingress-without-class=false'
+          timeout_sec: 10
+    apply:
+      commands:
+        - command:
+            - /bin/sh
+            - -c
+            - >
+              set -e;
+              awk 'BEGIN{skip=1} /^---$/{if(skip){skip=0; next}} !skip {print}'
+              resources/nginx-ingress/ingress_class_routing/resource/deploy.yaml |
+              sed "s/namespace: ingress-nginx/namespace: ${BENCH_NS_INGRESS}/g" |
+              sed 's/--watch-ingress-without-class=true/--watch-ingress-without-class=false/g' |
+              kubectl apply -f -
+          timeout_sec: 40
+    verify:
+      commands:
+        - command:
+            - /bin/sh
+            - -c
+            - >
+              set -e;
+              kubectl -n ${BENCH_NS_INGRESS} rollout status deployment/ingress-nginx-controller --timeout=120s >/dev/null;
+              kubectl -n ${BENCH_NS_INGRESS} get deployment ingress-nginx-controller -o yaml |
+              grep -q -- '--watch-ingress-without-class=false'
+          timeout_sec: 130
+      retries: 3
+      interval_sec: 3
+
+  - id: demo_app_ready
+    probe:
+      commands:
+        - command: ["kubectl", "-n", "${BENCH_NS_APP}", "rollout", "status", "deployment/{{params.app_deployment_name}}", "--timeout=5s"]
+          timeout_sec: 10
+        - command: ["kubectl", "-n", "${BENCH_NS_APP}", "get", "service", "{{params.service_name}}"]
+          timeout_sec: 10
+    apply:
+      commands:
+        - command:
+            - /bin/sh
+            - -c
+            - >
+              sed "s/namespace: demo/namespace: ${BENCH_NS_APP}/g"
+              resources/nginx-ingress/ingress_class_routing/resource/demo-app.yaml |
+              kubectl apply -f -
+          timeout_sec: 20
+    verify:
+      commands:
+        - command: ["kubectl", "-n", "${BENCH_NS_APP}", "rollout", "status", "deployment/{{params.app_deployment_name}}", "--timeout=60s"]
+          timeout_sec: 70
+        - command: ["kubectl", "-n", "${BENCH_NS_APP}", "get", "service", "{{params.service_name}}"]
+          timeout_sec: 10
+      retries: 3
+      interval_sec: 2
+
+  - id: curl_test_ready
+    probe:
+      commands:
+        - command: ["kubectl", "-n", "${BENCH_NS_APP}", "wait", "--for=condition=Ready", "pod/{{params.curl_pod_name}}", "--timeout=5s"]
+          timeout_sec: 10
+    apply:
+      commands:
+        - command:
+            - /bin/sh
+            - -c
+            - >
+              sed "s/namespace: demo/namespace: ${BENCH_NS_APP}/g"
+              resources/nginx-ingress/ingress_class_routing/resource/curl-test.yaml |
+              kubectl apply -f -
+          timeout_sec: 20
+    verify:
+      commands:
+        - command: ["kubectl", "-n", "${BENCH_NS_APP}", "wait", "--for=condition=Ready", "pod/{{params.curl_pod_name}}", "--timeout=60s"]
+          timeout_sec: 70
+      retries: 3
+      interval_sec: 2
+
+  - id: ingress_without_class_baseline_ready
+    probe:
+      commands:
+        - command:
+            - /bin/sh
+            - -c
+            - >
+              set -e;
+              kubectl -n ${BENCH_NS_APP} get ingress {{params.ingress_name}} >/dev/null;
+              class_name=$(kubectl -n ${BENCH_NS_APP} get ingress {{params.ingress_name}} -o jsonpath='{.spec.ingressClassName}');
+              test -z "${class_name}"
+          timeout_sec: 10
+    apply:
+      commands:
+        - command:
+            - /bin/sh
+            - -c
+            - >
+              sed "s/namespace: demo/namespace: ${BENCH_NS_APP}/g"
+              resources/nginx-ingress/ingress_class_routing/resource/demo-ingress.yaml |
+              kubectl apply -f -
+          timeout_sec: 20
+    verify:
+      commands:
+        - command:
+            - /bin/sh
+            - -c
+            - >
+              set -e;
+              kubectl -n ${BENCH_NS_APP} get ingress {{params.ingress_name}} >/dev/null;
+              class_name=$(kubectl -n ${BENCH_NS_APP} get ingress {{params.ingress_name}} -o jsonpath='{.spec.ingressClassName}');
+              test -z "${class_name}"
+          timeout_sec: 10
+
+detailedInstructions: |
+  Fix ingress class routing in the assigned namespaces.
+
+  Namespaces:
+  - controller: `${BENCH_NS_INGRESS}`
+  - application: `${BENCH_NS_APP}`
+
+  Current baseline:
+  - Deployment `ingress-nginx-controller` only watches Ingresses with an explicit class.
+  - Ingress `{{params.ingress_name}}` exists, but it has no `spec.ingressClassName`.
+  - Deployment `{{params.app_deployment_name}}` and Service `{{params.service_name}}` are already healthy.
+
+  Requirements:
+  - Update Ingress `{{params.ingress_name}}` in `${BENCH_NS_APP}`.
+  - Set `spec.ingressClassName={{params.ingress_class_name}}`.
+  - Keep the backend Deployment and Service unchanged.
+
+  A good validation command is:
+  ```bash
+  kubectl -n ${BENCH_NS_APP} exec {{params.curl_pod_name}} -- \
+    curl -sS -H "Host: {{params.host}}" \
+    http://ingress-nginx-controller.${BENCH_NS_INGRESS}.svc.cluster.local{{params.path}}
+  ```
+
+operatorContext: |
+  Helpful commands:
+  ```bash
+  kubectl -n ${BENCH_NS_APP} get ingress,svc,deploy,pod
+  kubectl -n ${BENCH_NS_INGRESS} get deploy -o yaml
+  kubectl -n ${BENCH_NS_INGRESS} logs deploy/ingress-nginx-controller --tail=200
+  ```
+
+oracle:
+  verify:
+    commands:
+      - command: ["python3", "resources/nginx-ingress/ingress_class_routing/oracle/oracle.py", "--check", "controller-flag", "--ingress-name", "{{params.ingress_name}}", "--curl-pod-name", "{{params.curl_pod_name}}", "--host", "{{params.host}}", "--path", "{{params.path}}", "--service-name", "{{params.service_name}}", "--expected-ingress-class", "{{params.ingress_class_name}}", "--expected-body", "{{params.expected_body}}"]
+        timeout_sec: 30
+      - command: ["python3", "resources/nginx-ingress/ingress_class_routing/oracle/oracle.py", "--check", "ingress", "--ingress-name", "{{params.ingress_name}}", "--curl-pod-name", "{{params.curl_pod_name}}", "--host", "{{params.host}}", "--path", "{{params.path}}", "--service-name", "{{params.service_name}}", "--expected-ingress-class", "{{params.ingress_class_name}}", "--expected-body", "{{params.expected_body}}"]
+        timeout_sec: 30
+      - command: ["python3", "resources/nginx-ingress/ingress_class_routing/oracle/oracle.py", "--check", "http", "--ingress-name", "{{params.ingress_name}}", "--curl-pod-name", "{{params.curl_pod_name}}", "--host", "{{params.host}}", "--path", "{{params.path}}", "--service-name", "{{params.service_name}}", "--expected-ingress-class", "{{params.ingress_class_name}}", "--expected-body", "{{params.expected_body}}"]
+        timeout_sec: 30
+
+cleanUpCommands:
+  - command: ["kubectl", "-n", "${BENCH_NS_APP}", "delete", "ingress", "{{params.ingress_name}}", "--ignore-not-found=true"]
+    timeout_sec: 20
+  - command: ["kubectl", "-n", "${BENCH_NS_APP}", "delete", "pod", "{{params.curl_pod_name}}", "--ignore-not-found=true"]
+    timeout_sec: 20
+  - command: ["kubectl", "-n", "${BENCH_NS_APP}", "delete", "service", "{{params.service_name}}", "--ignore-not-found=true"]
+    timeout_sec: 20
+  - command: ["kubectl", "-n", "${BENCH_NS_APP}", "delete", "deployment", "{{params.app_deployment_name}}", "--ignore-not-found=true"]
+    timeout_sec: 20
+  - command:
+      - /bin/sh
+      - -c
+      - >
+        set -e;
+        awk 'BEGIN{skip=1} /^---$/{if(skip){skip=0; next}} !skip {print}'
+        resources/nginx-ingress/ingress_class_routing/resource/deploy.yaml |
+        sed "s/namespace: ingress-nginx/namespace: ${BENCH_NS_INGRESS}/g" |
+        kubectl delete --ignore-not-found=true -f - || true
+    timeout_sec: 40

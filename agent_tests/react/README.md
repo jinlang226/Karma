@@ -34,5 +34,5 @@ python3 orchestrator.py run \
   --sandbox docker \
   --docker-image benchmark-react \
   --service nginx-ingress \
-  --case class_only_upgrade
+  --case ingress_class_routing
 ```
