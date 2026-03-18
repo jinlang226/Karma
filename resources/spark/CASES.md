@@ -11,8 +11,8 @@ these base cases instead of being embedded directly in `test.yaml`.
   - Base capability: single-job execution with correct service account and image.
 
 - `spark_multi_tenant_job_execution`
-  - Run one healthy SparkPi job in each assigned tenant namespace.
-  - Base capability: namespace-isolated multi-tenant execution.
+  - Run one healthy SparkPi job in each active tenant namespace.
+  - Base capability: namespace-isolated multi-tenant execution across a bounded 2-4 tenant set.
 
 - `spark_history_server_ready`
   - Stand up a healthy Spark History Server with PVC-backed log storage.

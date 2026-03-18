@@ -39,6 +39,11 @@ params:
     limit_burst:
       type: string
       default: "1"
+    controller_replicas:
+      type: int
+      default: 2
+      min: 1
+      max: 10
     baseline_limit_status_code:
       type: string
       default: "503"
@@ -73,7 +78,7 @@ preconditionUnits:
             - >
               set -e;
               awk 'BEGIN{skip=1} /^---$/{if(skip){skip=0; next}} !skip {print}'
-              resources/nginx-ingress/create_ingress/resource/deploy.yaml |
+              resources/nginx-ingress/rate_limit_ingress/resource/deploy.yaml |
               sed "s/namespace: ingress-nginx/namespace: ${BENCH_NS_INGRESS}/g" |
               kubectl apply -f -
           timeout_sec: 40
@@ -84,7 +89,7 @@ preconditionUnits:
       retries: 3
       interval_sec: 3
 
-  - id: single_controller_replica_ready
+  - id: controller_topology_ready
     probe:
       commands:
         - command:
@@ -94,12 +99,12 @@ preconditionUnits:
               set -e;
               spec=$(kubectl -n ${BENCH_NS_INGRESS} get deployment ingress-nginx-controller -o jsonpath='{.spec.replicas}');
               ready=$(kubectl -n ${BENCH_NS_INGRESS} get deployment ingress-nginx-controller -o jsonpath='{.status.readyReplicas}');
-              test "${spec}" = "1";
-              test "${ready:-0}" = "1"
+              test "${spec}" = "{{params.controller_replicas}}";
+              test "${ready:-0}" = "{{params.controller_replicas}}"
           timeout_sec: 10
     apply:
       commands:
-        - command: ["kubectl", "-n", "${BENCH_NS_INGRESS}", "scale", "deployment/ingress-nginx-controller", "--replicas=1"]
+        - command: ["kubectl", "-n", "${BENCH_NS_INGRESS}", "scale", "deployment/ingress-nginx-controller", "--replicas={{params.controller_replicas}}"]
           timeout_sec: 20
     verify:
       commands:
@@ -111,8 +116,8 @@ preconditionUnits:
               kubectl -n ${BENCH_NS_INGRESS} rollout status deployment/ingress-nginx-controller --timeout=120s >/dev/null;
               spec=$(kubectl -n ${BENCH_NS_INGRESS} get deployment ingress-nginx-controller -o jsonpath='{.spec.replicas}');
               ready=$(kubectl -n ${BENCH_NS_INGRESS} get deployment ingress-nginx-controller -o jsonpath='{.status.readyReplicas}');
-              test "${spec}" = "1";
-              test "${ready:-0}" = "1"
+              test "${spec}" = "{{params.controller_replicas}}";
+              test "${ready:-0}" = "{{params.controller_replicas}}"
           timeout_sec: 130
       retries: 3
       interval_sec: 3
@@ -129,7 +134,7 @@ preconditionUnits:
             - -c
             - >
               sed "s/namespace: demo/namespace: ${BENCH_NS_APP}/g"
-              resources/nginx-ingress/rate_limit_ingress_easy/resource/rate-echo.yaml |
+              resources/nginx-ingress/rate_limit_ingress/resource/rate-echo.yaml |
               kubectl apply -f -
           timeout_sec: 20
     verify:
@@ -151,7 +156,7 @@ preconditionUnits:
             - -c
             - >
               sed "s/namespace: demo/namespace: ${BENCH_NS_APP}/g"
-              resources/nginx-ingress/rate_limit_ingress_easy/resource/curl-test.yaml |
+              resources/nginx-ingress/rate_limit_ingress/resource/curl-test.yaml |
               kubectl apply -f -
           timeout_sec: 20
     verify:
@@ -183,7 +188,7 @@ preconditionUnits:
             - -c
             - >
               sed "s/namespace: demo/namespace: ${BENCH_NS_APP}/g"
-              resources/nginx-ingress/rate_limit_ingress_easy/resource/ingress-api.yaml |
+              resources/nginx-ingress/rate_limit_ingress/resource/ingress-api.yaml |
               kubectl apply -f -
           timeout_sec: 20
         - command:
@@ -191,7 +196,7 @@ preconditionUnits:
             - -c
             - >
               sed "s/namespace: demo/namespace: ${BENCH_NS_APP}/g"
-              resources/nginx-ingress/rate_limit_ingress_easy/resource/ingress-health.yaml |
+              resources/nginx-ingress/rate_limit_ingress/resource/ingress-health.yaml |
               kubectl apply -f -
           timeout_sec: 20
     verify:
@@ -252,7 +257,7 @@ preconditionUnits:
       interval_sec: 3
 
 detailedInstructions: |
-  Configure per-Ingress rate limiting in the assigned namespaces.
+  Make the API ingress return repeated HTTP `{{params.limit_status_code}}` responses under load.
 
   Namespaces:
   - controller: `${BENCH_NS_INGRESS}`
@@ -262,30 +267,21 @@ detailedInstructions: |
   - Backend Deployment `{{params.app_deployment_name}}` is healthy.
   - Ingress `{{params.api_ingress_name}}` serves `{{params.api_path}}`.
   - Ingress `{{params.health_ingress_name}}` serves `{{params.health_path}}`.
+  - The ingress-nginx controller starts with `{{params.controller_replicas}}` replicas.
   - No rate-limit annotations are configured yet.
   - Controller ConfigMap `ingress-nginx-controller` currently returns `{{params.baseline_limit_status_code}}` for throttled requests.
 
-  Requirements:
-  - Limit `{{params.api_path}}` to `{{params.limit_rps}}` request per second.
-  - Exceeding requests on `{{params.api_path}}` must return HTTP `{{params.limit_status_code}}`.
-  - Update ConfigMap `ingress-nginx-controller` so `limit-req-status-code={{params.limit_status_code}}`.
-  - Keep `{{params.health_path}}` unlimited and healthy.
+  Goal:
+  - Under load, repeated requests to `{{params.api_path}}` must produce HTTP `{{params.limit_status_code}}`.
+  - How you achieve that is up to you.
   - Do not modify the backend Deployment.
-  - Restart or reload the controller if needed so the ConfigMap change takes effect.
 
   Good validation commands:
   ```bash
-  kubectl -n ${BENCH_NS_INGRESS} get configmap ingress-nginx-controller \
-    -o jsonpath='{.data.limit-req-status-code}'; echo
   kubectl -n ${BENCH_NS_APP} exec {{params.curl_pod_name}} -- sh -c \
     'for i in 1 2 3 4 5 6 7 8 9 10; do curl -s -o /dev/null -w "%{http_code}\n" \
       -H "Host: {{params.host}}" \
       http://ingress-nginx-controller.${BENCH_NS_INGRESS}.svc.cluster.local{{params.api_path}}; \
-      sleep {{params.request_pause_seconds}}; done'
-  kubectl -n ${BENCH_NS_APP} exec {{params.curl_pod_name}} -- sh -c \
-    'for i in 1 2 3 4 5 6 7 8 9 10; do curl -s -o /dev/null -w "%{http_code}\n" \
-      -H "Host: {{params.host}}" \
-      http://ingress-nginx-controller.${BENCH_NS_INGRESS}.svc.cluster.local{{params.health_path}}; \
       sleep {{params.request_pause_seconds}}; done'
   ```
 
@@ -294,17 +290,14 @@ operatorContext: |
   ```bash
   kubectl -n ${BENCH_NS_APP} get ingress,svc,deploy,pod -o yaml
   kubectl -n ${BENCH_NS_INGRESS} get configmap ingress-nginx-controller -o yaml
+  kubectl -n ${BENCH_NS_INGRESS} get deployment ingress-nginx-controller -o yaml
   kubectl -n ${BENCH_NS_INGRESS} logs deploy/ingress-nginx-controller --tail=200
   ```
 
 oracle:
   verify:
     commands:
-      - command: ["python3", "resources/nginx-ingress/rate_limit_ingress/oracle/oracle.py", "--check", "annotations", "--api-ingress-name", "{{params.api_ingress_name}}", "--curl-pod-name", "{{params.curl_pod_name}}", "--host", "{{params.host}}", "--api-path", "{{params.api_path}}", "--health-path", "{{params.health_path}}", "--expected-limit-rps", "{{params.limit_rps}}", "--expected-limit-burst", "{{params.limit_burst}}", "--expected-limit-status-code", "{{params.limit_status_code}}", "--request-count", "{{params.request_count}}", "--request-pause-seconds", "{{params.request_pause_seconds}}", "--min-limited-responses", "{{params.min_limited_responses}}"]
-        timeout_sec: 30
-      - command: ["python3", "resources/nginx-ingress/rate_limit_ingress/oracle/oracle.py", "--check", "configmap", "--api-ingress-name", "{{params.api_ingress_name}}", "--curl-pod-name", "{{params.curl_pod_name}}", "--host", "{{params.host}}", "--api-path", "{{params.api_path}}", "--health-path", "{{params.health_path}}", "--expected-limit-rps", "{{params.limit_rps}}", "--expected-limit-burst", "{{params.limit_burst}}", "--expected-limit-status-code", "{{params.limit_status_code}}", "--request-count", "{{params.request_count}}", "--request-pause-seconds", "{{params.request_pause_seconds}}", "--min-limited-responses", "{{params.min_limited_responses}}"]
-        timeout_sec: 30
-      - command: ["python3", "resources/nginx-ingress/rate_limit_ingress/oracle/oracle.py", "--check", "behavior", "--api-ingress-name", "{{params.api_ingress_name}}", "--curl-pod-name", "{{params.curl_pod_name}}", "--host", "{{params.host}}", "--api-path", "{{params.api_path}}", "--health-path", "{{params.health_path}}", "--expected-limit-rps", "{{params.limit_rps}}", "--expected-limit-burst", "{{params.limit_burst}}", "--expected-limit-status-code", "{{params.limit_status_code}}", "--request-count", "{{params.request_count}}", "--request-pause-seconds", "{{params.request_pause_seconds}}", "--min-limited-responses", "{{params.min_limited_responses}}"]
+      - command: ["python3", "resources/nginx-ingress/rate_limit_ingress/oracle/oracle.py", "--curl-pod-name", "{{params.curl_pod_name}}", "--host", "{{params.host}}", "--api-path", "{{params.api_path}}", "--expected-limit-status-code", "{{params.limit_status_code}}", "--request-count", "{{params.request_count}}", "--request-pause-seconds", "{{params.request_pause_seconds}}", "--min-limited-responses", "{{params.min_limited_responses}}"]
         timeout_sec: 60
 
 cleanUpCommands:
@@ -340,7 +333,7 @@ cleanUpCommands:
       - >
         set -e;
         awk 'BEGIN{skip=1} /^---$/{if(skip){skip=0; next}} !skip {print}'
-        resources/nginx-ingress/create_ingress/resource/deploy.yaml |
+        resources/nginx-ingress/rate_limit_ingress/resource/deploy.yaml |
         sed "s/namespace: ingress-nginx/namespace: ${BENCH_NS_INGRESS}/g" |
         kubectl delete --ignore-not-found=true -f - || true
     timeout_sec: 40

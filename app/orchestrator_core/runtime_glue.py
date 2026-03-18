@@ -113,6 +113,7 @@ from app.util import (
     normalize_metrics,
     parse_duration_seconds,
     safe_join,
+    sanitize_name,
     ts_str,
 )
 from app.workflow import (
@@ -340,6 +341,18 @@ def _build_single_case_workflow_plan(app, case_id, args):
     def _single_case_namespace_context(case_data):
         data = case_data if isinstance(case_data, dict) else {}
         contract = data.get("namespace_contract") if isinstance(data.get("namespace_contract"), dict) else {}
+        default_role = str(contract.get("default_role") or "default").strip() or "default"
+        declared_roles = []
+        for raw_role in (contract.get("required_roles") or []):
+            role = str(raw_role or "").strip()
+            if role and role not in declared_roles:
+                declared_roles.append(role)
+        for raw_role in (contract.get("optional_roles") or []):
+            role = str(raw_role or "").strip()
+            if role and role not in declared_roles:
+                declared_roles.append(role)
+        if default_role not in declared_roles:
+            declared_roles.insert(0, default_role)
         roles = {}
         base_roles = contract.get("base_roles")
         if not isinstance(base_roles, dict):
@@ -353,8 +366,12 @@ def _build_single_case_workflow_plan(app, case_id, args):
         if not roles:
             base_namespace = str(contract.get("base_namespace") or contract.get("baseNamespace") or "").strip()
             if base_namespace:
-                roles["default"] = base_namespace
-        default_role = str(contract.get("default_role") or "default").strip() or "default"
+                if len(declared_roles) <= 1:
+                    roles[default_role] = base_namespace
+                else:
+                    for role_name in declared_roles:
+                        suffix = sanitize_name(role_name).replace("_", "-").strip("-") or "default"
+                        roles[role_name] = f"{base_namespace}-{suffix}"
         if default_role not in roles and roles:
             default_role = "default" if "default" in roles else next(iter(roles.keys()))
         if not roles:

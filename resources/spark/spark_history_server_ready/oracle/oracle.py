@@ -30,6 +30,8 @@ def main() -> int:
     parser.add_argument("--expected-service-account", required=True)
     parser.add_argument("--expected-image", required=True)
     parser.add_argument("--expected-log-dir", required=True)
+    parser.add_argument("--expected-service-port", required=True, type=int)
+    parser.add_argument("--expected-replicas", required=True, type=int)
     args = parser.parse_args()
 
     namespace = bench_namespace("spark-history")
@@ -43,16 +45,18 @@ def main() -> int:
 
     if args.check == "service":
         ports = service_ports(namespace, args.service_name)
-        if 18080 not in ports:
-            print(f"service/{args.service_name} does not expose port 18080")
+        if args.expected_service_port not in ports:
+            print(f"service/{args.service_name} does not expose port {args.expected_service_port}")
             return 1
-        print(f"service/{args.service_name} exposes port 18080")
+        print(f"service/{args.service_name} exposes port {args.expected_service_port}")
         return 0
 
     if args.check == "deployment":
         ready = deployment_ready_replicas(namespace, args.deployment_name)
-        if ready != 1:
-            print(f"deployment/{args.deployment_name} readyReplicas={ready}, expected 1")
+        if ready != args.expected_replicas:
+            print(
+                f"deployment/{args.deployment_name} readyReplicas={ready}, expected {args.expected_replicas}"
+            )
             return 1
         service_account = deployment_service_account(namespace, args.deployment_name)
         if service_account != args.expected_service_account:
@@ -67,7 +71,10 @@ def main() -> int:
                 f"deployment/{args.deployment_name} image={image!r}, expected {args.expected_image!r}"
             )
             return 1
-        print(f"deployment/{args.deployment_name} is ready with the expected service account and image")
+        print(
+            f"deployment/{args.deployment_name} is ready with {args.expected_replicas} replica(s), "
+            "the expected service account, and image"
+        )
         return 0
 
     env_value = deployment_env(namespace, args.deployment_name, "SPARK_HISTORY_OPTS")

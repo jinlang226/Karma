@@ -53,7 +53,7 @@ Run a single case:
 ```bash
 python3 orchestrator.py run \
   --service nginx-ingress \
-  --case renew_tls_secret
+  --case https_ingress_ready
 ```
 
 Run a workflow:

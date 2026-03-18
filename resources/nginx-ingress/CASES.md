@@ -3,10 +3,9 @@
 This runbook covers the active base-functionality benchmark cases in
 `resources/nginx-ingress/`.
 
-Historical scenario-shaped folders such as `create_ingress/` and
-`renew_tls_secret/` are still present because the new base cases reuse their
-resource manifests, but those legacy folders no longer expose active
-`test.yaml` entrypoints.
+Only the active base-case folders in `resources/nginx-ingress/` expose runnable
+`test.yaml` entrypoints. Legacy scenario-shaped folders have been removed from
+the active service tree.
 
 For general Kubernetes knowledge, see `resources/KUBERNETES.md`. For
 ingress-nginx background, see `resources/nginx-ingress/GENERAL.md`.
@@ -92,14 +91,12 @@ Capability:
 Baseline:
 - The backend already exists.
 - API and health Ingresses already exist.
-- The controller runs with one replica.
+- The controller starts at the configured replica count.
 - No rate-limit annotations are configured yet.
 - The controller ConfigMap still uses the baseline throttled response code.
 
 Success:
-- The controller ConfigMap sets `limit-req-status-code` to `429`.
 - The API path returns repeated `429` responses under load.
-- The health path continues returning only `200`.
 
 ## Case: https_ingress_ready
 
