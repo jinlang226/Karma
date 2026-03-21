@@ -6,9 +6,8 @@ ROOT_DIR="$(git rev-parse --show-toplevel 2>/dev/null || pwd)"
 
 CLUSTER_NAME="${KIND_CLUSTER_NAME:-kind}"
 BASE_IMAGE="${KIND_NODE_BASE_IMAGE:-kindest/node:v1.32.1}"
-LOCAL_NODE_IMAGE="${KIND_NODE_IMAGE:-karma/kind-node:v1.32.1}"
+NODE_IMAGE="${KIND_NODE_IMAGE:-karma/kind-node:v1.32.1}"
 CONFIG_PATH="${KIND_CLUSTER_CONFIG:-$ROOT_DIR/scripts/kind/cluster-4node.yaml}"
-USE_OFFICIAL_NODE_IMAGE=0
 RECREATE=0
 SMOKE_NAMESPACES=()
 
@@ -95,15 +94,15 @@ cluster_exists() {
 }
 
 build_local_node_image() {
-  if docker image inspect "$LOCAL_NODE_IMAGE" >/dev/null 2>&1; then
-    log "Reusing local Kind node image $LOCAL_NODE_IMAGE"
+  if docker image inspect "$NODE_IMAGE" >/dev/null 2>&1; then
+    log "Reusing local Kind node image $NODE_IMAGE"
     return
   fi
 
-  log "Building repo-owned Kind node image $LOCAL_NODE_IMAGE from $BASE_IMAGE"
+  log "Building local Kind node image $NODE_IMAGE from $BASE_IMAGE"
   docker build \
     --build-arg "BASE_IMAGE=$BASE_IMAGE" \
-    -t "$LOCAL_NODE_IMAGE" \
+    -t "$NODE_IMAGE" \
     -f "$ROOT_DIR/scripts/kind-node/Dockerfile" \
     "$ROOT_DIR/scripts/kind-node"
 }
@@ -146,12 +145,7 @@ run_dns_smoke() {
   kubectl -n "$ns" logs dns-smoke >/dev/null
 }
 
-if [ "$USE_OFFICIAL_NODE_IMAGE" = "1" ]; then
-  NODE_IMAGE="$BASE_IMAGE"
-else
-  build_local_node_image
-  NODE_IMAGE="$LOCAL_NODE_IMAGE"
-fi
+build_local_node_image
 
 if cluster_exists; then
   if [ "$RECREATE" = "1" ]; then

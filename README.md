@@ -48,7 +48,7 @@ The UI is the easiest way to inspect services, cases, workflows, and generated C
 
 ## Local cluster setup
 
-For local benchmark development, create a repo-owned Kind cluster with:
+For local benchmark development, create a Kind cluster with:
 
 ```bash
 ./scripts/setup-cluster.sh --provider kind
