@@ -8,7 +8,6 @@ CLUSTER_NAME="${KIND_CLUSTER_NAME:-kind}"
 BASE_IMAGE="${KIND_NODE_BASE_IMAGE:-kindest/node:v1.32.1}"
 LOCAL_NODE_IMAGE="${KIND_NODE_IMAGE:-karma/kind-node:v1.32.1}"
 CONFIG_PATH="${KIND_CLUSTER_CONFIG:-$ROOT_DIR/scripts/kind/cluster-4node.yaml}"
-SMOKE_MODE="${KIND_SETUP_SMOKE:-rabbitmq}"
 USE_OFFICIAL_NODE_IMAGE=0
 RECREATE=0
 KEEP_SMOKE_NAMESPACES="${KEEP_KIND_SMOKE_NAMESPACES:-0}"
@@ -27,7 +26,6 @@ Options:
   --base-image IMAGE           Official/base Kind node image (default: kindest/node:v1.32.1)
   --node-image IMAGE           Local repo-owned node image tag (default: karma/kind-node:v1.32.1)
   --use-official-node-image    Skip local image build and create the cluster from the official image directly
-  --smoke-mode MODE            Validation mode: rabbitmq, basic, none (default: rabbitmq)
   --keep-smoke-namespaces      Keep temporary smoke namespaces for debugging
   -h, --help                   Show this help
 EOF
@@ -87,11 +85,6 @@ while [ $# -gt 0 ]; do
       USE_OFFICIAL_NODE_IMAGE=1
       shift
       ;;
-    --smoke-mode)
-      [ $# -ge 2 ] || die "--smoke-mode requires a value"
-      SMOKE_MODE="$2"
-      shift 2
-      ;;
     --keep-smoke-namespaces)
       KEEP_SMOKE_NAMESPACES=1
       shift
@@ -106,15 +99,9 @@ while [ $# -gt 0 ]; do
   esac
 done
 
-case "$SMOKE_MODE" in
-  rabbitmq|basic|none) ;;
-  *) die "unsupported smoke mode: $SMOKE_MODE" ;;
-esac
-
 require_cmd docker
 require_cmd kind
 require_cmd kubectl
-require_cmd envsubst
 
 cluster_exists() {
   kind get clusters | grep -qx "$CLUSTER_NAME"
@@ -172,43 +159,6 @@ run_dns_smoke() {
   kubectl -n "$ns" logs dns-smoke >/dev/null
 }
 
-render_apply() {
-  local ns="$1"
-  local prefix="$2"
-  local file="$3"
-  BENCH_NAMESPACE="$ns" BENCH_PARAM_CLUSTER_PREFIX="$prefix" envsubst < "$file" | kubectl -n "$ns" apply -f -
-}
-
-run_rabbitmq_smoke() {
-  local ns="kind-rabbitmq-smoke"
-  local prefix="setup-smoke"
-  SMOKE_NAMESPACES+=("$ns")
-  log "Running RabbitMQ bootstrap smoke in namespace $ns"
-  kubectl create namespace "$ns" >/dev/null 2>&1 || true
-  kubectl -n "$ns" create secret generic "${prefix}-erlang-cookie" \
-    --from-literal=cookie=supersecretcookie \
-    --dry-run=client -o yaml | kubectl apply -f -
-  kubectl -n "$ns" create secret generic "${prefix}-admin" \
-    --from-literal=username=admin \
-    --from-literal=password=adminpass \
-    --dry-run=client -o yaml | kubectl apply -f -
-
-  render_apply "$ns" "$prefix" "$ROOT_DIR/resources/rabbitmq-experiments/manual_monitoring/resource/rbac.yaml"
-  render_apply "$ns" "$prefix" "$ROOT_DIR/resources/rabbitmq-experiments/manual_monitoring/resource/configmap.yaml"
-  render_apply "$ns" "$prefix" "$ROOT_DIR/resources/rabbitmq-experiments/manual_monitoring/resource/services.yaml"
-  render_apply "$ns" "$prefix" "$ROOT_DIR/resources/rabbitmq-experiments/manual_monitoring/resource/statefulset.yaml"
-
-  if ! kubectl -n "$ns" rollout status "statefulset/$prefix" --timeout=600s; then
-    kubectl -n "$ns" get pods -o wide || true
-    kubectl -n "$ns" logs "${prefix}-0" --all-containers --tail=200 || true
-    kubectl -n "$ns" describe pod "${prefix}-0" || true
-    die "RabbitMQ bootstrap smoke failed"
-  fi
-
-  [ "$(kubectl -n "$ns" get sts "$prefix" -o jsonpath='{.status.readyReplicas}')" = "3" ] \
-    || die "RabbitMQ smoke finished without 3 ready replicas"
-}
-
 if [ "$USE_OFFICIAL_NODE_IMAGE" = "1" ]; then
   NODE_IMAGE="$BASE_IMAGE"
 else
@@ -233,18 +183,7 @@ fi
 log "Using kubectl context kind-$CLUSTER_NAME"
 kubectl cluster-info >/dev/null
 wait_for_cluster_core
-
-case "$SMOKE_MODE" in
-  rabbitmq)
-    run_dns_smoke
-    run_rabbitmq_smoke
-    ;;
-  basic)
-    run_dns_smoke
-    ;;
-  none)
-    ;;
-esac
+run_dns_smoke
 
 log "Cluster is ready"
 kubectl get nodes

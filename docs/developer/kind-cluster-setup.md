@@ -24,7 +24,6 @@ It will:
 2. Create a 4-node Kind cluster using `scripts/kind/cluster-4node.yaml`.
 3. Wait for core system workloads (`coredns`, `kindnet`, `kube-proxy`, `local-path-provisioner`).
 4. Run an in-cluster DNS smoke.
-5. Run a RabbitMQ bootstrap smoke using the same Kubernetes peer-discovery path that has been sensitive to broken DNS/CNI states.
 
 ## Why the repo-owned image exists
 
@@ -45,18 +44,6 @@ Recreate an existing cluster:
 
 ```bash
 ./scripts/setup-kind-cluster.sh --recreate
-```
-
-Only run the fast DNS smoke:
-
-```bash
-./scripts/setup-kind-cluster.sh --smoke-mode basic
-```
-
-Skip benchmark-specific smokes:
-
-```bash
-./scripts/setup-kind-cluster.sh --smoke-mode none
 ```
 
 Keep temporary smoke namespaces for debugging:
