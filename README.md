@@ -56,7 +56,7 @@ For local benchmark development, create a Kind cluster with:
 
 That bootstrap creates a 4-node Kind cluster, waits for core system pods, and runs a DNS smoke.
 
-Setup details and options live in `docs/developer/kind-cluster-setup.md`.
+Setup details and options live in [docs/developer/kind-cluster-setup.md](docs/developer/kind-cluster-setup.md).
 
 ## Common entrypoints
 
