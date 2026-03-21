@@ -54,7 +54,7 @@ For local benchmark development, create a repo-owned Kind cluster with:
 ./scripts/setup-cluster.sh --provider kind
 ```
 
-That bootstrap creates a 4-node Kind cluster, waits for core system pods, and runs a DNS smoke so the cluster is validated beyond simple node readiness.
+That bootstrap creates a 4-node Kind cluster, waits for core system pods, and runs a DNS smoke.
 
 Setup details and options live in [docs/developer/kind-cluster-setup.md](/Users/junhan.ouyang/personal-code/Karma/docs/developer/kind-cluster-setup.md).
 

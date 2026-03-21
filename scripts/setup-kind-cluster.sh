@@ -16,15 +16,11 @@ usage() {
   cat <<'EOF'
 Usage: scripts/setup-kind-cluster.sh [options]
 
-Creates or reuses a local Kind cluster for KARMA and validates that the cluster
-is usable for benchmark workloads.
+Creates or reuses the local Kind cluster for KARMA.
 
 Options:
   --cluster-name NAME          Kind cluster name (default: kind)
   --recreate                   Delete and recreate the cluster if it already exists
-  --base-image IMAGE           Official/base Kind node image (default: kindest/node:v1.32.1)
-  --node-image IMAGE           Local repo-owned node image tag (default: karma/kind-node:v1.32.1)
-  --use-official-node-image    Skip local image build and create the cluster from the official image directly
   -h, --help                   Show this help
 EOF
 }
