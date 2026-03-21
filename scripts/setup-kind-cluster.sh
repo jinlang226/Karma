@@ -10,7 +10,6 @@ LOCAL_NODE_IMAGE="${KIND_NODE_IMAGE:-karma/kind-node:v1.32.1}"
 CONFIG_PATH="${KIND_CLUSTER_CONFIG:-$ROOT_DIR/scripts/kind/cluster-4node.yaml}"
 USE_OFFICIAL_NODE_IMAGE=0
 RECREATE=0
-KEEP_SMOKE_NAMESPACES="${KEEP_KIND_SMOKE_NAMESPACES:-0}"
 SMOKE_NAMESPACES=()
 
 usage() {
@@ -26,7 +25,6 @@ Options:
   --base-image IMAGE           Official/base Kind node image (default: kindest/node:v1.32.1)
   --node-image IMAGE           Local repo-owned node image tag (default: karma/kind-node:v1.32.1)
   --use-official-node-image    Skip local image build and create the cluster from the official image directly
-  --keep-smoke-namespaces      Keep temporary smoke namespaces for debugging
   -h, --help                   Show this help
 EOF
 }
@@ -45,9 +43,6 @@ require_cmd() {
 }
 
 cleanup_smoke_namespaces() {
-  if [ "$KEEP_SMOKE_NAMESPACES" = "1" ]; then
-    return
-  fi
   if [ "${#SMOKE_NAMESPACES[@]}" -eq 0 ]; then
     return
   fi
@@ -83,10 +78,6 @@ while [ $# -gt 0 ]; do
       ;;
     --use-official-node-image)
       USE_OFFICIAL_NODE_IMAGE=1
-      shift
-      ;;
-    --keep-smoke-namespaces)
-      KEEP_SMOKE_NAMESPACES=1
       shift
       ;;
     -h|--help)

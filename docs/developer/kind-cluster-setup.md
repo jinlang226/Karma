@@ -46,12 +46,6 @@ Recreate an existing cluster:
 ./scripts/setup-kind-cluster.sh --recreate
 ```
 
-Keep temporary smoke namespaces for debugging:
-
-```bash
-./scripts/setup-kind-cluster.sh --keep-smoke-namespaces
-```
-
 ## Future extension
 
 `scripts/setup-cluster.sh` is provider-shaped on purpose.
