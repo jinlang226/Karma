@@ -39,7 +39,7 @@ KARMA is built around a few ideas that matter in practice:
 - **Reusable building blocks.** A testcase defines one operational task with setup, prompt, verification, cleanup, and metrics.
 - **Stateful workflows.** Stages run in sequence against preserved system state, so later actions can help or hurt earlier outcomes.
 - **Deterministic correctness checks.** Each stage has explicit verification, with optional workflow-level regression sweeps to catch cross-stage breakage.
-- **Probe/apply/verify setup.** Preconditions are resolved against the live cluster instead of assuming a clean reset every time.
+- **Probe/apply/verify setup.** Testcases are broken into smaller resource-level precondition units, each with its own `probe`, `apply`, and `verify` cycle. That makes cases much more chainable because a later workflow stage can reuse the parts of the environment that are already correct instead of replaying a full reset.
 - **Trajectory capture.** Runs produce logs, traces, snapshots, and optional judge artifacts so you can inspect how the agent behaved, not just whether it passed.
 
 This makes KARMA useful for long-horizon evaluation, regression analysis, and safety-oriented agent testing in real infrastructure environments.
