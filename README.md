@@ -8,7 +8,8 @@
 
 **Kubernetes Agent Runtime Measurement Architecture**
 
-Composable evaluation for AI agents working on live Kubernetes systems.
+Modular Framework for Evaluating AI Agents in
+Kubernetes
 
 <p align="center">
   <a href="#about"><b>About</b></a> |
