@@ -13,10 +13,10 @@ Composable evaluation for AI agents working on live Kubernetes systems.
 <p align="center">
   <a href="#about"><b>About</b></a> |
   <a href="#why-karma"><b>Why KARMA</b></a> |
+  <a href="#roadmap"><b>Roadmap</b></a> |
   <a href="#quick-start"><b>Quick Start</b></a> |
   <a href="#repo-map"><b>Repo Map</b></a> |
   <a href="#profiles"><b>Profiles</b></a> |
-  <a href="#roadmap"><b>Roadmap</b></a> |
   <a href="#developer-guide"><b>Developer Guide</b></a>
 </p>
 
@@ -43,6 +43,16 @@ KARMA is built around a few ideas that matter in practice:
 - **Trajectory capture.** Runs produce logs, traces, snapshots, and optional judge artifacts so you can inspect how the agent behaved, not just whether it passed.
 
 This makes KARMA useful for long-horizon evaluation, regression analysis, and safety-oriented agent testing in real infrastructure environments.
+
+## Roadmap
+
+KARMA already scales benchmark difficulty through workflow composition. The next steps are about widening that model.
+
+- [ ] Extend the workflow model beyond Kubernetes
+  The current implementation focuses on Kubernetes microservices. The workflow model itself is broader, and we want to carry it into other environments.
+
+- [ ] Add vertical adversarial injection
+  Workflow length is only one source of difficulty. We also want to layer controlled environmental interference onto existing workflows, including config drift, permission constraints, background controllers, and competing automation.
 
 ## Quick Start
 
@@ -139,18 +149,6 @@ Shipped examples:
   Starts a Docker workflow run with `cli-runner` and a headless Codex command.
 
 One important naming note: this repo also has judge rubric profiles under `resources/*/judge_base.yaml`. Those are not execution presets. They are overlays for the LLM-as-Judge pipeline.
-
-## Roadmap
-
-KARMA already scales benchmark difficulty through workflow composition. The next steps are about widening that model.
-
-- **Beyond Kubernetes**
-  The current implementation focuses on Kubernetes microservices. The workflow model itself is broader, and we want to extend it to other environments.
-
-- **Vertical adversarial injection**
-  Workflow length is only one source of difficulty. We also want to layer controlled environmental interference onto existing workflows, including config drift, permission constraints, background controllers, and competing automation.
-
-Together, those two directions push KARMA from longer workflows toward richer and more realistic operating conditions.
 
 ## Developer Guide
 
