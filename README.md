@@ -46,13 +46,14 @@ This makes KARMA useful for long-horizon evaluation, regression analysis, and sa
 
 ## Roadmap
 
-KARMA already scales benchmark difficulty through workflow composition. The next steps are about widening that model.
+KARMA already supports **horizontal composition**: building longer workflows from reusable stages.
 
-- [ ] Extend the workflow model beyond Kubernetes
-  The current implementation focuses on Kubernetes microservices. The workflow model itself is broader, and we want to carry it into other environments.
+But many hard real-world tasks are not just longer workflows. They are a base task plus environmental adversaries such as drift, permission constraints, and competing controllers.
 
-- [ ] Add vertical adversarial injection
-  Workflow length is only one source of difficulty. We also want to layer controlled environmental interference onto existing workflows, including config drift, permission constraints, background controllers, and competing automation.
+That is the next direction for KARMA:
+
+- [ ] Extend KARMA beyond Kubernetes
+- [ ] Add layered environmental adversaries to workflows
 
 ## Quick Start
 
