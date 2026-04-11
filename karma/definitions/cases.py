@@ -11,6 +11,10 @@ fields such as ``preOperationCommands`` or ``verificationCommands`` are
 rejected at load time with a descriptive error. No dual-format branching
 exists anywhere in this module or downstream in ``runtime.case``.
 
+Schema validation is performed by pydantic models defined in this
+module. ``load_case_file`` runs ``CaseSchema.model_validate`` before
+returning, so no unvalidated dict ever reaches normalization code.
+
 No runtime imports. All functions operate on plain dicts and ``Path``
 objects.
 """
@@ -19,12 +23,94 @@ from __future__ import annotations
 
 from copy import deepcopy
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 
 import yaml
+from pydantic import BaseModel, ValidationError, field_validator, model_validator
 
 _TEST_FILE_NAME = "test.yaml"
 _VALID_ON_PROBE_FAIL = {"error", "skip"}
+
+
+# ---------------------------------------------------------------------------
+# Pydantic schema models
+# ---------------------------------------------------------------------------
+
+class _CommandItem(BaseModel):
+    """A single command entry in a probe, apply, or verify block."""
+
+    command: str
+    sleep: int = 0
+    namespace_role: str | None = None
+    timeout_sec: int | None = None
+
+
+class _OperationBlock(BaseModel):
+    """A probe/apply/verify operation block within a precondition unit."""
+
+    probe: list[_CommandItem] | _CommandItem | str
+    apply: list[_CommandItem] | _CommandItem | str
+    verify: list[_CommandItem] | _CommandItem | str
+    on_probe_fail: Literal["error", "skip"] = "error"
+
+
+class _PreconditionUnit(BaseModel):
+    """One precondition unit with a name and an operation block."""
+
+    name: str
+    probe: list[_CommandItem] | _CommandItem | str
+    apply: list[_CommandItem] | _CommandItem | str
+    verify: list[_CommandItem] | _CommandItem | str
+    on_probe_fail: Literal["error", "skip"] = "error"
+
+
+class _OracleVerify(BaseModel):
+    """The verify block inside the oracle config."""
+
+    commands: list[_CommandItem] | _CommandItem | str = []
+    retries: int = 1
+    interval_sec: float = 0.0
+
+
+class _OracleConfig(BaseModel):
+    """The oracle block at the top level of a test.yaml."""
+
+    verify: _OracleVerify = _OracleVerify()
+    script: str | None = None
+
+
+class _ParamDefinition(BaseModel):
+    """A single parameter definition with a default value."""
+
+    default: Any = None
+    description: str = ""
+
+
+class _NamespaceContract(BaseModel):
+    """Namespace role requirements for a case."""
+
+    required_roles: list[str] = []
+    optional_roles: list[str] = []
+
+
+class CaseSchema(BaseModel):
+    """Top-level schema for a contemporary ``test.yaml`` file.
+
+    Validation fails immediately when a required field is missing, a
+    field has the wrong type, or an unrecognized top-level key is
+    present that is not a known contemporary field. The error message
+    from pydantic identifies the exact field path and reason.
+    """
+
+    prompt: str
+    params: dict[str, _ParamDefinition] = {}
+    preconditionUnits: list[_PreconditionUnit] = []
+    oracle: _OracleConfig = _OracleConfig()
+    namespace_contract: _NamespaceContract = _NamespaceContract()
+    decoys: list[Any] = []
+    setup_check: Any = None
+    metrics: list[str] = []
+    tags: list[str] = []
 
 
 # ---------------------------------------------------------------------------
@@ -197,8 +283,9 @@ def load_case_file(resources_dir: Path, service: str, case_name: str) -> dict[st
     RuntimeError
         When the file is absent or cannot be parsed as a YAML object, or
         when the file contains a legacy field such as
-        ``preOperationCommands`` or ``verificationCommands``. The error
-        message names the offending field and its contemporary replacement.
+        ``preOperationCommands`` or ``verificationCommands``, or when
+        pydantic schema validation fails. The error message names the
+        offending field path and the reason.
     """
     path = case_path(resources_dir, service, case_name)
     if not path.exists():
@@ -217,6 +304,16 @@ def load_case_file(resources_dir: Path, service: str, case_name: str) -> dict[st
                 f"case '{case_name}': legacy field '{legacy_field}' is not supported. "
                 f"Use '{replacement}' instead."
             )
+    try:
+        CaseSchema.model_validate(data)
+    except ValidationError as exc:
+        details = "; ".join(
+            f"{'.'.join(str(loc) for loc in e['loc'])}: {e['msg']}"
+            for e in exc.errors()
+        )
+        raise RuntimeError(
+            f"case '{case_name}': schema validation failed: {details}"
+        ) from exc
     return data
 
 

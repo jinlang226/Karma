@@ -145,3 +145,92 @@ class TestNormalizeCase:
         for key in ("service", "case_name", "params", "namespace_contract",
                     "precondition_units", "oracle", "decoys", "warnings"):
             assert key in result
+
+
+class TestLegacyFormatRejection:
+    def test_pre_operation_commands_rejected(self, tmp_path):
+        p = tmp_path / "svc" / "legacy-case" / "test.yaml"
+        p.parent.mkdir(parents=True)
+        p.write_text("preOperationCommands:\n  - kubectl apply -f x.yaml\n")
+        with pytest.raises(RuntimeError) as exc_info:
+            load_case_file(tmp_path, "svc", "legacy-case")
+        assert "preOperationCommands" in str(exc_info.value)
+        assert "preconditionUnits" in str(exc_info.value)
+
+    def test_verification_commands_rejected(self, tmp_path):
+        p = tmp_path / "svc" / "legacy-case2" / "test.yaml"
+        p.parent.mkdir(parents=True)
+        p.write_text("verificationCommands:\n  - kubectl get pod\n")
+        with pytest.raises(RuntimeError) as exc_info:
+            load_case_file(tmp_path, "svc", "legacy-case2")
+        assert "verificationCommands" in str(exc_info.value)
+        assert "oracle.verify.commands" in str(exc_info.value)
+
+    def test_contemporary_format_loads_without_error(self, tmp_path):
+        p = tmp_path / "svc" / "good-case" / "test.yaml"
+        p.parent.mkdir(parents=True)
+        p.write_text("prompt: do the thing\n")
+        data = load_case_file(tmp_path, "svc", "good-case")
+        assert data["prompt"] == "do the thing"
+
+
+class TestSchemaValidation:
+    def test_missing_prompt_raises(self, tmp_path):
+        p = tmp_path / "svc" / "no-prompt" / "test.yaml"
+        p.parent.mkdir(parents=True)
+        p.write_text("preconditionUnits: []\n")
+        with pytest.raises(RuntimeError, match="schema validation failed"):
+            load_case_file(tmp_path, "svc", "no-prompt")
+
+    def test_error_message_contains_field_name(self, tmp_path):
+        p = tmp_path / "svc" / "bad-field" / "test.yaml"
+        p.parent.mkdir(parents=True)
+        p.write_text("prompt: do it\nmetrics: not_a_list\n")
+        with pytest.raises(RuntimeError) as exc_info:
+            load_case_file(tmp_path, "svc", "bad-field")
+        assert "metrics" in str(exc_info.value)
+
+    def test_invalid_on_probe_fail_raises(self, tmp_path):
+        p = tmp_path / "svc" / "bad-probe" / "test.yaml"
+        p.parent.mkdir(parents=True)
+        p.write_text(
+            "prompt: do it\n"
+            "preconditionUnits:\n"
+            "  - name: setup\n"
+            "    probe: kubectl get ns\n"
+            "    apply: kubectl create ns x\n"
+            "    verify: kubectl get ns x\n"
+            "    on_probe_fail: invalid_value\n"
+        )
+        with pytest.raises(RuntimeError, match="schema validation failed"):
+            load_case_file(tmp_path, "svc", "bad-probe")
+
+    def test_valid_minimal_case_passes(self, tmp_path):
+        p = tmp_path / "svc" / "minimal" / "test.yaml"
+        p.parent.mkdir(parents=True)
+        p.write_text("prompt: do the thing\n")
+        data = load_case_file(tmp_path, "svc", "minimal")
+        assert data["prompt"] == "do the thing"
+
+    def test_valid_full_case_passes(self, tmp_path):
+        p = tmp_path / "svc" / "full" / "test.yaml"
+        p.parent.mkdir(parents=True)
+        p.write_text(
+            "prompt: configure the cluster\n"
+            "params:\n"
+            "  target_node:\n"
+            "    default: rabbit@pod-0\n"
+            "preconditionUnits:\n"
+            "  - name: ns_ready\n"
+            "    probe: kubectl get ns target\n"
+            "    apply: kubectl create ns target\n"
+            "    verify: kubectl get ns target\n"
+            "oracle:\n"
+            "  verify:\n"
+            "    commands:\n"
+            "      - command: kubectl get pod\n"
+            "metrics:\n"
+            "  - blast_radius\n"
+        )
+        data = load_case_file(tmp_path, "svc", "full")
+        assert data["prompt"] == "configure the cluster"

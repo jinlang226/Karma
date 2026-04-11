@@ -21,13 +21,48 @@ from __future__ import annotations
 
 from copy import deepcopy
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 
 import yaml
+from pydantic import BaseModel, ValidationError
 
 _SCENARIO_FILE_NAME = "scenario.yaml"
 _ADVERSARIAL_DIR_NAME = "adversarial"
 _VALID_ON_PROBE_FAIL = {"error", "skip"}
+
+
+# ---------------------------------------------------------------------------
+# Pydantic schema models
+# ---------------------------------------------------------------------------
+
+class _ScenarioOperationBlock(BaseModel):
+    """A probe/apply/verify block inside a scenario deploy or lift section."""
+
+    probe: Any
+    apply: Any
+    verify: Any
+    on_probe_fail: Literal["error", "skip"] = "error"
+
+
+class _ScenarioPromptHints(BaseModel):
+    """Optional agent prompt hints declared in a scenario file."""
+
+    deploy: str | None = None
+    active: str | None = None
+
+
+class ScenarioSchema(BaseModel):
+    """Top-level schema for an adversary ``scenario.yaml`` file.
+
+    Validation fails immediately when ``deploy`` is absent or when
+    ``lift`` is present but malformed. The error message identifies
+    the exact field path and reason.
+    """
+
+    deploy: _ScenarioOperationBlock
+    lift: _ScenarioOperationBlock | None = None
+    params: dict[str, Any] = {}
+    prompt_hints: _ScenarioPromptHints = _ScenarioPromptHints()
 
 
 # ---------------------------------------------------------------------------
@@ -223,8 +258,9 @@ def resolve_adversary_scenario(
     Raises
     ------
     RuntimeError
-        When the scenario file is missing, unparseable, or structurally
-        invalid.
+        When the scenario file is missing, unparseable, fails pydantic
+        schema validation, or is otherwise structurally invalid. The
+        error message names the offending field path and the reason.
 
     Returns
     -------
@@ -234,6 +270,8 @@ def resolve_adversary_scenario(
         ``lift_unit`` (dict or ``None``),
         ``prompt_hints`` (``{"deploy": str|None, "active": str|None}``).
     """
+    # Schema validation happens here before field access.
+    # The raw_data argument is expected to be the parsed scenario dict.
     ...
 
 
