@@ -28,7 +28,7 @@ from typing import Any
 
 from .case import run_stage
 from ..oracle import run_regression_sweep
-from ..definitions.adversary import collect_pending_lift_units
+from ..adversary import collect_pending_lift_units
 from .. import protocol
 
 
