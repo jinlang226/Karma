@@ -31,10 +31,11 @@ from __future__ import annotations
 
 from copy import deepcopy
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 import re
 
 import yaml
+from pydantic import BaseModel, ValidationError
 
 _VALID_PROMPT_MODES = ("progressive", "concat_stateful", "concat_blind")
 _DEFAULT_PROMPT_MODE = "progressive"
@@ -43,6 +44,49 @@ _DEFAULT_NAMESPACE_ALIAS = "default"
 _STAGE_PARAM_REF_RE = re.compile(
     r"^\s*\$\{stages\.([a-zA-Z0-9_.-]+)\.params\.([a-zA-Z0-9_.-]+)\}\s*$"
 )
+
+
+# ---------------------------------------------------------------------------
+# Pydantic schema models
+# ---------------------------------------------------------------------------
+
+class _StageSpec(BaseModel):
+    """One stage entry in a workflow YAML spec.stages list."""
+
+    id: str
+    service: str
+    case: str
+    param_overrides: dict[str, Any] = {}
+    namespaces: list[str] = []
+    agent_timeout_sec: int = _DEFAULT_AGENT_TIMEOUT_SEC
+    retries: int = 0
+
+
+class _WorkflowMetadata(BaseModel):
+    """The metadata block at the top of a workflow YAML."""
+
+    id: str
+    label: str | None = None
+
+
+class _WorkflowSpec(BaseModel):
+    """The spec block of a workflow YAML."""
+
+    stages: list[_StageSpec]
+    prompt_mode: Literal["progressive", "concat_stateful", "concat_blind"] = _DEFAULT_PROMPT_MODE
+    adversary: list[Any] = []
+
+
+class WorkflowSchema(BaseModel):
+    """Top-level schema for a workflow YAML file.
+
+    Validation fails immediately when ``metadata.id`` is absent,
+    ``spec.stages`` is missing or empty, or ``prompt_mode`` is not
+    one of the three accepted values.
+    """
+
+    metadata: _WorkflowMetadata
+    spec: _WorkflowSpec
 
 
 # ---------------------------------------------------------------------------
@@ -150,7 +194,8 @@ def normalize_workflow(
     Raises
     ------
     ValueError
-        When the workflow is structurally invalid.
+        When pydantic schema validation fails. The error message
+        identifies the exact field path and reason.
 
     Returns
     -------
@@ -159,6 +204,16 @@ def normalize_workflow(
         ``prompt_mode`` (str), ``stages`` (list[dict]),
         ``adversary`` (list[dict]).
     """
+    try:
+        WorkflowSchema.model_validate(raw)
+    except ValidationError as exc:
+        details = "; ".join(
+            f"{'.' .join(str(loc) for loc in e['loc'])}: {e['msg']}"
+            for e in exc.errors()
+        )
+        raise ValueError(
+            f"workflow schema validation failed: {details}"
+        ) from exc
     ...
 
 
