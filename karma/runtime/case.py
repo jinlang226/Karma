@@ -56,6 +56,11 @@ def _run_operation_units(
 ) -> dict[str, Any]:
     """Execute a list of probe/apply/verify operation units in order.
 
+    All units must be in the canonical format produced by
+    ``definitions.cases.normalize_precondition_units``. No format
+    detection or legacy field handling is performed here; the legacy
+    execution branch from ``run_flow.py`` is not carried forward.
+
     For each unit: runs probe commands first; when the probe passes, runs
     apply then verify. Respects the ``on_probe_fail`` policy (``"error"``
     or ``"skip"``). Retries verify up to ``verify_retries`` times with
