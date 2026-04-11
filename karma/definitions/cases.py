@@ -6,6 +6,11 @@ A *case* is one benchmark task defined by a ``test.yaml`` file under
 disk, validates its structure, resolves parameter overrides, and returns
 a normalized case descriptor consumed by ``runtime.case``.
 
+Only the contemporary case format is accepted. Files containing legacy
+fields such as ``preOperationCommands`` or ``verificationCommands`` are
+rejected at load time with a descriptive error. No dual-format branching
+exists anywhere in this module or downstream in ``runtime.case``.
+
 No runtime imports. All functions operate on plain dicts and ``Path``
 objects.
 """
@@ -178,13 +183,22 @@ def case_path(resources_dir: Path, service: str, case_name: str) -> Path:
     return resources_dir / service / case_name / _TEST_FILE_NAME
 
 
+_LEGACY_FIELDS: dict[str, str] = {
+    "preOperationCommands": "preconditionUnits",
+    "verificationCommands": "oracle.verify.commands",
+}
+
+
 def load_case_file(resources_dir: Path, service: str, case_name: str) -> dict[str, Any]:
     """Load and parse the ``test.yaml`` for *service*/*case_name*.
 
     Raises
     ------
     RuntimeError
-        When the file is absent or cannot be parsed as a YAML object.
+        When the file is absent or cannot be parsed as a YAML object, or
+        when the file contains a legacy field such as
+        ``preOperationCommands`` or ``verificationCommands``. The error
+        message names the offending field and its contemporary replacement.
     """
     path = case_path(resources_dir, service, case_name)
     if not path.exists():
@@ -197,6 +211,12 @@ def load_case_file(resources_dir: Path, service: str, case_name: str) -> dict[st
         ) from exc
     if not isinstance(data, dict):
         raise RuntimeError(f"case '{case_name}': {path} must be a YAML object")
+    for legacy_field, replacement in _LEGACY_FIELDS.items():
+        if legacy_field in data:
+            raise RuntimeError(
+                f"case '{case_name}': legacy field '{legacy_field}' is not supported. "
+                f"Use '{replacement}' instead."
+            )
     return data
 
 
@@ -234,6 +254,11 @@ def normalize_namespace_contract(case_data: dict[str, Any]) -> dict[str, Any]:
 
 def normalize_precondition_units(case_data: dict[str, Any]) -> list[dict[str, Any]]:
     """Return the list of normalized precondition operation units from *case_data*.
+
+    Reads from the ``preconditionUnits`` key only. Any file containing a
+    legacy field such as ``preOperationCommands`` is rejected upstream by
+    :func:`load_case_file` before this function is ever reached, so no
+    format detection is performed here.
 
     Each unit has the canonical probe/apply/verify shape produced by
     :func:`_normalize_operation_block`. Returns an empty list when the
