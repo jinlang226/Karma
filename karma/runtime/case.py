@@ -39,6 +39,7 @@ from ..environments.registry import get_environment
 from ..sandbox import launch_agent, cleanup_agent
 from ..oracle import run_oracle
 from ..evidence import collect_evidence
+from ..adversary import deploy as adversary_deploy, lift as adversary_lift, report as adversary_report
 from .. import protocol
 
 

@@ -136,7 +136,7 @@ def normalize_workflow(
     """Validate and normalize a raw workflow dict.
 
     Validates the metadata and spec blocks, validates adversary entries
-    via ``definitions.adversary``, and resolves cross-stage param
+    via ``adversary.definitions``, and resolves cross-stage param
     references. Does not load case files or adversary scenario files;
     those are deferred to :func:`resolve_workflow_rows`.
 

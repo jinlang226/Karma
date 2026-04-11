@@ -13,13 +13,8 @@ The service is derived from ``inject_at_stage`` via the stage service map,
 enforcing that a scenario references resources from within the same test
 suite that owns the inject stage.
 
-This module has no runtime imports. It is consumed by
-``definitions.workflows`` during row resolution and by
-``runtime.workflow`` during the final cleanup sweep.
-
-Note: ``definitions/adversary.py`` is an extension beyond the base
-PLAN.md file list. It houses adversary logic that would otherwise bloat
-``definitions/workflows.py``.
+No runtime imports. Consumed by ``definitions.workflows`` during row
+resolution and by ``adversary.runtime`` during the lifecycle sweep.
 """
 
 from __future__ import annotations
@@ -276,7 +271,7 @@ def collect_pending_lift_units(
 ) -> list[dict[str, Any]]:
     """Return lift units for injections whose lift stage never ran.
 
-    Used by the final cleanup sweep in ``runtime.workflow`` to ensure no
+    Used by the final cleanup sweep in ``adversary.runtime`` to ensure no
     adversarial conditions are left in the cluster after an early workflow
     exit.
 
