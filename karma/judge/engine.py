@@ -1,0 +1,119 @@
+"""
+Judge orchestration and result writes.
+
+Drives the full LLM-as-Judge evaluation pipeline for a stage or a batch
+of stages. Loads artifacts from disk, assembles the request payload,
+calls the LLM, aggregates scores, and writes the result.
+
+This module must not import ``runtime.*``. The judge pipeline runs
+entirely from artifacts written to disk, which means it can be invoked
+post-hoc on any run directory without a live cluster or agent process.
+"""
+
+from __future__ import annotations
+
+from pathlib import Path
+from typing import Any
+
+from .input_builder import build_judge_input
+from .rubric import load_rubric
+from .client import call_judge_llm
+from .scoring import aggregate_scores
+
+
+def run_judge(
+    run_dir: Path,
+    stage_id: str,
+    *,
+    rubric_overrides: dict[str, Any] | None = None,
+    judge_model: str | None = None,
+    dry_run: bool = False,
+) -> dict[str, Any]:
+    """Evaluate one stage with the LLM judge and return the result dict.
+
+    Loads evidence and oracle artifacts, assembles the request payload,
+    calls the LLM via ``judge.client``, aggregates scores, and writes the
+    result to ``{run_dir}/stages/{stage_id}/judge.json``.
+
+    When *dry_run* is ``True``, builds and returns the judge input payload
+    without calling the LLM. Useful for inspecting the request before
+    committing tokens.
+
+    Parameters
+    ----------
+    run_dir:
+        Root directory of the run to evaluate.
+    stage_id:
+        ID of the stage to evaluate.
+    rubric_overrides:
+        Optional rubric overrides merged on top of the base rubric via
+        ``judge.rubric.merge_rubric_overrides``.
+    judge_model:
+        LLM model name override. Falls back to the ``KARMA_JUDGE_MODEL``
+        environment variable and then the client default.
+    dry_run:
+        When ``True``, returns the assembled input payload without calling
+        the LLM.
+
+    Raises
+    ------
+    RuntimeError
+        When required artifacts are missing from *run_dir*.
+
+    Returns
+    -------
+    dict
+        Keys: ``stage_id``, ``verdict`` (``"pass"``, ``"fail"``, or
+        ``"partial"``), ``score`` (float), ``rubric_items`` (list[dict]),
+        ``reasoning`` (str), ``raw_response`` (dict).
+    """
+    rubric = load_rubric(run_dir, stage_id, overrides=rubric_overrides)
+    judge_input = build_judge_input(run_dir, stage_id, rubric=rubric)
+
+    if dry_run:
+        return {"stage_id": stage_id, "dry_run": True, "input": judge_input}
+
+    raw_response = call_judge_llm(judge_input, model=judge_model)
+    result = aggregate_scores(raw_response, rubric=rubric, stage_id=stage_id)
+
+    output_path = run_dir / "stages" / stage_id / "judge.json"
+    try:
+        import json
+        output_path.write_text(json.dumps(result, indent=2))
+    except Exception:
+        pass
+
+    return result
+
+
+def run_judge_batch(
+    run_dir: Path,
+    *,
+    stage_ids: list[str] | None = None,
+    rubric_overrides: dict[str, Any] | None = None,
+    judge_model: str | None = None,
+) -> dict[str, Any]:
+    """Evaluate all stages in a run and return a batch result dict.
+
+    When *stage_ids* is ``None``, discovers all stage directories under
+    ``{run_dir}/stages/`` automatically.
+
+    Parameters
+    ----------
+    run_dir:
+        Root directory of the run to evaluate.
+    stage_ids:
+        Explicit list of stage IDs to evaluate, or ``None`` to discover
+        all stages.
+    rubric_overrides:
+        Optional rubric overrides applied to every stage.
+    judge_model:
+        LLM model name override forwarded to each :func:`run_judge` call.
+
+    Returns
+    -------
+    dict
+        Map of ``stage_id`` to the individual judge result dict for that
+        stage.
+    """
+    ...
