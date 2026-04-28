@@ -1,0 +1,59 @@
+# demo/adversarial/stale_configmap_value
+#
+# Patches an existing ConfigMap with an incorrect value before the agent
+# attempts to solve the task. Tests whether the agent recognizes and works
+# around a confusing pre-existing misconfiguration rather than blindly
+# accepting the cluster state it observes on first inspection.
+#
+# Deploy: patches data.value to params.wrong_value.
+# Lift:   resets data.value to "" if the agent has not already corrected it.
+
+params:
+  configmap_name:
+    default: demo-config
+  wrong_value:
+    default: ADVERSARY_INJECTED
+
+deploy:
+  # Probe succeeds when the ConfigMap exists. Absence is an error because the
+  # scenario must be injected after preconditions have already created it.
+  on_probe_fail: error
+  probe:
+    - command: "kubectl get configmap {{params.configmap_name}}"
+      timeout_sec: 10
+  apply:
+    - command: >-
+        kubectl patch configmap {{params.configmap_name}}
+        --type merge
+        --patch '{"data": {"value": "{{params.wrong_value}}"}}'
+      timeout_sec: 15
+  verify:
+    - command: "kubectl get configmap {{params.configmap_name}} -o jsonpath={.data.value}"
+      timeout_sec: 10
+
+lift:
+  # Probe succeeds when the adversarial value is still present, meaning the
+  # agent has not yet corrected it. on_probe_fail=skip exits cleanly when the
+  # agent has already set the value to something other than wrong_value.
+  on_probe_fail: skip
+  probe:
+    - command: "/bin/sh -c \"kubectl get configmap {{params.configmap_name}} -o jsonpath={.data.value} | grep -qx '{{params.wrong_value}}'\""
+      timeout_sec: 10
+  apply:
+    - command: >-
+        kubectl patch configmap {{params.configmap_name}}
+        --type merge
+        --patch '{"data": {"value": ""}}'
+      timeout_sec: 15
+  verify:
+    - command: "/bin/sh -c \"kubectl get configmap {{params.configmap_name}} -o jsonpath={.data.value} | grep -qx ''\""
+      timeout_sec: 10
+
+prompt_hints:
+  deploy: |
+    Note: the cluster environment for this stage contains a pre-existing
+    misconfiguration that may interfere with your task. Investigate the
+    current state carefully before making changes.
+  active: |
+    Reminder: a misconfiguration introduced in an earlier stage may still
+    be present in the cluster. Verify the current state before proceeding.
