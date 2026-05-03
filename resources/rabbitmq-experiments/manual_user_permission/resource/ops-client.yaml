@@ -1,0 +1,50 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: ops-client
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: ops-client
+  template:
+    metadata:
+      labels:
+        app: ops-client
+    spec:
+      containers:
+        - name: client
+          image: curlimages/curl:8.6.0
+          env:
+            - name: OPS_USER
+              valueFrom:
+                secretKeyRef:
+                  name: ${BENCH_PARAM_CLUSTER_PREFIX}-ops
+                  key: username
+            - name: OPS_PASS
+              valueFrom:
+                secretKeyRef:
+                  name: ${BENCH_PARAM_CLUSTER_PREFIX}-ops
+                  key: password
+          command:
+            - /bin/sh
+            - -c
+            - |
+              set -e
+              base="http://${BENCH_PARAM_CLUSTER_PREFIX}:15672/api"
+              auth="${OPS_USER}:${OPS_PASS}"
+              for i in $(seq 1 60); do
+                if curl -s -u "$auth" "$base/vhosts" >/dev/null; then
+                  break
+                fi
+                sleep 2
+              done
+              code=$(curl -s -o /tmp/resp -w "%{http_code}" -u "$auth" \
+                "$base/queues/%2Fops")
+              if [ "$code" -ge 300 ]; then
+                echo "ops-client: failed to access /ops: $(cat /tmp/resp)"
+                exit 1
+              fi
+              while true; do
+                sleep 10
+              done
