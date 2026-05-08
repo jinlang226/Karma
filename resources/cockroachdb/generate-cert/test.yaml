@@ -1,0 +1,68 @@
+# cockroachdb/generate-cert
+#
+# A CockroachDB cluster is running in insecure mode with an openssl-toolbox
+# pod available. The agent must enable TLS so secure access works and
+# insecure access is rejected.
+
+prompt: |
+  Enable TLS for the running CockroachDB cluster in the cockroachdb namespace.
+
+  The cluster is currently running in insecure mode. An openssl-toolbox pod
+  is available for certificate generation.
+
+  GOAL:
+  1. Insecure access is rejected:
+     ```bash
+     kubectl -n cockroachdb exec crdb-cluster-0 -- \
+       ./cockroach sql --insecure -e "SELECT 1;"
+     ```
+  2. Secure access succeeds:
+     ```bash
+     kubectl -n cockroachdb exec crdb-cluster-0 -- \
+       ./cockroach sql --certs-dir=/cockroach/cockroach-certs -e "SELECT 1;"
+     ```
+
+namespace_contract:
+  required_roles: []
+
+metrics:
+  - time_to_first_mutation
+
+preconditionUnits:
+  - name: crdb_env_ready
+    on_probe_fail: skip
+    probe:
+      - command: "kubectl -n cockroachdb exec crdb-cluster-0 -- ./cockroach sql --insecure -e 'SELECT 1;' 2>/dev/null"
+        timeout_sec: 15
+    apply:
+      - command: "/bin/sh -c 'kubectl delete namespace cockroachdb --ignore-not-found=true; kubectl wait --for=delete namespace/cockroachdb --timeout=120s || true'"
+        sleep: 2
+      - command: "kubectl create namespace cockroachdb"
+        sleep: 1
+      - command: "kubectl -n cockroachdb apply -f resources/cockroachdb/generate-cert/resource/rbac.yaml"
+        sleep: 2
+      - command: "kubectl -n cockroachdb apply -f resources/cockroachdb/generate-cert/resource/services.yaml"
+        sleep: 2
+      - command: "kubectl -n cockroachdb apply -f resources/cockroachdb/generate-cert/resource/statefulset.yaml"
+        sleep: 5
+      - command: "/bin/sh -c 'for i in $(seq 1 30); do count=$(kubectl -n cockroachdb get pod -l app.kubernetes.io/name=cockroachdb --no-headers 2>/dev/null | wc -l | tr -d \" \"); if [ \"${count}\" -ge 1 ]; then exit 0; fi; sleep 2; done; exit 1'"
+        sleep: 1
+      - command: "kubectl -n cockroachdb wait --for=jsonpath={.status.phase}=Running pod -l app.kubernetes.io/name=cockroachdb --timeout=300s"
+        sleep: 5
+      - command: "/bin/sh -c 'for i in $(seq 1 30); do kubectl -n cockroachdb exec crdb-cluster-0 -- ./cockroach init --insecure --host=crdb-cluster-0.crdb-cluster.cockroachdb.svc.cluster.local && exit 0; sleep 3; done; exit 1'"
+        sleep: 2
+      - command: "kubectl -n cockroachdb wait --for=condition=ready pod -l app.kubernetes.io/name=cockroachdb --timeout=300s"
+        sleep: 10
+      - command: "kubectl -n cockroachdb apply -f resources/cockroachdb/generate-cert/resource/openssl-toolbox.yaml"
+        sleep: 2
+      - command: "kubectl -n cockroachdb wait --for=condition=ready pod/openssl-toolbox --timeout=120s"
+        sleep: 2
+    verify:
+      - command: "kubectl -n cockroachdb exec crdb-cluster-0 -- ./cockroach sql --insecure -e 'SELECT 1;' 2>/dev/null"
+        timeout_sec: 15
+
+oracle:
+  verify:
+    commands:
+      - command: "python3 resources/cockroachdb/generate-cert/oracle/oracle.py"
+        timeout_sec: 60
