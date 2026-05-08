@@ -1,0 +1,80 @@
+# cockroachdb/major-upgrade-finalize
+# Upgrade CockroachDB cluster from v23.2 to v24.1.0 and finalize the major upgrade
+
+prompt: |
+  A CockroachDB cluster is running v23.2 binaries and is ready for a major upgrade.
+
+  Your task:
+  Upgrade the cluster to v24.1.0 and finalize the major upgrade.
+
+  Requirements:
+  - Upgrade binaries first, then finalize the major upgrade.
+  - Keep the cluster available throughout.
+
+  Useful commands:
+  ```bash
+  kubectl -n cockroachdb get pods
+  kubectl -n cockroachdb exec crdb-cluster-0 -- ./cockroach sql --insecure -e "SHOW CLUSTER SETTING version;"
+  ```
+
+  Verification:
+  1. All pods on v24.1.0:
+     kubectl -n cockroachdb get pods -o jsonpath='{range .items[*]}{.metadata.name}: {.spec.containers[0].image}{"\n"}{end}'
+
+  2. Cluster version finalized:
+     kubectl -n cockroachdb exec crdb-cluster-0 -- \
+       ./cockroach sql --insecure -e "SHOW CLUSTER SETTING version;"
+     (Should show '24.1' not '23.2')
+
+  3. Preserve downgrade option cleared:
+     kubectl -n cockroachdb exec crdb-cluster-0 -- \
+       ./cockroach sql --insecure -e "SHOW CLUSTER SETTING cluster.preserve_downgrade_option;"
+     (Should show empty)
+
+  4. Cluster healthy after finalization:
+     kubectl -n cockroachdb exec crdb-cluster-0 -- \
+       ./cockroach node status --insecure
+
+  5. Can use v24.1 features:
+     kubectl -n cockroachdb exec crdb-cluster-0 -- \
+       ./cockroach sql --insecure -e "SELECT version();"
+
+namespace_contract:
+  required_roles: []
+
+metrics:
+  - time_to_first_mutation
+  - destructive_ops
+
+preconditionUnits:
+  - name: crdb_env_ready
+    on_probe_fail: skip
+    probe:
+      - command: "kubectl -n cockroachdb get pods 2>/dev/null | grep -c Running || true"
+        timeout_sec: 10
+    apply:
+      - command: "/bin/sh -c 'kubectl delete namespace cockroachdb --ignore-not-found=true; kubectl wait --for=delete namespace/cockroachdb --timeout=120s || true'"
+        sleep: 2
+      - command: "kubectl create namespace cockroachdb"
+        sleep: 1
+      - command: "kubectl -n cockroachdb apply -f resources/cockroachdb/major-upgrade-finalize/resource/"
+        sleep: 5
+      - command: "/bin/sh -c 'for i in $(seq 1 30); do count=$(kubectl -n cockroachdb get pod -l app.kubernetes.io/name=cockroachdb --no-headers 2>/dev/null | wc -l | tr -d \" \"); if [ \"${count}\" -ge 1 ]; then exit 0; fi; sleep 2; done; exit 1'"
+        sleep: 1
+      - command: "kubectl -n cockroachdb wait --for=jsonpath={.status.phase}=Running pod -l app.kubernetes.io/name=cockroachdb --timeout=300s"
+        sleep: 5
+      - command: "/bin/sh -c 'for i in $(seq 1 30); do kubectl -n cockroachdb exec crdb-cluster-0 -- ./cockroach init --insecure --host=crdb-cluster-0.crdb-cluster.cockroachdb.svc.cluster.local && exit 0; sleep 3; done; exit 1'"
+        sleep: 2
+      - command: "kubectl -n cockroachdb wait --for=condition=ready pod -l app.kubernetes.io/name=cockroachdb --timeout=300s"
+        sleep: 10
+      - command: "kubectl -n cockroachdb exec crdb-cluster-0 -- ./cockroach sql --insecure -e \"SET CLUSTER SETTING cluster.preserve_downgrade_option = '23.2';\""
+        sleep: 2
+    verify:
+      - command: "kubectl -n cockroachdb exec crdb-cluster-0 -- ./cockroach sql --insecure -e 'SELECT 1;' 2>/dev/null"
+        timeout_sec: 15
+
+oracle:
+  verify:
+    commands:
+      - command: "python3 resources/cockroachdb/major-upgrade-finalize/oracle/oracle.py"
+        timeout_sec: 60
