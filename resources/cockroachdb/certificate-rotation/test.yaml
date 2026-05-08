@@ -1,0 +1,75 @@
+# cockroachdb/certificate-rotation
+# Rotate TLS certificates for a running CockroachDB cluster with ~1 year validity
+
+prompt: |
+  Rotate the TLS certificates for the running CockroachDB cluster.
+  The new certificates should be valid for about 1 year.
+  The existing CA key and cert are available in the openssl-toolbox pod at
+  /tmp/certs/ca.key and /tmp/certs/ca.crt.
+
+  Verification:
+  1. Secure SQL works:
+     kubectl -n cockroachdb exec crdb-cluster-0 -- \
+       ./cockroach sql --certs-dir=/cockroach/cockroach-certs -e "SELECT 1;"
+
+  2. Node cert rotated:
+     kubectl -n cockroachdb get secret crdb-cluster-certs -o jsonpath='{.data.node\.crt}' | base64 -d | \
+       openssl x509 -noout -fingerprint -sha256
+
+  3. New cert validity about 1 year:
+     kubectl -n cockroachdb get secret crdb-cluster-certs -o jsonpath='{.data.node\.crt}' | base64 -d | \
+       openssl x509 -noout -enddate
+
+namespace_contract:
+  required_roles: []
+
+metrics:
+  - time_to_first_mutation
+  - destructive_ops
+
+preconditionUnits:
+  - name: crdb_env_ready
+    on_probe_fail: skip
+    probe:
+      - command: "kubectl -n cockroachdb get pods 2>/dev/null | grep -c Running || true"
+        timeout_sec: 10
+    apply:
+      - command: "/bin/sh -c 'kubectl delete namespace cockroachdb --ignore-not-found=true; kubectl wait --for=delete namespace/cockroachdb --timeout=120s || true'"
+        sleep: 2
+      - command: "kubectl create namespace cockroachdb"
+        sleep: 1
+      - command: "kubectl -n cockroachdb apply -f resources/cockroachdb/certificate-rotation/resource/rbac.yaml"
+        sleep: 2
+      - command: "kubectl -n cockroachdb apply -f resources/cockroachdb/certificate-rotation/resource/services.yaml"
+        sleep: 2
+      - command: "kubectl -n cockroachdb apply -f resources/cockroachdb/certificate-rotation/resource/openssl-toolbox.yaml"
+        sleep: 2
+      - command: "kubectl -n cockroachdb wait --for=condition=ready pod/openssl-toolbox --timeout=120s"
+        sleep: 2
+      - command: "/bin/sh -c 'kubectl -n cockroachdb exec openssl-toolbox -- sh -c \"set -e; rm -rf /tmp/certs && mkdir -p /tmp/certs; cd /tmp/certs; openssl genrsa -out ca.key 2048; openssl req -x509 -new -nodes -key ca.key -subj /CN=CockroachDB_CA -days 3650 -out ca.crt; openssl genrsa -out node.key 2048; openssl req -new -key node.key -subj /CN=node -out node.csr; openssl x509 -req -in node.csr -CA ca.crt -CAkey ca.key -CAcreateserial -out node.crt -days 2; openssl genrsa -out client.root.key 2048; openssl req -new -key client.root.key -subj /CN=root -out client.root.csr; openssl x509 -req -in client.root.csr -CA ca.crt -CAkey ca.key -CAcreateserial -out client.root.crt -days 2\"'"
+        sleep: 2
+      - command: "/bin/sh -c 'rm -rf /tmp/crdb-old-certs; kubectl -n cockroachdb cp openssl-toolbox:/tmp/certs /tmp/crdb-old-certs'"
+        sleep: 1
+      - command: "/bin/sh -c 'kubectl -n cockroachdb create secret generic crdb-cluster-certs --from-file=ca.crt=/tmp/crdb-old-certs/ca.crt --from-file=node.crt=/tmp/crdb-old-certs/node.crt --from-file=node.key=/tmp/crdb-old-certs/node.key --from-file=client.root.crt=/tmp/crdb-old-certs/client.root.crt --from-file=client.root.key=/tmp/crdb-old-certs/client.root.key --dry-run=client -o yaml | kubectl apply -f -'"
+        sleep: 1
+      - command: "/bin/sh -c 'fingerprint=$(openssl x509 -noout -fingerprint -sha256 -in /tmp/crdb-old-certs/node.crt | sed \"s/.*=//\"); ca_fingerprint=$(openssl x509 -noout -fingerprint -sha256 -in /tmp/crdb-old-certs/ca.crt | sed \"s/.*=//\"); not_after=$(openssl x509 -noout -enddate -in /tmp/crdb-old-certs/node.crt | sed \"s/notAfter=//\"); kubectl -n cockroachdb create configmap crdb-old-cert --from-literal=fingerprint=\"$fingerprint\" --from-literal=ca_fingerprint=\"$ca_fingerprint\" --from-literal=not_after=\"$not_after\" --dry-run=client -o yaml | kubectl apply -f -'"
+        sleep: 1
+      - command: "kubectl -n cockroachdb apply -f resources/cockroachdb/certificate-rotation/resource/statefulset.yaml"
+        sleep: 5
+      - command: "/bin/sh -c 'for i in $(seq 1 30); do count=$(kubectl -n cockroachdb get pod -l app.kubernetes.io/name=cockroachdb --no-headers 2>/dev/null | wc -l | tr -d \" \"); if [ \"${count}\" -ge 1 ]; then exit 0; fi; sleep 2; done; exit 1'"
+        sleep: 1
+      - command: "kubectl -n cockroachdb wait --for=jsonpath={.status.phase}=Running pod -l app.kubernetes.io/name=cockroachdb --timeout=300s"
+        sleep: 5
+      - command: "/bin/sh -c 'for i in $(seq 1 30); do kubectl -n cockroachdb exec crdb-cluster-0 -- ./cockroach init --certs-dir=/cockroach/cockroach-certs --host=crdb-cluster-0.crdb-cluster.cockroachdb.svc.cluster.local && exit 0; sleep 3; done; exit 1'"
+        sleep: 2
+      - command: "kubectl -n cockroachdb wait --for=condition=ready pod -l app.kubernetes.io/name=cockroachdb --timeout=300s"
+        sleep: 10
+    verify:
+      - command: "kubectl -n cockroachdb get pods 2>/dev/null | grep -c Running || true"
+        timeout_sec: 10
+
+oracle:
+  verify:
+    commands:
+      - command: "python3 resources/cockroachdb/certificate-rotation/oracle/oracle.py"
+        timeout_sec: 60

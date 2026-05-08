@@ -1,0 +1,68 @@
+# cockroachdb/monitoring-integration
+# Enable Prometheus scraping for CockroachDB metrics using the Prometheus Operator
+
+prompt: |
+  Prometheus is running in the monitoring namespace.
+  Enable Prometheus scraping for CockroachDB metrics from /_status/vars on port 8080.
+  You may use any Prometheus Operator-compatible approach.
+
+  Verification:
+  1. Prometheus has an active target for CockroachDB metrics.
+  2. Metrics endpoint is reachable inside the cluster.
+
+namespace_contract:
+  required_roles: []
+
+metrics:
+  - time_to_first_mutation
+
+preconditionUnits:
+  - name: crdb_env_ready
+    on_probe_fail: skip
+    probe:
+      - command: "kubectl -n cockroachdb get pods 2>/dev/null | grep -c Running || true"
+        timeout_sec: 10
+    apply:
+      - command: "/bin/sh -c 'kubectl delete namespace cockroachdb --ignore-not-found=true; kubectl wait --for=delete namespace/cockroachdb --timeout=120s || true; kubectl delete namespace monitoring --ignore-not-found=true; kubectl wait --for=delete namespace/monitoring --timeout=120s || true'"
+        sleep: 2
+      - command: "kubectl create namespace monitoring"
+        sleep: 1
+      - command: "kubectl apply -f resources/cockroachdb/monitoring-integration/resource/monitoring-crds.yaml"
+        sleep: 2
+      - command: "kubectl create namespace cockroachdb"
+        sleep: 1
+      - command: "kubectl -n monitoring apply -f resources/cockroachdb/monitoring-integration/resource/prometheus-operator.yaml"
+        sleep: 3
+      - command: "kubectl -n monitoring apply -f resources/cockroachdb/monitoring-integration/resource/prometheus-rbac.yaml"
+        sleep: 2
+      - command: "kubectl -n monitoring apply -f resources/cockroachdb/monitoring-integration/resource/prometheus.yaml"
+        sleep: 2
+      - command: "kubectl -n monitoring wait --for=condition=ready pod -l app=prometheus-operator --timeout=300s"
+        sleep: 2
+      - command: "/bin/sh -c 'for i in $(seq 1 60); do count=$(kubectl -n monitoring get pod -l prometheus=crdb --no-headers 2>/dev/null | wc -l | tr -d \" \"); if [ \"${count}\" -ge 1 ]; then kubectl -n monitoring wait --for=condition=ready pod -l prometheus=crdb --timeout=300s && exit 0; fi; sleep 2; done; exit 1'"
+        sleep: 2
+      - command: "kubectl -n cockroachdb apply -f resources/cockroachdb/monitoring-integration/resource/rbac.yaml"
+        sleep: 2
+      - command: "kubectl -n cockroachdb apply -f resources/cockroachdb/monitoring-integration/resource/services.yaml"
+        sleep: 2
+      - command: "kubectl -n cockroachdb apply -f resources/cockroachdb/monitoring-integration/resource/statefulset.yaml"
+        sleep: 5
+      - command: "kubectl -n cockroachdb wait --for=jsonpath={.status.phase}=Running pod -l app.kubernetes.io/name=cockroachdb --timeout=300s"
+        sleep: 5
+      - command: "/bin/sh -c 'for i in $(seq 1 30); do kubectl -n cockroachdb exec crdb-cluster-0 -- ./cockroach init --insecure --host=crdb-cluster-0.crdb-cluster.cockroachdb.svc.cluster.local && exit 0; sleep 3; done; exit 1'"
+        sleep: 2
+      - command: "kubectl -n cockroachdb wait --for=condition=ready pod -l app.kubernetes.io/name=cockroachdb --timeout=300s"
+        sleep: 10
+      - command: "kubectl -n cockroachdb apply -f resources/cockroachdb/monitoring-integration/resource/curl-test.yaml"
+        sleep: 2
+      - command: "kubectl -n cockroachdb wait --for=condition=ready pod/curl-test --timeout=120s"
+        sleep: 2
+    verify:
+      - command: "kubectl -n cockroachdb exec crdb-cluster-0 -- ./cockroach sql --insecure -e 'SELECT 1;' 2>/dev/null"
+        timeout_sec: 15
+
+oracle:
+  verify:
+    commands:
+      - command: "python3 resources/cockroachdb/monitoring-integration/oracle/oracle.py"
+        timeout_sec: 60
