@@ -333,7 +333,23 @@ def resolve_case_params(
         ``(resolved_params, warnings)`` where *warnings* is a list of
         non-fatal diagnostic strings.
     """
-    ...
+    declared: dict[str, Any] = case_data.get("params") or {}
+    overrides: dict[str, Any] = param_overrides or {}
+    warnings: list[str] = []
+
+    resolved: dict[str, Any] = {}
+    for key, param_def in declared.items():
+        if isinstance(param_def, dict):
+            resolved[key] = param_def.get("default")
+        else:
+            resolved[key] = param_def
+
+    for key, value in overrides.items():
+        if key not in declared:
+            warnings.append(f"unrecognized param override '{key}' (not declared in case)")
+        resolved[key] = value
+
+    return resolved, warnings
 
 
 def normalize_namespace_contract(case_data: dict[str, Any]) -> dict[str, Any]:
@@ -346,7 +362,24 @@ def normalize_namespace_contract(case_data: dict[str, Any]) -> dict[str, Any]:
         (list[str]). Both lists are deduplicated with order preserved.
         An absent contract is represented as two empty lists.
     """
-    ...
+    raw = case_data.get("namespace_contract") or {}
+    if not isinstance(raw, dict):
+        raw = {}
+
+    def _dedup(lst: Any) -> list[str]:
+        seen: set[str] = set()
+        result: list[str] = []
+        for item in (lst or []):
+            s = str(item).strip()
+            if s and s not in seen:
+                seen.add(s)
+                result.append(s)
+        return result
+
+    return {
+        "required_roles": _dedup(raw.get("required_roles")),
+        "optional_roles": _dedup(raw.get("optional_roles")),
+    }
 
 
 def normalize_precondition_units(case_data: dict[str, Any]) -> list[dict[str, Any]]:
@@ -366,7 +399,32 @@ def normalize_precondition_units(case_data: dict[str, Any]) -> list[dict[str, An
     RuntimeError
         When any unit is structurally invalid.
     """
-    ...
+    raw_units = case_data.get("preconditionUnits") or []
+    if not isinstance(raw_units, list):
+        return []
+
+    result: list[dict[str, Any]] = []
+    for i, unit in enumerate(raw_units):
+        if not isinstance(unit, dict):
+            raise RuntimeError(
+                f"preconditionUnits[{i}] must be a dict, got {type(unit).__name__}"
+            )
+        name = unit.get("name") or f"unit_{i}"
+        label = f"preconditionUnits[{i}] '{name}'"
+        on_probe_fail = str(unit.get("on_probe_fail") or "error").strip().lower()
+        try:
+            normalized = _normalize_operation_block(
+                unit,
+                label=label,
+                case_id=name,
+                default_on_probe_fail=on_probe_fail,
+            )
+            normalized["name"] = name
+            result.append(normalized)
+        except ValueError as exc:
+            raise RuntimeError(str(exc)) from exc
+
+    return result
 
 
 def normalize_oracle_config(case_data: dict[str, Any]) -> dict[str, Any]:
@@ -379,7 +437,34 @@ def normalize_oracle_config(case_data: dict[str, Any]) -> dict[str, Any]:
         ``after_commands`` (list), ``after_failure_mode`` (``"warn"`` or
         ``"fail"``), ``script_path`` (str or ``None``).
     """
-    ...
+    raw = case_data.get("oracle") or {}
+    if not isinstance(raw, dict):
+        raw = {}
+
+    # Pydantic's extra='ignore' drops before/after hooks from CaseSchema,
+    # so we read them directly from the raw dict here.
+    verify_block = raw.get("verify") or {}
+    if not isinstance(verify_block, dict):
+        verify_block = {}
+
+    verify_commands = _normalize_commands(verify_block.get("commands"))
+    before_commands = _normalize_commands(verify_block.get("before_commands"))
+    after_commands = _normalize_commands(verify_block.get("after_commands"))
+
+    raw_mode = str(verify_block.get("after_failure_mode") or "warn").strip().lower()
+    after_failure_mode = raw_mode if raw_mode in ("warn", "fail") else "warn"
+
+    script_path: str | None = None
+    if isinstance(raw.get("script"), str):
+        script_path = raw["script"].strip() or None
+
+    return {
+        "verify_commands": verify_commands,
+        "before_commands": before_commands,
+        "after_commands": after_commands,
+        "after_failure_mode": after_failure_mode,
+        "script_path": script_path,
+    }
 
 
 def normalize_decoy_config(case_data: dict[str, Any]) -> list[dict[str, Any]]:
@@ -388,7 +473,23 @@ def normalize_decoy_config(case_data: dict[str, Any]) -> list[dict[str, Any]]:
     Each descriptor has keys ``path`` (str) and ``namespace`` (str).
     Returns an empty list when the case declares no decoys.
     """
-    ...
+    raw = case_data.get("decoys") or []
+    if not isinstance(raw, list):
+        return []
+
+    result: list[dict[str, Any]] = []
+    for item in raw:
+        if isinstance(item, dict):
+            path = str(item.get("path") or "").strip()
+            namespace = str(item.get("namespace") or "").strip()
+            if path:
+                result.append({"path": path, "namespace": namespace})
+        elif isinstance(item, str):
+            item = item.strip()
+            if item:
+                result.append({"path": item, "namespace": ""})
+
+    return result
 
 
 def normalize_case(
@@ -415,4 +516,28 @@ def normalize_case(
         ``decoys``, ``setup_check``, ``metrics``, ``tags``,
         ``warnings``.
     """
-    ...
+    data = deepcopy(case_data)
+    params, warnings = resolve_case_params(data, param_overrides)
+    namespace_contract = normalize_namespace_contract(data)
+    precondition_units = normalize_precondition_units(data)
+    oracle = normalize_oracle_config(data)
+    decoys = normalize_decoy_config(data)
+
+    metrics = [str(m) for m in (data.get("metrics") or []) if m]
+    tags = [str(t) for t in (data.get("tags") or []) if t]
+    setup_check = data.get("setup_check")
+
+    return {
+        "service": service,
+        "case_name": case_name,
+        "prompt": data.get("prompt", ""),
+        "params": params,
+        "namespace_contract": namespace_contract,
+        "precondition_units": precondition_units,
+        "oracle": oracle,
+        "decoys": decoys,
+        "setup_check": setup_check,
+        "metrics": metrics,
+        "tags": tags,
+        "warnings": warnings,
+    }
