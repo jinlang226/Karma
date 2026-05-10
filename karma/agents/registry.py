@@ -88,4 +88,19 @@ def resolve_agent(
         Superset of :func:`get_agent_meta` with additional keys
         ``sandbox_mode`` (str) and ``image_tag`` (str or ``None``).
     """
-    ...
+    if sandbox_mode == "local" and name is None:
+        return {
+            "folder": None,
+            "dockerfile": None,
+            "entrypoint": None,
+            "description": "local process, no Docker image",
+            "sandbox_mode": "local",
+            "image_tag": None,
+        }
+
+    if sandbox_mode == "docker" and name is None:
+        raise ValueError("agent name is required when sandbox_mode is 'docker'")
+
+    meta = get_agent_meta(name)  # type: ignore[arg-type]
+    image_tag = f"karma-agent-{name}:latest" if sandbox_mode == "docker" else None
+    return {**meta, "sandbox_mode": sandbox_mode, "image_tag": image_tag}
