@@ -95,7 +95,7 @@ class WorkflowSchema(BaseModel):
 
 def _is_valid_name(name: str) -> bool:
     """Return ``True`` when *name* contains only alphanumerics, hyphens, and underscores."""
-    ...
+    return bool(re.match(r'^[a-zA-Z0-9_-]+$', name))
 
 
 def _parse_stage_param_ref(value: str) -> dict[str, str] | None:
@@ -136,7 +136,55 @@ def _resolve_stage_param_overrides(
     tuple[dict, list[str]]
         ``(resolved_overrides, warnings)``.
     """
-    ...
+    overrides = dict(stage.get("param_overrides") or {})
+    warnings: list[str] = []
+    current_id = stage.get("id", "")
+    resolved: dict[str, Any] = {}
+
+    for key, value in overrides.items():
+        if not isinstance(value, str):
+            resolved[key] = value
+            continue
+        ref = _parse_stage_param_ref(value)
+        if ref is None:
+            resolved[key] = value
+            continue
+
+        ref_stage_id = ref["stage_id"]
+        ref_param = ref["param"]
+
+        # Reject forward references and self-references.
+        ref_index = next(
+            (j for j, s in enumerate(all_stages) if s.get("id") == ref_stage_id),
+            None,
+        )
+        if ref_index is None:
+            raise ValueError(
+                f"stage '{current_id}' param_overrides['{key}'] references "
+                f"unknown stage '{ref_stage_id}'"
+            )
+        if ref_index >= stage_index:
+            raise ValueError(
+                f"stage '{current_id}' param_overrides['{key}'] references "
+                f"stage '{ref_stage_id}' which is at the same index or later"
+            )
+
+        if ref_stage_id not in prior_stage_params:
+            raise ValueError(
+                f"stage '{current_id}' param_overrides['{key}'] references "
+                f"stage '{ref_stage_id}' which has no resolved params yet"
+            )
+        prior_params = prior_stage_params[ref_stage_id]
+        if ref_param not in prior_params:
+            warnings.append(
+                f"stage '{current_id}' param_overrides['{key}'] references "
+                f"param '{ref_param}' not found in stage '{ref_stage_id}' params"
+            )
+            resolved[key] = None
+        else:
+            resolved[key] = prior_params[ref_param]
+
+    return resolved, warnings
 
 
 def _namespace_aliases_for_stage(stage: dict[str, Any]) -> list[str]:
@@ -214,7 +262,40 @@ def normalize_workflow(
         raise ValueError(
             f"workflow schema validation failed: {details}"
         ) from exc
-    ...
+
+    meta = raw.get("metadata") or {}
+    spec = raw.get("spec") or {}
+    raw_stages = spec.get("stages") or []
+
+    normalized_stages: list[dict[str, Any]] = []
+    prior_stage_params: dict[str, dict[str, Any]] = {}
+
+    for i, s in enumerate(raw_stages):
+        stage_id = str(s.get("id") or f"stage_{i + 1}")
+        resolved_overrides, w = _resolve_stage_param_overrides(
+            s, i, raw_stages, prior_stage_params
+        )
+        ns_list = _namespace_aliases_for_stage(s)
+        stage_dict: dict[str, Any] = {
+            "id": stage_id,
+            "service": str(s.get("service") or ""),
+            "case_name": str(s.get("case") or ""),
+            "param_overrides": resolved_overrides,
+            "namespaces": ns_list,
+            "agent_timeout_sec": int(s.get("agent_timeout_sec") or _DEFAULT_AGENT_TIMEOUT_SEC),
+            "retries": int(s.get("retries") or 0),
+            "_warnings": w,
+        }
+        normalized_stages.append(stage_dict)
+        prior_stage_params[stage_id] = resolved_overrides
+
+    return {
+        "id": str(meta.get("id") or ""),
+        "label": meta.get("label"),
+        "prompt_mode": str(spec.get("prompt_mode") or _DEFAULT_PROMPT_MODE),
+        "stages": normalized_stages,
+        "adversary": list(spec.get("adversary") or []),
+    }
 
 
 def resolve_workflow_rows(
@@ -246,7 +327,52 @@ def resolve_workflow_rows(
         Ordered list of workflow row dicts. See module docstring for the
         row shape.
     """
-    ...
+    from .cases import load_case_file, normalize_case
+
+    rows: list[dict[str, Any]] = []
+    adversary_list: list[dict[str, Any]] = workflow.get("adversary") or []
+
+    for stage in workflow.get("stages") or []:
+        service = stage["service"]
+        case_name = stage["case_name"]
+        stage_id = stage["id"]
+        param_overrides = stage.get("param_overrides") or {}
+
+        case_data = load_case_file(resources_dir, service, case_name)
+        normalized = normalize_case(case_data, service, case_name, param_overrides)
+
+        # Collect adversary entries targeting this stage.
+        deploy_ops: list[dict[str, Any]] = []
+        lift_ops: list[dict[str, Any]] = []
+        hint: str | None = None
+
+        for adv in adversary_list:
+            if not isinstance(adv, dict):
+                continue
+            target = adv.get("target_stage") or adv.get("stage")
+            if target and target != stage_id:
+                continue
+            deploy_ops.extend(adv.get("deploy") or [])
+            lift_ops.extend(adv.get("lift") or [])
+            if hint is None and adv.get("prompt_hint"):
+                hint = str(adv["prompt_hint"])
+
+        row: dict[str, Any] = {
+            "stage_id": stage_id,
+            "service": service,
+            "case_name": case_name,
+            "case": normalized,
+            "namespace_roles": stage.get("namespaces") or [_DEFAULT_NAMESPACE_ALIAS],
+            "adversary_deploy": deploy_ops,
+            "adversary_lift": lift_ops,
+            "adversary_hint": hint,
+            "prompt_mode": workflow.get("prompt_mode") or _DEFAULT_PROMPT_MODE,
+            "agent_timeout_sec": stage.get("agent_timeout_sec") or _DEFAULT_AGENT_TIMEOUT_SEC,
+            "retries": int(stage.get("retries") or 0),
+        }
+        rows.append(row)
+
+    return rows
 
 
 def single_case_to_workflow(
@@ -283,7 +409,30 @@ def single_case_to_workflow(
     namespace_roles:
         Explicit namespace roles; when ``None`` the case contract is used.
     """
-    ...
+    if prompt_mode not in _VALID_PROMPT_MODES:
+        prompt_mode = _DEFAULT_PROMPT_MODE
+
+    namespaces = namespace_roles if namespace_roles is not None else [_DEFAULT_NAMESPACE_ALIAS]
+    workflow_id = f"{service}/{case_name}"
+
+    return {
+        "id": workflow_id,
+        "label": None,
+        "prompt_mode": prompt_mode,
+        "stages": [
+            {
+                "id": "stage_1",
+                "service": service,
+                "case_name": case_name,
+                "param_overrides": dict(param_overrides or {}),
+                "namespaces": namespaces,
+                "agent_timeout_sec": agent_timeout_sec,
+                "retries": 0,
+                "_warnings": [],
+            }
+        ],
+        "adversary": [],
+    }
 
 
 def get_all_stage_ids(workflow: dict[str, Any]) -> list[str]:
