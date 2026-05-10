@@ -62,7 +62,18 @@ def render_stage_prompt(
     ValueError
         When *case_data* contains no usable prompt template.
     """
-    ...
+    template = str(case_data.get("prompt") or "").strip()
+    if not template:
+        raise ValueError("case has no prompt template")
+
+    builtins: dict[str, str] = {
+        "stage_id": str(stage.get("id") or stage.get("stage_id") or ""),
+        "workflow_id": str(workflow.get("id") or ""),
+        "service": str(stage.get("service") or ""),
+        "case_name": str(stage.get("case_name") or ""),
+    }
+    merged = {**builtins, **(variables or {})}
+    return _expand_placeholders(template, merged)
 
 
 def assemble_agent_prompt(
@@ -95,7 +106,29 @@ def assemble_agent_prompt(
     ValueError
         When *prompt_mode* is not one of ``VALID_PROMPT_MODES``.
     """
-    ...
+    if prompt_mode not in VALID_PROMPT_MODES:
+        raise ValueError(
+            f"invalid prompt_mode {prompt_mode!r}; "
+            f"expected one of {VALID_PROMPT_MODES}"
+        )
+
+    current_prompt = stage_prompts[current_index]
+
+    if prompt_mode == "progressive":
+        assembled = current_prompt
+    elif prompt_mode == "concat_stateful":
+        parts: list[str] = []
+        for i, p in enumerate(stage_prompts[: current_index + 1]):
+            marker = "(ACTIVE) " if i == current_index else f"(STAGE {i + 1}) "
+            parts.append(marker + p)
+        assembled = "\n\n".join(parts)
+    else:  # concat_blind
+        assembled = "\n\n".join(stage_prompts[: current_index + 1])
+
+    if adversary_hint:
+        assembled = assembled + "\n\n" + adversary_hint.strip()
+
+    return assembled
 
 
 def render_workflow_system_prompt(
@@ -109,4 +142,9 @@ def render_workflow_system_prompt(
     ``runtime.workflow`` to prepend a shared instruction block to each
     stage prompt in multi-stage runs.
     """
-    ...
+    template = str((workflow.get("spec") or {}).get("system_prompt") or "").strip()
+    if not template:
+        return None
+    builtins: dict[str, str] = {"workflow_id": str(workflow.get("id") or "")}
+    merged = {**builtins, **(variables or {})}
+    return _expand_placeholders(template, merged)
