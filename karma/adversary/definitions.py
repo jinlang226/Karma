@@ -228,7 +228,32 @@ def validate_adversary_workflow_block(
         Each entry has keys ``scenario`` (str), ``inject_at_stage`` (str),
         ``lift_at_stage`` (str or ``None``), ``param_overrides`` (dict).
     """
-    ...
+    raw_list = (spec or {}).get("adversary") or []
+    if not isinstance(raw_list, list):
+        raise ValueError("spec.adversary must be a list")
+
+    validated: list[dict[str, Any]] = []
+    for i, entry in enumerate(raw_list):
+        if not isinstance(entry, dict):
+            raise ValueError(f"spec.adversary[{i}] must be a dict")
+        scenario = entry.get("scenario")
+        if not scenario or not isinstance(scenario, str):
+            raise ValueError(f"spec.adversary[{i}].scenario is required and must be a string")
+        inject_at = entry.get("inject_at_stage")
+        if not inject_at or not isinstance(inject_at, str):
+            raise ValueError(
+                f"spec.adversary[{i}].inject_at_stage is required and must be a string"
+            )
+        lift_at = entry.get("lift_at_stage")
+        if lift_at is not None and not isinstance(lift_at, str):
+            raise ValueError(f"spec.adversary[{i}].lift_at_stage must be a string or null")
+        validated.append({
+            "scenario": str(scenario).strip(),
+            "inject_at_stage": str(inject_at).strip(),
+            "lift_at_stage": str(lift_at).strip() if lift_at else None,
+            "param_overrides": dict(entry.get("param_overrides") or {}),
+        })
+    return validated
 
 
 def resolve_adversary_scenario(
@@ -270,9 +295,95 @@ def resolve_adversary_scenario(
         ``lift_unit`` (dict or ``None``),
         ``prompt_hints`` (``{"deploy": str|None, "active": str|None}``).
     """
-    # Schema validation happens here before field access.
-    # The raw_data argument is expected to be the parsed scenario dict.
-    ...
+    inject_at = entry["inject_at_stage"]
+    lift_at = entry.get("lift_at_stage")
+    scenario_name = entry["scenario"]
+    param_overrides = entry.get("param_overrides") or {}
+
+    service = stage_service_map.get(inject_at)
+    if not service:
+        raise RuntimeError(
+            f"adversary scenario '{scenario_name}': inject_at_stage '{inject_at}' "
+            f"not found in stage service map"
+        )
+
+    scenario_path = (
+        resources_dir / service / _ADVERSARIAL_DIR_NAME / scenario_name / _SCENARIO_FILE_NAME
+    )
+    if not scenario_path.exists():
+        raise RuntimeError(
+            f"adversary scenario '{scenario_name}': file not found at {scenario_path}"
+        )
+    try:
+        raw_data = yaml.safe_load(scenario_path.read_text()) or {}
+    except Exception as exc:
+        raise RuntimeError(
+            f"adversary scenario '{scenario_name}': failed to parse {scenario_path}: {exc}"
+        ) from exc
+    if not isinstance(raw_data, dict):
+        raise RuntimeError(
+            f"adversary scenario '{scenario_name}': {scenario_path} must be a YAML object"
+        )
+
+    try:
+        ScenarioSchema.model_validate(raw_data)
+    except ValidationError as exc:
+        details = "; ".join(
+            f"{'.' .join(str(loc) for loc in e['loc'])}: {e['msg']}"
+            for e in exc.errors()
+        )
+        raise RuntimeError(
+            f"adversary scenario '{scenario_name}': schema validation failed: {details}"
+        ) from exc
+
+    data = deepcopy(raw_data)
+
+    # Apply param_overrides by substituting {{params.key}} tokens.
+    params: dict[str, Any] = {**dict(data.get("params") or {}), **param_overrides}
+
+    def _sub(obj: Any) -> Any:
+        if isinstance(obj, str):
+            for k, v in params.items():
+                obj = obj.replace(f"{{{{params.{k}}}}}", str(v))
+            return obj
+        if isinstance(obj, list):
+            return [_sub(item) for item in obj]
+        if isinstance(obj, dict):
+            return {kk: _sub(vv) for kk, vv in obj.items()}
+        return obj
+
+    data = _sub(data)
+
+    try:
+        deploy_unit = _normalize_operation_block(
+            data.get("deploy") or {}, "deploy", scenario_name
+        )
+    except ValueError as exc:
+        raise RuntimeError(str(exc)) from exc
+
+    lift_unit: dict[str, Any] | None = None
+    if data.get("lift") is not None:
+        try:
+            lift_unit = _normalize_operation_block(
+                data["lift"], "lift", scenario_name
+            )
+        except ValueError as exc:
+            raise RuntimeError(str(exc)) from exc
+
+    hints_raw = data.get("prompt_hints") or {}
+    prompt_hints = {
+        "deploy": str(hints_raw.get("deploy") or "").strip() or None,
+        "active": str(hints_raw.get("active") or "").strip() or None,
+    }
+
+    return {
+        "id": scenario_name,
+        "inject_at_stage": inject_at,
+        "lift_at_stage": lift_at,
+        "deploy_unit": deploy_unit,
+        "lift_unit": lift_unit,
+        "prompt_hints": prompt_hints,
+    }
 
 
 def collect_stage_operations(
@@ -326,7 +437,16 @@ def collect_pending_lift_units(
     completed_stage_ids:
         IDs of stages that ran to completion.
     """
-    ...
+    result: list[dict[str, Any]] = []
+    for inj in injections or []:
+        if inj.get("id") not in deployed_scenario_ids:
+            continue
+        lift_at = inj.get("lift_at_stage")
+        if lift_at and lift_at in completed_stage_ids:
+            continue
+        if inj.get("lift_unit") is not None:
+            result.append(deepcopy(inj["lift_unit"]))
+    return result
 
 
 def collect_stage_hint(
@@ -350,4 +470,26 @@ def collect_stage_hint(
     all_stage_ids:
         Ordered list of all stage IDs in the workflow.
     """
-    ...
+    hints: list[str] = []
+    for inj in injections or []:
+        inject_at = inj.get("inject_at_stage")
+        lift_at = inj.get("lift_at_stage")
+        ph = inj.get("prompt_hints") or {}
+
+        if inject_at == stage_id:
+            h = ph.get("deploy")
+            if h:
+                hints.append(h.strip())
+        elif lift_at and inject_at and inject_at in all_stage_ids and lift_at in all_stage_ids:
+            inject_idx = all_stage_ids.index(inject_at)
+            lift_idx = all_stage_ids.index(lift_at)
+            try:
+                current_idx = all_stage_ids.index(stage_id)
+            except ValueError:
+                continue
+            if inject_idx < current_idx < lift_idx:
+                h = ph.get("active")
+                if h:
+                    hints.append(h.strip())
+
+    return "\n\n".join(hints) if hints else None
