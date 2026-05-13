@@ -12,8 +12,54 @@ live run context, including from the judge pipeline and standalone scripts.
 
 from __future__ import annotations
 
+import json
+import os
+import subprocess
+import time
 from pathlib import Path
 from typing import Any
+
+from . import protocol
+
+
+def _run_commands(
+    commands: list[dict[str, Any]],
+    *,
+    env: dict[str, str],
+    timeout_sec: int,
+) -> tuple[bool, str]:
+    """Run a list of command dicts, returning ``(ok, combined_output)``.
+
+    Stops on the first non-zero exit unless the command list is empty.
+    """
+    output_parts: list[str] = []
+    deadline = time.monotonic() + timeout_sec
+
+    for entry in commands:
+        cmd = entry.get("command", "")
+        if not cmd:
+            continue
+        remaining = max(1, int(deadline - time.monotonic()))
+        cmd_timeout = min(entry.get("timeout_sec") or 120, remaining)
+        try:
+            proc = subprocess.run(
+                cmd, shell=True, capture_output=True, text=True,
+                env=env, timeout=cmd_timeout,
+            )
+            out = proc.stdout + proc.stderr
+            output_parts.append(f"$ {cmd}\n{out}")
+            if entry.get("sleep"):
+                time.sleep(entry["sleep"])
+            if proc.returncode != 0:
+                return False, "".join(output_parts)
+        except subprocess.TimeoutExpired:
+            output_parts.append(f"$ {cmd}\n[timed out after {cmd_timeout}s]\n")
+            return False, "".join(output_parts)
+        except Exception as exc:
+            output_parts.append(f"$ {cmd}\n[error: {exc}]\n")
+            return False, "".join(output_parts)
+
+    return True, "".join(output_parts)
 
 
 def run_oracle(
@@ -65,7 +111,67 @@ def run_oracle(
         ``script_output`` (``None`` if no script), ``error`` (``None``
         on success).
     """
-    ...
+    result: dict[str, Any] = {
+        "verdict": "error",
+        "output": "",
+        "before_output": "",
+        "after_output": "",
+        "script_output": None,
+        "error": None,
+    }
+    try:
+        env = {**os.environ, **role_bindings, **(env_vars or {})}
+        after_failure_mode = oracle_config.get("after_failure_mode") or "warn"
+
+        before_ok, before_out = _run_commands(
+            oracle_config.get("before_commands") or [],
+            env=env, timeout_sec=timeout_sec,
+        )
+        result["before_output"] = before_out
+
+        verify_ok, verify_out = _run_commands(
+            oracle_config.get("verify_commands") or [],
+            env=env, timeout_sec=timeout_sec,
+        )
+        result["output"] = verify_out
+
+        script_output: str | None = None
+        script_path = oracle_config.get("script_path")
+        if script_path:
+            try:
+                proc = subprocess.run(
+                    ["python3", script_path],
+                    capture_output=True, text=True, env=env, timeout=timeout_sec,
+                )
+                script_output = proc.stdout + proc.stderr
+                if proc.returncode != 0:
+                    verify_ok = False
+            except Exception as exc:
+                script_output = f"[script error: {exc}]"
+                verify_ok = False
+        result["script_output"] = script_output
+
+        after_ok, after_out = _run_commands(
+            oracle_config.get("after_commands") or [],
+            env=env, timeout_sec=timeout_sec,
+        )
+        result["after_output"] = after_out
+
+        if not verify_ok:
+            result["verdict"] = "fail"
+        elif not after_ok and after_failure_mode == "fail":
+            result["verdict"] = "fail"
+        else:
+            result["verdict"] = "pass"
+
+    except Exception as exc:
+        result["verdict"] = "error"
+        result["error"] = str(exc)
+
+    protocol.ensure_stage_dir(run_dir, stage_id)
+    oracle_path = protocol.stage_oracle_path(run_dir, stage_id)
+    oracle_path.write_text(json.dumps(result, indent=2))
+    return result
 
 
 def run_regression_sweep(
@@ -102,4 +208,16 @@ def run_regression_sweep(
     dict
         Map of ``stage_id`` to its regression verdict dict.
     """
-    ...
+    results: dict[str, Any] = {}
+    for stage_id, oracle_config in stage_oracle_configs:
+        role_bindings = role_bindings_map.get(stage_id) or {}
+        verdict = run_oracle(
+            oracle_config,
+            role_bindings=role_bindings,
+            run_dir=run_dir,
+            stage_id=f"{stage_id}__regression",
+            env_vars=env_vars,
+            timeout_sec=timeout_sec,
+        )
+        results[stage_id] = verdict
+    return results
