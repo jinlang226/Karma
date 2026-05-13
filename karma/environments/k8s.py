@@ -11,8 +11,14 @@ it directly from ``runtime.*``.
 
 from __future__ import annotations
 
+import re
+import subprocess
 from pathlib import Path
 from typing import Any
+
+_PLACEHOLDER_RE = re.compile(r"\{\{namespace\.([A-Za-z0-9_-]+)\}\}")
+_NAMESPACE_PREFIX = "karma"
+_FORCE_DELETE_TIMEOUT_SEC = 120
 
 
 class K8sEnvironment:
@@ -41,6 +47,24 @@ class K8sEnvironment:
             ``namespace_prefix`` (str), ``force_delete_timeout_sec`` (int).
         """
         self._config = config or {}
+        self._prefix = str(self._config.get("namespace_prefix") or _NAMESPACE_PREFIX)
+        self._force_timeout = int(
+            self._config.get("force_delete_timeout_sec") or _FORCE_DELETE_TIMEOUT_SEC
+        )
+        kc = self._config.get("kubeconfig")
+        self._kubeconfig: str | None = str(kc) if kc else None
+
+    def _kubectl(self, args: list[str], *, check: bool = True, timeout: int = 60) -> subprocess.CompletedProcess:
+        """Run a kubectl command with optional kubeconfig override."""
+        import os
+        env = dict(os.environ)
+        if self._kubeconfig:
+            env["KUBECONFIG"] = self._kubeconfig
+        cmd = ["kubectl"] + args
+        return subprocess.run(
+            cmd, env=env, capture_output=True, text=True,
+            check=check, timeout=timeout,
+        )
 
     def bind_namespace_roles(
         self,
@@ -58,7 +82,15 @@ class K8sEnvironment:
         dict
             Map of role name to physical namespace name.
         """
-        ...
+        safe_run = re.sub(r"[^a-z0-9-]", "-", run_id.lower())[:40].rstrip("-")
+        bindings: dict[str, str] = {}
+        for role in (roles or []):
+            safe_role = re.sub(r"[^a-z0-9-]", "-", str(role).lower()).strip("-")
+            if safe_role == "default":
+                bindings[role] = f"{self._prefix}-{safe_run}"
+            else:
+                bindings[role] = f"{self._prefix}-{safe_run}-{safe_role}"
+        return bindings
 
     def ensure_namespaces(
         self,
@@ -75,7 +107,19 @@ class K8sEnvironment:
         RuntimeError
             When namespace creation fails.
         """
-        ...
+        for role, ns_name in role_bindings.items():
+            try:
+                self._kubectl(["create", "namespace", ns_name], check=False)
+                self._kubectl([
+                    "label", "namespace", ns_name,
+                    "karma/role=" + role,
+                    "karma/run-dir=" + str(run_dir.name),
+                    "--overwrite",
+                ], check=False)
+            except Exception as exc:
+                raise RuntimeError(
+                    f"failed to ensure namespace '{ns_name}' for role '{role}': {exc}"
+                ) from exc
 
     def cleanup_namespaces(
         self,
@@ -95,7 +139,17 @@ class K8sEnvironment:
         RuntimeError
             When deletion fails and *force* is ``False``.
         """
-        ...
+        for role, ns_name in role_bindings.items():
+            args = ["delete", "namespace", ns_name, "--ignore-not-found"]
+            if force:
+                args += ["--grace-period=0", "--force"]
+            try:
+                self._kubectl(args, check=not force, timeout=self._force_timeout)
+            except Exception as exc:
+                if not force:
+                    raise RuntimeError(
+                        f"failed to delete namespace '{ns_name}' for role '{role}': {exc}"
+                    ) from exc
 
     def render_manifest(
         self,
@@ -112,7 +166,18 @@ class K8sEnvironment:
         ValueError
             When the template references a role absent from *role_bindings*.
         """
-        ...
+        template = template_path.read_text()
+
+        def _replace(m: re.Match) -> str:
+            role = m.group(1)
+            if role not in role_bindings:
+                raise ValueError(
+                    f"manifest template references unknown role '{role}'; "
+                    f"available: {list(role_bindings)}"
+                )
+            return role_bindings[role]
+
+        return _PLACEHOLDER_RE.sub(_replace, template)
 
     def plant_decoys(
         self,
@@ -132,7 +197,29 @@ class K8sEnvironment:
         RuntimeError
             When any decoy application fails.
         """
-        ...
+        for decoy in decoy_configs or []:
+            path = resources_dir / str(decoy.get("path") or "")
+            if not path.exists():
+                raise RuntimeError(f"decoy manifest not found: {path}")
+            rendered = self.render_manifest(path, role_bindings)
+            ns = str(decoy.get("namespace") or "").strip()
+            apply_args = ["apply", "-f", "-"]
+            if ns:
+                apply_args += ["-n", ns]
+            try:
+                import os
+                env = dict(os.environ)
+                if self._kubeconfig:
+                    env["KUBECONFIG"] = self._kubeconfig
+                subprocess.run(
+                    ["kubectl"] + apply_args,
+                    input=rendered, env=env, capture_output=True, text=True,
+                    check=True, timeout=60,
+                )
+            except Exception as exc:
+                raise RuntimeError(
+                    f"failed to apply decoy manifest '{path}': {exc}"
+                ) from exc
 
     def build_env_vars(
         self,
@@ -145,4 +232,9 @@ class K8sEnvironment:
         Includes ``KARMA_NS_<ROLE>=<physical_name>`` entries for each role
         and ``KARMA_KUBECTL_PROXY_PORT=<port>`` for the proxy address.
         """
-        ...
+        env: dict[str, str] = {}
+        for role, ns_name in role_bindings.items():
+            key = "KARMA_NS_" + re.sub(r"[^A-Z0-9]", "_", role.upper())
+            env[key] = ns_name
+        env["KARMA_KUBECTL_PROXY_PORT"] = str(proxy_port)
+        return env
