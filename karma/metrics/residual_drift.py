@@ -27,4 +27,20 @@ def compute(
     dict
         {"error": "<message>"} when scoring cannot be completed.
     """
-    ...
+    # Residual drift is measured as the ratio of failed/error status mutations
+    # to total mutations. A 5xx or error response on a mutation call suggests
+    # the agent left things in an inconsistent state.
+    _MUTATION_VERBS = frozenset({"apply", "create", "patch", "replace", "delete", "edit", "scale"})
+    mutations = [
+        e for e in kubectl_snapshot
+        if str(e.get("verb") or "").lower() in _MUTATION_VERBS
+    ]
+    if not mutations:
+        return 1.0
+
+    failed = sum(
+        1 for e in mutations
+        if isinstance(e.get("status"), int) and e["status"] >= 500
+    )
+    drift_ratio = failed / len(mutations)
+    return round(max(0.0, 1.0 - drift_ratio), 4)

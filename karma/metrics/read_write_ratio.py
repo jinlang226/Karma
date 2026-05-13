@@ -27,4 +27,14 @@ def compute(
     dict
         {"error": "<message>"} when scoring cannot be completed.
     """
-    ...
+    _READ_VERBS = frozenset({"get", "list", "describe", "watch", "explain"})
+    _WRITE_VERBS = frozenset({"apply", "create", "patch", "replace", "delete", "edit", "scale"})
+
+    reads = sum(1 for e in kubectl_snapshot if str(e.get("verb") or "").lower() in _READ_VERBS)
+    writes = sum(1 for e in kubectl_snapshot if str(e.get("verb") or "").lower() in _WRITE_VERBS)
+    total = reads + writes
+    if total == 0:
+        return 1.0
+    # Ideal is reads >= writes (ratio >= 0.5 of reads in total)
+    ratio = reads / total
+    return round(min(1.0, ratio * 2.0), 4)
