@@ -1,0 +1,55 @@
+# ray/worker_recovery
+# Fix the ray-worker deployment whose startup command has an invalid flag causing crash loops
+
+prompt: |
+  The Ray head is running, but the worker pods are crash looping.
+  The worker startup command includes an invalid flag, so workers never join
+  the cluster.
+
+  Your task: fix the ray-worker deployment so the worker command starts
+  successfully and connects to ray-head:6379.
+
+  Requirements:
+  - Remove the invalid flag from the worker command.
+  - Ensure the worker deployment reaches 2 ready replicas.
+
+  Success criteria: ray-worker has 2 ready replicas and Ray reports 3 live nodes.
+
+namespace_contract:
+  required_roles: []
+
+metrics:
+  - time_to_first_mutation
+
+preconditionUnits:
+  - name: ray_env_ready
+    on_probe_fail: skip
+    probe:
+      - command: "kubectl -n ray get pods 2>/dev/null | grep -c Running || true"
+        timeout_sec: 10
+    apply:
+      - command: "kubectl create namespace ray"
+        sleep: 0
+      - command: "kubectl -n ray apply -f resources/ray/worker_recovery/resource/ray-head-service.yaml"
+        sleep: 1
+      - command: "kubectl -n ray apply -f resources/ray/worker_recovery/resource/ray-head.yaml"
+        sleep: 2
+      - command: "kubectl -n ray rollout status deploy/ray-head --timeout=120s"
+        sleep: 2
+      - command: "kubectl -n ray apply -f resources/ray/worker_recovery/resource/ray-worker.yaml"
+        sleep: 1
+      - command: "kubectl -n ray apply -f resources/ray/worker_recovery/resource/ray-client.yaml"
+        sleep: 1
+      - command: "kubectl -n ray wait --for=condition=Ready pod/ray-client --timeout=60s"
+        sleep: 1
+      - command: "kubectl -n ray exec ray-client -- ray start --address=ray-head:6379"
+        sleep: 2
+    verify:
+      - command: "kubectl -n ray get pods 2>/dev/null | grep -c Running || true"
+        timeout_sec: 10
+
+oracle:
+  verify:
+    commands:
+      - command: "python3 resources/ray/worker_recovery/oracle/oracle.py"
+        timeout_sec: 60
