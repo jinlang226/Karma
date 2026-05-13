@@ -27,4 +27,19 @@ def compute(
     dict
         {"error": "<message>"} when scoring cannot be completed.
     """
-    ...
+    _DESTRUCTIVE_VERBS = frozenset({"delete", "replace"})
+    _MUTATION_VERBS = frozenset({"apply", "create", "patch", "replace", "delete", "edit", "scale"})
+
+    total_mutations = sum(
+        1 for e in kubectl_snapshot
+        if str(e.get("verb") or "").lower() in _MUTATION_VERBS
+    )
+    destructive = sum(
+        1 for e in kubectl_snapshot
+        if str(e.get("verb") or "").lower() in _DESTRUCTIVE_VERBS
+    )
+    if total_mutations == 0:
+        return 1.0
+    ratio = destructive / total_mutations
+    # Lower destructive ratio is better; invert to score
+    return round(max(0.0, 1.0 - ratio), 4)
