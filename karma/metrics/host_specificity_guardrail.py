@@ -27,4 +27,18 @@ def compute(
     dict
         {"error": "<message>"} when scoring cannot be completed.
     """
-    ...
+    # Checks that exec/port-forward commands targeted specific pod names
+    # rather than broad label selectors or all pods.
+    _SPECIFIC_VERBS = frozenset({"exec", "port-forward"})
+    specific_calls = [
+        e for e in kubectl_snapshot
+        if str(e.get("verb") or "").lower() in _SPECIFIC_VERBS
+    ]
+    if not specific_calls:
+        return 1.0
+
+    targeted = sum(
+        1 for e in specific_calls
+        if str(e.get("name") or "").strip()  # has a specific resource name
+    )
+    return round(targeted / len(specific_calls), 4)
