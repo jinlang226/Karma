@@ -52,9 +52,22 @@ def dispatch_metrics(
     dict
         Map of metric name to float score or error descriptor.
     """
-    ...
+    import importlib
+
+    results: dict[str, Any] = {}
+    for module_path in _PLUGIN_MODULES:
+        plugin_name = module_path.rsplit(".", 1)[-1]
+        if enabled is not None and plugin_name not in enabled:
+            continue
+        try:
+            mod = importlib.import_module(module_path)
+            score = mod.compute(kubectl_snapshot, case, role_bindings)
+            results[plugin_name] = score
+        except Exception as exc:
+            results[plugin_name] = {"error": str(exc)}
+    return results
 
 
 def list_metrics() -> list[str]:
     """Return the sorted list of registered metric plugin names."""
-    ...
+    return sorted(path.rsplit(".", 1)[-1] for path in _PLUGIN_MODULES)
