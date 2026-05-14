@@ -54,7 +54,37 @@ def load_rubric(
     RuntimeError
         When no rubric can be located for *stage_id*.
     """
-    ...
+    from .. import protocol
+    import json
+
+    stage_meta_path = protocol.stage_meta_path(run_dir, stage_id)
+    if stage_meta_path.exists():
+        try:
+            meta = json.loads(stage_meta_path.read_text())
+        except Exception:
+            meta = {}
+    else:
+        meta = {}
+
+    raw_rubric = meta.get("rubric")
+    if raw_rubric is None:
+        # Fall back to a default single-item rubric.
+        raw_rubric = {
+            "items": [
+                {
+                    "id": "task_completion",
+                    "description": "Did the agent complete the task correctly?",
+                    "weight": 1.0,
+                    "rubric": "Score 1.0 if the task objective was fully achieved, 0.0 otherwise.",
+                }
+            ],
+            "passing_threshold": 0.5,
+        }
+
+    rubric = normalize_rubric(raw_rubric)
+    if overrides:
+        rubric = merge_rubric_overrides(rubric, overrides)
+    return rubric
 
 
 def normalize_rubric(raw: dict[str, Any]) -> dict[str, Any]:
@@ -69,7 +99,37 @@ def normalize_rubric(raw: dict[str, Any]) -> dict[str, Any]:
     ValueError
         When the rubric is structurally invalid.
     """
-    ...
+    items = raw.get("items")
+    if not isinstance(items, list) or not items:
+        raise ValueError("rubric must have a non-empty 'items' list")
+
+    normalized_items: list[dict[str, Any]] = []
+    total_weight = 0.0
+    for i, item in enumerate(items):
+        if not isinstance(item, dict):
+            raise ValueError(f"rubric items[{i}] must be a dict")
+        for field in ("id", "description", "weight", "rubric"):
+            if field not in item:
+                raise ValueError(f"rubric items[{i}] missing required field '{field}'")
+        weight = float(item["weight"])
+        if weight <= 0:
+            raise ValueError(f"rubric items[{i}].weight must be positive")
+        total_weight += weight
+        normalized_items.append({
+            "id": str(item["id"]),
+            "description": str(item["description"]),
+            "weight": weight,
+            "rubric": str(item["rubric"]),
+        })
+
+    if abs(total_weight - 1.0) > 0.01:
+        raise ValueError(f"rubric item weights must sum to 1.0, got {total_weight:.4f}")
+
+    threshold = float(raw.get("passing_threshold") or 0.5)
+    if not 0.0 <= threshold <= 1.0:
+        raise ValueError(f"passing_threshold must be in [0.0, 1.0], got {threshold}")
+
+    return {"items": normalized_items, "passing_threshold": threshold}
 
 
 def merge_rubric_overrides(
@@ -82,4 +142,24 @@ def merge_rubric_overrides(
     by the override item. Non-matching override items are appended, and
     all weights are renormalized to sum to 1.0.
     """
-    ...
+    from copy import deepcopy
+    result = deepcopy(base)
+    base_by_id = {item["id"]: i for i, item in enumerate(result["items"])}
+
+    for override_item in (overrides.get("items") or []):
+        oid = override_item.get("id")
+        if oid in base_by_id:
+            result["items"][base_by_id[oid]] = dict(override_item)
+        else:
+            result["items"].append(dict(override_item))
+
+    # Renormalize weights
+    total = sum(item.get("weight", 0.0) for item in result["items"])
+    if total > 0:
+        for item in result["items"]:
+            item["weight"] = round(item.get("weight", 0.0) / total, 6)
+
+    if "passing_threshold" in overrides:
+        result["passing_threshold"] = float(overrides["passing_threshold"])
+
+    return result
