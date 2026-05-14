@@ -27,4 +27,23 @@ def compute(
     dict
         {"error": "<message>"} when scoring cannot be completed.
     """
-    ...
+    # Checks that the agent modified SparkApplication specs (resource tuning)
+    # rather than just restarting jobs repeatedly.
+    _SPARK_RESOURCES = frozenset({"sparkapplication", "sparkapplications"})
+    _RESTART_VERBS = frozenset({"delete", "create"})
+    _TUNE_VERBS = frozenset({"apply", "patch", "replace"})
+
+    restarts = sum(
+        1 for e in kubectl_snapshot
+        if str(e.get("verb") or "").lower() in _RESTART_VERBS
+        and str(e.get("resource") or "").lower() in _SPARK_RESOURCES
+    )
+    tunes = sum(
+        1 for e in kubectl_snapshot
+        if str(e.get("verb") or "").lower() in _TUNE_VERBS
+        and str(e.get("resource") or "").lower() in _SPARK_RESOURCES
+    )
+    total = restarts + tunes
+    if total == 0:
+        return 0.5
+    return round(tunes / total, 4)

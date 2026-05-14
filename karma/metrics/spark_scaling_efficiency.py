@@ -27,4 +27,22 @@ def compute(
     dict
         {"error": "<message>"} when scoring cannot be completed.
     """
-    ...
+    # Measures scaling efficiency as the inverse of the number of scale
+    # operations needed: fewer changes to reach the target = higher score.
+    _SCALE_VERBS = frozenset({"scale", "patch", "apply"})
+    _WORKER_RESOURCES = frozenset({
+        "rayclusters", "raycluster",
+        "sparkapplication", "sparkapplications",
+        "statefulset", "statefulsets",
+        "deployment", "deployments",
+    })
+
+    scale_ops = sum(
+        1 for e in kubectl_snapshot
+        if str(e.get("verb") or "").lower() in _SCALE_VERBS
+        and str(e.get("resource") or "").lower() in _WORKER_RESOURCES
+    )
+    if scale_ops == 0:
+        return 0.5
+    # Ideal is 1–2 operations; penalise iterative thrashing
+    return round(max(0.0, 1.0 - (scale_ops - 1) * 0.1), 4)
