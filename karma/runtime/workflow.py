@@ -79,7 +79,24 @@ def _run_final_regression_sweep(
     dict
         Map of ``stage_id`` to regression verdict dict.
     """
-    ...
+    from ..definitions.cases import normalize_oracle_config
+    from ..definitions.workflows import resolve_workflow_rows
+
+    completed_rows = [
+        row for row in rows
+        if row.get("stage_id") in {r.get("stage_id") for r in stage_results if r.get("status") == "pass"}
+    ]
+    if len(completed_rows) <= 1:
+        return {}
+
+    oracle_configs = [(r["stage_id"], r.get("case", {}).get("oracle") or {}) for r in completed_rows]
+    role_bindings_map = {r["stage_id"]: {} for r in completed_rows}
+
+    return run_regression_sweep(
+        oracle_configs,
+        role_bindings_map=role_bindings_map,
+        run_dir=run_dir,
+    )
 
 
 def _run_adversary_cleanup_sweep(
@@ -105,7 +122,18 @@ def _run_adversary_cleanup_sweep(
     )
     if not pending:
         return {"lifted": [], "errors": []}
-    ...
+
+    lifted_ids: list[str] = []
+    errors: list[str] = []
+    adv_log = run_dir / "adversary_cleanup.log"
+    for unit in pending:
+        from ..adversary.runtime import lift as adv_lift
+        result = adv_lift([unit], role_bindings={}, log_path=adv_log, env_vars=None)
+        if result.get("ok"):
+            lifted_ids.extend(result.get("lifted_ids") or [])
+        else:
+            errors.append(f"cleanup lift failed: {result.get('output', '')[:200]}")
+    return {"lifted": lifted_ids, "errors": errors}
 
 
 # ---------------------------------------------------------------------------
