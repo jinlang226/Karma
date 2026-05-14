@@ -97,7 +97,49 @@ def run_workflow(
         Keys: ``run_id``, ``status`` (``"complete"``, ``"failed"``, or
         ``"error"``), ``stages`` (list[dict]), ``summary`` (dict).
     """
-    ...
+    from ..definitions.workflows import resolve_workflow_rows
+
+    effective_run_id = run_id or generate_run_id(str(workflow.get("id") or "workflow"))
+    run_dir = runs_dir / effective_run_id
+    run_dir.mkdir(parents=True, exist_ok=True)
+
+    _register_run(effective_run_id, {"run_id": effective_run_id, "status": "running", "stages": []})
+
+    try:
+        rows = resolve_workflow_rows(workflow, resources_dir=resources_dir)
+        env = get_environment(environment_provider, config=environment_config)
+        agent_meta = resolve_agent(agent_name, sandbox_mode=sandbox_mode)
+        prompt_mode = str(workflow.get("prompt_mode") or "progressive")
+
+        result = run_workflow_loop(
+            rows,
+            run_id=effective_run_id,
+            run_dir=run_dir,
+            resources_dir=resources_dir,
+            agent_meta=agent_meta,
+            sandbox_mode=sandbox_mode,
+            environment=env,
+            prompt_mode=prompt_mode,
+            on_stage_complete=on_stage_complete,
+        )
+        result["summary"] = {
+            "total_stages": len(rows),
+            "passed": sum(1 for s in result.get("stages", []) if s.get("status") == "pass"),
+            "failed": sum(1 for s in result.get("stages", []) if s.get("status") in ("fail", "error", "timeout")),
+        }
+        _update_run(effective_run_id, result)
+        return result
+
+    except Exception as exc:
+        error_result: dict[str, Any] = {
+            "run_id": effective_run_id,
+            "status": "error",
+            "stages": [],
+            "summary": {},
+            "error": str(exc),
+        }
+        _update_run(effective_run_id, error_result)
+        return error_result
 
 
 def run_case(
@@ -164,7 +206,24 @@ def submit_run(
         Run ID that can be passed to :func:`get_run_status` and
         :func:`cleanup_run`.
     """
-    ...
+    effective_run_id = generate_run_id(str(workflow.get("id") or "workflow"))
+    _register_run(effective_run_id, {"run_id": effective_run_id, "status": "running", "stages": []})
+
+    def _run() -> None:
+        run_workflow(
+            workflow,
+            runs_dir=runs_dir,
+            resources_dir=resources_dir,
+            agent_name=agent_name,
+            sandbox_mode=sandbox_mode,
+            environment_provider=environment_provider,
+            on_stage_complete=on_stage_complete,
+            run_id=effective_run_id,
+        )
+
+    thread = threading.Thread(target=_run, daemon=True)
+    thread.start()
+    return effective_run_id
 
 
 def get_run_status(run_id: str) -> dict[str, Any] | None:
