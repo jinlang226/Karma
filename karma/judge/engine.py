@@ -116,4 +116,22 @@ def run_judge_batch(
         Map of ``stage_id`` to the individual judge result dict for that
         stage.
     """
-    ...
+    if stage_ids is None:
+        stages_dir = run_dir / "stages"
+        if stages_dir.exists():
+            stage_ids = sorted(d.name for d in stages_dir.iterdir() if d.is_dir())
+        else:
+            stage_ids = []
+
+    batch: dict[str, Any] = {}
+    for sid in (stage_ids or []):
+        try:
+            batch[sid] = run_judge(
+                run_dir,
+                sid,
+                rubric_overrides=rubric_overrides,
+                judge_model=judge_model,
+            )
+        except Exception as exc:
+            batch[sid] = {"stage_id": sid, "verdict": "error", "error": str(exc)}
+    return batch
