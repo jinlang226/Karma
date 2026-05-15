@@ -9,12 +9,16 @@ def compute(
     case: dict[str, Any],
     role_bindings: dict[str, str],
 ) -> float | dict[str, Any]:
-    """Compute the config score for one stage run.
+    """Score ConfigMap and Secret mutation targeting for the stage run.
+
+    Returns the fraction of ConfigMap/Secret mutations that targeted
+    role-bound namespaces. Returns 1.0 when no config resources were
+    mutated, indicating no stray configuration changes.
 
     Parameters
     ----------
     kubectl_snapshot:
-        Parsed kubectl call list produced by evidence.collect_kubectl_snapshot.
+        Parsed kubectl call list from evidence.collect_kubectl_snapshot.
     case:
         Normalized case descriptor from definitions.cases.normalize_case.
     role_bindings:
@@ -27,4 +31,14 @@ def compute(
     dict
         {"error": "<message>"} when scoring cannot be completed.
     """
-    ...
+    allowed_ns = set(role_bindings.values())
+    config_kinds = {"configmap", "secret"}
+    mutations = [
+        c for c in kubectl_snapshot
+        if c.get("method") in ("PUT", "PATCH", "POST", "DELETE")
+        and str(c.get("kind") or "").lower() in config_kinds
+    ]
+    if not mutations:
+        return 1.0
+    in_scope = sum(1 for c in mutations if c.get("namespace") in allowed_ns)
+    return round(in_scope / len(mutations), 4)
