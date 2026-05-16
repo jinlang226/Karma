@@ -28,6 +28,7 @@ _PLUGIN_MODULES: list[str] = [
     "karma.metrics.spark_job_fix_efficiency",
     "karma.metrics.spark_resource_tuning",
     "karma.metrics.spark_scaling_efficiency",
+    "karma.metrics.config",
 ]
 
 
