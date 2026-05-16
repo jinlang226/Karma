@@ -69,7 +69,7 @@ def run_oracle(
     run_dir: Path,
     stage_id: str,
     env_vars: dict[str, str] | None = None,
-    timeout_sec: int = 300,
+    timeout_sec: int | None = None,
 ) -> dict[str, Any]:
     """Execute the oracle verify block for one stage and return the verdict.
 
@@ -111,6 +111,9 @@ def run_oracle(
         ``script_output`` (``None`` if no script), ``error`` (``None``
         on success).
     """
+    from .settings import settings as _settings
+    effective_timeout = timeout_sec if timeout_sec is not None else _settings.oracle_timeout_sec
+
     result: dict[str, Any] = {
         "verdict": "error",
         "output": "",
@@ -125,13 +128,13 @@ def run_oracle(
 
         before_ok, before_out = _run_commands(
             oracle_config.get("before_commands") or [],
-            env=env, timeout_sec=timeout_sec,
+            env=env, timeout_sec=effective_timeout,
         )
         result["before_output"] = before_out
 
         verify_ok, verify_out = _run_commands(
             oracle_config.get("verify_commands") or [],
-            env=env, timeout_sec=timeout_sec,
+            env=env, timeout_sec=effective_timeout,
         )
         result["output"] = verify_out
 
@@ -141,7 +144,7 @@ def run_oracle(
             try:
                 proc = subprocess.run(
                     ["python3", script_path],
-                    capture_output=True, text=True, env=env, timeout=timeout_sec,
+                    capture_output=True, text=True, env=env, timeout=effective_timeout,
                 )
                 script_output = proc.stdout + proc.stderr
                 if proc.returncode != 0:
@@ -153,7 +156,7 @@ def run_oracle(
 
         after_ok, after_out = _run_commands(
             oracle_config.get("after_commands") or [],
-            env=env, timeout_sec=timeout_sec,
+            env=env, timeout_sec=effective_timeout,
         )
         result["after_output"] = after_out
 
@@ -180,7 +183,7 @@ def run_regression_sweep(
     role_bindings_map: dict[str, dict[str, str]],
     run_dir: Path,
     env_vars: dict[str, str] | None = None,
-    timeout_sec: int = 300,
+    timeout_sec: int | None = None,
 ) -> dict[str, Any]:
     """Re-run the oracle for all completed stages to detect regressions.
 
