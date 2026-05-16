@@ -195,7 +195,18 @@ def cancel_job(run_id: str) -> bool:
         ``True`` when the job was found and cancellation was requested,
         ``False`` when *run_id* is not registered.
     """
-    ...
+    with _jobs_lock:
+        job = _active_jobs.get(run_id)
+    if job is None:
+        return False
+    _update_job(run_id, {"status": "cancelled"})
+    eq = job.get("event_queue")
+    if eq is not None:
+        try:
+            eq.put_nowait(None)
+        except queue.Full:
+            pass
+    return True
 
 
 def list_jobs(*, status_filter: str | None = None) -> list[dict[str, Any]]:
