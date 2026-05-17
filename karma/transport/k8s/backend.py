@@ -223,9 +223,13 @@ def wait_for_readiness(
     proxy_handle: ProxyHandle,
     *,
     timeout_sec: int = 15,
-    poll_interval_sec: float = 0.25,
+    poll_interval_sec: float = 0.1,
 ) -> None:
     """Block until the proxy is ready or the timeout expires.
+
+    Polls with exponential backoff starting at *poll_interval_sec* and
+    capping at 1 second to reduce busy-waiting once the proxy is slow
+    to start.
 
     Raises
     ------
@@ -233,10 +237,12 @@ def wait_for_readiness(
         When the proxy is not ready within *timeout_sec* seconds.
     """
     deadline = time.monotonic() + timeout_sec
+    interval = poll_interval_sec
     while time.monotonic() < deadline:
         if proxy_handle.is_ready():
             return
-        time.sleep(poll_interval_sec)
+        time.sleep(interval)
+        interval = min(interval * 1.5, 1.0)
     raise RuntimeError(
         f"kubectl proxy did not become ready within {timeout_sec}s "
         f"(port {proxy_handle.port})"
