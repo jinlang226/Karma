@@ -36,13 +36,17 @@ def collect_kubectl_snapshot(kubectl_log_path: Path) -> list[dict[str, Any]]:
         return []
 
     entries: list[dict[str, Any]] = []
-    for line in kubectl_log_path.read_text().splitlines():
+    try:
+        raw_text = kubectl_log_path.read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return entries
+    for line in raw_text.splitlines():
         line = line.strip()
         if not line:
             continue
         try:
             record = json.loads(line)
-        except json.JSONDecodeError:
+        except Exception:
             continue
         if not isinstance(record, dict):
             continue
