@@ -103,6 +103,10 @@ def create_app(
         _run_queues[run_id] = eq
         return jsonify({"run_id": run_id}), 201
 
+    @app.route("/health")
+    def health():
+        return jsonify({"status": "ok"})
+
     @app.route("/api/run/<run_id>/status")
     def api_run_status(run_id):
         status = get_job_status(run_id)
