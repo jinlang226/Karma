@@ -237,6 +237,12 @@ def run_workflow_loop(
 
         if stage_result.get("status") == "pass":
             completed_stage_ids.add(stage_id)
+            prompt_path = protocol.stage_prompt_path(run_dir, stage_id)
+            if prompt_path.exists():
+                try:
+                    stage_prompts.append(prompt_path.read_text())
+                except Exception:
+                    pass
         else:
             workflow_status = "failed"
             break
