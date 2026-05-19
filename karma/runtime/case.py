@@ -76,6 +76,7 @@ def _run_operation_units(
     """
     import os
     import subprocess
+    from ..settings import settings as _settings
 
     log_path.parent.mkdir(parents=True, exist_ok=True)
     env = {**os.environ, **role_bindings, **(env_vars or {})}
@@ -122,7 +123,7 @@ def _run_operation_units(
         apply_ok = True
         for cmd_entry in unit.get("apply_commands") or []:
             cmd = cmd_entry["command"]
-            to = cmd_entry.get("timeout_sec") or 120
+            to = cmd_entry.get("timeout_sec") or _settings.command_timeout_sec
             try:
                 proc = subprocess.run(
                     cmd, shell=True, capture_output=True, text=True, env=env, timeout=to
