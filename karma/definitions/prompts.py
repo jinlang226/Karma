@@ -73,7 +73,7 @@ def render_stage_prompt(
         "case_name": str(stage.get("case_name") or ""),
     }
     merged = {**builtins, **(variables or {})}
-    return _expand_placeholders(template, merged)
+    return _expand_placeholders(template, merged).rstrip()
 
 
 def assemble_agent_prompt(
