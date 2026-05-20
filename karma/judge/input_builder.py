@@ -126,7 +126,8 @@ def render_judge_prompt(
 
     rubric = judge_input.get("rubric") or {}
     oracle = judge_input.get("oracle") or {}
-    trace_facts = judge_input.get("trace_facts") or {}
+    raw_trace = judge_input.get("trace_facts")
+    trace_facts: dict[str, Any] = raw_trace if isinstance(raw_trace, dict) else {}
 
     items_lines: list[str] = []
     for item in rubric.get("items") or []:
@@ -135,7 +136,8 @@ def render_judge_prompt(
         items_lines.append(f"  Rubric: {item['rubric']}")
         items_lines.append("")
 
-    ns_list = trace_facts.get("namespaces_touched") or []
+    raw_ns = trace_facts.get("namespaces_touched")
+    ns_list: list[str] = raw_ns if isinstance(raw_ns, list) else []
     ns_str = ", ".join(ns_list) if ns_list else "(none)"
 
     ctx: dict[str, str] = {
