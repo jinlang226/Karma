@@ -114,3 +114,59 @@ class TestAggregateScores:
         raw = {"content": "[]"}
         result = aggregate_scores(raw, rubric=_RUBRIC, stage_id="my-stage")
         assert result["stage_id"] == "my-stage"
+
+
+class TestComputeAggregateEdgeCases:
+    def test_score_clamped_to_one(self):
+        items = [{"id": "correctness", "score": 1.2}, {"id": "efficiency", "score": 1.0}]
+        score = compute_aggregate_score(items, rubric=_RUBRIC)
+        assert score <= 1.0
+
+    def test_unscored_item_defaults_to_zero(self):
+        items = [{"id": "correctness", "score": 0.0}, {"id": "efficiency", "score": 0.0}]
+        assert compute_aggregate_score(items, rubric=_RUBRIC) == 0.0
+
+    def test_weights_apply_proportionally(self):
+        items = [{"id": "correctness", "score": 1.0}, {"id": "efficiency", "score": 0.0}]
+        score = compute_aggregate_score(items, rubric=_RUBRIC)
+        assert abs(score - 0.6) < 0.001
+
+    def test_extra_item_ids_ignored(self):
+        items = [
+            {"id": "correctness", "score": 1.0},
+            {"id": "efficiency", "score": 1.0},
+            {"id": "unknown_extra", "score": 0.5},
+        ]
+        score = compute_aggregate_score(items, rubric=_RUBRIC)
+        assert score == 1.0
+
+
+class TestRubricOverrideRenormalization:
+    def test_renormalized_weights_sum_to_one(self):
+        from karma.judge.rubric import merge_rubric_overrides
+        base = {
+            "items": [
+                {"id": "a", "description": "A", "weight": 0.5, "rubric": "x"},
+                {"id": "b", "description": "B", "weight": 0.5, "rubric": "y"},
+            ],
+            "passing_threshold": 0.7,
+        }
+        overrides = {
+            "items": [{"id": "c", "description": "C", "weight": 1.0, "rubric": "z"}]
+        }
+        result = merge_rubric_overrides(base, overrides)
+        total = sum(item["weight"] for item in result["items"])
+        assert abs(total - 1.0) < 0.001
+
+    def test_replaced_item_keeps_id(self):
+        from karma.judge.rubric import merge_rubric_overrides
+        base = {
+            "items": [{"id": "a", "description": "A", "weight": 1.0, "rubric": "old"}],
+            "passing_threshold": 0.5,
+        }
+        overrides = {
+            "items": [{"id": "a", "description": "A updated", "weight": 1.0, "rubric": "new"}]
+        }
+        result = merge_rubric_overrides(base, overrides)
+        assert result["items"][0]["rubric"] == "new"
+        assert len(result["items"]) == 1
