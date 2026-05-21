@@ -7,6 +7,7 @@ from karma.interfaces.http.jobs import (
     translate_ui_request,
     get_job_status,
     list_jobs,
+    cancel_job,
 )
 
 
@@ -95,3 +96,43 @@ class TestListJobs:
         assert all(j["status"] == "running" for j in running)
         del jobs._active_jobs["j2"]
         del jobs._active_jobs["j3"]
+
+
+class TestCancelJob:
+    def test_returns_false_for_unknown_run_id(self):
+        assert cancel_job("does-not-exist") is False
+
+    def test_returns_true_and_marks_cancelled(self):
+        import queue
+        from karma.interfaces.http import jobs
+        eq: queue.Queue = queue.Queue()
+        jobs._active_jobs["cj1"] = {
+            "run_id": "cj1",
+            "status": "running",
+            "event_queue": eq,
+        }
+        result = cancel_job("cj1")
+        assert result is True
+        assert jobs._active_jobs["cj1"]["status"] == "cancelled"
+        del jobs._active_jobs["cj1"]
+
+    def test_pushes_none_sentinel_to_queue(self):
+        import queue
+        from karma.interfaces.http import jobs
+        eq: queue.Queue = queue.Queue()
+        jobs._active_jobs["cj2"] = {
+            "run_id": "cj2",
+            "status": "running",
+            "event_queue": eq,
+        }
+        cancel_job("cj2")
+        sentinel = eq.get_nowait()
+        assert sentinel is None
+        del jobs._active_jobs["cj2"]
+
+    def test_cancel_without_queue_still_works(self):
+        from karma.interfaces.http import jobs
+        jobs._active_jobs["cj3"] = {"run_id": "cj3", "status": "running"}
+        result = cancel_job("cj3")
+        assert result is True
+        del jobs._active_jobs["cj3"]
