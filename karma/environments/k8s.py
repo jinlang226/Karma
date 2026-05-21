@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import re
 import subprocess
+import time
 from pathlib import Path
 from typing import Any
 
@@ -109,7 +110,15 @@ class K8sEnvironment:
         """
         for role, ns_name in role_bindings.items():
             try:
-                self._kubectl(["create", "namespace", ns_name], check=False)
+                result = self._kubectl(["create", "namespace", ns_name], check=False)
+                if result.returncode != 0 and "AlreadyExists" not in result.stderr:
+                    for _retry in range(2):
+                        time.sleep(0.5)
+                        result = self._kubectl(
+                            ["create", "namespace", ns_name], check=False
+                        )
+                        if result.returncode == 0 or "AlreadyExists" in result.stderr:
+                            break
                 self._kubectl([
                     "label", "namespace", ns_name,
                     "karma/role=" + role,
