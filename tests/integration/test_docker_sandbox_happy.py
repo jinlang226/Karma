@@ -38,6 +38,7 @@ def test_docker_launch_builds_expected_container_command():
     cmd = _FakePopen.last_cmd
     assert cmd is not None
     assert cmd[:3] == ["docker", "run", "--rm"]
+    assert "-i" not in cmd
     assert "-v" in cmd
     joined = " ".join(cmd)
     assert f"{bundle_dir}:/workspace" in joined

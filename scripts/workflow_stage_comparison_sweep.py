@@ -263,8 +263,9 @@ class SweepRunner:
         self.resume_skipped_lines = 0
         self.single_start_attempt = 1
         self.three_stage_start_attempt = 1
+        self.auto_resume = self.history_path.exists() and self.history_path.is_file() and not args.fresh
 
-        if not args.resume:
+        if not self.auto_resume:
             self.history_path.unlink(missing_ok=True)
             self.summary_path.unlink(missing_ok=True)
             self.aggregate_csv.unlink(missing_ok=True)
@@ -274,7 +275,7 @@ class SweepRunner:
         self.single_stage_count, self.single_stage_index = _load_stage_index_by_id(self.single_workflow_path)
         self.multi_stage_count, self.multi_stage_index = _load_stage_index_by_id(self.multi_workflow_path)
 
-        if args.resume:
+        if self.auto_resume:
             existing_history, skipped_lines = self._load_existing_history()
             self.history.extend(existing_history)
             self.resume_skipped_lines = skipped_lines
@@ -282,7 +283,7 @@ class SweepRunner:
             self.three_stage_start_attempt = self._next_attempt_index("three_stage")
             print(
                 (
-                    "[stage-compare] resume loaded "
+                    "[stage-compare] auto-resume loaded "
                     f"single_completed={self.single_start_attempt - 1} "
                     f"three_stage_completed={self.three_stage_start_attempt - 1} "
                     f"skipped_history_lines={self.resume_skipped_lines}"
@@ -606,8 +607,8 @@ class SweepRunner:
 
     def run(self) -> dict[str, Any]:
         target_runs = int(self.args.runs_per_workflow)
-        single_start = self.single_start_attempt if self.args.resume else 1
-        three_stage_start = self.three_stage_start_attempt if self.args.resume else 1
+        single_start = self.single_start_attempt if self.auto_resume else 1
+        three_stage_start = self.three_stage_start_attempt if self.auto_resume else 1
 
         if single_start > target_runs:
             print(
@@ -767,7 +768,13 @@ def build_parser() -> argparse.ArgumentParser:
         "--resume",
         action="store_true",
         default=_as_bool_env("RESUME_STAGE_COMPARE", False),
-        help="Keep existing history/summary and append new runs in work-dir.",
+        help="Deprecated: resuming now happens automatically when work-dir already contains history.jsonl.",
+    )
+    parser.add_argument(
+        "--fresh",
+        action="store_true",
+        default=False,
+        help="Ignore any existing work-dir history and start this work-dir from scratch.",
     )
     parser.add_argument(
         "--dry-run",
