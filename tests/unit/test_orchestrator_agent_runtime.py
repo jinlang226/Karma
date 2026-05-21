@@ -51,6 +51,7 @@ def test_launch_agent_docker_writes_cidfile_argument_and_process_hint():
         cmd = _FakePopen.last_cmd
         assert isinstance(proc, _FakePopen)
         assert cmd is not None
+        assert "-i" not in cmd
         assert "--cidfile" in cmd
         cid_idx = cmd.index("--cidfile")
         cid_path = Path(cmd[cid_idx + 1])
