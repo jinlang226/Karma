@@ -32,23 +32,25 @@ python scripts/workflow_stage_comparison_sweep.py --runs-per-workflow 1 --dry-ru
 
 ## Resume semantics
 
-Use the same `--work-dir` and add `--resume` to continue unfinished runs:
+Use the same `--work-dir` to continue unfinished runs. If that work-dir already contains `history.jsonl`, the runner auto-resumes from the next missing attempt for each workflow kind:
 
 ```bash
 . .venv/bin/activate
 python scripts/workflow_stage_comparison_sweep.py \
   --runs-per-workflow 50 \
   --work-dir ".benchmark/workflow-stage-comparison-20260310T203429Z" \
-  --resume \
   ...
 ```
 
 Behavior:
 
-- Resume loads existing `history.jsonl`.
+- Existing `history.jsonl` triggers auto-resume.
 - For each workflow kind (`single`, `three_stage`), it starts from `max(attempt_index)+1`.
 - It only runs remaining attempts up to `--runs-per-workflow`.
 - Existing history/log entries are preserved; new results are appended.
+- Use `--fresh` if you intentionally want to reset the same work-dir and start over.
+
+The legacy `--resume` flag is still accepted but is no longer required.
 
 ## Outputs
 

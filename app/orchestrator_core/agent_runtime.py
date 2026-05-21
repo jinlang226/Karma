@@ -57,11 +57,12 @@ def launch_agent(bundle_dir, env, args, *, environ=None, popen=None):
         image = args.docker_image
         if not image:
             raise RuntimeError("docker sandbox requires --docker-image")
+        # Headless agents should not inherit an open stdin stream. Some CLIs
+        # treat attached stdin as extra prompt input and stall before acting.
         cmd = [
             "docker",
             "run",
             "--rm",
-            "-i",
             "-v",
             f"{bundle_dir}:/workspace",
             "-v",
