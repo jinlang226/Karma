@@ -32,11 +32,12 @@ def compute(
         {"error": "<message>"} when scoring cannot be completed.
     """
     allowed_ns = set(role_bindings.values())
-    config_kinds = {"configmap", "secret"}
+    config_resources = {"configmaps", "secrets"}
+    mutation_verbs = {"apply", "create", "patch", "replace", "delete", "edit"}
     mutations = [
         c for c in kubectl_snapshot
-        if c.get("method") in ("PUT", "PATCH", "POST", "DELETE")
-        and str(c.get("kind") or "").lower() in config_kinds
+        if str(c.get("verb") or "").lower() in mutation_verbs
+        and str(c.get("resource") or "").lower() in config_resources
     ]
     if not mutations:
         return 1.0
