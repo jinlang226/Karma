@@ -169,3 +169,127 @@ class TestRunWorkflowLoop:
             )
         assert mock_run.call_count == 2
         assert result["status"] == "complete"
+
+
+class TestStagePromptsAccumulation:
+    def _make_row(self, stage_id: str) -> dict:
+        return {
+            "stage_id": stage_id,
+            "service": "svc",
+            "case_name": "case",
+            "case": {},
+            "namespace_roles": ["default"],
+            "adversary_deploy": [],
+            "adversary_lift": [],
+            "adversary_hint": None,
+            "prompt_mode": "concat_stateful",
+            "agent_timeout_sec": 60,
+            "retries": 0,
+        }
+
+    def test_prompt_passed_to_second_stage(self, tmp_path):
+        rows = [self._make_row("s1"), self._make_row("s2")]
+        pass_r = lambda sid: {
+            "stage_id": sid, "status": "pass", "oracle_verdict": "pass",
+            "submitted": True, "duration_sec": 0.1, "error": None,
+            "evidence_path": "", "oracle_path": "",
+        }
+        prompt_text = "You are an agent."
+
+        def fake_run_stage(row, **kwargs):
+            sid = row["stage_id"]
+            if sid == "s1":
+                protocol.ensure_stage_dir(tmp_path, "s1")
+                protocol.stage_prompt_path(tmp_path, "s1").write_text(prompt_text)
+            return pass_r(sid)
+
+        with patch("karma.runtime.workflow.run_stage", side_effect=fake_run_stage) as mock_run:
+            run_workflow_loop(
+                rows,
+                run_id="r1",
+                run_dir=tmp_path,
+                resources_dir=tmp_path,
+                agent_meta={},
+                sandbox_mode="local",
+                environment=MagicMock(),
+                prompt_mode="concat_stateful",
+            )
+        second_call_kwargs = mock_run.call_args_list[1][1]
+        assert prompt_text in second_call_kwargs["stage_prompts"]
+
+    def test_failed_stage_prompt_not_accumulated(self, tmp_path):
+        rows = [self._make_row("s1"), self._make_row("s2")]
+        fail_r = {"stage_id": "s1", "status": "fail", "oracle_verdict": "fail",
+                  "submitted": True, "duration_sec": 0.1, "error": None,
+                  "evidence_path": "", "oracle_path": ""}
+
+        with patch("karma.runtime.workflow.run_stage", return_value=fail_r) as mock_run:
+            run_workflow_loop(
+                rows,
+                run_id="r1",
+                run_dir=tmp_path,
+                resources_dir=tmp_path,
+                agent_meta={},
+                sandbox_mode="local",
+                environment=MagicMock(),
+                prompt_mode="concat_stateful",
+            )
+        assert mock_run.call_count == 1
+
+
+class TestFailFast:
+    def _make_row(self, stage_id: str, retries: int = 0) -> dict:
+        return {
+            "stage_id": stage_id,
+            "service": "svc",
+            "case_name": "case",
+            "case": {},
+            "namespace_roles": ["default"],
+            "adversary_deploy": [],
+            "adversary_lift": [],
+            "adversary_hint": None,
+            "prompt_mode": "single",
+            "agent_timeout_sec": 60,
+            "retries": retries,
+        }
+
+    def test_second_stage_skipped_after_first_fails(self, tmp_path):
+        rows = [self._make_row("s1"), self._make_row("s2")]
+        fail_r = {"stage_id": "s1", "status": "fail", "oracle_verdict": "fail",
+                  "submitted": True, "duration_sec": 0.0, "error": None,
+                  "evidence_path": "", "oracle_path": ""}
+
+        with patch("karma.runtime.workflow.run_stage", return_value=fail_r) as mock_run:
+            result = run_workflow_loop(
+                rows,
+                run_id="r1",
+                run_dir=tmp_path,
+                resources_dir=tmp_path,
+                agent_meta={},
+                sandbox_mode="local",
+                environment=MagicMock(),
+                prompt_mode="single",
+            )
+        assert mock_run.call_count == 1
+        assert result["status"] == "failed"
+        assert len(result["stages"]) == 1
+
+    def test_timeout_triggers_fail_fast(self, tmp_path):
+        rows = [self._make_row("s1"), self._make_row("s2")]
+        timeout_r = {"stage_id": "s1", "status": "timeout", "oracle_verdict": None,
+                     "submitted": False, "duration_sec": 60.0, "error": None,
+                     "evidence_path": "", "oracle_path": ""}
+
+        with patch("karma.runtime.workflow.run_stage", return_value=timeout_r) as mock_run:
+            result = run_workflow_loop(
+                rows,
+                run_id="r1",
+                run_dir=tmp_path,
+                resources_dir=tmp_path,
+                agent_meta={},
+                sandbox_mode="local",
+                environment=MagicMock(),
+                prompt_mode="single",
+            )
+        assert mock_run.call_count == 1
+        assert result["status"] == "failed"
