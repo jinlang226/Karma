@@ -162,10 +162,15 @@ def build_agent_image(
     run_dir.mkdir(parents=True, exist_ok=True)
 
     with log_path.open("w") as log_fh:
-        result = subprocess.run(
-            ["docker", "build", "-t", image_tag, "-f", str(dockerfile), str(context_dir)],
-            stdout=log_fh, stderr=log_fh,
-        )
+        try:
+            result = subprocess.run(
+                ["docker", "build", "-t", image_tag, "-f", str(dockerfile), str(context_dir)],
+                stdout=log_fh, stderr=log_fh,
+            )
+        except FileNotFoundError:
+            raise RuntimeError(
+                "docker binary not found on PATH; install Docker to use sandbox_mode=docker"
+            )
     if result.returncode != 0:
         raise RuntimeError(
             f"Docker build failed for image {image_tag!r}; see {log_path}"
@@ -230,7 +235,12 @@ def launch_agent(
         docker_cmd += ["-v", f"{host_path}:{container_path}"]
     docker_cmd.append(image_tag)
 
-    result = subprocess.run(docker_cmd, capture_output=True, text=True)
+    try:
+        result = subprocess.run(docker_cmd, capture_output=True, text=True)
+    except FileNotFoundError:
+        raise RuntimeError(
+            "docker binary not found on PATH; install Docker to use sandbox_mode=docker"
+        )
     if result.returncode != 0:
         raise RuntimeError(
             f"Failed to start Docker container: {result.stderr.strip()}"
