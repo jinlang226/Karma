@@ -235,6 +235,10 @@ def run_workflow_loop(
 
         stage_results.append(stage_result)
 
+        for inj in (row.get("adversary_deploy") or []):
+            if inj.get("id"):
+                deployed_scenario_ids.add(inj["id"])
+
         if stage_result.get("status") == "pass":
             completed_stage_ids.add(stage_id)
             prompt_path = protocol.stage_prompt_path(run_dir, stage_id)
