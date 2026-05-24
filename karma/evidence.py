@@ -75,7 +75,12 @@ def normalize_token_usage(agent_log_path: Path) -> dict[str, Any]:
     if not agent_log_path.exists():
         return result
 
-    for line in agent_log_path.read_text().splitlines():
+    try:
+        raw_text = agent_log_path.read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return result
+
+    for line in raw_text.splitlines():
         line = line.strip()
         if not line:
             continue
