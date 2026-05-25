@@ -344,10 +344,11 @@ def resolve_case_params(
         else:
             resolved[key] = param_def
 
-    for key, value in overrides.items():
-        if key not in declared:
-            warnings.append(f"unrecognized param override '{key}' (not declared in case)")
-        resolved[key] = value
+    if overrides:
+        for key, value in overrides.items():
+            if key not in declared:
+                warnings.append(f"unrecognized param override '{key}' (not declared in case)")
+            resolved[key] = value
 
     return resolved, warnings
 
