@@ -95,8 +95,8 @@ class TestNormalizePreconditionUnits:
 
     def test_raises_on_missing_probe(self):
         data = {
-            "preconditions": [
-                {"apply": ["kubectl apply -f x.yaml"], "verify": ["kubectl get pod"]}
+            "preconditionUnits": [
+                {"name": "u1", "apply": ["kubectl apply -f x.yaml"], "verify": ["kubectl get pod"]}
             ]
         }
         with pytest.raises(RuntimeError, match="probe"):
@@ -104,8 +104,9 @@ class TestNormalizePreconditionUnits:
 
     def test_normalizes_valid_unit(self):
         data = {
-            "preconditions": [
+            "preconditionUnits": [
                 {
+                    "name": "u1",
                     "probe": ["kubectl get ns target"],
                     "apply": ["kubectl create ns target"],
                     "verify": ["kubectl get ns target"],
@@ -134,7 +135,8 @@ class TestNormalizeOracleConfig:
 class TestNormalizeCase:
     def test_raises_on_structural_error(self, tmp_path):
         data = {
-            "preconditions": [{"apply": ["x"], "verify": ["y"]}]
+            "prompt": "do the thing",
+            "preconditionUnits": [{"name": "u1", "apply": ["x"], "verify": ["y"]}]
         }
         with pytest.raises(RuntimeError):
             normalize_case(data, "svc", "bad-case")

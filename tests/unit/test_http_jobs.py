@@ -22,7 +22,7 @@ class TestTranslateUiRequest:
         wf = translate_ui_request(payload, resources_dir=tmp_path)
         stage = wf["stages"][0]
         assert stage["service"] == "rabbitmq-experiments"
-        assert stage["case"] == "failover"
+        assert stage["case_name"] == "failover"
 
     def test_raises_when_service_missing(self, tmp_path):
         with pytest.raises(ValueError, match="service"):
@@ -56,7 +56,7 @@ class TestTranslateUiRequest:
         wf1 = translate_ui_request(payload, resources_dir=tmp_path)
         wf2 = translate_ui_request(payload, resources_dir=tmp_path)
         assert wf1["stages"][0]["service"] == wf2["stages"][0]["service"]
-        assert wf1["stages"][0]["case"] == wf2["stages"][0]["case"]
+        assert wf1["stages"][0]["case_name"] == wf2["stages"][0]["case_name"]
 
 
 class TestGetJobStatus:

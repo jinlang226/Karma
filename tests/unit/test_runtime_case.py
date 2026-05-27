@@ -31,12 +31,14 @@ class TestWaitForSubmit:
 
 
 class TestRunOperationUnits:
-    def test_returns_ok_false_on_probe_failure(self, tmp_path):
+    def test_returns_ok_false_when_apply_fails(self, tmp_path):
+        # Probe fails (precondition not yet satisfied), so the apply path
+        # runs; when apply itself fails the unit is reported as not ok.
         units = [
             {
                 "id": "unit:precondition",
                 "probe_commands": [{"command": "false", "sleep": 0}],
-                "apply_commands": [{"command": "echo apply", "sleep": 0}],
+                "apply_commands": [{"command": "false", "sleep": 0}],
                 "verify_commands": [{"command": "echo verify", "sleep": 0}],
                 "verify_retries": 1,
                 "verify_interval_sec": 0.0,
