@@ -182,6 +182,33 @@ def _run_operation_units(
     return {"ok": overall_ok, "units": unit_outcomes, "output": "".join(all_output)}
 
 
+def _param_env_vars(params: dict[str, Any] | None) -> dict[str, str]:
+    """Return ``BENCH_PARAM_<KEY>`` environment variables for resolved params.
+
+    Keys are uppercased with non-alphanumerics replaced by underscores.
+    Bools render as ``true``/``false``, ``None`` as empty string, and
+    dict/list values as compact JSON, matching the legacy command contract.
+    """
+    import json
+    import re as _re
+
+    out: dict[str, str] = {}
+    for key, value in (params or {}).items():
+        key_name = _re.sub(r"[^A-Z0-9]", "_", str(key).upper())
+        if not key_name:
+            continue
+        if isinstance(value, bool):
+            rendered = "true" if value else "false"
+        elif value is None:
+            rendered = ""
+        elif isinstance(value, (dict, list)):
+            rendered = json.dumps(value, sort_keys=True)
+        else:
+            rendered = str(value)
+        out["BENCH_PARAM_" + key_name] = rendered
+    return out
+
+
 def _wait_for_submit(
     submit_path: Path,
     *,
@@ -280,10 +307,15 @@ def run_stage(
         precond_log = protocol.stage_precondition_log_path(run_dir, stage_id)
         case = row.get("case") or {}
         precond_units = case.get("precondition_units") or []
+        # Namespace ($BENCH_NAMESPACE, $BENCH_NS_<ROLE>) and param
+        # ($BENCH_PARAM_<KEY>) env vars that case/scenario commands reference.
+        param_env = _param_env_vars(case.get("params"))
+        command_env = {**environment.build_namespace_env_vars(role_bindings), **param_env}
         precond_result = _run_operation_units(
             precond_units,
             role_bindings=role_bindings,
             log_path=precond_log,
+            env_vars=command_env,
             label="precondition",
         )
         if not precond_result["ok"]:
@@ -306,7 +338,10 @@ def run_stage(
         # Step 5: adversary deploy
         adv_deploy_units = row.get("adversary_deploy") or []
         adv_log = protocol.stage_adversary_log_path(run_dir, stage_id)
-        env_vars_adv = environment.build_env_vars(role_bindings, proxy_port=proxy_handle.port)
+        env_vars_adv = {
+            **environment.build_env_vars(role_bindings, proxy_port=proxy_handle.port),
+            **param_env,
+        }
         deploy_result = adversary_deploy(adv_deploy_units, role_bindings=role_bindings, log_path=adv_log, env_vars=env_vars_adv)
 
         # Step 6: write agent bundle
