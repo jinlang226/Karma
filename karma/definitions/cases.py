@@ -353,6 +353,38 @@ def resolve_case_params(
     return resolved, warnings
 
 
+import re as _re
+
+_PARAM_TOKEN_RE = _re.compile(r"\{\{params\.([a-zA-Z0-9_]+)\}\}")
+_FULL_PARAM_TOKEN_RE = _re.compile(r"^\s*\{\{params\.([a-zA-Z0-9_]+)\}\}\s*$")
+
+
+def _substitute_param_tokens(value: Any, params: dict[str, Any]) -> Any:
+    """Recursively substitute ``{{params.key}}`` tokens in *value*.
+
+    A string that is exactly one token returns the param's native value
+    (preserving non-string types); tokens embedded in a larger string are
+    replaced with the string form of the value. Tokens whose key is not in
+    *params* are left untouched so partially-parameterized cases do not
+    crash at load time.
+    """
+    if isinstance(value, str):
+        full = _FULL_PARAM_TOKEN_RE.match(value)
+        if full and full.group(1) in params:
+            return params[full.group(1)]
+
+        def _repl(m: _re.Match) -> str:
+            key = m.group(1)
+            return str(params[key]) if key in params else m.group(0)
+
+        return _PARAM_TOKEN_RE.sub(_repl, value)
+    if isinstance(value, list):
+        return [_substitute_param_tokens(item, params) for item in value]
+    if isinstance(value, dict):
+        return {k: _substitute_param_tokens(v, params) for k, v in value.items()}
+    return value
+
+
 def normalize_namespace_contract(case_data: dict[str, Any]) -> dict[str, Any]:
     """Return the normalized namespace contract from *case_data*.
 
@@ -519,6 +551,10 @@ def normalize_case(
     """
     data = deepcopy(case_data)
     params, warnings = resolve_case_params(data, param_overrides)
+    # Substitute {{params.key}} tokens throughout the case (commands, prompt,
+    # decoys) with the resolved param values before sub-normalization, so the
+    # units consumed by runtime.case carry concrete values rather than tokens.
+    data = _substitute_param_tokens(data, params)
     namespace_contract = normalize_namespace_contract(data)
     precondition_units = normalize_precondition_units(data)
     oracle = normalize_oracle_config(data)
