@@ -35,7 +35,7 @@ from typing import Any, Literal
 import re
 
 import yaml
-from pydantic import BaseModel, ValidationError
+from pydantic import BaseModel, Field, ValidationError
 
 _VALID_PROMPT_MODES = ("progressive", "concat_stateful", "concat_blind")
 _DEFAULT_PROMPT_MODE = "progressive"
@@ -72,7 +72,7 @@ class _WorkflowMetadata(BaseModel):
 class _WorkflowSpec(BaseModel):
     """The spec block of a workflow YAML."""
 
-    stages: list[_StageSpec]
+    stages: list[_StageSpec] = Field(min_length=1)
     prompt_mode: Literal["progressive", "concat_stateful", "concat_blind"] = _DEFAULT_PROMPT_MODE
     adversary: list[Any] = []
 
