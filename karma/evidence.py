@@ -22,6 +22,50 @@ _MUTATION_VERBS = frozenset(
     {"apply", "create", "patch", "replace", "delete", "edit", "scale", "rollout"}
 )
 
+# Map raw HTTP methods (as logged by the proxy) to kubectl-style verbs so that
+# mutation detection and metrics see the verbs they expect.
+_HTTP_TO_KUBECTL_VERB = {
+    "get": "get",
+    "post": "create",
+    "put": "replace",
+    "patch": "patch",
+    "delete": "delete",
+    "head": "get",
+}
+
+
+def _parse_api_path(path: str) -> tuple[str, str, str]:
+    """Parse a Kubernetes API request *path* into ``(resource, namespace, name)``.
+
+    Handles core (``/api/v1/...``) and grouped (``/apis/<group>/<v>/...``)
+    paths, namespaced and cluster-scoped, with or without a trailing object
+    name. Query strings are ignored. Returns empty strings for parts that are
+    not present.
+    """
+    if not path:
+        return "", "", ""
+    clean = path.split("?", 1)[0].strip("/")
+    segments = clean.split("/") if clean else []
+    if not segments:
+        return "", "", ""
+
+    # Drop the API root prefix: api/v1/... or apis/<group>/<version>/...
+    if segments[0] == "api" and len(segments) >= 2:
+        rest = segments[2:]
+    elif segments[0] == "apis" and len(segments) >= 3:
+        rest = segments[3:]
+    else:
+        rest = segments
+
+    namespace = ""
+    if rest and rest[0] == "namespaces" and len(rest) >= 2:
+        namespace = rest[1]
+        rest = rest[2:]
+
+    resource = rest[0] if rest else ""
+    name = rest[1] if len(rest) >= 2 else ""
+    return resource, namespace, name
+
 
 def collect_kubectl_snapshot(kubectl_log_path: Path) -> list[dict[str, Any]]:
     """Parse the proxy kubectl log and return a structured call list.
@@ -50,12 +94,29 @@ def collect_kubectl_snapshot(kubectl_log_path: Path) -> list[dict[str, Any]]:
             continue
         if not isinstance(record, dict):
             continue
+
+        raw_verb = str(record.get("verb") or "").lower()
+        # The proxy logs the raw HTTP method; map it to a kubectl-style verb
+        # unless the record already carries a kubectl verb.
+        verb = _HTTP_TO_KUBECTL_VERB.get(raw_verb, raw_verb)
+
+        # resource/namespace/name may be supplied explicitly; otherwise derive
+        # them from the request path the proxy logged.
+        resource = str(record.get("resource") or "")
+        namespace = str(record.get("namespace") or "")
+        name = str(record.get("name") or "")
+        if not resource and record.get("path"):
+            p_resource, p_namespace, p_name = _parse_api_path(str(record["path"]))
+            resource = resource or p_resource
+            namespace = namespace or p_namespace
+            name = name or p_name
+
         entries.append({
             "timestamp": record.get("timestamp") or record.get("ts"),
-            "verb": str(record.get("verb") or "").lower(),
-            "resource": str(record.get("resource") or ""),
-            "namespace": str(record.get("namespace") or ""),
-            "name": str(record.get("name") or ""),
+            "verb": verb,
+            "resource": resource,
+            "namespace": namespace,
+            "name": name,
             "status": record.get("status") or record.get("statusCode"),
             "duration_ms": record.get("duration_ms") or record.get("durationMs"),
         })
