@@ -230,6 +230,30 @@ class K8sEnvironment:
                     f"failed to apply decoy manifest '{path}': {exc}"
                 ) from exc
 
+    def build_namespace_env_vars(
+        self,
+        role_bindings: dict[str, str],
+    ) -> dict[str, str]:
+        """Return namespace environment variables for commands and prompts.
+
+        Emits, for each role, ``KARMA_NS_<ROLE>``, ``BENCH_NS_<ROLE>``, and
+        ``NS_<role>`` set to the physical namespace name, plus a single
+        ``BENCH_NAMESPACE`` pointing at the default role's namespace (or the
+        first bound namespace when no ``default`` role exists). The
+        ``BENCH_*`` names are the ones case and scenario commands reference
+        via ``${BENCH_NAMESPACE}`` / ``$BENCH_NS_<ROLE>``.
+        """
+        env: dict[str, str] = {}
+        default_ns = role_bindings.get("default") or next(iter(role_bindings.values()), "")
+        if default_ns:
+            env["BENCH_NAMESPACE"] = default_ns
+        for role, ns_name in role_bindings.items():
+            role_key = re.sub(r"[^A-Z0-9]", "_", role.upper())
+            env["KARMA_NS_" + role_key] = ns_name
+            env["BENCH_NS_" + role_key] = ns_name
+            env["NS_" + role] = ns_name
+        return env
+
     def build_env_vars(
         self,
         role_bindings: dict[str, str],
@@ -238,12 +262,9 @@ class K8sEnvironment:
     ) -> dict[str, str]:
         """Return environment variables to inject into the agent process.
 
-        Includes ``KARMA_NS_<ROLE>=<physical_name>`` entries for each role
+        Includes the namespace variables from :meth:`build_namespace_env_vars`
         and ``KARMA_KUBECTL_PROXY_PORT=<port>`` for the proxy address.
         """
-        env: dict[str, str] = {}
-        for role, ns_name in role_bindings.items():
-            key = "KARMA_NS_" + re.sub(r"[^A-Z0-9]", "_", role.upper())
-            env[key] = ns_name
+        env = self.build_namespace_env_vars(role_bindings)
         env["KARMA_KUBECTL_PROXY_PORT"] = str(proxy_port)
         return env
