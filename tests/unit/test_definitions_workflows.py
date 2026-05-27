@@ -99,7 +99,7 @@ class TestSingleCaseToWorkflow:
         wf = single_case_to_workflow("rabbitmq-experiments", "failover")
         stage = wf["stages"][0]
         assert stage["service"] == "rabbitmq-experiments"
-        assert stage["case"] == "failover"
+        assert stage["case_name"] == "failover"
 
     def test_param_overrides_attached(self):
         wf = single_case_to_workflow("svc", "case", {"key": "val"})
