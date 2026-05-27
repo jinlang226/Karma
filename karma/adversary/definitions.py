@@ -338,8 +338,18 @@ def resolve_adversary_scenario(
 
     data = deepcopy(raw_data)
 
-    # Apply param_overrides by substituting {{params.key}} tokens.
-    params: dict[str, Any] = {**dict(data.get("params") or {}), **param_overrides}
+    # Resolve declared params to their default values (a param may be declared
+    # either as a bare value or as a ``{"default": ...}`` definition, mirroring
+    # case params), then apply param_overrides on top. The merged scalar values
+    # are what {{params.key}} tokens substitute to.
+    declared_params = data.get("params") or {}
+    resolved_params: dict[str, Any] = {}
+    for key, definition in declared_params.items():
+        if isinstance(definition, dict):
+            resolved_params[key] = definition.get("default")
+        else:
+            resolved_params[key] = definition
+    params: dict[str, Any] = {**resolved_params, **param_overrides}
 
     def _sub(obj: Any) -> Any:
         if isinstance(obj, str):
