@@ -29,7 +29,10 @@ Run directory layout::
 from __future__ import annotations
 
 import datetime
+import re
 from pathlib import Path
+
+_UNSAFE_RUN_ID_CHARS = re.compile(r"[^A-Za-z0-9._-]+")
 
 
 # ---------------------------------------------------------------------------
@@ -138,7 +141,13 @@ def generate_run_id(workflow_id: str, *, ts: str | None = None) -> str:
 
     The format is ``{workflow_id}-{YYYYMMDD_HHMMSS}``. If *ts* is provided
     it is used as the timestamp string verbatim.
+
+    The *workflow_id* is sanitized so the run id is safe to use both as a
+    single path segment and as a URL path variable. Any run of characters
+    outside ``[A-Za-z0-9._-]`` (notably the ``/`` in single-case workflow
+    ids like ``service/case``) is collapsed to a single hyphen.
     """
     if ts is None:
         ts = datetime.datetime.utcnow().strftime("%Y%m%d_%H%M%S")
-    return f"{workflow_id}-{ts}"
+    safe_id = _UNSAFE_RUN_ID_CHARS.sub("-", workflow_id).strip("-") or "workflow"
+    return f"{safe_id}-{ts}"
