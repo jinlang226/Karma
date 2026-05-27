@@ -122,7 +122,11 @@ def create_app(
         return Response(
             _sse_stream_generator(run_id, eq),
             mimetype="text/event-stream",
-            headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+            headers={
+                "Cache-Control": "no-cache",
+                "X-Accel-Buffering": "no",
+                "Access-Control-Allow-Origin": "*",
+            },
         )
 
     @app.route("/api/run/<run_id>/cancel", methods=["POST"])
