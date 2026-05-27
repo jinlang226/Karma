@@ -119,6 +119,12 @@ class K8sEnvironment:
                         )
                         if result.returncode == 0 or "AlreadyExists" in result.stderr:
                             break
+                    else:
+                        # Retries exhausted and the namespace still does not exist.
+                        raise RuntimeError(
+                            f"kubectl create namespace failed after retries: "
+                            f"{result.stderr.strip() or result.returncode}"
+                        )
                 self._kubectl([
                     "label", "namespace", ns_name,
                     "karma/role=" + role,
