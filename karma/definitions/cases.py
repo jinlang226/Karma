@@ -216,9 +216,18 @@ def _normalize_operation_block(
     if not isinstance(raw, dict):
         raise ValueError(f"case '{case_id}' {label} block must be an object")
 
-    probe_commands = _normalize_commands(raw.get("probe"))
-    apply_commands = _normalize_commands(raw.get("apply"))
-    verify_commands = _normalize_commands(raw.get("verify"))
+    def _block_commands(value: Any) -> list[dict[str, Any]]:
+        # A probe/apply/verify block may be a string, a command dict, a list,
+        # or a structured block {"commands": [...], "retries": N, ...}. Unwrap
+        # the structured form so its commands are extracted (the retries /
+        # interval_sec fields are read separately below).
+        if isinstance(value, dict) and "commands" in value:
+            return _normalize_commands(value.get("commands"))
+        return _normalize_commands(value)
+
+    probe_commands = _block_commands(raw.get("probe"))
+    apply_commands = _block_commands(raw.get("apply"))
+    verify_commands = _block_commands(raw.get("verify"))
 
     if not probe_commands:
         raise ValueError(f"case '{case_id}' {label}.probe command(s) are required")
