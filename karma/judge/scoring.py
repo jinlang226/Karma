@@ -139,7 +139,8 @@ def compute_aggregate_score(
         s["score"] * rubric_weights.get(s["id"], 0.0)
         for s in item_scores
     )
-    return round(weighted_sum / total_weight, 4)
+    aggregate = weighted_sum / total_weight
+    return round(max(0.0, min(1.0, aggregate)), 4)
 
 
 def determine_verdict(
