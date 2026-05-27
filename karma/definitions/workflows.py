@@ -328,11 +328,33 @@ def resolve_workflow_rows(
         row shape.
     """
     from .cases import load_case_file, normalize_case
+    from ..adversary.definitions import (
+        resolve_adversary_scenario,
+        collect_stage_operations,
+        collect_stage_hint,
+    )
+
+    stages = workflow.get("stages") or []
+    all_stage_ids = [str(s.get("id") or "") for s in stages]
+    stage_service_map = {
+        str(s.get("id") or ""): str(s.get("service") or "") for s in stages
+    }
+
+    # Resolve every adversary entry once, loading and normalizing its scenario
+    # file. Each injection targets exactly one inject_at_stage, so the per-stage
+    # collectors below distribute the deploy/lift units to the right rows.
+    injections: list[dict[str, Any]] = []
+    for adv in (workflow.get("adversary") or []):
+        if not isinstance(adv, dict):
+            continue
+        injections.append(
+            resolve_adversary_scenario(
+                adv, stage_service_map, resources_dir=resources_dir
+            )
+        )
 
     rows: list[dict[str, Any]] = []
-    adversary_list: list[dict[str, Any]] = workflow.get("adversary") or []
-
-    for stage in workflow.get("stages") or []:
+    for stage in stages:
         service = stage["service"]
         case_name = stage["case_name"]
         stage_id = stage["id"]
@@ -341,21 +363,11 @@ def resolve_workflow_rows(
         case_data = load_case_file(resources_dir, service, case_name)
         normalized = normalize_case(case_data, service, case_name, param_overrides)
 
-        # Collect adversary entries targeting this stage.
-        deploy_ops: list[dict[str, Any]] = []
-        lift_ops: list[dict[str, Any]] = []
-        hint: str | None = None
-
-        for adv in adversary_list:
-            if not isinstance(adv, dict):
-                continue
-            target = adv.get("target_stage") or adv.get("stage")
-            if target and target != stage_id:
-                continue
-            deploy_ops.extend(adv.get("deploy") or [])
-            lift_ops.extend(adv.get("lift") or [])
-            if hint is None and adv.get("prompt_hint"):
-                hint = str(adv["prompt_hint"])
+        deploy_units, lift_units = collect_stage_operations(injections, stage_id)
+        hint = collect_stage_hint(injections, stage_id, all_stage_ids)
+        stage_injections = [
+            inj for inj in injections if inj.get("inject_at_stage") == stage_id
+        ]
 
         row: dict[str, Any] = {
             "stage_id": stage_id,
@@ -363,9 +375,10 @@ def resolve_workflow_rows(
             "case_name": case_name,
             "case": normalized,
             "namespace_roles": stage.get("namespaces") or [_DEFAULT_NAMESPACE_ALIAS],
-            "adversary_deploy": deploy_ops,
-            "adversary_lift": lift_ops,
+            "adversary_deploy": deploy_units,
+            "adversary_lift": lift_units,
             "adversary_hint": hint,
+            "adversary_injections": stage_injections,
             "prompt_mode": workflow.get("prompt_mode") or _DEFAULT_PROMPT_MODE,
             "agent_timeout_sec": stage.get("agent_timeout_sec") or _DEFAULT_AGENT_TIMEOUT_SEC,
             "retries": int(stage.get("retries") or 0),
