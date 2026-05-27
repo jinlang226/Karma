@@ -201,7 +201,7 @@ def run_workflow_loop(
     all_injections = [
         inj
         for row in rows
-        for inj in (row.get("adversary_deploy") or [])
+        for inj in (row.get("adversary_injections") or [])
     ]
 
     workflow_status = "complete"
@@ -235,7 +235,7 @@ def run_workflow_loop(
 
         stage_results.append(stage_result)
 
-        for inj in (row.get("adversary_deploy") or []):
+        for inj in (row.get("adversary_injections") or []):
             if inj.get("id"):
                 deployed_scenario_ids.add(inj["id"])
 
