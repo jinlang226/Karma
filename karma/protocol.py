@@ -148,6 +148,6 @@ def generate_run_id(workflow_id: str, *, ts: str | None = None) -> str:
     ids like ``service/case``) is collapsed to a single hyphen.
     """
     if ts is None:
-        ts = datetime.datetime.utcnow().strftime("%Y%m%d_%H%M%S")
+        ts = datetime.datetime.now(datetime.timezone.utc).strftime("%Y%m%d_%H%M%S")
     safe_id = _UNSAFE_RUN_ID_CHARS.sub("-", workflow_id).strip("-") or "workflow"
     return f"{safe_id}-{ts}"
