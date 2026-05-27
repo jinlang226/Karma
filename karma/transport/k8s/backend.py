@@ -154,6 +154,11 @@ def launch_proxy(
         cmd, env=merged_env, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True
     )
 
+    try:
+        (run_dir / "proxy.pid").write_text(str(proc.pid))
+    except Exception:
+        pass
+
     handle = ProxyHandle(proc, proxy_port, run_dir=run_dir, control_port=control_port)
     wait_for_readiness(handle, timeout_sec=readiness_timeout_sec)
     return handle
