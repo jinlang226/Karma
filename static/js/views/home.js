@@ -12,10 +12,10 @@
   const { el, clear } = KARMA;
 
   const STEPS = [
-    ["1 · Define", "A case (one task) or a multi-stage workflow describes the prompt, the cluster setup, and the success check."],
-    ["2 · Run", "An agent attempts the task locally or in Docker — or you do it by hand as a manual run. Adversary faults can be injected mid-run."],
-    ["3 · Verify", "After the agent finishes, an oracle checks the cluster reached the desired state and metrics capture how the agent behaved."],
-    ["4 · Judge", "An LLM judge scores the run against a rubric; batches average scores across many runs."],
+    ["Define", "A case or multi-stage workflow specifies the prompt, the cluster setup, and the success check."],
+    ["Run", "An agent attempts the task locally or in Docker, or you perform it by hand as a manual run."],
+    ["Verify", "An oracle checks the resulting cluster state, and metrics capture how the agent behaved."],
+    ["Judge", "An LLM judge scores the run against a rubric; batches aggregate scores across runs."],
   ];
 
   const TABS = [
@@ -25,14 +25,14 @@
   ];
 
   const CONCEPTS = [
-    ["Case", "A single benchmark task defined by a test.yaml: a prompt, setup preconditions, and an oracle that checks the result."],
-    ["Workflow", "An ordered sequence of stages (each a case), run as one session and optionally carrying adversary injections."],
-    ["Prompt mode", "How earlier stages' prompts are shown to the agent — Progressive: each stage adds to the last; Concatenated (stateful): the full running history; Concatenated (blind): only the current stage."],
-    ["Agent & sandbox", "The agent under test runs either as a local process (none = solver/local, no agent process) or inside a Docker container (docker)."],
-    ["Adversary", "An intentional fault injected into the cluster during a stage to test how well the agent diagnoses and recovers; it can be lifted at a later stage."],
-    ["Oracle", "Automated pass/fail verification run after the agent finishes, confirming the cluster reached the desired state."],
-    ["Judge", "An LLM-as-judge that scores a completed run against a rubric; a batch averages scores across many runs."],
-    ["Metrics", "Plugins that score behaviour from the agent's kubectl activity — blast radius, destructive operations, residual drift, and more."],
+    ["Case", "A single benchmark task, defined by a test.yaml file. It specifies the agent's prompt, the preconditions used to prepare the cluster, and the oracle that determines success."],
+    ["Workflow", "An ordered sequence of stages — each stage is one case — executed as a single session. A workflow may also declare adversarial scenario injections."],
+    ["Prompt mode", "Determines how the prompts from earlier stages are presented to the agent. Progressive appends each stage to the previous one; Concatenated (stateful) provides the full running history; Concatenated (blind) provides only the current stage."],
+    ["Agent & sandbox", "The agent is the system under test. It runs either as a local process (or none, to run without an agent) or inside a Docker container, as selected by the sandbox setting."],
+    ["Adversary", "A deliberate fault injected into the cluster during a stage to evaluate how well the agent detects and recovers from it. It can optionally be lifted at a later stage."],
+    ["Oracle", "An automated check that runs after the agent finishes and returns a pass or fail verdict by confirming the cluster reached its intended state."],
+    ["Judge", "An LLM-based evaluator that scores a completed run against a rubric. A batch aggregates the average score across many runs."],
+    ["Metrics", "Plugins that quantify the agent's behaviour from its observed kubectl activity — for example blast radius, destructive operations, and residual drift."],
   ];
 
   function mount(container) {
@@ -48,12 +48,15 @@
     container.appendChild(hero);
 
     container.appendChild(el("h3", { class: "home-section" }, "How It Works"));
-    const steps = el("div", { class: "grid" });
-    for (const [t, d] of STEPS) {
-      steps.appendChild(el("div", { class: "card", style: "cursor:default" },
-        el("div", { class: "title" }, t), el("div", { class: "sub" }, d)));
-    }
-    container.appendChild(steps);
+    const flow = el("div", { class: "flow" });
+    STEPS.forEach(([t, d], i) => {
+      if (i > 0) flow.appendChild(el("div", { class: "flow-arrow" }, "→"));
+      flow.appendChild(el("div", { class: "flow-step" },
+        el("div", { class: "flow-num" }, String(i + 1)),
+        el("div", { class: "flow-step-title" }, t),
+        el("div", { class: "flow-step-desc" }, d)));
+    });
+    container.appendChild(flow);
 
     container.appendChild(el("h3", { class: "home-section" }, "Explore"));
     const tabGrid = el("div", { class: "grid explore-grid" });
