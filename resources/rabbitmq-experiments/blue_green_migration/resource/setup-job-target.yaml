@@ -1,0 +1,53 @@
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: ${BENCH_PARAM_GREEN_CLUSTER_PREFIX}-setup
+spec:
+  backoffLimit: 2
+  template:
+    spec:
+      restartPolicy: OnFailure
+      containers:
+        - name: setup
+          image: curlimages/curl:8.6.0
+          env:
+            - name: RABBITMQ_ADMIN_USER
+              valueFrom:
+                secretKeyRef:
+                  name: ${BENCH_PARAM_GREEN_CLUSTER_PREFIX}-admin
+                  key: username
+            - name: RABBITMQ_ADMIN_PASS
+              valueFrom:
+                secretKeyRef:
+                  name: ${BENCH_PARAM_GREEN_CLUSTER_PREFIX}-admin
+                  key: password
+            - name: RABBITMQ_APP_USER
+              valueFrom:
+                secretKeyRef:
+                  name: ${BENCH_PARAM_GREEN_CLUSTER_PREFIX}-app
+                  key: username
+            - name: RABBITMQ_APP_PASS
+              valueFrom:
+                secretKeyRef:
+                  name: ${BENCH_PARAM_GREEN_CLUSTER_PREFIX}-app
+                  key: password
+          command:
+            - /bin/sh
+            - -c
+            - |
+              set -e
+              base="http://${BENCH_PARAM_GREEN_CLUSTER_PREFIX}:15672/api"
+              auth="${RABBITMQ_ADMIN_USER}:${RABBITMQ_ADMIN_PASS}"
+              curl -s -u "$auth" -XPUT "$base/vhosts/%2Fapp" >/dev/null
+              curl -s -u "$auth" -H "content-type: application/json" \
+                -XPUT "$base/users/${RABBITMQ_APP_USER}" \
+                -d '{"password":"'"${RABBITMQ_APP_PASS}"'","tags":""}' >/dev/null
+              curl -s -u "$auth" -H "content-type: application/json" \
+                -XPUT "$base/permissions/%2Fapp/${RABBITMQ_APP_USER}" \
+                -d '{"configure":".*","write":".*","read":".*"}' >/dev/null
+              curl -s -u "$auth" -H "content-type: application/json" \
+                -XPUT "$base/permissions/%2Fapp/${RABBITMQ_ADMIN_USER}" \
+                -d '{"configure":".*","write":".*","read":".*"}' >/dev/null
+              curl -s -u "$auth" -H "content-type: application/json" \
+                -XPUT "$base/queues/%2Fapp/app-queue" \
+                -d '{"durable":true,"auto_delete":false,"arguments":{}}' >/dev/null

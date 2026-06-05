@@ -1,0 +1,92 @@
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: mongodb-replica
+spec:
+  serviceName: mongodb-replica-svc
+  podManagementPolicy: Parallel
+  replicas: 3
+  selector:
+    matchLabels:
+      app: mongodb-replica
+  template:
+    metadata:
+      labels:
+        app: mongodb-replica
+        monitoring: enabled
+    spec:
+      securityContext:
+        runAsUser: 0
+        runAsGroup: 0
+      initContainers:
+        - name: pod-guard
+          image: busybox:1.36
+          command:
+            - /bin/sh
+            - /guard/guard.sh
+          env:
+            - name: MONITORING_LABEL
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.labels['monitoring']
+            - name: REQ_MEM_MIB
+              valueFrom:
+                resourceFieldRef:
+                  containerName: mongod
+                  resource: requests.memory
+                  divisor: 1Mi
+            - name: LIM_MEM_MIB
+              valueFrom:
+                resourceFieldRef:
+                  containerName: mongod
+                  resource: limits.memory
+                  divisor: 1Mi
+          volumeMounts:
+            - name: guard-script
+              mountPath: /guard/guard.sh
+              subPath: guard.sh
+              readOnly: true
+      containers:
+        - name: mongod
+          image: mongo:6.0.5
+          command:
+            - mongod
+            - --replSet
+            - mongodb-replica
+            - --bind_ip_all
+            - --auth
+            - --keyFile=/etc/mongo-keyfile/keyfile
+          ports:
+            - containerPort: 27017
+              name: mongodb
+              protocol: TCP
+          resources:
+            requests:
+              cpu: "0.5"
+              memory: "512Mi"
+            limits:
+              cpu: "1"
+              memory: "1Gi"
+          volumeMounts:
+            - name: data-volume
+              mountPath: /data/db
+            - name: mongo-keyfile
+              mountPath: /etc/mongo-keyfile
+              readOnly: true
+      volumes:
+        - name: guard-script
+          configMap:
+            name: pod-guard-script
+            defaultMode: 493
+        - name: mongo-keyfile
+          secret:
+            secretName: mongo-keyfile
+            defaultMode: 256
+  volumeClaimTemplates:
+    - metadata:
+        name: data-volume
+      spec:
+        accessModes: ["ReadWriteOnce"]
+        resources:
+          requests:
+            storage: 10Gi
