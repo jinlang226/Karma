@@ -51,13 +51,16 @@
   // --- Files panel ----------------------------------------------------------
   function filesPanel() {
     const panel = el("div", { class: "panel" });
-    panel.appendChild(el("h3", {}, "Workflow files"));
+    panel.appendChild(el("h3", {}, "Saved workflows"));
+    panel.appendChild(el("p", { class: "field-help" },
+      "Predefined workflows from the workflows/ folder. Click Run to execute one, " +
+      "or build your own below."));
     const tbl = el("table", {}, el("thead", {}, el("tr", {},
       el("th", {}, "File"), el("th", {}, "ID"), el("th", {}, "Stages"),
       el("th", {}, "Prompt mode"), el("th", {}, "Status"), el("th", {}, ""))));
     const body = el("tbody", {});
     tbl.appendChild(body);
-    panel.appendChild(tbl);
+    panel.appendChild(el("div", { class: "scroll-list" }, tbl));
     api.get("/api/workflows").then((files) => {
       if (!files.length) body.appendChild(el("tr", {}, el("td", { colspan: "6", class: "muted" }, "No workflow files found.")));
       for (const f of files) {
@@ -94,7 +97,6 @@
   // --- Builder panel --------------------------------------------------------
   function builderPanel() {
     const panel = el("div", { class: "panel" });
-    panel.appendChild(el("h3", {}, "Builder"));
 
     const idInput = el("input", { value: "ui-workflow" });
     const modeSel = el("select", {},
@@ -213,12 +215,11 @@
       ...stageOptions(adv.liftIndex));
     const rm = el("button", { class: "btn secondary", onClick: () => { advRows.splice(index, 1); rerender(); } }, "✕");
     return el("div", { class: "builder-row" },
-      el("div", { class: "builder-row-head" }, `Injection ${index + 1}`),
+      el("div", { class: "builder-row-head" }, el("span", {}, `Injection ${index + 1}`), rm),
       el("div", { class: "row" },
         el("div", {}, el("label", {}, "Inject at"), injectSel),
         el("div", {}, el("label", {}, "Scenario"), scenSel),
-        el("div", {}, el("label", {}, "Lift at"), liftSel),
-        el("div", { style: "flex:0" }, el("label", {}, " "), rm)));
+        el("div", {}, el("label", {}, "Lift at"), liftSel)));
   }
 
   function stageRow(stage, index, rerender) {
@@ -272,11 +273,10 @@
     loadParams();
 
     return el("div", { class: "builder-row" },
-      el("div", { class: "builder-row-head" }, `Stage ${index + 1}`),
+      el("div", { class: "builder-row-head" }, el("span", {}, `Stage ${index + 1}`), rm),
       el("div", { class: "row" },
         el("div", {}, el("label", {}, "Service"), svcSel),
-        el("div", {}, el("label", {}, "Case"), caseSel),
-        el("div", { style: "flex:0" }, el("label", {}, " "), rm)),
+        el("div", {}, el("label", {}, "Case"), caseSel)),
       paramsBox);
   }
 

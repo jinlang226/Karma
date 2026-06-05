@@ -77,17 +77,42 @@
   async function renderService(service) {
     clear(root);
     root.appendChild(backBtn(renderHome));
-    root.appendChild(el("h2", {}, KARMA.labels.service(service)));
-    const grid = el("div", { class: "grid" });
+    root.appendChild(el("h2", { class: "after-back" }, KARMA.labels.service(service)));
+    const desc = KARMA.labels.serviceDescription(service);
+    if (desc) root.appendChild(el("p", { class: "field-help" }, desc));
+    const grid = el("div", { class: "service-grid" });
     root.appendChild(grid);
     try {
       const data = await api.get("/api/services");
       const svc = data.services.find((s) => s.name === service);
       for (const c of (svc ? svc.cases : [])) {
-        grid.appendChild(el("div", { class: "card", onClick: () => renderCase(service, c) },
-          el("div", { class: "title" }, KARMA.labels.case(c))));
+        const card = caseCard(service, c);
+        grid.appendChild(card.node);
+        card.load();
       }
     } catch (e) { root.appendChild(errBox(e)); }
+  }
+
+  // A case card showing the test name, a prompt excerpt, and quick facts.
+  function caseCard(service, caseName) {
+    const sub = el("div", { class: "service-desc" }, "Loading…");
+    const facts = el("div", { class: "service-cases" });
+    const node = el("div", { class: "card service-card", onClick: () => renderCase(service, caseName) },
+      el("div", { class: "title" }, KARMA.labels.case(caseName)), sub, facts);
+    async function load() {
+      try {
+        const d = await api.get(`/api/cases/${service}/${caseName}`);
+        const prompt = (d.prompt || "").trim().replace(/\s+/g, " ");
+        sub.textContent = prompt ? (prompt.length > 150 ? prompt.slice(0, 150) + "…" : prompt) : "—";
+        clear(facts);
+        facts.appendChild(el("span", { class: "count" }, `${d.precondition_count} preconditions`));
+        facts.appendChild(document.createTextNode(`  ·  ${d.metrics.length} metrics`));
+        if (d.params && d.params.length) {
+          facts.appendChild(document.createTextNode(`  ·  ${d.params.length} params`));
+        }
+      } catch (_e) { sub.textContent = ""; }
+    }
+    return { node, load };
   }
 
   async function renderCase(service, caseName) {
@@ -98,7 +123,7 @@
       detail = await api.get(`/api/cases/${service}/${caseName}`);
     } catch (e) { root.appendChild(errBox(e)); return; }
 
-    root.appendChild(el("h2", {}, `${KARMA.labels.service(service)} · ${KARMA.labels.case(caseName)}`));
+    root.appendChild(el("h2", { class: "after-back" }, `${KARMA.labels.service(service)} · ${KARMA.labels.case(caseName)}`));
 
     // Metadata badges
     const badges = el("div", { class: "toolbar" });
@@ -164,8 +189,13 @@
     root.appendChild(cfg);
     root.appendChild(status);
 
-    // Command builder
-    root.appendChild(buildCommandBuilder(service, caseName, agentSel, sandboxSel, timeoutInput, collectParams));
+    // CLI command — auto-generated, updates as the run config changes.
+    const cli = buildCliPanel(service, caseName, agentSel, sandboxSel, timeoutInput, collectParams);
+    root.appendChild(cli.node);
+    [agentSel, sandboxSel].forEach((elm) => elm.addEventListener("change", cli.refresh));
+    timeoutInput.addEventListener("input", cli.refresh);
+    Object.values(paramInputs).forEach((inp) => inp.addEventListener("input", cli.refresh));
+    cli.refresh();
   }
 
   // --- Agent run ------------------------------------------------------------
@@ -270,23 +300,25 @@
     }
   }
 
-  // --- Command builder ------------------------------------------------------
-  function buildCommandBuilder(service, caseName, agentSel, sandboxSel, timeoutInput, collectParams) {
-    const panel = el("div", { class: "panel" });
-    const body = el("div", { style: "display:none" });
-    const toggle = el("button", { class: "btn secondary", onClick: () => {
-      body.style.display = body.style.display === "none" ? "block" : "none";
-    } }, "Show CLI command");
-    panel.appendChild(toggle);
-
-    const out = el("pre", { class: "log" }, "");
-    const warn = el("div", { class: "muted" });
-    const refresh = el("button", { class: "btn", onClick: doRefresh }, "Generate");
-    const copy = el("button", { class: "btn secondary", onClick: () => {
-      navigator.clipboard && navigator.clipboard.writeText(out.textContent);
+  // --- CLI command ----------------------------------------------------------
+  // The equivalent terminal command for the current selections. Auto-updates
+  // as the run config changes; shown in a code block with an in-block Copy.
+  function buildCliPanel(service, caseName, agentSel, sandboxSel, timeoutInput, collectParams) {
+    const code = el("pre", { class: "log" }, "");
+    const copy = el("button", { class: "code-copy", title: "Copy command", onClick: () => {
+      if (navigator.clipboard) navigator.clipboard.writeText(code.textContent);
+      copy.textContent = "Copied";
+      setTimeout(() => { copy.textContent = "Copy"; }, 1200);
     } }, "Copy");
+    const warn = el("div", { class: "field-help", style: "color:var(--accent)" });
 
-    async function doRefresh() {
+    const panel = el("div", { class: "panel" },
+      el("h3", {}, "CLI command"),
+      el("p", { class: "field-help" }, "Prefer the terminal? Run this exact case with:"),
+      el("div", { class: "code-block" }, copy, code),
+      warn);
+
+    async function refresh() {
       try {
         const res = await api.post("/api/cli/preview", {
           command: "case",
@@ -296,16 +328,11 @@
             timeout: Number(timeoutInput.value) || 900, params: collectParams(),
           },
         });
-        out.textContent = res.command_multi_line || res.command_one_line || "";
-        warn.textContent = [...(res.errors || []), ...(res.warnings || [])].join(" | ");
-      } catch (e) { out.textContent = "Error: " + e.message; KARMA.toastError(e); }
+        code.textContent = res.command_multi_line || res.command_one_line || "";
+        warn.textContent = [...(res.errors || []), ...(res.warnings || [])].join(" · ");
+      } catch (_e) { /* keep last good command */ }
     }
-
-    body.appendChild(el("div", { class: "toolbar" }, refresh, copy));
-    body.appendChild(out);
-    body.appendChild(warn);
-    panel.appendChild(body);
-    return panel;
+    return { node: panel, refresh };
   }
 
   KARMA.registerView({ id: "runner", label: "Run", mount });
