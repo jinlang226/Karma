@@ -1,0 +1,92 @@
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: mongodb-replica
+spec:
+  serviceName: mongodb-replica-svc
+  podManagementPolicy: Parallel
+  replicas: 3
+  selector:
+    matchLabels:
+      app: mongodb-replica
+  template:
+    metadata:
+      labels:
+        app: mongodb-replica
+    spec:
+      securityContext:
+        runAsUser: 0
+        runAsGroup: 0
+      containers:
+        - name: mongod
+          image: mongo:6.0.5
+          command:
+            - mongod
+            - --config
+            - /etc/mongo-config/mongod.conf
+          env:
+            - name: ADMIN_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: admin-user-password
+                  key: password
+          ports:
+            - containerPort: 27017
+              name: mongodb
+              protocol: TCP
+          readinessProbe:
+            exec:
+              command:
+                - /bin/sh
+                - -c
+                - mongosh --quiet "mongodb://admin-user:${ADMIN_PASSWORD}@localhost:27017/admin" --eval "db.adminCommand({ping:1})"
+            initialDelaySeconds: 30
+            periodSeconds: 10
+            timeoutSeconds: 5
+            failureThreshold: 6
+          livenessProbe:
+            exec:
+              command:
+                - /bin/sh
+                - -c
+                - mongosh --quiet "mongodb://admin-user:${ADMIN_PASSWORD}@localhost:27017/admin" --eval "db.adminCommand({ping:1})"
+            initialDelaySeconds: 60
+            periodSeconds: 15
+            timeoutSeconds: 5
+            failureThreshold: 10
+          volumeMounts:
+            - name: data-volume
+              mountPath: /data/db
+            - name: mongo-keyfile
+              mountPath: /etc/mongo-keyfile
+              readOnly: true
+            - name: mongod-config
+              mountPath: /etc/mongo-config/mongod.conf
+              subPath: mongod.conf
+              readOnly: true
+          resources:
+            requests:
+              cpu: "0.5"
+              memory: "512Mi"
+            limits:
+              cpu: "1"
+              memory: "1Gi"
+      volumes:
+        - name: mongo-keyfile
+          secret:
+            secretName: mongo-keyfile
+            defaultMode: 256
+        - name: mongod-config
+          configMap:
+            name: mongod-config
+            items:
+              - key: mongod.conf
+                path: mongod.conf
+  volumeClaimTemplates:
+    - metadata:
+        name: data-volume
+      spec:
+        accessModes: ["ReadWriteOnce"]
+        resources:
+          requests:
+            storage: 10Gi

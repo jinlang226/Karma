@@ -1,0 +1,66 @@
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: spark
+  namespace: spark-history
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: spark-history-pvc
+  namespace: spark-history
+spec:
+  accessModes:
+  - ReadWriteOnce
+  resources:
+    requests:
+      storage: 1Gi
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: spark-history-server
+  namespace: spark-history
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: spark-history-server
+  template:
+    metadata:
+      labels:
+        app: spark-history-server
+    spec:
+      serviceAccountName: spark
+      containers:
+      - name: spark-history-server
+        image: apache/spark:3.5.3
+        command:
+        - /opt/spark/bin/spark-class
+        - org.apache.spark.deploy.history.HistoryServer
+        env:
+        # BUG: log directory points at "/wrong/path/spark-logs". The correct
+        # value is "/mnt/spark-logs", matching the volume mount path below.
+        - name: SPARK_HISTORY_OPTS
+          value: "-Dspark.history.fs.logDirectory=/wrong/path/spark-logs -Dspark.history.fs.update.interval=5s -Dspark.history.ui.port=18080"
+        - name: SPARK_NO_DAEMONIZE
+          value: "true"
+        ports:
+        - containerPort: 18080
+          name: http
+        volumeMounts:
+        - name: spark-logs
+          mountPath: /mnt/spark-logs
+        resources:
+          requests:
+            cpu: 100m
+            memory: 512Mi
+          limits:
+            cpu: 500m
+            memory: 1Gi
+      volumes:
+      - name: spark-logs
+        persistentVolumeClaim:
+          # BUG: claimName references "spark-history-pvc-wrong" but the PVC is
+          # named "spark-history-pvc".
+          claimName: spark-history-pvc-wrong
