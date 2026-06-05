@@ -24,7 +24,7 @@ _WORKFLOWS_DIR = _REPO_ROOT / "workflows"
 )
 class TestDemoWorkflowSmoke:
     def _find_demo_workflow(self) -> Path | None:
-        candidates = list(_WORKFLOWS_DIR.glob("demo*.yaml")) if _WORKFLOWS_DIR.exists() else []
+        candidates = list(_WORKFLOWS_DIR.glob("*demo*.yaml")) if _WORKFLOWS_DIR.exists() else []
         return candidates[0] if candidates else None
 
     def test_demo_workflow_loads_without_error(self):

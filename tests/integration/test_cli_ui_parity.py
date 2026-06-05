@@ -32,20 +32,33 @@ class TestCliUiParity:
         ui_stage = ui_workflow["stages"][0]
         cli_stage = cli_workflow["stages"][0]
         assert ui_stage["service"] == cli_stage["service"]
-        assert ui_stage["case"] == cli_stage["case"]
+        assert ui_stage["case_name"] == cli_stage["case_name"]
         assert ui_stage["param_overrides"] == cli_stage["param_overrides"]
 
-    def test_both_paths_call_submit_run(self, tmp_path):
-        """Confirm both adapters ultimately call runtime.service.submit_run."""
-        with patch("karma.interfaces.http.jobs.submit_run") as mock_submit, \
-             patch("karma.interfaces.http.jobs.normalize_workflow",
-                   return_value={"stages": [{"id": "s1"}], "adversary": []}):
-            mock_submit.return_value = "run-123"
+    def test_both_paths_call_run_workflow(self, tmp_path):
+        """Confirm the HTTP adapter ultimately calls runtime.service.run_workflow.
+
+        submit_job runs the workflow on its own daemon thread (so it can
+        publish a terminal event), so we wait for the threaded call.
+        """
+        import threading
+
+        called = threading.Event()
+
+        def _fake_run_workflow(workflow, **kwargs):
+            called.set()
+            return {"status": "complete", "summary": {}}
+
+        with patch("karma.interfaces.http.jobs.run_workflow",
+                   side_effect=_fake_run_workflow) as mock_run, \
+             patch("karma.interfaces.http.jobs.translate_ui_request",
+                   return_value={"id": "wf", "stages": [{"id": "s1"}], "adversary": []}):
             from karma.interfaces.http.jobs import submit_job
             run_id = submit_job(
                 {"service": "svc", "case_name": "case"},
                 runs_dir=tmp_path,
                 resources_dir=tmp_path,
             )
-            mock_submit.assert_called_once()
-            assert run_id == "run-123"
+            assert called.wait(timeout=5), "run_workflow was never invoked"
+            mock_run.assert_called_once()
+            assert isinstance(run_id, str) and run_id
