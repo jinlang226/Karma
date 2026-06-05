@@ -10,12 +10,13 @@ through an identical ``runtime.service`` stack with no further branching.
 from __future__ import annotations
 
 import threading
-import queue
 from pathlib import Path
 from typing import Any
 
 from ...definitions.workflows import single_case_to_workflow, normalize_workflow
-from ...runtime.service import submit_run, get_run_status, cleanup_run
+from ...runtime.service import run_workflow, get_run_status
+from ...protocol import generate_run_id
+from .events import hub
 
 
 _active_jobs: dict[str, dict[str, Any]] = {}
@@ -113,22 +114,18 @@ def submit_job(
     resources_dir: Path,
     on_stage_complete: Any | None = None,
 ) -> str:
-    """Translate a UI payload, submit it as a run, and return the run ID.
+    """Translate a UI payload, run it in the background, and return the run ID.
 
-    Calls :func:`translate_ui_request` to normalize the payload, then
-    calls ``runtime.service.submit_run`` to start the run asynchronously.
-    Registers the resulting job in the active jobs table.
+    Normalizes the payload via :func:`translate_ui_request`, then runs
+    ``runtime.service.run_workflow`` on a daemon thread owned here. Running
+    the workflow synchronously inside our own thread (rather than delegating
+    to ``submit_run``'s thread) gives a definite completion point, so we can
+    publish a terminal ``run_complete`` event and close the event stream --
+    something the fire-and-forget path could not signal.
 
-    Parameters
-    ----------
-    payload:
-        Raw dict from the HTTP request body.
-    runs_dir:
-        Root runs directory.
-    resources_dir:
-        Root resources directory.
-    on_stage_complete:
-        Optional callback forwarded to ``runtime.service.submit_run``.
+    Every stage completion is published to the shared :data:`events.hub`
+    keyed by run ID; the SSE endpoint subscribes to that. An optional
+    *on_stage_complete* callback is still invoked for non-HTTP callers.
 
     Raises
     ------
@@ -138,27 +135,54 @@ def submit_job(
     Returns
     -------
     str
-        Run ID that can be passed to :func:`get_job_status` and
-        :func:`cancel_job`.
+        Run ID for :func:`get_job_status`, :func:`cancel_job`, and the SSE
+        stream.
     """
     workflow = translate_ui_request(payload, resources_dir=resources_dir)
-    event_queue: queue.Queue = queue.Queue(maxsize=100)
+    run_id = generate_run_id(str(workflow.get("id") or "workflow"))
+    _register_job(run_id, {"run_id": run_id, "status": "running", "kind": "run"})
 
-    run_id = submit_run(
-        workflow,
-        runs_dir=runs_dir,
-        resources_dir=resources_dir,
-        agent_name=payload.get("agent"),
-        sandbox_mode=str(payload.get("sandbox") or "local"),
-        on_stage_complete=on_stage_complete,
-    )
+    def _stage_cb(stage_result: dict[str, Any]) -> None:
+        hub.publish(
+            run_id,
+            {"type": "stage_complete", "run_id": run_id, "stage": stage_result},
+        )
+        if on_stage_complete is not None:
+            try:
+                on_stage_complete(stage_result)
+            except Exception:
+                pass
 
-    _register_job(run_id, {
-        "run_id": run_id,
-        "status": "running",
-        "event_queue": event_queue,
-    })
+    def _run() -> None:
+        try:
+            result = run_workflow(
+                workflow,
+                runs_dir=runs_dir,
+                resources_dir=resources_dir,
+                agent_name=payload.get("agent"),
+                sandbox_mode=str(payload.get("sandbox") or "local"),
+                on_stage_complete=_stage_cb,
+                run_id=run_id,
+            )
+            _update_job(run_id, {"status": result.get("status", "complete")})
+            hub.publish(run_id, {
+                "type": "run_complete",
+                "run_id": run_id,
+                "status": result.get("status"),
+                "summary": result.get("summary"),
+            })
+        except Exception as exc:
+            _update_job(run_id, {"status": "error", "error": str(exc)})
+            hub.publish(run_id, {
+                "type": "run_complete",
+                "run_id": run_id,
+                "status": "error",
+                "error": str(exc),
+            })
+        finally:
+            hub.close(run_id)
 
+    threading.Thread(target=_run, daemon=True).start()
     return run_id
 
 
@@ -178,34 +202,30 @@ def get_job_status(run_id: str) -> dict[str, Any] | None:
     merged = dict(job)
     if runtime_status:
         merged.update(runtime_status)
-    merged.pop("event_queue", None)
     return merged
 
 
 def cancel_job(run_id: str) -> bool:
-    """Request cancellation of a running job.
+    """Request cancellation of a running job and end its event stream.
 
-    Marks the job as cancelled in the active jobs table and pushes a
-    cancel sentinel to the event queue. The runtime loop checks for
-    cancellation between stages and exits early when detected.
+    Marks the job cancelled in the active jobs table, publishes a
+    ``cancelled`` event, and closes the hub stream so any attached SSE
+    client terminates. The background workflow may still finish its
+    current stage; cancellation is best effort at stage boundaries.
 
     Returns
     -------
     bool
-        ``True`` when the job was found and cancellation was requested,
-        ``False`` when *run_id* is not registered.
+        ``True`` when the job was found, ``False`` when *run_id* is not
+        registered.
     """
     with _jobs_lock:
         job = _active_jobs.get(run_id)
     if job is None:
         return False
     _update_job(run_id, {"status": "cancelled"})
-    eq = job.get("event_queue")
-    if eq is not None:
-        try:
-            eq.put_nowait(None)
-        except queue.Full:
-            pass
+    hub.publish(run_id, {"type": "cancelled", "run_id": run_id})
+    hub.close(run_id)
     return True
 
 
@@ -213,12 +233,12 @@ def list_jobs(*, status_filter: str | None = None) -> list[dict[str, Any]]:
     """Return a list of all active job status dicts.
 
     When *status_filter* is provided, only jobs whose ``status`` matches
-    are included. The ``event_queue`` key is excluded from every entry.
+    are included.
     """
     with _jobs_lock:
         jobs = list(_active_jobs.values())
     return [
-        {k: v for k, v in job.items() if k != "event_queue"}
+        dict(job)
         for job in jobs
         if status_filter is None or job.get("status") == status_filter
     ]
