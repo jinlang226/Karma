@@ -22,9 +22,6 @@
     KARMA.toast(m, "error");
     return el("div", { class: "error-box" }, m);
   }
-  function backBtn(fn) {
-    return el("button", { class: "btn secondary", onClick: fn }, "← Back");
-  }
 
   async function mount(container) {
     root = container;
@@ -49,6 +46,7 @@
 
   async function renderHome() {
     clear(root);
+    KARMA.setBreadcrumb(null);
     root.appendChild(el("h2", {}, "Run a Case"));
     try {
       const data = await api.get("/api/services");
@@ -76,8 +74,8 @@
 
   async function renderService(service) {
     clear(root);
-    root.appendChild(el("div", { class: "page-head" },
-      backBtn(renderHome), el("h2", {}, KARMA.labels.service(service))));
+    KARMA.setBreadcrumb({ back: renderHome, crumbs: [] });
+    root.appendChild(el("h2", {}, KARMA.labels.service(service)));
     const desc = KARMA.labels.serviceDescription(service);
     if (desc) root.appendChild(el("p", { class: "field-help" }, desc));
     const grid = el("div", { class: "service-grid" });
@@ -117,18 +115,19 @@
 
   async function renderCase(service, caseName) {
     clear(root);
+    KARMA.setBreadcrumb({
+      back: () => renderService(service),
+      crumbs: [{ label: KARMA.labels.service(service), onClick: () => renderService(service) }],
+    });
     let detail;
     try {
       detail = await api.get(`/api/cases/${service}/${caseName}`);
     } catch (e) {
-      root.appendChild(el("div", { class: "page-head" }, backBtn(() => renderService(service))));
       root.appendChild(errBox(e));
       return;
     }
 
-    root.appendChild(el("div", { class: "page-head" },
-      backBtn(() => renderService(service)),
-      el("h2", {}, `${KARMA.labels.service(service)} · ${KARMA.labels.case(caseName)}`)));
+    root.appendChild(el("h2", {}, KARMA.labels.case(caseName)));
 
     // Metadata badges
     const badges = el("div", { class: "toolbar" });

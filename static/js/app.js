@@ -38,6 +38,7 @@
     activeId = id;
     if (location.hash !== "#" + id) location.hash = id;
     renderNav();
+    if (KARMA.setBreadcrumb) KARMA.setBreadcrumb(null);   // each view sets its own
     const container = clear(document.getElementById("view"));
     // Restart the enter animation on every switch (including the brand -> home),
     // so navigating always fades the new view in rather than snapping it in.
@@ -57,6 +58,28 @@
   }
 
   KARMA.activate = activate;
+
+  // Breadcrumb beside the brand. spec = null (clear) or
+  // { back: fn|null, crumbs: [{label, onClick|null}] }. Crumbs are the
+  // clickable ancestors of the current page; the current page's own name
+  // stays in the page heading.
+  KARMA.setBreadcrumb = function (spec) {
+    const host = document.getElementById("breadcrumb");
+    if (!host) return;
+    clear(host);
+    if (!spec) return;
+    if (spec.back) {
+      host.appendChild(el("button", {
+        class: "crumb-back", title: "Back", "aria-label": "Back", onClick: spec.back,
+      }, "←"));
+    }
+    (spec.crumbs || []).forEach((c, i) => {
+      if (i > 0) host.appendChild(el("span", { class: "crumb-sep" }, "/"));
+      host.appendChild(c.onClick
+        ? el("span", { class: "crumb-link", onClick: c.onClick }, c.label)
+        : el("span", { class: "crumb-current" }, c.label));
+    });
+  };
 
   // --- Toast / status notifications (bottom-right) -------------------------
   function ensureToastHost() {
