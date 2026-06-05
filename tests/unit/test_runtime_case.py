@@ -134,3 +134,59 @@ class TestRunStage:
         assert result["status"] == "error"
         assert result["stage_id"] == "stage_1"
         assert "cluster unreachable" in (result.get("error") or "")
+
+    def test_no_agent_run_skips_launch_and_uses_oracle_verdict(self, tmp_path):
+        # `resolve_agent(None, sandbox_mode="local")` yields a descriptor with no
+        # folder/entrypoint. A no-agent run must NOT try to launch an agent
+        # (which previously crashed with FileNotFoundError on "entrypoint.sh");
+        # it stands the scenario up and the oracle verdict drives the status.
+        from karma.runtime.case import run_stage
+
+        row = {
+            "stage_id": "stage_1",
+            "service": "demo",
+            "case_name": "configmap-update",
+            "case": {"prompt": "patch the configmap", "oracle": {}, "precondition_units": [], "decoys": []},
+            "namespace_roles": ["default"],
+            "adversary_deploy": [],
+            "adversary_lift": [],
+            "adversary_hint": None,
+            "prompt_mode": "progressive",
+            "agent_timeout_sec": 1,
+            "retries": 0,
+        }
+        no_agent_meta = {
+            "folder": None,
+            "dockerfile": None,
+            "entrypoint": None,
+            "sandbox_mode": "local",
+            "image_tag": None,
+        }
+        environment = MagicMock()
+        environment.bind_namespace_roles.return_value = {"default": "karma-ns"}
+        environment.build_env_vars.return_value = {}
+
+        proxy = MagicMock()
+        proxy.port = 0
+
+        with patch("karma.runtime.case.launch_proxy", return_value=proxy), \
+             patch("karma.runtime.case.write_agent_bundle", return_value=tmp_path / "kc"), \
+             patch("karma.runtime.case.collect_evidence", return_value={}), \
+             patch("karma.runtime.case.run_oracle", return_value={"verdict": "pass"}), \
+             patch("karma.runtime.case.launch_agent") as mock_launch:
+            result = run_stage(
+                row,
+                run_dir=tmp_path,
+                resources_dir=tmp_path,
+                agent_meta=no_agent_meta,
+                sandbox_mode="local",
+                environment=environment,
+                prior_stage_ids=[],
+                stage_prompts=["do the thing"],
+                prompt_mode="progressive",
+            )
+
+        mock_launch.assert_not_called()
+        assert result["status"] == "pass"
+        assert result["submitted"] is False
+        assert result["oracle_verdict"] == "pass"
