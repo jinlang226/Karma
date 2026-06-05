@@ -51,7 +51,7 @@
   // --- Files panel ----------------------------------------------------------
   function filesPanel() {
     const panel = el("div", { class: "panel" });
-    panel.appendChild(el("h3", {}, "Saved workflows"));
+    panel.appendChild(el("h3", {}, "Saved Workflows"));
     panel.appendChild(el("p", { class: "field-help" },
       "Predefined workflows from the workflows/ folder. Click Run to execute one, " +
       "or build your own below."));
@@ -144,7 +144,14 @@
     const addAdvBtn = el("button", {
       class: "btn secondary",
       disabled: !scenarios.length ? "disabled" : null,
-      onClick: () => { advRows.push({ scenario: "", injectIndex: 0, liftIndex: -1 }); renderAdv(); },
+      onClick: () => {
+        if (!stages.length) {
+          KARMA.toast("Add a stage before adding an adversarial injection.", "error");
+          return;
+        }
+        advRows.push({ scenario: "", injectIndex: 0, liftIndex: -1 });
+        renderAdv();
+      },
     }, "+ Add adversary");
     const advHint = scenarios.length
       ? "Optional. Inject an adversarial scenario (a deliberate fault) at a stage " +
@@ -162,6 +169,9 @@
       el("div", { class: "toolbar" }, valBtn, runBtn), msg);
     yaml.addEventListener("input", () => autosize(yaml));
     const genBtn = el("button", { class: "btn", onClick: () => {
+      if (!stages.length) { KARMA.toast("Add at least one stage first.", "error"); return; }
+      const bad = stages.findIndex((s) => !s.service || !s.case);
+      if (bad >= 0) { KARMA.toast(`Stage ${bad + 1}: choose a service and a case.`, "error"); return; }
       yaml.value = generateYaml(idInput.value, modeSel.value, stages, advRows);
       output.style.display = "";
       autosize(yaml);
@@ -339,8 +349,10 @@
   // --- Jobs panel -----------------------------------------------------------
   function jobsPanel() {
     const panel = el("div", { class: "panel" });
+    panel.appendChild(el("h3", {}, "Jobs"));
+    panel.appendChild(el("p", { class: "field-help" },
+      "Runs started from this page while the server is up. Click Refresh to update."));
     panel.appendChild(el("div", { class: "toolbar" },
-      el("h3", { style: "flex:1;margin:0" }, "Jobs"),
       el("button", { class: "btn secondary", onClick: refreshJobs }, "Refresh")));
     panel.appendChild(el("div", { id: "wf-jobs-table" }));
     panel.appendChild(el("pre", { class: "log", id: "wf-jobs-log" }, "Run output appears here.\n"));
