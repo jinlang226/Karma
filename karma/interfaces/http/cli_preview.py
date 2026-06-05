@@ -133,7 +133,7 @@ def build_preview(payload: dict[str, Any]) -> dict[str, Any]:
     if sandbox == "docker" and not agent:
         errors.append("--agent is required when --sandbox docker")
     if sandbox == "local" and not agent:
-        warnings.append("no agent set: this runs in solver/local mode (no agent process)")
+        warnings.append("No agent selected, so this runs locally without launching one.")
 
     if command == "case":
         service = _clean(target.get("service"))

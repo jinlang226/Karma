@@ -146,6 +146,9 @@
     // Params form
     const cfg = el("div", { class: "panel" });
     cfg.appendChild(el("h3", {}, "Parameters & Run Config"));
+    cfg.appendChild(el("p", { class: "field-help" },
+      "Adjust the case parameters if needed, then choose how to run it: which agent " +
+      "(or none to run locally without one), local or Docker sandbox, and a timeout."));
     const paramInputs = {};
     for (const p of detail.params) {
       cfg.appendChild(el("label", {}, `${KARMA.labels.case(p.name)}${p.description ? " — " + p.description : ""}`));
@@ -156,20 +159,16 @@
 
     const row = el("div", { class: "row" });
     const agentSel = el("select", {},
-      el("option", { value: "" }, "(none — solver/local)"),
+      el("option", { value: "" }, "None — run locally"),
       ...agents.map((a) => el("option", { value: a }, KARMA.labels.agent(a))));
     const sandboxSel = el("select", {},
-      el("option", { value: "local" }, "local"),
-      el("option", { value: "docker" }, "docker"));
+      el("option", { value: "local" }, "Local"),
+      el("option", { value: "docker" }, "Docker"));
     const timeoutInput = el("input", { type: "number", value: "900" });
     row.appendChild(el("div", {}, el("label", {}, "Agent"), agentSel));
     row.appendChild(el("div", {}, el("label", {}, "Sandbox"), sandboxSel));
     row.appendChild(el("div", {}, el("label", {}, "Timeout (s)"), timeoutInput));
     cfg.appendChild(row);
-    cfg.appendChild(el("p", { class: "field-help" },
-      "Agent — which agent attempts the task (none = solver/local, no agent process). " +
-      "Sandbox — run the agent locally or in a Docker container. " +
-      "Timeout — seconds before the agent run is stopped."));
 
     function collectParams() {
       const out = {};
@@ -315,13 +314,13 @@
       copy.textContent = "Copied";
       setTimeout(() => { copy.textContent = "Copy"; }, 1200);
     } }, "Copy");
-    const warn = el("div", { class: "field-help", style: "color:var(--accent)" });
+    const note = el("div", { class: "field-help", style: "margin-top:10px" });
 
     const panel = el("div", { class: "panel" },
       el("h3", {}, "CLI Command"),
-      el("p", { class: "field-help" }, "Prefer the terminal? Run this exact case with:"),
+      el("p", { class: "field-help" }, "Prefer the terminal? Copy and run this to launch the same case:"),
       el("div", { class: "code-block" }, copy, code),
-      warn);
+      note);
 
     async function refresh() {
       try {
@@ -334,7 +333,10 @@
           },
         });
         code.textContent = res.command_multi_line || res.command_one_line || "";
-        warn.textContent = [...(res.errors || []), ...(res.warnings || [])].join(" · ");
+        // Errors (red) mean the command won't work; warnings are gentle notes.
+        const errs = res.errors || [], warns = res.warnings || [];
+        if (errs.length) { note.style.color = "var(--bad)"; note.textContent = errs.join(" · "); }
+        else { note.style.color = ""; note.textContent = warns.join(" · "); }
       } catch (_e) { /* keep last good command */ }
     }
     return { node: panel, refresh };
