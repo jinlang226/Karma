@@ -116,7 +116,9 @@ class TestNormalizePreconditionUnits:
         units = normalize_precondition_units(data)
         assert len(units) == 1
         assert len(units[0]["probe_commands"]) == 1
-        assert units[0]["on_probe_fail"] == "error"
+        # Default is "skip": a failing probe (target absent) proceeds to apply,
+        # which is what this create-namespace setup unit needs.
+        assert units[0]["on_probe_fail"] == "skip"
 
 
 class TestNormalizeOracleConfig:

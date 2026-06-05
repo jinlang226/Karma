@@ -51,7 +51,7 @@ class _OperationBlock(BaseModel):
     probe: list[_CommandItem] | _CommandItem | str
     apply: list[_CommandItem] | _CommandItem | str
     verify: list[_CommandItem] | _CommandItem | str
-    on_probe_fail: Literal["error", "skip"] = "error"
+    on_probe_fail: Literal["error", "skip"] = "skip"
 
 
 class _PreconditionUnit(BaseModel):
@@ -61,7 +61,7 @@ class _PreconditionUnit(BaseModel):
     probe: list[_CommandItem] | _CommandItem | str
     apply: list[_CommandItem] | _CommandItem | str
     verify: list[_CommandItem] | _CommandItem | str
-    on_probe_fail: Literal["error", "skip"] = "error"
+    on_probe_fail: Literal["error", "skip"] = "skip"
 
 
 class _OracleVerify(BaseModel):
@@ -203,7 +203,7 @@ def _normalize_operation_block(
     label: str,
     case_id: str,
     *,
-    default_on_probe_fail: str = "error",
+    default_on_probe_fail: str = "skip",
 ) -> dict[str, Any]:
     """Return a canonical operation unit dict for *raw*.
 
@@ -566,7 +566,7 @@ def normalize_precondition_units(case_data: dict[str, Any]) -> list[dict[str, An
             )
         name = unit.get("name") or f"unit_{i}"
         label = f"preconditionUnits[{i}] '{name}'"
-        on_probe_fail = str(unit.get("on_probe_fail") or "error").strip().lower()
+        on_probe_fail = str(unit.get("on_probe_fail") or "skip").strip().lower()
         try:
             normalized = _normalize_operation_block(
                 unit,
