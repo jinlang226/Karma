@@ -1,19 +1,54 @@
 # mongodb/password-rotation
 # Rotate MongoDB user password and update the corresponding Secret
 
+params:
+  cluster_prefix:
+    default: mongodb-replica
+    description: StatefulSet name of the replica set members.
+  replica_set_name:
+    default: mongodb-replica
+    description: MongoDB replica set _id used when initiating the set.
+  admin_secret_name:
+    default: admin-user-password
+    description: Kubernetes Secret holding the admin user's password.
+  app_secret_name:
+    default: app-user-password
+    description: Kubernetes Secret holding the app user's current password.
+  app_next_secret_name:
+    default: app-user-password-next
+    description: Kubernetes Secret holding the app user's next password.
+  reporting_secret_name:
+    default: reporting-user-password
+    description: Kubernetes Secret holding the reporting user's password.
+  admin_username:
+    default: admin-user
+    description: Username of the MongoDB admin user.
+  app_username:
+    default: app-user
+    description: Username of the application user being rotated.
+  reporting_username:
+    default: reporting-user
+    description: Username of the reporting user.
+  app_database:
+    default: appdb
+    description: Application database that must remain accessible.
+  app_collection:
+    default: testdata
+    description: Application collection seeded with data.
+
 prompt: |
   A 3-member MongoDB replica set is running in the mongodb namespace.
   Authentication is enabled. Passwords are stored in these Secrets:
-  - admin-user-password
-  - app-user-password
-  - app-user-password-next
-  - reporting-user-password
+  - {{params.admin_secret_name}}
+  - {{params.app_secret_name}}
+  - {{params.app_next_secret_name}}
+  - {{params.reporting_secret_name}}
 
   Task:
-  - Rotate app-user to the password in app-user-password-next.
-  - Update the app-user-password Secret to match the new password.
-  - Do not break reporting-user or admin access.
-  - Data in appdb.testdata must remain accessible.
+  - Rotate {{params.app_username}} to the password in {{params.app_next_secret_name}}.
+  - Update the {{params.app_secret_name}} Secret to match the new password.
+  - Do not break {{params.reporting_username}} or admin access.
+  - Data in {{params.app_database}}.{{params.app_collection}} must remain accessible.
 
   Notes:
   - Do not use operators or CRDs.
@@ -42,25 +77,25 @@ preconditionUnits:
       - command: "kubectl -n mongodb apply -f resources/mongodb/password-rotation/resource/statefulset.yaml"
         sleep: 5
       - command: |
-          /bin/sh -c 'for i in $(seq 1 120); do ready=$(kubectl -n mongodb get sts mongodb-replica -o jsonpath='\''{.status.readyReplicas}'\'' 2>/dev/null); if [ "${ready:-0}" -ge 3 ]; then exit 0; fi; sleep 5; done; exit 1'
+          /bin/sh -c 'for i in $(seq 1 120); do ready=$(kubectl -n mongodb get sts {{params.cluster_prefix}} -o jsonpath='\''{.status.readyReplicas}'\'' 2>/dev/null); if [ "${ready:-0}" -ge 3 ]; then exit 0; fi; sleep 5; done; exit 1'
         sleep: 2
       - command: |
-          /bin/sh -c 'kubectl -n mongodb exec mongodb-replica-0 -- mongosh --quiet --eval '\''rs.initiate({_id:"mongodb-replica",members:[{_id:0,host:"mongodb-replica-0.mongodb-replica-svc.mongodb.svc.cluster.local:27017"},{_id:1,host:"mongodb-replica-1.mongodb-replica-svc.mongodb.svc.cluster.local:27017"},{_id:2,host:"mongodb-replica-2.mongodb-replica-svc.mongodb.svc.cluster.local:27017"}]})'\'''
+          /bin/sh -c 'kubectl -n mongodb exec mongodb-replica-0 -- mongosh --quiet --eval '\''rs.initiate({_id:"{{params.replica_set_name}}",members:[{_id:0,host:"mongodb-replica-0.mongodb-replica-svc.mongodb.svc.cluster.local:27017"},{_id:1,host:"mongodb-replica-1.mongodb-replica-svc.mongodb.svc.cluster.local:27017"},{_id:2,host:"mongodb-replica-2.mongodb-replica-svc.mongodb.svc.cluster.local:27017"}]})'\'''
         sleep: 5
       - command: |
           /bin/sh -c 'for i in $(seq 1 20); do kubectl -n mongodb exec mongodb-replica-0 -- mongosh --quiet --eval '\''db.hello().isWritablePrimary'\'' | grep true && exit 0; sleep 3; done; exit 1'
         sleep: 2
       - command: |
-          /bin/sh -c 'kubectl -n mongodb exec mongodb-replica-0 -- mongosh --quiet --eval '\''db.getSiblingDB("admin").createUser({user:"admin-user",pwd:"admin123password",roles:[{role:"clusterAdmin",db:"admin"},{role:"userAdminAnyDatabase",db:"admin"},{role:"readWriteAnyDatabase",db:"admin"}]})'\'''
+          /bin/sh -c 'kubectl -n mongodb exec mongodb-replica-0 -- mongosh --quiet --eval '\''db.getSiblingDB("admin").createUser({user:"{{params.admin_username}}",pwd:"admin123password",roles:[{role:"clusterAdmin",db:"admin"},{role:"userAdminAnyDatabase",db:"admin"},{role:"readWriteAnyDatabase",db:"admin"}]})'\'''
         sleep: 2
       - command: |
-          /bin/sh -c 'kubectl -n mongodb exec mongodb-replica-0 -- mongosh --quiet "mongodb://admin-user:admin123password@localhost:27017/admin" --eval '\''db.getSiblingDB("admin").createUser({user:"app-user",pwd:"appuser123password",roles:[{role:"readWrite",db:"appdb"}]})'\'''
+          /bin/sh -c 'kubectl -n mongodb exec mongodb-replica-0 -- mongosh --quiet "mongodb://{{params.admin_username}}:admin123password@localhost:27017/admin" --eval '\''db.getSiblingDB("admin").createUser({user:"{{params.app_username}}",pwd:"appuser123password",roles:[{role:"readWrite",db:"{{params.app_database}}"}]})'\'''
         sleep: 2
       - command: |
-          /bin/sh -c 'kubectl -n mongodb exec mongodb-replica-0 -- mongosh --quiet "mongodb://admin-user:admin123password@localhost:27017/admin" --eval '\''db.getSiblingDB("admin").createUser({user:"reporting-user",pwd:"reporting123password",roles:[{role:"read",db:"appdb"}]})'\'''
+          /bin/sh -c 'kubectl -n mongodb exec mongodb-replica-0 -- mongosh --quiet "mongodb://{{params.admin_username}}:admin123password@localhost:27017/admin" --eval '\''db.getSiblingDB("admin").createUser({user:"{{params.reporting_username}}",pwd:"reporting123password",roles:[{role:"read",db:"{{params.app_database}}"}]})'\'''
         sleep: 2
       - command: |
-          /bin/sh -c 'kubectl -n mongodb exec mongodb-replica-0 -- mongosh --quiet "mongodb://admin-user:admin123password@localhost:27017/admin" --eval '\''db.getSiblingDB("appdb").testdata.insertMany([{x:1},{x:2},{x:3}],{writeConcern:{w:1}})'\'''
+          /bin/sh -c 'kubectl -n mongodb exec mongodb-replica-0 -- mongosh --quiet "mongodb://{{params.admin_username}}:admin123password@localhost:27017/admin" --eval '\''db.getSiblingDB("{{params.app_database}}").{{params.app_collection}}.insertMany([{x:1},{x:2},{x:3}],{writeConcern:{w:1}})'\'''
         sleep: 2
     verify:
       - command: "kubectl -n mongodb get pods 2>/dev/null | grep -c Running || true"

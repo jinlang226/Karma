@@ -27,6 +27,16 @@ prompt: |
   3. Voting exclusions list is empty.
   4. auto_shrink_voting_configuration is true or unset (default).
 
+params:
+  cluster_prefix:
+    default: "es-cluster"
+    description: "StatefulSet/cluster name prefix for Elasticsearch node pods"
+  http_service_name:
+    default: "es-http"
+    description: "Name of the Elasticsearch HTTP service"
+  curl_pod_name:
+    default: "curl-test"
+    description: "Helper pod used to query Elasticsearch over HTTP"
 namespace_contract:
   required_roles: []
 
@@ -51,15 +61,15 @@ preconditionUnits:
         sleep: 1
       - command: "kubectl -n elasticsearch apply -f resources/elasticsearch/master-downscale-voting-exclusions/resource/"
         sleep: 1
-      - command: "kubectl -n elasticsearch wait --for=condition=ready pod -l app=es-cluster --timeout=600s"
+      - command: "kubectl -n elasticsearch wait --for=condition=ready pod -l app={{params.cluster_prefix}} --timeout=600s"
         sleep: 1
-      - command: "kubectl -n elasticsearch wait --for=condition=ready pod/curl-test --timeout=300s"
+      - command: "kubectl -n elasticsearch wait --for=condition=ready pod/{{params.curl_pod_name}} --timeout=300s"
         sleep: 1
-      - command: "/bin/sh -c 'for i in $(seq 1 30); do kubectl -n elasticsearch exec curl-test -- curl -s --max-time 5 \"http://es-http.elasticsearch.svc:9200/_cluster/health?wait_for_status=yellow&timeout=5s\" | grep -q \"\\\"status\\\"\" && exit 0; sleep 2; done; exit 1'"
+      - command: "/bin/sh -c 'for i in $(seq 1 30); do kubectl -n elasticsearch exec {{params.curl_pod_name}} -- curl -s --max-time 5 \"http://{{params.http_service_name}}.elasticsearch.svc:9200/_cluster/health?wait_for_status=yellow&timeout=5s\" | grep -q \"\\\"status\\\"\" && exit 0; sleep 2; done; exit 1'"
         sleep: 1
-      - command: "/bin/sh -c 'kubectl -n elasticsearch exec curl-test -- curl -s -XPUT \"http://es-http.elasticsearch.svc:9200/_cluster/settings\" -H \"Content-Type: application/json\" -d \"{\\\"persistent\\\":{\\\"cluster.auto_shrink_voting_configuration\\\":false}}\"'"
+      - command: "/bin/sh -c 'kubectl -n elasticsearch exec {{params.curl_pod_name}} -- curl -s -XPUT \"http://{{params.http_service_name}}.elasticsearch.svc:9200/_cluster/settings\" -H \"Content-Type: application/json\" -d \"{\\\"persistent\\\":{\\\"cluster.auto_shrink_voting_configuration\\\":false}}\"'"
         sleep: 1
-      - command: "kubectl -n elasticsearch scale sts/es-cluster --replicas=1"
+      - command: "kubectl -n elasticsearch scale sts/{{params.cluster_prefix}} --replicas=1"
         sleep: 1
     verify:
       - command: "kubectl -n elasticsearch get pods 2>/dev/null | grep -c Running || true"

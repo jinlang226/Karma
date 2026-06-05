@@ -10,6 +10,37 @@ prompt: |
   - Do not install operators or CRDs.
   - Keep the cluster healthy.
 
+params:
+  aggregate_secret_name:
+    default: "es-file-realm-aggregate"
+    description: "Secret aggregating the merged file-realm users and roles"
+  provided_secret_name:
+    default: "user-provided-file-realm"
+    description: "Secret holding the user-provided file-realm entries"
+  tls_secret_name:
+    default: "es-http-tls"
+    description: "Secret holding the HTTPS TLS cert, key, and CA"
+  http_service_name:
+    default: "es-http"
+    description: "Name of the Elasticsearch HTTP service"
+  cluster_prefix:
+    default: "es-cluster"
+    description: "StatefulSet/cluster name prefix for Elasticsearch node pods"
+  report_user:
+    default: "report-user"
+    description: "Reporting user added to the file realm"
+  report_password:
+    default: "reportpass"
+    description: "Password for the reporting user"
+  ops_user:
+    default: "ops-user"
+    description: "Operations superuser in the file realm"
+  ops_password:
+    default: "opspass"
+    description: "Password for the operations user"
+  seed_index_name:
+    default: "app-data"
+    description: "Index seeded to validate authenticated access"
 namespace_contract:
   required_roles: []
 
@@ -52,27 +83,27 @@ preconditionUnits:
           req_extensions=v3_req
           prompt=no
           [req_distinguished_name]
-          CN=es-http
+          CN={{params.http_service_name}}
           [v3_req]
           keyUsage=critical,digitalSignature,keyEncipherment
           extendedKeyUsage=serverAuth,clientAuth
           subjectAltName=@alt_names
           [alt_names]
           DNS.1=localhost
-          DNS.2=es-http
-          DNS.3=es-http.elasticsearch
-          DNS.4=es-http.elasticsearch.svc
-          DNS.5=es-http.elasticsearch.svc.cluster.local
-          DNS.6=es-cluster
-          DNS.7=es-cluster.elasticsearch
-          DNS.8=es-cluster.elasticsearch.svc
-          DNS.9=es-cluster.elasticsearch.svc.cluster.local
+          DNS.2={{params.http_service_name}}
+          DNS.3={{params.http_service_name}}.elasticsearch
+          DNS.4={{params.http_service_name}}.elasticsearch.svc
+          DNS.5={{params.http_service_name}}.elasticsearch.svc.cluster.local
+          DNS.6={{params.cluster_prefix}}
+          DNS.7={{params.cluster_prefix}}.elasticsearch
+          DNS.8={{params.cluster_prefix}}.elasticsearch.svc
+          DNS.9={{params.cluster_prefix}}.elasticsearch.svc.cluster.local
           DNS.10=es-cluster-0
           DNS.11=es-cluster-1
           DNS.12=es-cluster-2
-          DNS.13=es-cluster-0.es-cluster.elasticsearch.svc.cluster.local
-          DNS.14=es-cluster-1.es-cluster.elasticsearch.svc.cluster.local
-          DNS.15=es-cluster-2.es-cluster.elasticsearch.svc.cluster.local
+          DNS.13=es-cluster-0.{{params.cluster_prefix}}.elasticsearch.svc.cluster.local
+          DNS.14=es-cluster-1.{{params.cluster_prefix}}.elasticsearch.svc.cluster.local
+          DNS.15=es-cluster-2.{{params.cluster_prefix}}.elasticsearch.svc.cluster.local
           EOF
           openssl genrsa -out /tmp/certs/ca.key 2048
           openssl req -x509 -new -nodes -key /tmp/certs/ca.key -sha256 -days 365 -subj "/CN=es-ca" -out /tmp/certs/ca.crt
@@ -81,7 +112,7 @@ preconditionUnits:
           openssl x509 -req -in /tmp/certs/server.csr -CA /tmp/certs/ca.crt -CAkey /tmp/certs/ca.key -CAcreateserial -out /tmp/certs/server.crt -days 365 -extensions v3_req -extfile /tmp/certs/openssl.cnf
           '\''
           kubectl -n elasticsearch cp openssl-toolbox:/tmp/certs "${TMP_DIR}/certs"
-          kubectl -n elasticsearch create secret generic es-http-tls --from-file=tls.crt="${TMP_DIR}/certs/server.crt" --from-file=tls.key="${TMP_DIR}/certs/server.key" --from-file=ca.crt="${TMP_DIR}/certs/ca.crt" --dry-run=client -o yaml | kubectl apply -f -
+          kubectl -n elasticsearch create secret generic {{params.tls_secret_name}} --from-file=tls.crt="${TMP_DIR}/certs/server.crt" --from-file=tls.key="${TMP_DIR}/certs/server.key" --from-file=ca.crt="${TMP_DIR}/certs/ca.crt" --dry-run=client -o yaml | kubectl apply -f -
           '
         sleep: 1
       - command: |
@@ -95,27 +126,27 @@ preconditionUnits:
           : > /tmp/ops/users_roles
           : > /tmp/report/users
           : > /tmp/report/users_roles
-          ES_PATH_CONF=/tmp/ops /usr/share/elasticsearch/bin/elasticsearch-users useradd ops-user -p opspass -r superuser
-          ES_PATH_CONF=/tmp/report /usr/share/elasticsearch/bin/elasticsearch-users useradd report-user -p reportpass -r read
+          ES_PATH_CONF=/tmp/ops /usr/share/elasticsearch/bin/elasticsearch-users useradd {{params.ops_user}} -p {{params.ops_password}} -r superuser
+          ES_PATH_CONF=/tmp/report /usr/share/elasticsearch/bin/elasticsearch-users useradd {{params.report_user}} -p {{params.report_password}} -r read
           : > /tmp/ops/roles.yml
           : > /tmp/report/roles.yml
           '\''
           kubectl -n elasticsearch cp file-realm-gen:/tmp/ops "${TMP_DIR}/ops"
           kubectl -n elasticsearch cp file-realm-gen:/tmp/report "${TMP_DIR}/report"
-          kubectl -n elasticsearch create secret generic es-file-realm-aggregate --from-file=users="${TMP_DIR}/ops/users" --from-file=users_roles="${TMP_DIR}/ops/users_roles" --from-file=roles.yml="${TMP_DIR}/ops/roles.yml" --dry-run=client -o yaml | kubectl apply -f -
-          kubectl -n elasticsearch create secret generic user-provided-file-realm --from-file=users="${TMP_DIR}/report/users" --from-file=users_roles="${TMP_DIR}/report/users_roles" --from-file=roles.yml="${TMP_DIR}/report/roles.yml" --dry-run=client -o yaml | kubectl apply -f -
+          kubectl -n elasticsearch create secret generic {{params.aggregate_secret_name}} --from-file=users="${TMP_DIR}/ops/users" --from-file=users_roles="${TMP_DIR}/ops/users_roles" --from-file=roles.yml="${TMP_DIR}/ops/roles.yml" --dry-run=client -o yaml | kubectl apply -f -
+          kubectl -n elasticsearch create secret generic {{params.provided_secret_name}} --from-file=users="${TMP_DIR}/report/users" --from-file=users_roles="${TMP_DIR}/report/users_roles" --from-file=roles.yml="${TMP_DIR}/report/roles.yml" --dry-run=client -o yaml | kubectl apply -f -
           '
         sleep: 1
       - command: "kubectl -n elasticsearch apply -f resources/elasticsearch/file-realm-user-roles-merge/resource/"
         sleep: 1
-      - command: "kubectl -n elasticsearch wait --for=condition=ready pod -l app=es-cluster --timeout=600s"
+      - command: "kubectl -n elasticsearch wait --for=condition=ready pod -l app={{params.cluster_prefix}} --timeout=600s"
         sleep: 1
       - command: "kubectl -n elasticsearch wait --for=condition=ready pod/curl-test --timeout=300s"
         sleep: 1
       - command: |
           /bin/sh -c '
           for i in $(seq 1 30); do
-            kubectl -n elasticsearch exec curl-test -- curl -s -k -u ops-user:opspass --max-time 5 https://es-http.elasticsearch.svc:9200/_cluster/health?wait_for_status=yellow&timeout=5s | grep -q status && exit 0
+            kubectl -n elasticsearch exec curl-test -- curl -s -k -u {{params.ops_user}}:{{params.ops_password}} --max-time 5 https://{{params.http_service_name}}.elasticsearch.svc:9200/_cluster/health?wait_for_status=yellow&timeout=5s | grep -q status && exit 0
             sleep 2
           done
           exit 1
@@ -123,8 +154,8 @@ preconditionUnits:
         sleep: 1
       - command: |
           /bin/sh -c '
-          kubectl -n elasticsearch exec curl-test -- curl -s -k -u ops-user:opspass -XPUT https://es-http.elasticsearch.svc:9200/app-data -H "Content-Type: application/json" -d "{\"settings\":{\"number_of_shards\":1,\"number_of_replicas\":1}}"
-          kubectl -n elasticsearch exec curl-test -- curl -s -k -u ops-user:opspass -XPOST https://es-http.elasticsearch.svc:9200/app-data/_doc -H "Content-Type: application/json" -d "{\"msg\":\"seed\"}"
+          kubectl -n elasticsearch exec curl-test -- curl -s -k -u {{params.ops_user}}:{{params.ops_password}} -XPUT https://{{params.http_service_name}}.elasticsearch.svc:9200/{{params.seed_index_name}} -H "Content-Type: application/json" -d "{\"settings\":{\"number_of_shards\":1,\"number_of_replicas\":1}}"
+          kubectl -n elasticsearch exec curl-test -- curl -s -k -u {{params.ops_user}}:{{params.ops_password}} -XPOST https://{{params.http_service_name}}.elasticsearch.svc:9200/{{params.seed_index_name}}/_doc -H "Content-Type: application/json" -d "{\"msg\":\"seed\"}"
           '
         sleep: 1
     verify:

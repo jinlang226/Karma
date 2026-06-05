@@ -20,6 +20,32 @@ prompt: |
   GOAL:
   - Transform is started and checkpoint advances.
 
+params:
+  cluster_prefix:
+    default: es-cluster
+    description: "Name prefix / pod label for the main Elasticsearch StatefulSet"
+  transform_cluster_prefix:
+    default: es-transform
+    description: "Name prefix / pod label for the transform-capacity StatefulSet"
+  http_service_name:
+    default: es-http
+    description: "Name of the Elasticsearch HTTP service"
+  curl_pod_name:
+    default: curl-test
+    description: "Helper pod used to issue HTTP requests against the cluster"
+  source_index_name:
+    default: app-events
+    description: "Source index feeding the transform"
+  dest_index_name:
+    default: app-events-rollup
+    description: "Destination (rollup) index produced by the transform"
+  transform_id:
+    default: events-by-service
+    description: "Identifier of the transform job"
+  checkpoint_configmap:
+    default: transform-checkpoint
+    description: "ConfigMap recording the transform checkpoint before the fault"
+
 namespace_contract:
   required_roles: []
 
@@ -44,16 +70,16 @@ preconditionUnits:
         sleep: 1
       - command: "kubectl -n elasticsearch apply -f resources/elasticsearch/transform-job-recovery/resource/"
         sleep: 1
-      - command: "kubectl -n elasticsearch wait --for=condition=ready pod -l app=es-cluster --timeout=600s"
+      - command: "kubectl -n elasticsearch wait --for=condition=ready pod -l app={{params.cluster_prefix}} --timeout=600s"
         sleep: 1
-      - command: "kubectl -n elasticsearch wait --for=condition=ready pod -l app=es-transform --timeout=300s"
+      - command: "kubectl -n elasticsearch wait --for=condition=ready pod -l app={{params.transform_cluster_prefix}} --timeout=300s"
         sleep: 1
-      - command: "kubectl -n elasticsearch wait --for=condition=ready pod/curl-test --timeout=300s"
+      - command: "kubectl -n elasticsearch wait --for=condition=ready pod/{{params.curl_pod_name}} --timeout=300s"
         sleep: 1
       - command: |
           /bin/sh -c '
           for i in $(seq 1 30); do
-            kubectl -n elasticsearch exec curl-test -- curl -s --max-time 5 http://es-http.elasticsearch.svc:9200/_cluster/health?wait_for_status=yellow&timeout=5s | grep -q status && exit 0
+            kubectl -n elasticsearch exec {{params.curl_pod_name}} -- curl -s --max-time 5 http://{{params.http_service_name}}.elasticsearch.svc:9200/_cluster/health?wait_for_status=yellow&timeout=5s | grep -q status && exit 0
             sleep 2
           done
           exit 1
@@ -61,13 +87,13 @@ preconditionUnits:
         sleep: 1
       - command: |
           /bin/sh -c '
-          kubectl -n elasticsearch exec curl-test -- /bin/sh -c '\''
-          cat <<EOF | curl -s -XPOST http://es-http.elasticsearch.svc:9200/_bulk -H "Content-Type: application/x-ndjson" --data-binary @-
-          {"index":{"_index":"app-events"}}
+          kubectl -n elasticsearch exec {{params.curl_pod_name}} -- /bin/sh -c '\''
+          cat <<EOF | curl -s -XPOST http://{{params.http_service_name}}.elasticsearch.svc:9200/_bulk -H "Content-Type: application/x-ndjson" --data-binary @-
+          {"index":{"_index":"{{params.source_index_name}}"}}
           {"service":"api","@timestamp":"2026-01-01T00:00:00Z"}
-          {"index":{"_index":"app-events"}}
+          {"index":{"_index":"{{params.source_index_name}}"}}
           {"service":"web","@timestamp":"2026-01-01T00:00:01Z"}
-          {"index":{"_index":"app-events"}}
+          {"index":{"_index":"{{params.source_index_name}}"}}
           {"service":"api","@timestamp":"2026-01-01T00:00:02Z"}
           EOF
           '\''
@@ -75,36 +101,36 @@ preconditionUnits:
         sleep: 1
       - command: |
           /bin/sh -c '
-          kubectl -n elasticsearch exec curl-test -- curl -s -XPUT http://es-http.elasticsearch.svc:9200/_transform/events-by-service -H "Content-Type: application/json" -d "{\"source\":{\"index\":\"app-events\"},\"dest\":{\"index\":\"app-events-rollup\"},\"pivot\":{\"group_by\":{\"service\":{\"terms\":{\"field\":\"service.keyword\"}}},\"aggregations\":{\"event_count\":{\"value_count\":{\"field\":\"service.keyword\"}}}},\"sync\":{\"time\":{\"field\":\"@timestamp\",\"delay\":\"1s\"}}}"
+          kubectl -n elasticsearch exec {{params.curl_pod_name}} -- curl -s -XPUT http://{{params.http_service_name}}.elasticsearch.svc:9200/_transform/{{params.transform_id}} -H "Content-Type: application/json" -d "{\"source\":{\"index\":\"{{params.source_index_name}}\"},\"dest\":{\"index\":\"{{params.dest_index_name}}\"},\"pivot\":{\"group_by\":{\"service\":{\"terms\":{\"field\":\"service.keyword\"}}},\"aggregations\":{\"event_count\":{\"value_count\":{\"field\":\"service.keyword\"}}}},\"sync\":{\"time\":{\"field\":\"@timestamp\",\"delay\":\"1s\"}}}"
           '
         sleep: 1
-      - command: "kubectl -n elasticsearch exec curl-test -- curl -s -XPOST http://es-http.elasticsearch.svc:9200/_transform/events-by-service/_start"
+      - command: "kubectl -n elasticsearch exec {{params.curl_pod_name}} -- curl -s -XPOST http://{{params.http_service_name}}.elasticsearch.svc:9200/_transform/{{params.transform_id}}/_start"
         sleep: 1
       - command: |
           /bin/sh -c '
           for i in $(seq 1 30); do
-            checkpoint=$(kubectl -n elasticsearch exec curl-test -- curl -s --max-time 5 http://es-http.elasticsearch.svc:9200/_transform/events-by-service/_stats 2>/dev/null | python3 -c "import json,sys; data=json.load(sys.stdin); t=data.get(\"transforms\",[]); print(t[0].get(\"checkpointing\",{}).get(\"last\",{}).get(\"checkpoint\",0) if t else 0)" 2>/dev/null || echo 0)
+            checkpoint=$(kubectl -n elasticsearch exec {{params.curl_pod_name}} -- curl -s --max-time 5 http://{{params.http_service_name}}.elasticsearch.svc:9200/_transform/{{params.transform_id}}/_stats 2>/dev/null | python3 -c "import json,sys; data=json.load(sys.stdin); t=data.get(\"transforms\",[]); print(t[0].get(\"checkpointing\",{}).get(\"last\",{}).get(\"checkpoint\",0) if t else 0)" 2>/dev/null || echo 0)
             if [ "${checkpoint}" -ge 1 ]; then
-              kubectl -n elasticsearch create configmap transform-checkpoint --from-literal=checkpoint_before="${checkpoint}" --dry-run=client -o yaml | kubectl apply -f -
+              kubectl -n elasticsearch create configmap {{params.checkpoint_configmap}} --from-literal=checkpoint_before="${checkpoint}" --dry-run=client -o yaml | kubectl apply -f -
               exit 0
             fi
             sleep 2
           done
-          kubectl -n elasticsearch create configmap transform-checkpoint --from-literal=checkpoint_before="0" --dry-run=client -o yaml | kubectl apply -f -
+          kubectl -n elasticsearch create configmap {{params.checkpoint_configmap}} --from-literal=checkpoint_before="0" --dry-run=client -o yaml | kubectl apply -f -
           exit 0
           '
         sleep: 1
-      - command: "kubectl -n elasticsearch scale sts/es-transform --replicas=0"
+      - command: "kubectl -n elasticsearch scale sts/{{params.transform_cluster_prefix}} --replicas=0"
         sleep: 1
-      - command: "kubectl -n elasticsearch wait --for=delete pod -l app=es-transform --timeout=300s"
+      - command: "kubectl -n elasticsearch wait --for=delete pod -l app={{params.transform_cluster_prefix}} --timeout=300s"
         sleep: 1
       - command: |
           /bin/sh -c '
-          kubectl -n elasticsearch exec curl-test -- /bin/sh -c '\''
-          cat <<EOF | curl -s -XPOST http://es-http.elasticsearch.svc:9200/_bulk -H "Content-Type: application/x-ndjson" --data-binary @-
-          {"index":{"_index":"app-events"}}
+          kubectl -n elasticsearch exec {{params.curl_pod_name}} -- /bin/sh -c '\''
+          cat <<EOF | curl -s -XPOST http://{{params.http_service_name}}.elasticsearch.svc:9200/_bulk -H "Content-Type: application/x-ndjson" --data-binary @-
+          {"index":{"_index":"{{params.source_index_name}}"}}
           {"service":"api","@timestamp":"2026-01-02T00:00:00Z"}
-          {"index":{"_index":"app-events"}}
+          {"index":{"_index":"{{params.source_index_name}}"}}
           {"service":"web","@timestamp":"2026-01-02T00:00:01Z"}
           EOF
           '\''

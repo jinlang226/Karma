@@ -5,17 +5,36 @@ prompt: |
   The Elasticsearch cluster is running below the target version.
 
   Your task:
-  Perform a full-restart upgrade to version 8.11.1 while keeping data intact.
+  Perform a full-restart upgrade to version {{params.to_version}} while keeping data intact.
 
   Constraints:
   - Do not install operators or CRDs.
   - The cluster must be fully stopped and started again for the upgrade.
 
   Verification:
-  1. Elasticsearch reports version 8.11.1.
+  1. Elasticsearch reports version {{params.to_version}}.
   2. Cluster is reachable and has 3 nodes.
   3. Seeded data is still present.
 
+params:
+  to_version:
+    default: "8.11.1"
+    description: "Target Elasticsearch version for the upgrade"
+  seed_configmap_name:
+    default: "es-seed"
+    description: "ConfigMap recording the seeded index and expected doc count"
+  http_service_name:
+    default: "es-http"
+    description: "Name of the Elasticsearch HTTP service"
+  cluster_prefix:
+    default: "es-cluster"
+    description: "StatefulSet/cluster name prefix for Elasticsearch node pods"
+  index_name:
+    default: "app-data"
+    description: "Index seeded before the upgrade and verified afterward"
+  expected_doc_count:
+    default: 3
+    description: "Number of documents seeded and expected to survive the upgrade"
 namespace_contract:
   required_roles: []
 
@@ -40,15 +59,15 @@ preconditionUnits:
         sleep: 1
       - command: "kubectl -n elasticsearch apply -f resources/elasticsearch/full-restart-upgrade-ha/resource/"
         sleep: 1
-      - command: "kubectl -n elasticsearch wait --for=condition=ready pod -l app=es-cluster --timeout=600s"
+      - command: "kubectl -n elasticsearch wait --for=condition=ready pod -l app={{params.cluster_prefix}} --timeout=600s"
         sleep: 1
       - command: "kubectl -n elasticsearch wait --for=condition=ready pod/curl-test --timeout=300s"
         sleep: 1
-      - command: "/bin/sh -c 'for i in $(seq 1 60); do kubectl -n elasticsearch exec curl-test -- curl -s --max-time 5 \"http://es-http.elasticsearch.svc:9200/_cluster/health?wait_for_status=yellow&timeout=5s\" | grep -q \"\\\"status\\\"\" && exit 0; sleep 2; done; exit 1'"
+      - command: "/bin/sh -c 'for i in $(seq 1 60); do kubectl -n elasticsearch exec curl-test -- curl -s --max-time 5 \"http://{{params.http_service_name}}.elasticsearch.svc:9200/_cluster/health?wait_for_status=yellow&timeout=5s\" | grep -q \"\\\"status\\\"\" && exit 0; sleep 2; done; exit 1'"
         sleep: 1
-      - command: "/bin/sh -c 'kubectl -n elasticsearch exec curl-test -- curl -s -X PUT http://es-http.elasticsearch.svc:9200/app-data >/dev/null; kubectl -n elasticsearch exec curl-test -- curl -s -X POST http://es-http.elasticsearch.svc:9200/app-data/_doc -H \"Content-Type: application/json\" -d \"{\\\"x\\\":1}\" >/dev/null; kubectl -n elasticsearch exec curl-test -- curl -s -X POST http://es-http.elasticsearch.svc:9200/app-data/_doc -H \"Content-Type: application/json\" -d \"{\\\"x\\\":2}\" >/dev/null; kubectl -n elasticsearch exec curl-test -- curl -s -X POST http://es-http.elasticsearch.svc:9200/app-data/_doc -H \"Content-Type: application/json\" -d \"{\\\"x\\\":3}\" >/dev/null; kubectl -n elasticsearch exec curl-test -- curl -s -X POST http://es-http.elasticsearch.svc:9200/app-data/_refresh >/dev/null'"
+      - command: "/bin/sh -c 'kubectl -n elasticsearch exec curl-test -- curl -s -X PUT http://{{params.http_service_name}}.elasticsearch.svc:9200/{{params.index_name}} >/dev/null; kubectl -n elasticsearch exec curl-test -- curl -s -X POST http://{{params.http_service_name}}.elasticsearch.svc:9200/{{params.index_name}}/_doc -H \"Content-Type: application/json\" -d \"{\\\"x\\\":1}\" >/dev/null; kubectl -n elasticsearch exec curl-test -- curl -s -X POST http://{{params.http_service_name}}.elasticsearch.svc:9200/{{params.index_name}}/_doc -H \"Content-Type: application/json\" -d \"{\\\"x\\\":2}\" >/dev/null; kubectl -n elasticsearch exec curl-test -- curl -s -X POST http://{{params.http_service_name}}.elasticsearch.svc:9200/{{params.index_name}}/_doc -H \"Content-Type: application/json\" -d \"{\\\"x\\\":3}\" >/dev/null; kubectl -n elasticsearch exec curl-test -- curl -s -X POST http://{{params.http_service_name}}.elasticsearch.svc:9200/{{params.index_name}}/_refresh >/dev/null'"
         sleep: 1
-      - command: "/bin/sh -c 'kubectl -n elasticsearch create configmap es-seed --from-literal=index=app-data --from-literal=expected_count=3 --dry-run=client -o yaml | kubectl apply -f -'"
+      - command: "/bin/sh -c 'kubectl -n elasticsearch create configmap {{params.seed_configmap_name}} --from-literal=index={{params.index_name}} --from-literal=expected_count={{params.expected_doc_count}} --dry-run=client -o yaml | kubectl apply -f -'"
         sleep: 1
     verify:
       - command: "kubectl -n elasticsearch get pods 2>/dev/null | grep -c Running || true"
