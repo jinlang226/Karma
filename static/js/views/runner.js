@@ -74,7 +74,7 @@
 
   async function renderService(service) {
     clear(root);
-    KARMA.setBreadcrumb({ back: renderHome, crumbs: [] });
+    KARMA.setBreadcrumb({ back: renderHome, crumbs: [{ label: KARMA.labels.service(service) }] });
     root.appendChild(el("h2", {}, KARMA.labels.service(service)));
     const desc = KARMA.labels.serviceDescription(service);
     if (desc) root.appendChild(el("p", { class: "field-help" }, desc));
@@ -117,7 +117,10 @@
     clear(root);
     KARMA.setBreadcrumb({
       back: () => renderService(service),
-      crumbs: [{ label: KARMA.labels.service(service), onClick: () => renderService(service) }],
+      crumbs: [
+        { label: KARMA.labels.service(service), onClick: () => renderService(service) },
+        { label: KARMA.labels.case(caseName) },
+      ],
     });
     let detail;
     try {
