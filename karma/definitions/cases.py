@@ -80,10 +80,25 @@ class _OracleConfig(BaseModel):
 
 
 class _ParamDefinition(BaseModel):
-    """A single parameter definition with a default value."""
+    """A single parameter definition: a default plus optional type and
+    validation constraints.
+
+    ``type`` is one of ``string``/``int``/``float``/``bool``/``enum``/
+    ``duration``/``quantity`` (default ``string``). ``values`` lists the
+    allowed choices for an ``enum``. ``min``/``max`` bound numeric values,
+    ``pattern`` is a regex the (stringified) value must match, and
+    ``required`` forces an override to be supplied. Unset constraints impose
+    no restriction, so a bare ``{default: x}`` keeps its old behavior.
+    """
 
     default: Any = None
     description: str = ""
+    type: str | None = None
+    values: list[Any] | None = None
+    min: float | None = None
+    max: float | None = None
+    pattern: str | None = None
+    required: bool = False
 
 
 class _NamespaceContract(BaseModel):
@@ -108,7 +123,6 @@ class CaseSchema(BaseModel):
     oracle: _OracleConfig = _OracleConfig()
     namespace_contract: _NamespaceContract = _NamespaceContract()
     decoys: list[Any] = []
-    setup_check: Any = None
     metrics: list[str] = []
     tags: list[str] = []
 
@@ -339,15 +353,94 @@ def load_case_file(resources_dir: Path, service: str, case_name: str) -> dict[st
     return data
 
 
+def _coerce_bool(value: Any) -> bool:
+    """Parse a boolean from a bool/number/string, raising on garbage."""
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, (int, float)):
+        return bool(value)
+    raw = str(value).strip().lower()
+    if raw in ("1", "true", "yes", "on"):
+        return True
+    if raw in ("0", "false", "no", "off"):
+        return False
+    raise ValueError(f"cannot parse bool from {value!r}")
+
+
+def _coerce_param_value(name: str, spec: dict[str, Any], value: Any) -> Any:
+    """Coerce and validate *value* for param *name* against its *spec*.
+
+    Applies type coercion (string/int/float/bool/enum/duration/quantity),
+    enum membership, numeric ``min``/``max`` bounds, and a regex ``pattern``.
+    Returns ``None`` unchanged (an unset optional param). Raises
+    ``ValueError`` on any type or constraint violation.
+    """
+    if value is None:
+        return None
+
+    # Coerce only when a type is explicitly declared; an untyped param keeps
+    # its native value (so a bare ``{default: 3}`` stays the int 3).
+    raw_type = spec.get("type")
+    if raw_type is not None:
+        param_type = str(raw_type).strip().lower()
+        if param_type in ("string", "duration", "quantity"):
+            value = str(value)
+        elif param_type == "int":
+            value = int(value)
+        elif param_type in ("float", "number"):
+            value = float(value)
+        elif param_type == "bool":
+            value = _coerce_bool(value)
+        elif param_type == "enum":
+            choices = spec.get("values")
+            if not isinstance(choices, list) or not choices:
+                raise ValueError(f"param {name}: enum requires a non-empty 'values' list")
+            choice_set = {str(item) for item in choices}
+            if str(value) not in choice_set:
+                raise ValueError(
+                    f"param {name}: value {value!r} not in {sorted(choice_set)}"
+                )
+            value = str(value)
+        else:
+            raise ValueError(f"param {name}: unsupported type {param_type!r}")
+
+    min_value = spec.get("min")
+    max_value = spec.get("max")
+    if min_value is not None and isinstance(value, (int, float)) and value < min_value:
+        raise ValueError(f"param {name}: value {value} < min {min_value}")
+    if max_value is not None and isinstance(value, (int, float)) and value > max_value:
+        raise ValueError(f"param {name}: value {value} > max {max_value}")
+
+    pattern = spec.get("pattern")
+    if pattern is not None:
+        try:
+            if not _re.match(str(pattern), str(value)):
+                raise ValueError(
+                    f"param {name}: value {value!r} does not match pattern {pattern!r}"
+                )
+        except _re.error as exc:
+            raise ValueError(f"param {name}: invalid regex {pattern!r}: {exc}") from exc
+
+    return value
+
+
 def resolve_case_params(
     case_data: dict[str, Any],
     param_overrides: dict[str, Any] | None = None,
 ) -> tuple[dict[str, Any], list[str]]:
-    """Resolve the final parameter values for a case.
+    """Resolve, coerce, and validate the final parameter values for a case.
 
     Merges declared parameter defaults from *case_data* with
-    *param_overrides*, with overrides taking precedence. Unrecognized
-    override keys produce a warning entry rather than an error.
+    *param_overrides* (overrides win), coercing and validating every value
+    against its declared ``type``/``values``/``min``/``max``/``pattern`` and
+    enforcing ``required``. Unrecognized override keys produce a warning
+    rather than an error.
+
+    Raises
+    ------
+    ValueError
+        When a value fails type coercion or a constraint, or a ``required``
+        param has no value.
 
     Returns
     -------
@@ -359,18 +452,25 @@ def resolve_case_params(
     overrides: dict[str, Any] = param_overrides or {}
     warnings: list[str] = []
 
+    def _spec(param_def: Any) -> dict[str, Any]:
+        return param_def if isinstance(param_def, dict) else {"default": param_def}
+
     resolved: dict[str, Any] = {}
     for key, param_def in declared.items():
-        if isinstance(param_def, dict):
-            resolved[key] = param_def.get("default")
-        else:
-            resolved[key] = param_def
+        spec = _spec(param_def)
+        if "default" in spec:
+            resolved[key] = _coerce_param_value(key, spec, spec.get("default"))
 
-    if overrides:
-        for key, value in overrides.items():
-            if key not in declared:
-                warnings.append(f"unrecognized param override '{key}' (not declared in case)")
+    for key, value in overrides.items():
+        if key not in declared:
+            warnings.append(f"unrecognized param override '{key}' (not declared in case)")
             resolved[key] = value
+        else:
+            resolved[key] = _coerce_param_value(key, _spec(declared[key]), value)
+
+    for key, param_def in declared.items():
+        if _spec(param_def).get("required") and key not in resolved:
+            raise ValueError(f"required param missing: {key}")
 
     return resolved, warnings
 
@@ -568,8 +668,7 @@ def normalize_case(
     dict
         Keys: ``service``, ``case_name``, ``params``,
         ``namespace_contract``, ``precondition_units``, ``oracle``,
-        ``decoys``, ``setup_check``, ``metrics``, ``tags``,
-        ``warnings``.
+        ``decoys``, ``metrics``, ``tags``, ``warnings``.
     """
     data = deepcopy(case_data)
     params, warnings = resolve_case_params(data, param_overrides)
@@ -584,7 +683,6 @@ def normalize_case(
 
     metrics = [str(m) for m in (data.get("metrics") or []) if m]
     tags = [str(t) for t in (data.get("tags") or []) if t]
-    setup_check = data.get("setup_check")
 
     return {
         "service": service,
@@ -595,7 +693,6 @@ def normalize_case(
         "precondition_units": precondition_units,
         "oracle": oracle,
         "decoys": decoys,
-        "setup_check": setup_check,
         "metrics": metrics,
         "tags": tags,
         "warnings": warnings,
