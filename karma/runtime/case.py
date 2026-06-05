@@ -364,24 +364,36 @@ def run_stage(
         protocol.stage_prompt_path(run_dir, stage_id).write_text(final_prompt)
 
         # Step 8: launch agent
+        #
+        # A no-agent run -- `resolve_agent(None, sandbox_mode="local")` returns a
+        # descriptor with no folder/entrypoint -- stands the scenario up and lets
+        # the oracle verify the preconditioned state without launching anything
+        # (e.g. `run-case` with no --agent, or an operator-driven manual run).
+        # In that case there is nothing to launch or wait on, so the stage
+        # outcome is determined solely by the oracle verdict.
         agent_env_vars = {**env_vars_adv, "KUBECONFIG": str(agent_kubeconfig)}
-        agent_process = launch_agent(
-            agent_meta,
-            sandbox_mode=sandbox_mode,
-            env_vars=agent_env_vars,
-            run_dir=stage_dir,
-            agent_timeout_sec=row.get("agent_timeout_sec") or 900,
-            kubeconfig_path=agent_kubeconfig,
-        )
+        no_agent = not (agent_meta.get("folder") or agent_meta.get("entrypoint"))
+        if no_agent:
+            submitted = False
+            stage_status_before_oracle = "running"
+        else:
+            agent_process = launch_agent(
+                agent_meta,
+                sandbox_mode=sandbox_mode,
+                env_vars=agent_env_vars,
+                run_dir=stage_dir,
+                agent_timeout_sec=row.get("agent_timeout_sec") or 900,
+                kubeconfig_path=agent_kubeconfig,
+            )
 
-        # Step 9: wait for submit or timeout
-        submit_path = protocol.stage_submit_path(run_dir, stage_id)
-        submitted, submit_content = _wait_for_submit(
-            submit_path,
-            agent_timeout_sec=row.get("agent_timeout_sec") or 900,
-        )
-        agent_process.terminate()
-        stage_status_before_oracle = "timeout" if not submitted else "running"
+            # Step 9: wait for submit or timeout
+            submit_path = protocol.stage_submit_path(run_dir, stage_id)
+            submitted, _submit_content = _wait_for_submit(
+                submit_path,
+                agent_timeout_sec=row.get("agent_timeout_sec") or 900,
+            )
+            agent_process.terminate()
+            stage_status_before_oracle = "timeout" if not submitted else "running"
 
         # Step 10: collect evidence
         evidence = collect_evidence(
