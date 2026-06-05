@@ -29,6 +29,7 @@ from typing import Any
 from .jobs import submit_job, get_job_status, cancel_job, list_jobs
 from .events import hub
 from . import catalog
+from . import judging
 from ...runtime.service import get_run_status
 from ...agents.registry import list_agents
 from ...metrics import list_metrics
@@ -193,6 +194,53 @@ def create_app(
         except Exception as exc:
             return jsonify({"error": str(exc)}), 500
         return jsonify(result)
+
+    @app.route("/api/judge/start", methods=["POST"])
+    def api_judge_start():
+        payload = request.get_json(force=True, silent=True) or {}
+        try:
+            job_id = judging.start_judge_job(
+                str(payload.get("target_type") or "run"),
+                str(payload.get("target_path") or ""),
+                judge_model=payload.get("model"),
+                dry_run=bool(payload.get("dry_run")),
+            )
+        except ValueError as exc:
+            return jsonify({"error": str(exc)}), 400
+        return jsonify({"job_id": job_id}), 201
+
+    @app.route("/api/judge/jobs")
+    def api_judge_jobs():
+        return jsonify(judging.list_judge_jobs())
+
+    @app.route("/api/judge/jobs/<job_id>")
+    def api_judge_job(job_id):
+        job = judging.get_judge_job(job_id)
+        if job is None:
+            return jsonify({"error": "not found"}), 404
+        return jsonify(job)
+
+    @app.route("/api/judge/jobs/<job_id>/stream")
+    def api_judge_job_stream(job_id):
+        if not hub.is_known(job_id):
+            return jsonify({"error": "not found"}), 404
+        return Response(
+            _sse_stream(job_id),
+            mimetype="text/event-stream",
+            headers={
+                "Cache-Control": "no-cache",
+                "X-Accel-Buffering": "no",
+                "Access-Control-Allow-Origin": "*",
+            },
+        )
+
+    @app.route("/api/judge/runs")
+    def api_judge_runs():
+        return jsonify(judging.list_judge_runs(Path(runs_dir)))
+
+    @app.route("/api/judge/batches")
+    def api_judge_batches():
+        return jsonify(judging.list_judge_batches(Path(runs_dir)))
 
     return app
 
