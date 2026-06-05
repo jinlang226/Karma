@@ -27,6 +27,7 @@ from pathlib import Path
 from typing import Any
 
 from .jobs import submit_job, get_job_status, cancel_job, list_jobs
+from .events import hub
 from . import catalog
 from ...runtime.service import get_run_status
 from ...agents.registry import list_agents
@@ -71,7 +72,6 @@ def create_app(
         workflows_dir = Path("workflows")
 
     app = Flask(__name__, static_folder=None)
-    _run_queues: dict[str, queue.Queue] = {}
 
     @app.route("/")
     def index():  # type: ignore[return]
@@ -87,24 +87,14 @@ def create_app(
     @app.route("/api/run", methods=["POST"])
     def api_run():
         payload = request.get_json(force=True, silent=True) or {}
-        eq: queue.Queue = queue.Queue(maxsize=100)
-
-        def stage_cb(stage_result: dict[str, Any]) -> None:
-            try:
-                eq.put_nowait({"type": "stage_complete", "stage": stage_result})
-            except queue.Full:
-                pass
-
         try:
             run_id = submit_job(
                 payload,
                 runs_dir=runs_dir,
                 resources_dir=resources_dir,
-                on_stage_complete=stage_cb,
             )
         except (ValueError, RuntimeError) as exc:
             return jsonify({"error": str(exc)}), 400
-        _run_queues[run_id] = eq
         return jsonify({"run_id": run_id}), 201
 
     @app.route("/health")
@@ -120,11 +110,10 @@ def create_app(
 
     @app.route("/api/run/<run_id>/stream")
     def api_run_stream(run_id):
-        eq = _run_queues.get(run_id)
-        if eq is None:
+        if not hub.is_known(run_id):
             return jsonify({"error": "not found"}), 404
         return Response(
-            _sse_stream_generator(run_id, eq),
+            _sse_stream(run_id),
             mimetype="text/event-stream",
             headers={
                 "Cache-Control": "no-cache",
@@ -135,14 +124,7 @@ def create_app(
 
     @app.route("/api/run/<run_id>/cancel", methods=["POST"])
     def api_run_cancel(run_id):
-        ok = cancel_job(run_id)
-        eq = _run_queues.get(run_id)
-        if eq is not None:
-            try:
-                eq.put_nowait(None)
-            except queue.Full:
-                pass
-        if not ok:
+        if not cancel_job(run_id):
             return jsonify({"error": "not found"}), 404
         return jsonify({"run_id": run_id, "status": "cancelled"})
 
@@ -215,49 +197,33 @@ def create_app(
     return app
 
 
-def _sse_stream_generator(
-    run_id: str,
-    event_queue: queue.Queue,
-) -> Any:
-    """Yield SSE-formatted event strings from *event_queue*.
+_HEARTBEAT_INTERVAL = 15.0
 
-    Reads from the queue until a ``None`` sentinel is pushed or the queue
-    is empty for longer than the idle timeout. Each event is formatted as::
 
-        data: {json}\\n\\n
+def _sse_stream(stream_id: str) -> Any:
+    """Yield SSE-formatted strings for *stream_id* from the shared hub.
+
+    Subscribes to :data:`events.hub`, which first replays the buffered
+    history (so a late or reconnecting client sees prior events) and then
+    delivers live events. A comment heartbeat is emitted whenever the
+    stream is idle for ``_HEARTBEAT_INTERVAL`` seconds so intermediaries do
+    not drop the connection. The ``None`` sentinel ends the stream with a
+    terminal ``done`` event. The subscription is always released on exit.
     """
-    _IDLE_TIMEOUT = 30.0
-    while True:
-        try:
-            event = event_queue.get(timeout=_IDLE_TIMEOUT)
-        except queue.Empty:
-            break
-        if event is None:
-            yield f"data: {json.dumps({'type': 'done', 'run_id': run_id})}\n\n"
-            break
-        yield f"data: {json.dumps(event)}\n\n"
-
-
-def _on_stage_complete_factory(
-    run_id: str,
-    event_queue: queue.Queue,
-) -> Any:
-    """Return a callback that pushes stage completion events to *event_queue*.
-
-    The returned callable accepts a stage result dict and enqueues it as a
-    JSON SSE event. It is passed to ``runtime.service.submit_run`` so that
-    the runtime loop can push progress without importing HTTP code.
-    """
-    def on_stage_complete(stage_result: dict[str, Any]) -> None:
-        try:
-            event_queue.put_nowait({
-                "type": "stage_complete",
-                "run_id": run_id,
-                "stage": stage_result,
-            })
-        except queue.Full:
-            pass
-    return on_stage_complete
+    q = hub.subscribe(stream_id)
+    try:
+        while True:
+            try:
+                event = q.get(timeout=_HEARTBEAT_INTERVAL)
+            except queue.Empty:
+                yield ": heartbeat\n\n"
+                continue
+            if event is None:
+                yield f"data: {json.dumps({'type': 'done', 'run_id': stream_id})}\n\n"
+                break
+            yield f"data: {json.dumps(event)}\n\n"
+    finally:
+        hub.unsubscribe(stream_id, q)
 
 
 def main(
