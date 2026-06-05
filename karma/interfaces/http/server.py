@@ -26,7 +26,8 @@ import queue
 from pathlib import Path
 from typing import Any
 
-from .jobs import submit_job, get_job_status, cancel_job
+from .jobs import submit_job, get_job_status, cancel_job, list_jobs
+from . import catalog
 from ...runtime.service import get_run_status
 from ...agents.registry import list_agents
 from ...metrics import list_metrics
@@ -36,6 +37,7 @@ def create_app(
     *,
     resources_dir: Path,
     runs_dir: Path,
+    workflows_dir: Path | None = None,
     static_dir: Path | None = None,
 ) -> Any:
     """Create and return the WSGI application instance.
@@ -65,6 +67,8 @@ def create_app(
 
     if static_dir is None:
         static_dir = Path(__file__).parent.parent.parent / "static"
+    if workflows_dir is None:
+        workflows_dir = Path("workflows")
 
     app = Flask(__name__, static_folder=None)
     _run_queues: dict[str, queue.Queue] = {}
@@ -144,15 +148,36 @@ def create_app(
 
     @app.route("/api/cases")
     def api_cases():
-        cases: dict[str, list[str]] = {}
-        res_path = Path(resources_dir)
-        if res_path.exists():
-            for svc_dir in sorted(res_path.iterdir()):
-                if svc_dir.is_dir():
-                    cases[svc_dir.name] = sorted(
-                        d.name for d in svc_dir.iterdir() if d.is_dir()
-                    )
-        return jsonify(cases)
+        return jsonify(catalog.list_cases_by_service(Path(resources_dir)))
+
+    @app.route("/api/services")
+    def api_services():
+        return jsonify({
+            "services": catalog.list_services(Path(resources_dir)),
+            "cluster": catalog.cluster_status(),
+        })
+
+    @app.route("/api/cases/<service>/<case_name>")
+    def api_case_detail(service, case_name):
+        try:
+            detail = catalog.get_case_detail(Path(resources_dir), service, case_name)
+        except RuntimeError as exc:
+            return jsonify({"error": str(exc)}), 404
+        return jsonify(detail)
+
+    @app.route("/api/runs")
+    def api_runs():
+        return jsonify(catalog.list_runs(Path(runs_dir)))
+
+    @app.route("/api/workflows")
+    def api_workflows():
+        return jsonify(
+            catalog.list_workflow_files(Path(workflows_dir), Path(resources_dir))
+        )
+
+    @app.route("/api/jobs")
+    def api_jobs():
+        return jsonify(list_jobs())
 
     @app.route("/api/agents")
     def api_agents():
@@ -254,11 +279,13 @@ def main(
         os.environ.get("KARMA_RESOURCES_DIR", "resources")
     )
     resolved_runs = runs_dir or Path(os.environ.get("KARMA_RUNS_DIR", "runs"))
+    resolved_workflows = Path(os.environ.get("KARMA_WORKFLOWS_DIR", "workflows"))
     resolved_host = os.environ.get("KARMA_HOST", host)
     resolved_port = int(os.environ.get("KARMA_PORT", port))
 
     app = create_app(
         resources_dir=resolved_resources,
         runs_dir=resolved_runs,
+        workflows_dir=resolved_workflows,
     )
     app.run(host=resolved_host, port=resolved_port)
