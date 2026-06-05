@@ -156,23 +156,21 @@ def create_app(
     def api_runs():
         return jsonify(catalog.list_runs(Path(runs_dir)))
 
-    @app.route("/api/workflows")
+    @app.route("/api/workflows", methods=["GET", "POST"])
     def api_workflows():
+        if request.method == "POST":
+            payload = request.get_json(force=True, silent=True) or {}
+            try:
+                res = catalog.save_workflow(
+                    Path(workflows_dir), Path(resources_dir),
+                    str(payload.get("yaml_text") or ""), payload.get("name"),
+                )
+            except ValueError as exc:
+                return jsonify({"ok": False, "error": str(exc)}), 400
+            return jsonify(res), 201
         return jsonify(
             catalog.list_workflow_files(Path(workflows_dir), Path(resources_dir))
         )
-
-    @app.route("/api/workflows", methods=["POST"])
-    def api_workflows_save():
-        payload = request.get_json(force=True, silent=True) or {}
-        try:
-            res = catalog.save_workflow(
-                Path(workflows_dir), Path(resources_dir),
-                str(payload.get("yaml_text") or ""), payload.get("name"),
-            )
-        except ValueError as exc:
-            return jsonify({"ok": False, "error": str(exc)}), 400
-        return jsonify(res), 201
 
     @app.route("/api/jobs")
     def api_jobs():
