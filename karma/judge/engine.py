@@ -92,6 +92,7 @@ def run_judge_batch(
     stage_ids: list[str] | None = None,
     rubric_overrides: dict[str, Any] | None = None,
     judge_model: str | None = None,
+    dry_run: bool = False,
 ) -> dict[str, Any]:
     """Evaluate all stages in a run and return a batch result dict.
 
@@ -109,6 +110,9 @@ def run_judge_batch(
         Optional rubric overrides applied to every stage.
     judge_model:
         LLM model name override forwarded to each :func:`run_judge` call.
+    dry_run:
+        When ``True``, each stage returns its assembled judge input
+        without calling the LLM. Forwarded to :func:`run_judge`.
 
     Returns
     -------
@@ -131,6 +135,7 @@ def run_judge_batch(
                 sid,
                 rubric_overrides=rubric_overrides,
                 judge_model=judge_model,
+                dry_run=dry_run,
             )
         except Exception as exc:
             batch[sid] = {"stage_id": sid, "verdict": "error", "error": str(exc)}
