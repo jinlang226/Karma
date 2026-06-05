@@ -150,3 +150,44 @@ class TestListAdversaryScenarios:
     def test_no_adversarial_dir_returns_empty(self, tmp_path):
         (tmp_path / "demo" / "some-case").mkdir(parents=True)
         assert catalog.list_adversary_scenarios(tmp_path) == []
+
+
+class TestSaveWorkflow:
+    def _resources(self, tmp_path):
+        _write_case(tmp_path / "resources", "svc", "c1", "prompt: hi\n")
+        return tmp_path / "resources"
+
+    def _yaml(self):
+        return (
+            "metadata:\n  id: my flow!\n"
+            "spec:\n  stages:\n    - id: s1\n      service: svc\n      case: c1\n"
+        )
+
+    def test_saves_to_ui_subfolder_with_sanitized_name(self, tmp_path):
+        res = self._resources(tmp_path)
+        wf_dir = tmp_path / "workflows"
+        out = catalog.save_workflow(wf_dir, res, self._yaml(), "my flow!")
+        assert out["ok"] is True
+        # "my flow!" sanitized to a safe single segment under ui/
+        assert out["name"] == "ui/my-flow.yaml"
+        assert (wf_dir / "ui" / "my-flow.yaml").exists()
+
+    def test_appears_in_listing(self, tmp_path):
+        res = self._resources(tmp_path)
+        wf_dir = tmp_path / "workflows"
+        catalog.save_workflow(wf_dir, res, self._yaml(), "saved")
+        names = [e["name"] for e in catalog.list_workflow_files(wf_dir, res)]
+        assert "ui/saved.yaml" in names
+
+    def test_invalid_workflow_rejected(self, tmp_path):
+        import pytest
+        res = self._resources(tmp_path)
+        with pytest.raises(ValueError):
+            catalog.save_workflow(tmp_path / "workflows", res, "metadata: {}\nspec: {}\n", "bad")
+
+    def test_overwrites_same_name(self, tmp_path):
+        res = self._resources(tmp_path)
+        wf_dir = tmp_path / "workflows"
+        catalog.save_workflow(wf_dir, res, self._yaml(), "dup")
+        catalog.save_workflow(wf_dir, res, self._yaml(), "dup")
+        assert len(list((wf_dir / "ui").glob("*.yaml"))) == 1

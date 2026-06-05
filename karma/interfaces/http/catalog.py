@@ -164,21 +164,31 @@ def list_runs(runs_dir: Path) -> list[dict[str, Any]]:
     return runs
 
 
+# Subfolder under workflows/ where UI-built workflows are saved.
+_UI_SUBDIR = "ui"
+
+
 def list_workflow_files(
     workflows_dir: Path, resources_dir: Path
 ) -> list[dict[str, Any]]:
-    """Return one entry per ``*.yaml`` under *workflows_dir*.
+    """Return one entry per ``*.yaml`` under *workflows_dir* (and ``ui/``).
 
     Each workflow is loaded and normalized so the UI can show its id,
     stage count, and prompt mode, plus an ``ok`` flag and validation
-    errors for files that fail to parse -- mirroring the old workflow
-    file list with its OK/INVALID badges.
+    errors for files that fail to parse. Files saved from the builder live
+    in the ``ui/`` subfolder and are listed with their ``ui/<name>.yaml``
+    relative name.
     """
     result: list[dict[str, Any]] = []
     if not workflows_dir.exists():
         return result
-    for wf in sorted(workflows_dir.glob("*.yaml")):
-        entry: dict[str, Any] = {"path": str(wf), "name": wf.name, "ok": True, "errors": []}
+    paths = sorted(workflows_dir.glob("*.yaml")) + sorted((workflows_dir / _UI_SUBDIR).glob("*.yaml"))
+    for wf in paths:
+        try:
+            rel = str(wf.relative_to(workflows_dir))
+        except ValueError:
+            rel = wf.name
+        entry: dict[str, Any] = {"path": str(wf), "name": rel, "ok": True, "errors": []}
         try:
             raw = load_workflow_file(wf)
             norm = normalize_workflow(raw, resources_dir=resources_dir)
@@ -191,6 +201,44 @@ def list_workflow_files(
             entry["errors"] = [str(exc)]
         result.append(entry)
     return result
+
+
+def save_workflow(
+    workflows_dir: Path, resources_dir: Path, yaml_text: str, name: str | None
+) -> dict[str, Any]:
+    """Validate and save a builder workflow to ``workflows/ui/<name>.yaml``.
+
+    The YAML is parsed and normalized first (so an invalid workflow is
+    never written). The file name derives from *name* (or the workflow id),
+    sanitized to a single safe path segment; saving with the same name
+    overwrites (upsert). Returns ``{ok, path, name}``.
+
+    Raises
+    ------
+    ValueError
+        When the YAML is unparseable or fails workflow validation.
+    """
+    import re
+    import yaml as _yaml
+
+    try:
+        raw = _yaml.safe_load(yaml_text) or {}
+    except Exception as exc:
+        raise ValueError(f"failed to parse YAML: {exc}") from exc
+    if not isinstance(raw, dict):
+        raise ValueError("workflow must be a YAML object")
+    norm = normalize_workflow(raw, resources_dir=resources_dir)
+
+    base = str(name or norm.get("id") or "workflow").strip()
+    safe = re.sub(r"[^A-Za-z0-9._-]+", "-", base).strip("-")
+    if not safe or safe in (".", ".."):
+        safe = "workflow"
+
+    dest_dir = workflows_dir / _UI_SUBDIR
+    dest_dir.mkdir(parents=True, exist_ok=True)
+    path = dest_dir / f"{safe}.yaml"
+    path.write_text(yaml_text if yaml_text.endswith("\n") else yaml_text + "\n")
+    return {"ok": True, "path": str(path), "name": f"{_UI_SUBDIR}/{safe}.yaml"}
 
 
 def list_adversary_scenarios(resources_dir: Path) -> list[dict[str, Any]]:

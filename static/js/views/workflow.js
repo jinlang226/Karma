@@ -53,14 +53,22 @@
     const panel = el("div", { class: "panel" });
     panel.appendChild(el("h3", {}, "Saved Workflows"));
     panel.appendChild(el("p", { class: "field-help" },
-      "Predefined workflows from the workflows/ folder. Click Run to execute one, " +
-      "or build your own below."));
+      "Predefined workflows from the workflows/ folder, plus any you save from the " +
+      "builder below (kept under workflows/ui/). Click Run to execute one."));
     const tbl = el("table", {}, el("thead", {}, el("tr", {},
       el("th", {}, "File"), el("th", {}, "ID"), el("th", {}, "Stages"),
       el("th", {}, "Prompt mode"), el("th", {}, "Status"), el("th", {}, ""))));
-    const body = el("tbody", {});
+    const body = el("tbody", { id: "wf-files-body" });
     tbl.appendChild(body);
     panel.appendChild(el("div", { class: "scroll-list" }, tbl));
+    loadFiles();
+    return panel;
+  }
+
+  function loadFiles() {
+    const body = document.getElementById("wf-files-body");
+    if (!body) return;
+    clear(body);
     api.get("/api/workflows").then((files) => {
       if (!files.length) body.appendChild(el("tr", {}, el("td", { colspan: "6", class: "muted" }, "No workflow files found.")));
       for (const f of files) {
@@ -78,7 +86,6 @@
           el("td", {}, runBtn)));
       }
     }).catch((e) => body.appendChild(el("tr", {}, el("td", { colspan: "6" }, errBox(e)))));
-    return panel;
   }
 
   async function runWorkflowFile(path) {
@@ -167,14 +174,31 @@
     const output = el("div", { style: "display:none" }, yaml,
       el("div", { class: "toolbar" }, valBtn, runBtn), msg);
     yaml.addEventListener("input", () => autosize(yaml));
-    const genBtn = el("button", { class: "btn", onClick: () => {
-      if (!stages.length) { KARMA.toast("Add at least one stage first.", "error"); return; }
+
+    // Validate the builder state and return the generated YAML, or null
+    // (after raising an error toast) when the workflow is incomplete.
+    function buildYamlOrWarn() {
+      if (!stages.length) { KARMA.toast("Add at least one stage first.", "error"); return null; }
       const bad = stages.findIndex((s) => !s.service || !s.case);
-      if (bad >= 0) { KARMA.toast(`Stage ${bad + 1}: choose a service and a case.`, "error"); return; }
-      yaml.value = generateYaml(idInput.value, modeSel.value, stages, advRows);
-      output.style.display = "";
-      autosize(yaml);
+      if (bad >= 0) { KARMA.toast(`Stage ${bad + 1}: choose a service and a case.`, "error"); return null; }
+      return generateYaml(idInput.value, modeSel.value, stages, advRows);
+    }
+    function showYaml(text) { yaml.value = text; output.style.display = ""; autosize(yaml); }
+
+    const genBtn = el("button", { class: "btn", onClick: () => {
+      const text = buildYamlOrWarn();
+      if (text) showYaml(text);
     } }, "Generate YAML");
+    const saveBtn = el("button", { class: "btn secondary", onClick: async () => {
+      const text = buildYamlOrWarn();
+      if (!text) return;
+      showYaml(text);
+      try {
+        const res = await api.post("/api/workflows", { yaml_text: text, name: idInput.value });
+        KARMA.toast("Saved as " + res.name, "success");
+        loadFiles();
+      } catch (e) { KARMA.toastError(e); }
+    } }, "Save to workflows");
 
     panel.appendChild(el("div", { class: "toolbar" }, addBtn));
 
@@ -185,9 +209,10 @@
 
     panel.appendChild(el("h3", {}, "Generate & Run"));
     panel.appendChild(el("p", { class: "field-help" },
-      "Build the workflow YAML from the stages and injections above. You can edit " +
-      "it, then validate it or run it inline right here."));
-    panel.appendChild(el("div", { class: "toolbar" }, genBtn));
+      "Build the workflow YAML from the stages and injections above. Generate it to " +
+      "edit, validate, or run it inline; Save to workflows keeps it under " +
+      "workflows/ui/ so it appears in Saved Workflows above."));
+    panel.appendChild(el("div", { class: "toolbar" }, genBtn, saveBtn));
     panel.appendChild(output);
     return panel;
   }
