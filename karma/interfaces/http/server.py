@@ -71,7 +71,9 @@ def create_app(
         )
 
     if static_dir is None:
-        static_dir = Path(__file__).parent.parent.parent / "static"
+        # server.py lives at karma/interfaces/http/; the static dir is at the
+        # repository root, i.e. three levels above the karma package.
+        static_dir = Path(__file__).resolve().parents[3] / "static"
     if workflows_dir is None:
         workflows_dir = Path("workflows")
 
