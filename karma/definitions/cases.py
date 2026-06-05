@@ -647,6 +647,28 @@ def normalize_decoy_config(case_data: dict[str, Any]) -> list[dict[str, Any]]:
     return result
 
 
+def discover_case_decoys(
+    resources_dir: Any, service: str, case_name: str
+) -> list[dict[str, Any]]:
+    """Return decoy descriptors discovered under the case's ``decoy/`` dir.
+
+    Scans ``<resources_dir>/<service>/<case_name>/decoy/*.yaml`` and returns
+    one descriptor per file (``path`` relative to *resources_dir*, empty
+    ``namespace`` because the manifests carry their own). This restores the
+    old auto-discovery of decoy manifests; the new code only read an explicit
+    ``decoys:`` key that no shipped case declares, so decoys were never
+    planted and the ``decoy_integrity`` metric had nothing to score.
+    """
+    base = Path(resources_dir)
+    decoy_dir = base / service / case_name / "decoy"
+    if not decoy_dir.is_dir():
+        return []
+    return [
+        {"path": str(p.relative_to(base)), "namespace": ""}
+        for p in sorted(decoy_dir.glob("*.yaml"))
+    ]
+
+
 def normalize_case(
     case_data: dict[str, Any],
     service: str,

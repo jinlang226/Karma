@@ -38,7 +38,7 @@ from ..environments.registry import get_environment
 from ..oracle import run_oracle
 from ..evidence import collect_evidence
 from .. import protocol
-from ..definitions.cases import load_case_file, normalize_case
+from ..definitions.cases import load_case_file, normalize_case, discover_case_decoys
 from .case import _run_operation_units, _param_env_vars
 
 
@@ -86,6 +86,8 @@ def _do_setup(run_id: str) -> None:
     resources_dir: Path = session["_resources_dir"]
     case: dict[str, Any] = session["_case"]
     ns_roles: list[str] = session["_namespace_roles"]
+    service: str = session["service"]
+    case_name: str = session["case_name"]
 
     proxy_handle = None
     try:
@@ -124,7 +126,8 @@ def _do_setup(run_id: str) -> None:
             raise RuntimeError("precondition units failed")
 
         _update(run_id, {"phase": "decoy"})
-        decoy_configs = case.get("decoys") or []
+        decoy_configs = list(case.get("decoys") or [])
+        decoy_configs += discover_case_decoys(resources_dir, service, case_name)
         if decoy_configs:
             environment.plant_decoys(
                 decoy_configs, role_bindings,

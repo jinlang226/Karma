@@ -40,6 +40,7 @@ from ..sandbox import launch_agent, cleanup_agent
 from ..oracle import run_oracle
 from ..evidence import collect_evidence
 from ..adversary import deploy as adversary_deploy, lift as adversary_lift, report as adversary_report
+from ..definitions.cases import discover_case_decoys
 from .. import protocol
 
 
@@ -353,8 +354,12 @@ def run_stage(
                 "oracle_path": str(protocol.stage_oracle_path(run_dir, stage_id)),
             }
 
-        # Step 4: plant decoys
-        decoy_configs = case.get("decoys") or []
+        # Step 4: plant decoys -- explicit `decoys:` entries plus any manifests
+        # discovered under the case's decoy/ directory.
+        decoy_configs = list(case.get("decoys") or [])
+        decoy_configs += discover_case_decoys(
+            resources_dir, row.get("service"), row.get("case_name")
+        )
         if decoy_configs:
             environment.plant_decoys(decoy_configs, role_bindings, resources_dir=resources_dir, run_dir=stage_dir)
 
