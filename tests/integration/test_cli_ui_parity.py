@@ -18,7 +18,7 @@ class TestCliUiParity:
     """Both paths must produce structurally identical workflows."""
 
     def test_ui_and_cli_produce_same_workflow_structure(self, tmp_path):
-        service = "rabbitmq-experiments"
+        service = "rabbitmq"
         case_name = "failover"
         params = {"target_node": "rabbit@pod-0"}
 

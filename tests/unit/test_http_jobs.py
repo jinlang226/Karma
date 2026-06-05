@@ -18,10 +18,10 @@ class TestTranslateUiRequest:
         assert len(wf["stages"]) == 1
 
     def test_single_case_stage_references_service_and_case(self, tmp_path):
-        payload = {"service": "rabbitmq-experiments", "case_name": "failover"}
+        payload = {"service": "rabbitmq", "case_name": "failover"}
         wf = translate_ui_request(payload, resources_dir=tmp_path)
         stage = wf["stages"][0]
-        assert stage["service"] == "rabbitmq-experiments"
+        assert stage["service"] == "rabbitmq"
         assert stage["case_name"] == "failover"
 
     def test_raises_when_service_missing(self, tmp_path):

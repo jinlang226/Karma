@@ -96,9 +96,9 @@ class TestSingleCaseToWorkflow:
         assert wf["stages"][0]["id"] == "stage_1"
 
     def test_stage_references_service_and_case(self):
-        wf = single_case_to_workflow("rabbitmq-experiments", "failover")
+        wf = single_case_to_workflow("rabbitmq", "failover")
         stage = wf["stages"][0]
-        assert stage["service"] == "rabbitmq-experiments"
+        assert stage["service"] == "rabbitmq"
         assert stage["case_name"] == "failover"
 
     def test_param_overrides_attached(self):

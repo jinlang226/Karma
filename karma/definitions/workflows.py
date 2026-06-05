@@ -409,7 +409,7 @@ def single_case_to_workflow(
     Parameters
     ----------
     service:
-        Service name, e.g. ``"rabbitmq-experiments"``.
+        Service name, e.g. ``"rabbitmq"``.
     case_name:
         Case name, e.g. ``"failover"``.
     param_overrides:
