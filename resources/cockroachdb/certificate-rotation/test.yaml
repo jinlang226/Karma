@@ -13,12 +13,20 @@ prompt: |
        ./cockroach sql --certs-dir=/cockroach/cockroach-certs -e "SELECT 1;"
 
   2. Node cert rotated:
-     kubectl -n cockroachdb get secret crdb-cluster-certs -o jsonpath='{.data.node\.crt}' | base64 -d | \
+     kubectl -n cockroachdb get secret {{params.cert_secret_name}} -o jsonpath='{.data.node\.crt}' | base64 -d | \
        openssl x509 -noout -fingerprint -sha256
 
   3. New cert validity about 1 year:
-     kubectl -n cockroachdb get secret crdb-cluster-certs -o jsonpath='{.data.node\.crt}' | base64 -d | \
+     kubectl -n cockroachdb get secret {{params.cert_secret_name}} -o jsonpath='{.data.node\.crt}' | base64 -d | \
        openssl x509 -noout -enddate
+
+params:
+  cert_secret_name:
+    default: crdb-cluster-certs
+    description: Kubernetes secret holding the cluster TLS certificates
+  old_cert_configmap_name:
+    default: crdb-old-cert
+    description: ConfigMap recording the pre-rotation certificate fingerprints
 
 namespace_contract:
   required_roles: []
@@ -50,9 +58,9 @@ preconditionUnits:
         sleep: 2
       - command: "/bin/sh -c 'rm -rf /tmp/crdb-old-certs; kubectl -n cockroachdb cp openssl-toolbox:/tmp/certs /tmp/crdb-old-certs'"
         sleep: 1
-      - command: "/bin/sh -c 'kubectl -n cockroachdb create secret generic crdb-cluster-certs --from-file=ca.crt=/tmp/crdb-old-certs/ca.crt --from-file=node.crt=/tmp/crdb-old-certs/node.crt --from-file=node.key=/tmp/crdb-old-certs/node.key --from-file=client.root.crt=/tmp/crdb-old-certs/client.root.crt --from-file=client.root.key=/tmp/crdb-old-certs/client.root.key --dry-run=client -o yaml | kubectl apply -f -'"
+      - command: "/bin/sh -c 'kubectl -n cockroachdb create secret generic {{params.cert_secret_name}} --from-file=ca.crt=/tmp/crdb-old-certs/ca.crt --from-file=node.crt=/tmp/crdb-old-certs/node.crt --from-file=node.key=/tmp/crdb-old-certs/node.key --from-file=client.root.crt=/tmp/crdb-old-certs/client.root.crt --from-file=client.root.key=/tmp/crdb-old-certs/client.root.key --dry-run=client -o yaml | kubectl apply -f -'"
         sleep: 1
-      - command: "/bin/sh -c 'fingerprint=$(openssl x509 -noout -fingerprint -sha256 -in /tmp/crdb-old-certs/node.crt | sed \"s/.*=//\"); ca_fingerprint=$(openssl x509 -noout -fingerprint -sha256 -in /tmp/crdb-old-certs/ca.crt | sed \"s/.*=//\"); not_after=$(openssl x509 -noout -enddate -in /tmp/crdb-old-certs/node.crt | sed \"s/notAfter=//\"); kubectl -n cockroachdb create configmap crdb-old-cert --from-literal=fingerprint=\"$fingerprint\" --from-literal=ca_fingerprint=\"$ca_fingerprint\" --from-literal=not_after=\"$not_after\" --dry-run=client -o yaml | kubectl apply -f -'"
+      - command: "/bin/sh -c 'fingerprint=$(openssl x509 -noout -fingerprint -sha256 -in /tmp/crdb-old-certs/node.crt | sed \"s/.*=//\"); ca_fingerprint=$(openssl x509 -noout -fingerprint -sha256 -in /tmp/crdb-old-certs/ca.crt | sed \"s/.*=//\"); not_after=$(openssl x509 -noout -enddate -in /tmp/crdb-old-certs/node.crt | sed \"s/notAfter=//\"); kubectl -n cockroachdb create configmap {{params.old_cert_configmap_name}} --from-literal=fingerprint=\"$fingerprint\" --from-literal=ca_fingerprint=\"$ca_fingerprint\" --from-literal=not_after=\"$not_after\" --dry-run=client -o yaml | kubectl apply -f -'"
         sleep: 1
       - command: "kubectl -n cockroachdb apply -f resources/cockroachdb/certificate-rotation/resource/statefulset.yaml"
         sleep: 5

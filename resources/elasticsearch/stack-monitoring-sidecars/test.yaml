@@ -19,6 +19,26 @@ prompt: |
   - Monitoring indices appear in the monitoring cluster.
   - Elasticsearch pods continue running with monitoring sidecars.
 
+params:
+  cluster_prefix:
+    default: es-cluster
+    description: "Name prefix for the Elasticsearch StatefulSet / node DNS"
+  http_service_name:
+    default: es-http
+    description: "Name of the Elasticsearch HTTP service / cert CN"
+  curl_pod_name:
+    default: curl-test
+    description: "Helper pod in the elasticsearch namespace for HTTP requests"
+  tls_secret_name:
+    default: es-http-tls
+    description: "Secret holding the Elasticsearch HTTPS TLS cert, key, and CA"
+  monitoring_deployment_name:
+    default: monitoring-es
+    description: "Pod label / deployment of the monitoring Elasticsearch cluster"
+  monitoring_curl_pod_name:
+    default: monitoring-curl-test
+    description: "Helper pod in the monitoring namespace for HTTP requests"
+
 namespace_contract:
   required_roles: []
 
@@ -43,9 +63,9 @@ preconditionUnits:
         sleep: 1
       - command: "kubectl -n monitoring apply -f resources/elasticsearch/stack-monitoring-sidecars/resource/monitoring-cluster/"
         sleep: 1
-      - command: "kubectl -n monitoring wait --for=condition=ready pod -l app=monitoring-es --timeout=300s"
+      - command: "kubectl -n monitoring wait --for=condition=ready pod -l app={{params.monitoring_deployment_name}} --timeout=300s"
         sleep: 1
-      - command: "kubectl -n monitoring wait --for=condition=ready pod/monitoring-curl-test --timeout=300s"
+      - command: "kubectl -n monitoring wait --for=condition=ready pod/{{params.monitoring_curl_pod_name}} --timeout=300s"
         sleep: 1
       - command: "kubectl delete namespace elasticsearch --ignore-not-found=true --wait=false"
         sleep: 1
@@ -67,19 +87,19 @@ preconditionUnits:
           req_extensions=v3_req
           prompt=no
           [req_distinguished_name]
-          CN=es-http
+          CN={{params.http_service_name}}
           [v3_req]
           keyUsage=critical,digitalSignature,keyEncipherment
           extendedKeyUsage=serverAuth,clientAuth
           subjectAltName=@alt_names
           [alt_names]
-          DNS.1=es-http
-          DNS.2=es-http.elasticsearch
-          DNS.3=es-http.elasticsearch.svc
-          DNS.4=es-http.elasticsearch.svc.cluster.local
-          DNS.5=es-cluster-0.es-cluster.elasticsearch.svc.cluster.local
-          DNS.6=es-cluster-1.es-cluster.elasticsearch.svc.cluster.local
-          DNS.7=es-cluster-2.es-cluster.elasticsearch.svc.cluster.local
+          DNS.1={{params.http_service_name}}
+          DNS.2={{params.http_service_name}}.elasticsearch
+          DNS.3={{params.http_service_name}}.elasticsearch.svc
+          DNS.4={{params.http_service_name}}.elasticsearch.svc.cluster.local
+          DNS.5={{params.cluster_prefix}}-0.{{params.cluster_prefix}}.elasticsearch.svc.cluster.local
+          DNS.6={{params.cluster_prefix}}-1.{{params.cluster_prefix}}.elasticsearch.svc.cluster.local
+          DNS.7={{params.cluster_prefix}}-2.{{params.cluster_prefix}}.elasticsearch.svc.cluster.local
           DNS.8=localhost
           EOF
           openssl genrsa -out /tmp/certs/ca.key 2048
@@ -89,14 +109,14 @@ preconditionUnits:
           openssl x509 -req -in /tmp/certs/server.csr -CA /tmp/certs/ca.crt -CAkey /tmp/certs/ca.key -CAcreateserial -out /tmp/certs/server.crt -days 365 -extensions v3_req -extfile /tmp/certs/openssl.cnf
           '\''
           kubectl -n elasticsearch cp openssl-toolbox:/tmp/certs "${TMP_DIR}/certs"
-          kubectl -n elasticsearch create secret generic es-http-tls --from-file=tls.crt="${TMP_DIR}/certs/server.crt" --from-file=tls.key="${TMP_DIR}/certs/server.key" --from-file=ca.crt="${TMP_DIR}/certs/ca.crt" --dry-run=client -o yaml | kubectl apply -f -
+          kubectl -n elasticsearch create secret generic {{params.tls_secret_name}} --from-file=tls.crt="${TMP_DIR}/certs/server.crt" --from-file=tls.key="${TMP_DIR}/certs/server.key" --from-file=ca.crt="${TMP_DIR}/certs/ca.crt" --dry-run=client -o yaml | kubectl apply -f -
           '
         sleep: 1
       - command: "kubectl -n elasticsearch apply -f resources/elasticsearch/stack-monitoring-sidecars/resource/"
         sleep: 1
-      - command: "kubectl -n elasticsearch wait --for=condition=ready pod -l app=es-cluster --timeout=600s"
+      - command: "kubectl -n elasticsearch wait --for=condition=ready pod -l app={{params.cluster_prefix}} --timeout=600s"
         sleep: 1
-      - command: "kubectl -n elasticsearch wait --for=condition=ready pod/curl-test --timeout=300s"
+      - command: "kubectl -n elasticsearch wait --for=condition=ready pod/{{params.curl_pod_name}} --timeout=300s"
         sleep: 1
     verify:
       - command: "kubectl -n elasticsearch get pods 2>/dev/null | grep -c Running || true"

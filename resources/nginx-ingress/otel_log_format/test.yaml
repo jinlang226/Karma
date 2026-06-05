@@ -4,8 +4,25 @@
 # ingress-nginx controller does not emit OpenTelemetry trace/span IDs
 # in access logs. The agent must enable OTel and update the log format.
 
+params:
+  host:
+    default: otel.example.com
+    description: Hostname the OTel-enabled Ingress serves.
+  path:
+    default: /otel-check
+    description: HTTP path used to generate the traced log entry.
+  collector_service_name:
+    default: otel-collector
+    description: Service name of the OpenTelemetry collector.
+  collector_port:
+    default: "4317"
+    description: OTLP gRPC port the collector listens on.
+  curl_pod_name:
+    default: curl-test
+    description: Name of the in-cluster pod used to issue test requests.
+
 prompt: |
-  An Ingress routes otel.example.com to a healthy backend in the demo
+  An Ingress routes {{params.host}} to a healthy backend in the demo
   namespace. Requests succeed, but the ingress-nginx access logs do not
   include OpenTelemetry trace/span IDs.
 
@@ -15,12 +32,12 @@ prompt: |
   3) Update the access log format so it records trace and span IDs.
 
   The OpenTelemetry collector is already running at
-  otel-collector.otel.svc:4317.
+  {{params.collector_service_name}}.otel.svc:{{params.collector_port}}.
 
   Use this request to generate a log entry:
   ```bash
-  kubectl -n demo exec curl-test -- curl -sS -H "Host: otel.example.com" \
-    http://ingress-nginx-controller.ingress-nginx.svc/otel-check
+  kubectl -n demo exec {{params.curl_pod_name}} -- curl -sS -H "Host: {{params.host}}" \
+    http://ingress-nginx-controller.ingress-nginx.svc{{params.path}}
   ```
 
   Set log-format-upstream to:
@@ -29,7 +46,7 @@ prompt: |
    otel_trace_id=$opentelemetry_trace_id
    otel_span_id=$opentelemetry_span_id'
 
-  Success criteria: the controller access log line for the /otel-check
+  Success criteria: the controller access log line for the {{params.path}}
   request contains non-empty otel_trace_id and otel_span_id values, and
   the corresponding trace is exported to the OpenTelemetry collector.
 
@@ -54,7 +71,7 @@ preconditionUnits:
   - name: nginx_env_ready
     on_probe_fail: skip
     probe:
-      - command: "kubectl -n demo wait --for=condition=ready pod/curl-test --timeout=5s"
+      - command: "kubectl -n demo wait --for=condition=ready pod/{{params.curl_pod_name}} --timeout=5s"
         timeout_sec: 10
     apply:
       - command: "/bin/sh -c 'kubectl delete namespace ingress-nginx --ignore-not-found=true; kubectl delete namespace demo --ignore-not-found=true; kubectl delete namespace otel --ignore-not-found=true; kubectl wait --for=delete namespace/ingress-nginx --timeout=120s || true; kubectl wait --for=delete namespace/demo --timeout=120s || true; kubectl wait --for=delete namespace/otel --timeout=120s || true'"
@@ -75,7 +92,7 @@ preconditionUnits:
         sleep: 1
       - command: "kubectl -n demo apply -f resources/nginx-ingress/otel_log_format/resource/curl-test.yaml"
         sleep: 1
-      - command: "kubectl -n demo wait --for=condition=Ready pod/curl-test --timeout=60s"
+      - command: "kubectl -n demo wait --for=condition=Ready pod/{{params.curl_pod_name}} --timeout=60s"
         sleep: 1
       - command: "kubectl create namespace otel"
         sleep: 0
@@ -84,7 +101,7 @@ preconditionUnits:
       - command: "kubectl -n otel rollout status deploy/otel-collector --timeout=60s"
         sleep: 1
     verify:
-      - command: "kubectl -n demo wait --for=condition=ready pod/curl-test --timeout=5s"
+      - command: "kubectl -n demo wait --for=condition=ready pod/{{params.curl_pod_name}} --timeout=5s"
         timeout_sec: 30
 
 oracle:

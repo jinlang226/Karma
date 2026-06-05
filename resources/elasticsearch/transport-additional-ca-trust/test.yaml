@@ -2,13 +2,30 @@
 # Restore degraded 3-node Elasticsearch cluster by adding additional transport CA trust
 
 prompt: |
-  The Elasticsearch cluster is degraded and running below the expected 3 nodes.
+  The Elasticsearch cluster is degraded and running below the expected {{params.expected_nodes}} nodes.
 
   Your task:
-  Restore the cluster to a healthy 3-node state.
+  Restore the cluster to a healthy {{params.expected_nodes}}-node state.
 
   Constraints:
   - Do not install operators or CRDs.
+
+params:
+  cluster_prefix:
+    default: es-cluster
+    description: "Name prefix for the Elasticsearch StatefulSet, headless service, and node DNS"
+  expected_nodes:
+    default: 3
+    description: "Expected number of healthy Elasticsearch nodes in the cluster"
+  transport_bundle_configmap:
+    default: es-transport-ca-bundle
+    description: "ConfigMap holding the additional transport CA trust bundle"
+  ca1_secret_name:
+    default: es-transport-ca1
+    description: "Secret holding the first transport CA cert and node keypair"
+  ca2_secret_name:
+    default: es-transport-ca2
+    description: "Secret holding the second transport CA cert and node keypair"
 
 namespace_contract:
   required_roles: []
@@ -54,13 +71,13 @@ preconditionUnits:
           extendedKeyUsage=serverAuth,clientAuth
           subjectAltName=@alt_names
           [alt_names]
-          DNS.1=es-cluster
-          DNS.2=es-cluster.elasticsearch
-          DNS.3=es-cluster.elasticsearch.svc
-          DNS.4=es-cluster.elasticsearch.svc.cluster.local
-          DNS.5=es-cluster-0.es-cluster.elasticsearch.svc.cluster.local
-          DNS.6=es-cluster-1.es-cluster.elasticsearch.svc.cluster.local
-          DNS.7=es-cluster-2.es-cluster.elasticsearch.svc.cluster.local
+          DNS.1={{params.cluster_prefix}}
+          DNS.2={{params.cluster_prefix}}.elasticsearch
+          DNS.3={{params.cluster_prefix}}.elasticsearch.svc
+          DNS.4={{params.cluster_prefix}}.elasticsearch.svc.cluster.local
+          DNS.5={{params.cluster_prefix}}-0.{{params.cluster_prefix}}.elasticsearch.svc.cluster.local
+          DNS.6={{params.cluster_prefix}}-1.{{params.cluster_prefix}}.elasticsearch.svc.cluster.local
+          DNS.7={{params.cluster_prefix}}-2.{{params.cluster_prefix}}.elasticsearch.svc.cluster.local
           EOF
           openssl genrsa -out /tmp/certs/ca1.key 2048
           openssl req -x509 -new -nodes -key /tmp/certs/ca1.key -sha256 -days 3650 -subj "/CN=es-ca-1" -out /tmp/certs/ca1.crt
@@ -74,12 +91,12 @@ preconditionUnits:
           openssl x509 -req -in /tmp/certs/server2.csr -CA /tmp/certs/ca2.crt -CAkey /tmp/certs/ca2.key -CAcreateserial -out /tmp/certs/server2.crt -days 365 -extensions v3_req -extfile /tmp/certs/openssl.cnf
           '\''
           kubectl -n elasticsearch cp openssl-toolbox:/tmp/certs "${TMP_DIR}/certs"
-          kubectl -n elasticsearch create secret generic es-transport-ca1 --from-file=ca.crt="${TMP_DIR}/certs/ca1.crt" --from-file=node.crt="${TMP_DIR}/certs/server1.crt" --from-file=node.key="${TMP_DIR}/certs/server1.key" --dry-run=client -o yaml | kubectl apply -f -
-          kubectl -n elasticsearch create secret generic es-transport-ca2 --from-file=ca.crt="${TMP_DIR}/certs/ca2.crt" --from-file=node.crt="${TMP_DIR}/certs/server2.crt" --from-file=node.key="${TMP_DIR}/certs/server2.key" --dry-run=client -o yaml | kubectl apply -f -
-          kubectl -n elasticsearch create configmap es-transport-ca-bundle --from-file=ca.crt="${TMP_DIR}/certs/ca1.crt" --dry-run=client -o yaml | kubectl apply -f -
+          kubectl -n elasticsearch create secret generic {{params.ca1_secret_name}} --from-file=ca.crt="${TMP_DIR}/certs/ca1.crt" --from-file=node.crt="${TMP_DIR}/certs/server1.crt" --from-file=node.key="${TMP_DIR}/certs/server1.key" --dry-run=client -o yaml | kubectl apply -f -
+          kubectl -n elasticsearch create secret generic {{params.ca2_secret_name}} --from-file=ca.crt="${TMP_DIR}/certs/ca2.crt" --from-file=node.crt="${TMP_DIR}/certs/server2.crt" --from-file=node.key="${TMP_DIR}/certs/server2.key" --dry-run=client -o yaml | kubectl apply -f -
+          kubectl -n elasticsearch create configmap {{params.transport_bundle_configmap}} --from-file=ca.crt="${TMP_DIR}/certs/ca1.crt" --dry-run=client -o yaml | kubectl apply -f -
           '
         sleep: 1
-      - command: "kubectl -n elasticsearch wait --for=condition=ready pod -l app=es-cluster --timeout=600s"
+      - command: "kubectl -n elasticsearch wait --for=condition=ready pod -l app={{params.cluster_prefix}} --timeout=600s"
         sleep: 1
       - command: "kubectl -n elasticsearch wait --for=condition=ready pod/curl-test --timeout=300s"
         sleep: 1

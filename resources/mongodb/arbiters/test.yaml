@@ -1,6 +1,20 @@
 # mongodb/arbiters
 # MongoDB operator-add-arbiters task
 
+params:
+  data_cluster_prefix:
+    default: mongo-rs
+    description: StatefulSet name of the data-bearing replica set members.
+  replica_set_name:
+    default: rs0
+    description: MongoDB replica set _id used when initiating the set.
+  app_database:
+    default: app
+    description: Application database that must remain intact.
+  app_collection:
+    default: test
+    description: Application collection seeded with data.
+
 prompt: |
   The MongoDB replica set has two data-bearing members and a running arbiter pod.
   Elections are unstable unless you add a voting member without increasing storage cost.
@@ -38,7 +52,7 @@ preconditionUnits:
       - command: |
           /bin/sh -c '
           for i in $(seq 1 60); do
-            ready=$(kubectl -n mongodb get sts mongo-rs -o jsonpath='{.status.readyReplicas}' 2>/dev/null)
+            ready=$(kubectl -n mongodb get sts {{params.data_cluster_prefix}} -o jsonpath='{.status.readyReplicas}' 2>/dev/null)
             if [ "${ready:-0}" -ge 2 ]; then
               exit 0
             fi
@@ -52,7 +66,7 @@ preconditionUnits:
       - command: |
           /bin/sh -c '
           kubectl -n mongodb exec mongo-rs-0 -- mongosh --quiet --eval '
-          rs.initiate({_id:"rs0",members:[
+          rs.initiate({_id:"{{params.replica_set_name}}",members:[
             {_id:0,host:"mongo-rs-0.mongo.mongodb.svc.cluster.local:27017"},
             {_id:1,host:"mongo-rs-1.mongo.mongodb.svc.cluster.local:27017"}
           ]})'
@@ -67,7 +81,7 @@ preconditionUnits:
           exit 1
           '
         sleep: 2
-      - command: "kubectl -n mongodb exec mongo-rs-0 -- mongosh --quiet --eval db.getSiblingDB(\"app\").test.insertMany([{x:1},{x:2},{x:3}], {writeConcern:{w:1}}); db.getSiblingDB(\"app\").test.countDocuments({});"
+      - command: "kubectl -n mongodb exec mongo-rs-0 -- mongosh --quiet --eval db.getSiblingDB(\"{{params.app_database}}\").{{params.app_collection}}.insertMany([{x:1},{x:2},{x:3}], {writeConcern:{w:1}}); db.getSiblingDB(\"{{params.app_database}}\").{{params.app_collection}}.countDocuments({});"
         sleep: 2
     verify:
       - command: "kubectl -n mongodb get pods 2>/dev/null | grep -c Running || true"

@@ -5,14 +5,14 @@ prompt: |
   The elastic user password must be rotated.
 
   OBSERVED STATE:
-  - Secret elastic-password contains the current password.
-  - Secret elastic-password-next contains the new password.
-  - An auth-checker deployment is expected to stay healthy.
+  - Secret {{params.current_password_secret_name}} contains the current password.
+  - Secret {{params.next_password_secret_name}} contains the new password.
+  - An {{params.auth_checker_deployment_name}} deployment is expected to stay healthy.
 
   YOUR TASK:
-  - Rotate the elastic user password to match elastic-password-next.
-  - Update the elastic-password secret to the new value.
-  - Ensure auth-checker becomes healthy after the rotation.
+  - Rotate the elastic user password to match {{params.next_password_secret_name}}.
+  - Update the {{params.current_password_secret_name}} secret to the new value.
+  - Ensure {{params.auth_checker_deployment_name}} becomes healthy after the rotation.
 
   CONSTRAINTS:
   - Do not install CRDs or use operators.
@@ -20,8 +20,27 @@ prompt: |
 
   GOAL:
   - Old password fails, new password succeeds.
-  - auth-checker is Ready.
+  - {{params.auth_checker_deployment_name}} is Ready.
 
+params:
+  next_password_secret_name:
+    default: "elastic-password-next"
+    description: "Secret holding the new elastic password during rotation"
+  current_password_secret_name:
+    default: "elastic-password"
+    description: "Secret holding the current elastic password"
+  auth_checker_deployment_name:
+    default: "auth-checker"
+    description: "Deployment that continuously verifies authentication during rotation"
+  transport_tls_secret_name:
+    default: "es-transport-tls"
+    description: "Secret holding the transport-layer TLS material"
+  cluster_prefix:
+    default: "es-cluster"
+    description: "StatefulSet/cluster name prefix for Elasticsearch node pods"
+  http_service_name:
+    default: "es-http"
+    description: "Name of the Elasticsearch HTTP service"
 namespace_contract:
   required_roles: []
 
@@ -66,13 +85,13 @@ preconditionUnits:
           extendedKeyUsage=serverAuth,clientAuth
           subjectAltName=@alt_names
           [alt_names]
-          DNS.1=es-cluster
-          DNS.2=es-cluster.elasticsearch
-          DNS.3=es-cluster.elasticsearch.svc
-          DNS.4=es-cluster.elasticsearch.svc.cluster.local
-          DNS.5=es-cluster-0.es-cluster.elasticsearch.svc.cluster.local
-          DNS.6=es-cluster-1.es-cluster.elasticsearch.svc.cluster.local
-          DNS.7=es-cluster-2.es-cluster.elasticsearch.svc.cluster.local
+          DNS.1={{params.cluster_prefix}}
+          DNS.2={{params.cluster_prefix}}.elasticsearch
+          DNS.3={{params.cluster_prefix}}.elasticsearch.svc
+          DNS.4={{params.cluster_prefix}}.elasticsearch.svc.cluster.local
+          DNS.5=es-cluster-0.{{params.cluster_prefix}}.elasticsearch.svc.cluster.local
+          DNS.6=es-cluster-1.{{params.cluster_prefix}}.elasticsearch.svc.cluster.local
+          DNS.7=es-cluster-2.{{params.cluster_prefix}}.elasticsearch.svc.cluster.local
           DNS.8=es-cluster-0
           DNS.9=es-cluster-1
           DNS.10=es-cluster-2
@@ -84,18 +103,18 @@ preconditionUnits:
           openssl x509 -req -in /tmp/certs/server.csr -CA /tmp/certs/ca.crt -CAkey /tmp/certs/ca.key -CAcreateserial -out /tmp/certs/server.crt -days 365 -extensions v3_req -extfile /tmp/certs/openssl.cnf
           '\''
           kubectl -n elasticsearch cp openssl-toolbox:/tmp/certs "${TMP_DIR}/certs"
-          kubectl -n elasticsearch create secret generic es-transport-tls --from-file=tls.crt="${TMP_DIR}/certs/server.crt" --from-file=tls.key="${TMP_DIR}/certs/server.key" --from-file=ca.crt="${TMP_DIR}/certs/ca.crt" --dry-run=client -o yaml | kubectl apply -f -
+          kubectl -n elasticsearch create secret generic {{params.transport_tls_secret_name}} --from-file=tls.crt="${TMP_DIR}/certs/server.crt" --from-file=tls.key="${TMP_DIR}/certs/server.key" --from-file=ca.crt="${TMP_DIR}/certs/ca.crt" --dry-run=client -o yaml | kubectl apply -f -
           '
         sleep: 1
       - command: "kubectl -n elasticsearch apply -f resources/elasticsearch/rotate-elastic-password/resource/"
         sleep: 1
-      - command: "kubectl -n elasticsearch wait --for=condition=ready pod -l app=es-cluster --timeout=600s"
+      - command: "kubectl -n elasticsearch wait --for=condition=ready pod -l app={{params.cluster_prefix}} --timeout=600s"
         sleep: 1
       - command: "kubectl -n elasticsearch wait --for=condition=ready pod/curl-test --timeout=300s"
         sleep: 1
-      - command: "kubectl -n elasticsearch wait --for=condition=available deployment/auth-checker --timeout=300s"
+      - command: "kubectl -n elasticsearch wait --for=condition=available deployment/{{params.auth_checker_deployment_name}} --timeout=300s"
         sleep: 1
-      - command: "/bin/sh -c 'kubectl -n elasticsearch exec curl-test -- curl -s --max-time 5 -u elastic:elasticpass-old http://es-http.elasticsearch.svc:9200/_cluster/health?wait_for_status=yellow\\&timeout=5s | grep -q status'"
+      - command: "/bin/sh -c 'kubectl -n elasticsearch exec curl-test -- curl -s --max-time 5 -u elastic:elasticpass-old http://{{params.http_service_name}}.elasticsearch.svc:9200/_cluster/health?wait_for_status=yellow\\&timeout=5s | grep -q status'"
         sleep: 1
     verify:
       - command: "kubectl -n elasticsearch get pods 2>/dev/null | grep -c Running || true"

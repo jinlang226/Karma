@@ -1,35 +1,55 @@
 # cockroachdb/zone-config
-# Apply zone configuration to tenant_b tables without modifying tenant_a tables
+# Apply zone configuration to {{params.target_schema}} tables without modifying {{params.protected_schema}} tables
 
 prompt: |
   A 3-node CockroachDB cluster is running in cockroachdb.
 
   Tables are organized by tenant using schemas:
-  - tenant_a.* belongs to Tenant A
-  - tenant_b.* belongs to Tenant B
+  - {{params.protected_schema}}.* belongs to Tenant A
+  - {{params.target_schema}}.* belongs to Tenant B
 
   Your task:
-  Apply a zone configuration to all tenant_b tables only with:
-  - num_replicas = 3
-  - gc.ttlseconds = 14400
-  - range_min_bytes = 134217728
-  - range_max_bytes = 536870912
+  Apply a zone configuration to all {{params.target_schema}} tables only with:
+  - num_replicas = {{params.num_replicas}}
+  - gc.ttlseconds = {{params.gc_ttl_seconds}}
+  - range_min_bytes = {{params.range_min_bytes}}
+  - range_max_bytes = {{params.range_max_bytes}}
 
-  Do not modify zone configs for tenant_a tables.
+  Do not modify zone configs for {{params.protected_schema}} tables.
 
   Useful commands:
   ```bash
-  kubectl -n cockroachdb exec crdb-cluster-0 -- ./cockroach sql --insecure --database=defaultdb -e "SHOW TABLES FROM tenant_b;"
+  kubectl -n cockroachdb exec crdb-cluster-0 -- ./cockroach sql --insecure --database=defaultdb -e "SHOW TABLES FROM {{params.target_schema}};"
   ```
 
   Verification:
-  1. tenant_b tables have the required zone config:
+  1. {{params.target_schema}} tables have the required zone config:
      kubectl -n cockroachdb exec crdb-cluster-0 -- \
-       ./cockroach sql --insecure --database=defaultdb -e "SHOW ZONE CONFIGURATION FOR TABLE tenant_b.<table>;"
+       ./cockroach sql --insecure --database=defaultdb -e "SHOW ZONE CONFIGURATION FOR TABLE {{params.target_schema}}.<table>;"
 
-  2. tenant_a tables have no custom zone config:
+  2. {{params.protected_schema}} tables have no custom zone config:
      kubectl -n cockroachdb exec crdb-cluster-0 -- \
-       ./cockroach sql --insecure --database=defaultdb -e "SELECT target FROM crdb_internal.zones WHERE target LIKE 'TABLE %tenant_a.%';"
+       ./cockroach sql --insecure --database=defaultdb -e "SELECT target FROM crdb_internal.zones WHERE target LIKE 'TABLE %{{params.protected_schema}}.%';"
+
+params:
+  target_schema:
+    default: tenant_b
+    description: Schema whose tables receive the new zone configuration
+  protected_schema:
+    default: tenant_a
+    description: Schema whose tables must NOT have their zone config modified
+  num_replicas:
+    default: 3
+    description: Replication factor to set in the zone configuration
+  gc_ttl_seconds:
+    default: 14400
+    description: GC TTL (seconds) to set in the zone configuration
+  range_min_bytes:
+    default: 134217728
+    description: Minimum range size (bytes) in the zone configuration
+  range_max_bytes:
+    default: 536870912
+    description: Maximum range size (bytes) in the zone configuration
 
 namespace_contract:
   required_roles: []
@@ -59,7 +79,7 @@ preconditionUnits:
         sleep: 2
       - command: "kubectl -n cockroachdb wait --for=condition=ready pod -l app.kubernetes.io/name=cockroachdb --timeout=300s"
         sleep: 10
-      - command: "/bin/sh -c 'kubectl -n cockroachdb exec crdb-cluster-0 -- ./cockroach sql --insecure --database=defaultdb -e \"CREATE SCHEMA IF NOT EXISTS tenant_a; CREATE SCHEMA IF NOT EXISTS tenant_b; CREATE TABLE IF NOT EXISTS tenant_a.table_a (id INT PRIMARY KEY, value STRING); CREATE TABLE IF NOT EXISTS tenant_a.table_b (id INT PRIMARY KEY, value STRING); CREATE TABLE IF NOT EXISTS tenant_b.table_c (id INT PRIMARY KEY, value STRING); CREATE TABLE IF NOT EXISTS tenant_b.table_d (id INT PRIMARY KEY, value STRING); INSERT INTO tenant_a.table_a VALUES (1, 47) ON CONFLICT DO NOTHING; INSERT INTO tenant_b.table_c VALUES (1, 47) ON CONFLICT DO NOTHING; INSERT INTO tenant_b.table_d VALUES (1, 47) ON CONFLICT DO NOTHING;\"'"
+      - command: "/bin/sh -c 'kubectl -n cockroachdb exec crdb-cluster-0 -- ./cockroach sql --insecure --database=defaultdb -e \"CREATE SCHEMA IF NOT EXISTS {{params.protected_schema}}; CREATE SCHEMA IF NOT EXISTS {{params.target_schema}}; CREATE TABLE IF NOT EXISTS {{params.protected_schema}}.table_a (id INT PRIMARY KEY, value STRING); CREATE TABLE IF NOT EXISTS {{params.protected_schema}}.table_b (id INT PRIMARY KEY, value STRING); CREATE TABLE IF NOT EXISTS {{params.target_schema}}.table_c (id INT PRIMARY KEY, value STRING); CREATE TABLE IF NOT EXISTS {{params.target_schema}}.table_d (id INT PRIMARY KEY, value STRING); INSERT INTO {{params.protected_schema}}.table_a VALUES (1, 47) ON CONFLICT DO NOTHING; INSERT INTO {{params.target_schema}}.table_c VALUES (1, 47) ON CONFLICT DO NOTHING; INSERT INTO {{params.target_schema}}.table_d VALUES (1, 47) ON CONFLICT DO NOTHING;\"'"
         sleep: 2
     verify:
       - command: "kubectl -n cockroachdb exec crdb-cluster-0 -- ./cockroach sql --insecure -e 'SELECT 1;' 2>/dev/null"
