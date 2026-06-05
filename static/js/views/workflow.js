@@ -105,12 +105,12 @@
       el("div", {}, el("label", {}, "Workflow ID"), idInput),
       el("div", {}, el("label", {}, "Prompt Mode"), modeSel));
     panel.appendChild(el("h3", {}, "Basics"));
-    panel.appendChild(top);
     panel.appendChild(el("p", { class: "field-help" },
-      "Workflow id is a short name for this workflow. Prompt mode controls how " +
+      "Workflow ID is a short name for this workflow. Prompt mode controls how " +
       "earlier stages' prompts are shown to the agent — Progressive adds each " +
       "stage to the previous, Concatenated (stateful) shows the full running " +
       "history, and Concatenated (blind) shows only the current stage."));
+    panel.appendChild(top);
 
     panel.appendChild(el("h3", {}, "Stages"));
     panel.appendChild(el("p", { class: "field-help" },
