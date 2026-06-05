@@ -11,23 +11,39 @@ class TestWaitForSubmit:
     def test_returns_true_when_file_appears(self, tmp_path):
         submit = tmp_path / "submit.txt"
         submit.write_text("done")
-        found, content = _wait_for_submit(submit, agent_timeout_sec=5)
+        found, content, exited = _wait_for_submit(submit, agent_timeout_sec=5)
         assert found is True
         assert content == "done"
+        assert exited is False
 
     def test_returns_false_on_timeout(self, tmp_path):
         submit = tmp_path / "submit.txt"
-        found, content = _wait_for_submit(
+        found, content, exited = _wait_for_submit(
             submit, agent_timeout_sec=0, poll_interval_sec=0.01
         )
         assert found is False
         assert content is None
+        assert exited is False
 
     def test_reads_content_correctly(self, tmp_path):
         submit = tmp_path / "submit.txt"
         submit.write_text("agent answer here")
-        _, content = _wait_for_submit(submit, agent_timeout_sec=5)
+        _, content, _exited = _wait_for_submit(submit, agent_timeout_sec=5)
         assert content == "agent answer here"
+
+    def test_agent_exit_ends_wait_without_submit(self, tmp_path):
+        # A process that has stopped before writing submit.txt ends the wait
+        # immediately with agent_exited=True instead of burning the timeout.
+        class _Dead:
+            def is_running(self):
+                return False
+        submit = tmp_path / "submit.txt"
+        found, content, exited = _wait_for_submit(
+            submit, agent_timeout_sec=30, poll_interval_sec=0.01,
+            agent_process=_Dead(),
+        )
+        assert found is False
+        assert exited is True
 
 
 class TestRunOperationUnits:

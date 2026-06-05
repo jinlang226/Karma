@@ -68,33 +68,50 @@ def _run_final_regression_sweep(
     stage_results: list[dict[str, Any]],
     *,
     run_dir: Path,
+    environment: Any,
 ) -> dict[str, Any]:
     """Re-run the oracle for all completed stages and return a regression summary.
 
     A regression is a stage whose oracle passed during the run but fails
     when re-evaluated after later stages may have altered cluster state.
 
+    Namespace cleanup is deferred to the end of the workflow (see
+    ``run_stage(defer_cleanup=True)``), so each stage's namespaces are still
+    live here. The bindings and namespace/param env are recomputed from the
+    rows the same way the stage built them, so the re-run oracle commands see
+    the same ``$BENCH_NS_*``/``$BENCH_PARAM_*`` context they did originally.
+
     Returns
     -------
     dict
         Map of ``stage_id`` to regression verdict dict.
     """
-    from ..definitions.cases import normalize_oracle_config
-    from ..definitions.workflows import resolve_workflow_rows
+    from .case import _param_env_vars
 
-    completed_rows = [
-        row for row in rows
-        if row.get("stage_id") in {r.get("stage_id") for r in stage_results if r.get("status") == "pass"}
-    ]
+    passed_ids = {r.get("stage_id") for r in stage_results if r.get("status") == "pass"}
+    completed_rows = [row for row in rows if row.get("stage_id") in passed_ids]
     if len(completed_rows) <= 1:
         return {}
 
-    oracle_configs = [(r["stage_id"], r.get("case", {}).get("oracle") or {}) for r in completed_rows]
-    role_bindings_map = {r["stage_id"]: {} for r in completed_rows}
+    oracle_configs: list[tuple[str, dict[str, Any]]] = []
+    role_bindings_map: dict[str, dict[str, str]] = {}
+    env_vars_map: dict[str, dict[str, str]] = {}
+    for row in completed_rows:
+        stage_id = row["stage_id"]
+        case = row.get("case") or {}
+        roles = row.get("namespace_roles") or ["default"]
+        bindings = environment.bind_namespace_roles(roles, run_dir.name)
+        oracle_configs.append((stage_id, case.get("oracle") or {}))
+        role_bindings_map[stage_id] = bindings
+        env_vars_map[stage_id] = {
+            **environment.build_namespace_env_vars(bindings),
+            **_param_env_vars(case.get("params")),
+        }
 
     return run_regression_sweep(
         oracle_configs,
         role_bindings_map=role_bindings_map,
+        env_vars_map=env_vars_map,
         run_dir=run_dir,
     )
 
@@ -106,8 +123,14 @@ def _run_adversary_cleanup_sweep(
     completed_stage_ids: set[str],
     environment: Any,
     run_dir: Path,
+    role_bindings: dict[str, str] | None = None,
+    env_vars: dict[str, str] | None = None,
 ) -> dict[str, Any]:
     """Lift pending adversary injections and return a cleanup summary.
+
+    Runs with the workflow's namespace bindings and env so the lift commands
+    target the right namespaces (they reference ``$BENCH_NS_*``); namespace
+    teardown is deferred until after this sweep.
 
     Returns
     -------
@@ -128,7 +151,12 @@ def _run_adversary_cleanup_sweep(
     adv_log = run_dir / "adversary_cleanup.log"
     for unit in pending:
         from ..adversary.runtime import lift as adv_lift
-        result = adv_lift([unit], role_bindings={}, log_path=adv_log, env_vars=None)
+        result = adv_lift(
+            [unit],
+            role_bindings=role_bindings or {},
+            log_path=adv_log,
+            env_vars=env_vars,
+        )
         if result.get("ok"):
             lifted_ids.extend(result.get("lifted_ids") or [])
         else:
@@ -222,6 +250,7 @@ def run_workflow_loop(
                 prior_stage_ids=list(completed_stage_ids),
                 stage_prompts=stage_prompts,
                 prompt_mode=prompt_mode,
+                defer_cleanup=True,
             )
 
             if on_stage_complete is not None:
@@ -258,11 +287,30 @@ def run_workflow_loop(
             "stage_results": stage_results,
         })
 
+    # Namespace teardown is deferred from each stage to here (run_stage was
+    # called with defer_cleanup=True), so the final sweeps run against the live
+    # cluster. Compute the full binding once for the sweeps and the teardown.
+    all_roles = sorted({
+        role for row in rows for role in (row.get("namespace_roles") or ["default"])
+    })
+    full_bindings: dict[str, str] = {}
+    full_env: dict[str, str] = {}
+    if environment is not None and all_roles:
+        try:
+            full_bindings = environment.bind_namespace_roles(all_roles, run_dir.name)
+            full_env = environment.build_namespace_env_vars(full_bindings)
+        except Exception:
+            full_bindings, full_env = {}, {}
+
     regression_sweep = None
     if workflow_status == "complete" and len(completed_stage_ids) > 1:
-        regression_sweep = _run_final_regression_sweep(
-            rows, stage_results, run_dir=run_dir
-        )
+        # A sweep failure is diagnostic only; it must not crash the run result.
+        try:
+            regression_sweep = _run_final_regression_sweep(
+                rows, stage_results, run_dir=run_dir, environment=environment
+            )
+        except Exception:
+            regression_sweep = None
 
     adversary_cleanup = None
     if deployed_scenario_ids:
@@ -272,7 +320,17 @@ def run_workflow_loop(
             completed_stage_ids=completed_stage_ids,
             environment=environment,
             run_dir=run_dir,
+            role_bindings=full_bindings,
+            env_vars=full_env,
         )
+
+    # Deferred namespace teardown: now that the sweeps (which need live state)
+    # have run, delete every namespace the workflow created.
+    if full_bindings and environment is not None:
+        try:
+            environment.cleanup_namespaces(full_bindings, run_dir=run_dir)
+        except Exception:
+            pass
 
     result = {
         "run_id": run_id,

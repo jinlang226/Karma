@@ -74,7 +74,13 @@ def run_judge(
         return {"stage_id": stage_id, "dry_run": True, "input": judge_input}
 
     raw_response = call_judge_llm(judge_input, model=judge_model)
-    result = aggregate_scores(raw_response, rubric=rubric, stage_id=stage_id)
+    # The oracle is authoritative: a stage the oracle failed can never be a
+    # judge "pass". Thread its verdict into scoring so determine_verdict can
+    # enforce that (judge_input["oracle"] is the persisted oracle result dict).
+    oracle_verdict = (judge_input.get("oracle") or {}).get("verdict")
+    result = aggregate_scores(
+        raw_response, rubric=rubric, stage_id=stage_id, oracle_verdict=oracle_verdict
+    )
 
     output_path = run_dir / "stages" / stage_id / "judge.json"
     try:
