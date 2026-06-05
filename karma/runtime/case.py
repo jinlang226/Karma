@@ -214,25 +214,41 @@ def _wait_for_submit(
     *,
     agent_timeout_sec: int,
     poll_interval_sec: float = 1.0,
-) -> tuple[bool, str | None]:
-    """Poll for the agent's submit file until it appears or the timeout expires.
+    agent_process: Any = None,
+) -> tuple[bool, str | None, bool]:
+    """Poll for the agent's submit file until it appears, the agent exits, or
+    the timeout expires.
+
+    When *agent_process* is given, a process that terminates before writing
+    ``submit.txt`` ends the wait immediately rather than burning the full
+    timeout (a crashed/early-exiting agent).
 
     Returns
     -------
-    tuple[bool, str | None]
-        ``(submitted, content)`` where *submitted* is ``True`` when the
-        file appeared and *content* is its text. Returns
-        ``(False, None)`` on timeout.
+    tuple[bool, str | None, bool]
+        ``(submitted, content, agent_exited)``. *submitted* is ``True`` when
+        the file appeared (with its text in *content*). *agent_exited* is
+        ``True`` when the process died before submitting. ``(False, None,
+        False)`` is a genuine timeout.
     """
     deadline = time.monotonic() + agent_timeout_sec
     while time.monotonic() < deadline:
         if submit_path.exists():
             try:
-                return True, submit_path.read_text()
+                return True, submit_path.read_text(), False
             except Exception:
                 pass
+        if agent_process is not None and not agent_process.is_running():
+            # Agent exited; give submit.txt one last chance (race on the final
+            # write) before declaring an early exit.
+            if submit_path.exists():
+                try:
+                    return True, submit_path.read_text(), False
+                except Exception:
+                    pass
+            return False, None, True
         time.sleep(poll_interval_sec)
-    return False, None
+    return False, None, False
 
 
 # ---------------------------------------------------------------------------
@@ -250,6 +266,7 @@ def run_stage(
     prior_stage_ids: list[str],
     stage_prompts: list[str],
     prompt_mode: str,
+    defer_cleanup: bool = False,
 ) -> dict[str, Any]:
     """Execute one workflow stage and return its result dict.
 
@@ -273,6 +290,12 @@ def run_stage(
         Rendered prompt strings for all stages up to and including this one.
     prompt_mode:
         One of the prompt modes defined in ``definitions.prompts``.
+    defer_cleanup:
+        When ``True``, the stage does not tear down its namespaces; the
+        caller (the workflow loop) owns namespace teardown so that cluster
+        state survives across stages and the final regression sweep can
+        re-evaluate it against the live cluster. The proxy and agent are
+        always cleaned up per stage regardless.
 
     Returns
     -------
@@ -386,14 +409,19 @@ def run_stage(
                 kubeconfig_path=agent_kubeconfig,
             )
 
-            # Step 9: wait for submit or timeout
+            # Step 9: wait for submit, agent exit, or timeout
             submit_path = protocol.stage_submit_path(run_dir, stage_id)
-            submitted, _submit_content = _wait_for_submit(
+            submitted, _submit_content, agent_exited = _wait_for_submit(
                 submit_path,
                 agent_timeout_sec=row.get("agent_timeout_sec") or 900,
+                agent_process=agent_process,
             )
             agent_process.terminate()
-            stage_status_before_oracle = "timeout" if not submitted else "running"
+            # A crashed/early-exiting agent is not a timeout; let the oracle
+            # decide pass/fail rather than forcing the "timeout" status.
+            stage_status_before_oracle = (
+                "running" if (submitted or agent_exited) else "timeout"
+            )
 
         # Step 10: collect evidence
         evidence = collect_evidence(
@@ -460,7 +488,7 @@ def run_stage(
             cleanup_agent(agent_process)
         if proxy_handle is not None:
             proxy_handle.teardown()
-        if role_bindings and environment is not None:
+        if not defer_cleanup and role_bindings and environment is not None:
             try:
                 environment.cleanup_namespaces(role_bindings, run_dir=stage_dir)
             except Exception:

@@ -146,6 +146,36 @@ class TestRunWorkflowLoop:
             )
         assert protocol.run_meta_path(tmp_path).exists()
 
+    def test_defers_namespace_cleanup_to_workflow_end(self, tmp_path):
+        # run_stage must be told to defer cleanup, and the workflow tears the
+        # namespaces down once at the end (after the sweeps), so cross-stage
+        # state survives and the regression sweep runs against a live cluster.
+        rows = [self._make_row("stage_1")]
+        pass_result = {"stage_id": "stage_1", "status": "pass",
+                       "oracle_verdict": "pass", "submitted": True,
+                       "duration_sec": 0.1, "error": None,
+                       "evidence_path": "", "oracle_path": ""}
+        env = MagicMock()
+        env.bind_namespace_roles.return_value = {"default": "ns-x"}
+        env.build_namespace_env_vars.return_value = {}
+
+        with patch("karma.runtime.workflow.run_stage",
+                   return_value=pass_result) as mock_run:
+            run_workflow_loop(
+                rows,
+                run_id="r1",
+                run_dir=tmp_path,
+                resources_dir=tmp_path,
+                agent_meta={},
+                sandbox_mode="local",
+                environment=env,
+                prompt_mode="progressive",
+            )
+        assert mock_run.call_args.kwargs["defer_cleanup"] is True
+        env.cleanup_namespaces.assert_called_once_with(
+            {"default": "ns-x"}, run_dir=tmp_path
+        )
+
     def test_retry_on_error_status(self, tmp_path):
         row = {**self._make_row("stage_1"), "retries": 1}
         error_result = {"stage_id": "stage_1", "status": "error",

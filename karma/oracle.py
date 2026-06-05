@@ -182,7 +182,7 @@ def run_regression_sweep(
     *,
     role_bindings_map: dict[str, dict[str, str]],
     run_dir: Path,
-    env_vars: dict[str, str] | None = None,
+    env_vars_map: dict[str, dict[str, str]] | None = None,
     timeout_sec: int | None = None,
 ) -> dict[str, Any]:
     """Re-run the oracle for all completed stages to detect regressions.
@@ -201,8 +201,11 @@ def run_regression_sweep(
         that stage's execution.
     run_dir:
         Root directory of the current run.
-    env_vars:
-        Additional environment variables forwarded to oracle commands.
+    env_vars_map:
+        Map of ``stage_id`` to the namespace/param environment variables
+        (``BENCH_NAMESPACE``, ``BENCH_NS_<ROLE>``, ``BENCH_PARAM_<KEY>``,
+        ...) that the stage's oracle commands reference. Each stage has its
+        own namespaces, so the env is per-stage rather than shared.
     timeout_sec:
         Per-stage timeout in seconds.
 
@@ -214,6 +217,7 @@ def run_regression_sweep(
     results: dict[str, Any] = {}
     for stage_id, oracle_config in stage_oracle_configs:
         role_bindings = role_bindings_map.get(stage_id) or {}
+        env_vars = (env_vars_map or {}).get(stage_id)
         verdict = run_oracle(
             oracle_config,
             role_bindings=role_bindings,
