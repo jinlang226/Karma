@@ -56,7 +56,7 @@
     container.appendChild(steps);
 
     container.appendChild(el("h3", { class: "home-section" }, "Explore"));
-    const tabGrid = el("div", { class: "grid" });
+    const tabGrid = el("div", { class: "grid explore-grid" });
     for (const [id, label, desc] of TABS) {
       tabGrid.appendChild(el("div", { class: "card", onClick: () => KARMA.activate(id) },
         el("div", { class: "title" }, label + " →"), el("div", { class: "sub" }, desc)));
