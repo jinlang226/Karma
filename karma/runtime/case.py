@@ -63,9 +63,16 @@ def _run_operation_units(
     detection or legacy field handling is performed here; the legacy
     execution branch from ``run_flow.py`` is not carried forward.
 
-    For each unit: runs probe commands first; when the probe passes, runs
-    apply then verify. Respects the ``on_probe_fail`` policy (``"error"``
-    or ``"skip"``). Retries verify up to ``verify_retries`` times with
+    For each unit, the probe tests whether the target state already holds:
+
+    * probe **passes** -> state already present, apply is skipped.
+    * probe **fails** + ``on_probe_fail="skip"`` (the default, used by setup
+      units) -> the "not yet present" signal is expected, so apply runs to
+      establish the state, then verify.
+    * probe **fails** + ``on_probe_fail="error"`` -> the failure is fatal
+      (e.g. a readiness gate the apply cannot satisfy), so the unit fails.
+
+    Retries verify up to ``verify_retries`` times with
     ``verify_interval_sec`` between attempts. All command output is
     appended to *log_path*.
 
@@ -87,7 +94,7 @@ def _run_operation_units(
 
     for unit in units or []:
         unit_id = unit.get("id") or unit.get("name") or "unknown"
-        on_fail = unit.get("on_probe_fail", "error")
+        on_fail = unit.get("on_probe_fail", "skip")
 
         # Probe
         probe_ok = True
@@ -113,12 +120,17 @@ def _run_operation_units(
                 break
 
         if probe_ok:
-            # Condition already satisfied
+            # Target state already present -> no apply needed.
             unit_outcomes.append({"id": unit_id, "ok": True, "skipped": True})
             continue
-        if not probe_ok and on_fail == "skip":
-            unit_outcomes.append({"id": unit_id, "ok": True, "skipped": True})
+        if on_fail == "error":
+            # Probe failure is fatal: apply cannot establish the state
+            # (e.g. a readiness gate), so the precondition fails.
+            overall_ok = False
+            unit_outcomes.append({"id": unit_id, "ok": False, "phase": "probe"})
             continue
+        # on_fail == "skip" (default): the probe failing is the expected
+        # "not yet present" signal -> fall through to apply to establish it.
 
         # Apply
         apply_ok = True
