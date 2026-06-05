@@ -119,3 +119,24 @@ class TestListWorkflowFiles:
         result = catalog.list_workflow_files(wf_dir, tmp_path / "resources")
         assert result[0]["ok"] is False
         assert result[0]["errors"]
+
+
+class TestListAdversaryScenarios:
+    def test_discovers_scenarios_with_lift_flag(self, tmp_path):
+        scen = tmp_path / "demo" / "adversarial" / "kill-pod" / "scenario.yaml"
+        scen.parent.mkdir(parents=True)
+        scen.write_text(
+            "deploy:\n  probe: kubectl get x\n  apply: kubectl delete x\n  verify: kubectl get x\n"
+            "lift:\n  probe: p\n  apply: a\n  verify: v\n"
+            "prompt_hints:\n  deploy: a pod was killed\n"
+        )
+        result = catalog.list_adversary_scenarios(tmp_path)
+        assert len(result) == 1
+        assert result[0]["service"] == "demo"
+        assert result[0]["scenario"] == "kill-pod"
+        assert result[0]["has_lift"] is True
+        assert result[0]["prompt_hints"]["deploy"] == "a pod was killed"
+
+    def test_no_adversarial_dir_returns_empty(self, tmp_path):
+        (tmp_path / "demo" / "some-case").mkdir(parents=True)
+        assert catalog.list_adversary_scenarios(tmp_path) == []

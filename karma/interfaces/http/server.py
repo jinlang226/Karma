@@ -30,6 +30,8 @@ from .jobs import submit_job, get_job_status, cancel_job, list_jobs
 from .events import hub
 from . import catalog
 from . import judging
+from . import cli_preview
+from ...definitions.workflows import normalize_workflow
 from ...runtime.service import get_run_status
 from ...runtime import manual
 from ...agents.registry import list_agents
@@ -286,6 +288,70 @@ def create_app(
     @app.route("/api/manual/<run_id>/metrics")
     def api_manual_metrics(run_id):
         return jsonify(manual.get_manual_metrics(run_id))
+
+    @app.route("/api/manual/<run_id>/adversary/deploy", methods=["POST"])
+    def api_manual_adversary_deploy(run_id):
+        payload = request.get_json(force=True, silent=True) or {}
+        scenario = str(payload.get("scenario") or "").strip()
+        if not scenario:
+            return jsonify({"error": "scenario is required"}), 400
+        try:
+            return jsonify(manual.deploy_manual_adversary(
+                run_id, scenario, param_overrides=payload.get("params") or None,
+            ))
+        except RuntimeError as exc:
+            return jsonify({"error": str(exc)}), 409
+
+    @app.route("/api/manual/<run_id>/adversary/lift", methods=["POST"])
+    def api_manual_adversary_lift(run_id):
+        payload = request.get_json(force=True, silent=True) or {}
+        scenario = str(payload.get("scenario") or "").strip()
+        if not scenario:
+            return jsonify({"error": "scenario is required"}), 400
+        try:
+            return jsonify(manual.lift_manual_adversary(run_id, scenario))
+        except RuntimeError as exc:
+            return jsonify({"error": str(exc)}), 409
+
+    # --- CLI preview, workflow import, adversary catalog, proxy status ------
+    @app.route("/api/cli/options")
+    def api_cli_options():
+        return jsonify(cli_preview.get_cli_options())
+
+    @app.route("/api/cli/preview", methods=["POST"])
+    def api_cli_preview():
+        payload = request.get_json(force=True, silent=True) or {}
+        return jsonify(cli_preview.build_preview(payload))
+
+    @app.route("/api/workflow/import", methods=["POST"])
+    def api_workflow_import():
+        payload = request.get_json(force=True, silent=True) or {}
+        import yaml as _yaml
+        try:
+            raw = _yaml.safe_load(payload.get("yaml_text") or "") or {}
+        except Exception as exc:
+            return jsonify({"ok": False, "errors": [f"YAML parse error: {exc}"]})
+        if not isinstance(raw, dict):
+            return jsonify({"ok": False, "errors": ["workflow must be a YAML object"]})
+        try:
+            workflow = normalize_workflow(raw, resources_dir=Path(resources_dir))
+        except ValueError as exc:
+            return jsonify({"ok": False, "errors": [str(exc)]})
+        return jsonify({"ok": True, "workflow": workflow})
+
+    @app.route("/api/adversary/scenarios")
+    def api_adversary_scenarios():
+        return jsonify(catalog.list_adversary_scenarios(Path(resources_dir)))
+
+    @app.route("/api/proxy/status")
+    def api_proxy_status():
+        import shutil
+        return jsonify({
+            "mode": "per-run",
+            "status": "ok",
+            "kubectl_available": shutil.which("kubectl") is not None,
+            "detail": "kubectl proxy is launched per stage; no standalone daemon",
+        })
 
     return app
 
