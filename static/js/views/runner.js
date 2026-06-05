@@ -76,8 +76,8 @@
 
   async function renderService(service) {
     clear(root);
-    root.appendChild(backBtn(renderHome));
-    root.appendChild(el("h2", { class: "after-back" }, KARMA.labels.service(service)));
+    root.appendChild(el("div", { class: "page-head" },
+      backBtn(renderHome), el("h2", {}, KARMA.labels.service(service))));
     const desc = KARMA.labels.serviceDescription(service);
     if (desc) root.appendChild(el("p", { class: "field-help" }, desc));
     const grid = el("div", { class: "service-grid" });
@@ -117,13 +117,18 @@
 
   async function renderCase(service, caseName) {
     clear(root);
-    root.appendChild(backBtn(() => renderService(service)));
     let detail;
     try {
       detail = await api.get(`/api/cases/${service}/${caseName}`);
-    } catch (e) { root.appendChild(errBox(e)); return; }
+    } catch (e) {
+      root.appendChild(el("div", { class: "page-head" }, backBtn(() => renderService(service))));
+      root.appendChild(errBox(e));
+      return;
+    }
 
-    root.appendChild(el("h2", { class: "after-back" }, `${KARMA.labels.service(service)} · ${KARMA.labels.case(caseName)}`));
+    root.appendChild(el("div", { class: "page-head" },
+      backBtn(() => renderService(service)),
+      el("h2", {}, `${KARMA.labels.service(service)} · ${KARMA.labels.case(caseName)}`)));
 
     // Metadata badges
     const badges = el("div", { class: "toolbar" });
@@ -140,10 +145,10 @@
 
     // Params form
     const cfg = el("div", { class: "panel" });
-    cfg.appendChild(el("h3", {}, "Parameters & run config"));
+    cfg.appendChild(el("h3", {}, "Parameters & Run Config"));
     const paramInputs = {};
     for (const p of detail.params) {
-      cfg.appendChild(el("label", {}, `${p.name}${p.description ? " — " + p.description : ""}`));
+      cfg.appendChild(el("label", {}, `${KARMA.labels.case(p.name)}${p.description ? " — " + p.description : ""}`));
       const input = el("input", { value: p.default == null ? "" : String(p.default) });
       paramInputs[p.name] = input;
       cfg.appendChild(input);
@@ -201,7 +206,7 @@
   // --- Agent run ------------------------------------------------------------
   async function startAgentRun(service, caseName, params, agent, sandbox, timeout, status) {
     clear(status);
-    status.appendChild(el("h3", {}, "Agent run"));
+    status.appendChild(el("h3", {}, "Agent Run"));
     const log = el("pre", { class: "log" }, "Submitting…\n");
     status.appendChild(log);
     try {
@@ -240,7 +245,7 @@
   // --- Manual run -----------------------------------------------------------
   async function startManualRun(service, caseName, params, status) {
     clear(status);
-    status.appendChild(el("h3", {}, "Manual run"));
+    status.appendChild(el("h3", {}, "Manual Run"));
     const phase = el("p", { class: "muted" }, "Starting setup…");
     status.appendChild(phase);
     const detailBox = el("div", {});
@@ -313,7 +318,7 @@
     const warn = el("div", { class: "field-help", style: "color:var(--accent)" });
 
     const panel = el("div", { class: "panel" },
-      el("h3", {}, "CLI command"),
+      el("h3", {}, "CLI Command"),
       el("p", { class: "field-help" }, "Prefer the terminal? Run this exact case with:"),
       el("div", { class: "code-block" }, copy, code),
       warn);

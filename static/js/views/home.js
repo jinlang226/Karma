@@ -47,7 +47,7 @@
         "remediate it, then scores the outcome with automated oracles and an LLM judge."));
     container.appendChild(hero);
 
-    container.appendChild(el("h3", {}, "How it works"));
+    container.appendChild(el("h3", { class: "home-section" }, "How It Works"));
     const steps = el("div", { class: "grid" });
     for (const [t, d] of STEPS) {
       steps.appendChild(el("div", { class: "card", style: "cursor:default" },
@@ -55,7 +55,7 @@
     }
     container.appendChild(steps);
 
-    container.appendChild(el("h3", {}, "Explore"));
+    container.appendChild(el("h3", { class: "home-section" }, "Explore"));
     const tabGrid = el("div", { class: "grid" });
     for (const [id, label, desc] of TABS) {
       tabGrid.appendChild(el("div", { class: "card", onClick: () => KARMA.activate(id) },
@@ -63,7 +63,7 @@
     }
     container.appendChild(tabGrid);
 
-    container.appendChild(el("h3", {}, "Concepts"));
+    container.appendChild(el("h3", { class: "home-section" }, "Concepts"));
     const concepts = el("div", { class: "panel concepts" });
     for (const [term, def] of CONCEPTS) {
       concepts.appendChild(el("div", { class: "concept" },

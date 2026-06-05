@@ -35,6 +35,10 @@
   function render() {
     clear(root);
     root.appendChild(el("h2", {}, "Judge"));
+    root.appendChild(el("p", { class: "field-help" },
+      "Score completed runs against a rubric with the LLM judge. Runs scores one " +
+      "run's stages; Batches averages scores across a folder of runs. Use Dry run " +
+      "to preview the request without calling the model."));
     root.appendChild(el("div", { class: "subtabs" },
       el("button", { class: "tab" + (sub === "runs" ? " active" : ""), onClick: () => { sub = "runs"; render(); } }, "Runs"),
       el("button", { class: "tab" + (sub === "batches" ? " active" : ""), onClick: () => { sub = "batches"; render(); } }, "Batches")));
