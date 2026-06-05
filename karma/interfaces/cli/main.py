@@ -15,6 +15,9 @@ Subcommands:
     Run a workflow YAML file end to end.
 ``run-case``
     Run a single case directly without a workflow file.
+``manual``
+    Set a case up, hand the namespace to a human operator to act on by
+    hand, then verify on demand and tear down.
 ``judge``
     Run the judge on an existing run directory.
 ``info``
@@ -70,6 +73,17 @@ def _build_parser() -> argparse.ArgumentParser:
     rc.add_argument("--timeout", type=int, default=900)
     rc.add_argument("--profile", default=None)
     rc.add_argument("--output", default="text", choices=["text", "json"])
+
+    mn = sub.add_parser(
+        "manual",
+        help="Set up a case for hands-on operation, then verify and clean up.",
+    )
+    mn.add_argument("service")
+    mn.add_argument("case")
+    mn.add_argument("--param", action="append", default=[], metavar="KEY=VALUE")
+    mn.add_argument("--runs-dir", default="runs")
+    mn.add_argument("--resources-dir", default="resources")
+    mn.add_argument("--profile", default=None)
 
     jg = sub.add_parser("judge", help="Run the judge on an existing run directory.")
     jg.add_argument("run_dir")
@@ -180,6 +194,69 @@ def _cmd_run_case(args: argparse.Namespace) -> None:
     _print_result(result, args.output)
 
 
+def _cmd_manual(args: argparse.Namespace) -> None:
+    """Handle the ``manual`` subcommand.
+
+    Sets the scenario up (proxy, namespaces, preconditions, decoys, bundle),
+    pauses for a human operator to do the task by hand against the printed
+    namespace, then verifies on demand (re-runnable) and tears down. Drives
+    the same ``runtime.manual`` lifecycle the HTTP API exposes -- the whole
+    session lives in this one process, so the in-memory state survives.
+    """
+    import time
+    from ...runtime import manual
+
+    profile = load_profile(args.profile) if args.profile else {}
+    merged = merge_profile(vars(args), profile)
+    param_overrides = _parse_param_overrides(args.param)
+    resources_dir = Path(merged.get("resources_dir", "resources"))
+    runs_dir = Path(merged.get("runs_dir", "runs"))
+
+    run_id = manual.start_manual_run(
+        args.service,
+        args.case,
+        runs_dir=runs_dir,
+        resources_dir=resources_dir,
+        param_overrides=param_overrides,
+    )
+    print(f"manual run {run_id}: setting up scenario...")
+
+    status = manual.get_manual_status(run_id) or {}
+    while status.get("status") == "setup_running":
+        time.sleep(1.5)
+        status = manual.get_manual_status(run_id) or {}
+
+    if status.get("status") == "setup_failed":
+        print(f"setup failed: {status.get('error')}", file=sys.stderr)
+        manual.cleanup_manual_run(run_id)
+        sys.exit(1)
+
+    print("\nready -- operate the cluster by hand, then verify:")
+    for role, ns in (status.get("namespace_bindings") or {}).items():
+        print(f"  namespace[{role}] = {ns}")
+    if status.get("kubeconfig_path"):
+        print(f"  export KUBECONFIG={status['kubeconfig_path']}")
+    if status.get("prompt_path"):
+        print(f"  task prompt: {status['prompt_path']}")
+
+    try:
+        while True:
+            choice = input("\n[Enter] verify  /  q then Enter to quit: ").strip().lower()
+            if choice == "q":
+                break
+            result = manual.submit_manual_run(run_id)
+            print(
+                f"  {result.get('status')} "
+                f"(oracle: {result.get('oracle_verdict')}, "
+                f"attempt {result.get('attempts')})"
+            )
+            if result.get("status") == "passed":
+                break
+    finally:
+        manual.cleanup_manual_run(run_id)
+        print("cleaned up.")
+
+
 def _cmd_judge(args: argparse.Namespace) -> None:
     """Handle the ``judge`` subcommand."""
     from ...judge.engine import run_judge, run_judge_batch
@@ -227,6 +304,8 @@ def main(argv: list[str] | None = None) -> None:
             _cmd_run_workflow(args)
         elif args.command == "run-case":
             _cmd_run_case(args)
+        elif args.command == "manual":
+            _cmd_manual(args)
         elif args.command == "judge":
             _cmd_judge(args)
         else:
