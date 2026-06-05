@@ -27,7 +27,7 @@
   const CONCEPTS = [
     ["Case", "A single benchmark task defined by a test.yaml: a prompt, setup preconditions, and an oracle that checks the result."],
     ["Workflow", "An ordered sequence of stages (each a case), run as one session and optionally carrying adversary injections."],
-    ["Prompt mode", "How earlier stages' prompts are shown to the agent — progressive: each stage adds to the last; concat_stateful: the full running history; concat_blind: only the current stage."],
+    ["Prompt mode", "How earlier stages' prompts are shown to the agent — Progressive: each stage adds to the last; Concatenated (stateful): the full running history; Concatenated (blind): only the current stage."],
     ["Agent & sandbox", "The agent under test runs either as a local process (none = solver/local, no agent process) or inside a Docker container (docker)."],
     ["Adversary", "An intentional fault injected into the cluster during a stage to test how well the agent diagnoses and recovers; it can be lifted at a later stage."],
     ["Oracle", "Automated pass/fail verification run after the agent finishes, confirming the cluster reached the desired state."],

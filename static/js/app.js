@@ -76,7 +76,7 @@
     const node = el("div", { class: "toast " + type });
     node.appendChild(el("span", { class: "toast-msg" }, String(message || "")));
     const close = el("button", {
-      class: "toast-close", title: "Dismiss", onClick: () => dismiss(),
+      class: "toast-close", title: "Dismiss", "aria-label": "Dismiss", onClick: () => dismiss(),
     }, "✕");
     node.appendChild(close);
     host.appendChild(node);

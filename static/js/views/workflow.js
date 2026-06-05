@@ -116,10 +116,9 @@
 
     panel.appendChild(el("h3", {}, "Stages"));
     panel.appendChild(el("p", { class: "field-help" },
-      "Each stage runs one case, in order. Pick a service and case and the case's " +
-      "parameters appear below the row; use param overrides (key=value, comma-separated) " +
-      "to change them. Reference an earlier stage's value with " +
-      "${stages.<stage-id>.params.<name>}."));
+      "Each stage runs one case, in order. Pick a service and a case, then fill in the " +
+      "parameters that appear below the row. To reuse a value from an earlier stage, " +
+      "type ${stages.<stage-id>.params.<name>} as the parameter value."));
     const stageList = el("div", { class: "builder-list" });
     panel.appendChild(stageList);
 
@@ -223,7 +222,10 @@
     const liftSel = el("select", { onChange: (e) => { adv.liftIndex = Number(e.target.value); } },
       el("option", { value: "-1", selected: adv.liftIndex === -1 ? "selected" : null }, "(no lift)"),
       ...stageOptions(adv.liftIndex));
-    const rm = el("button", { class: "btn secondary", onClick: () => { advRows.splice(index, 1); rerender(); } }, "✕");
+    const rm = el("button", {
+      class: "btn secondary", title: "Remove injection", "aria-label": "Remove injection",
+      onClick: () => { advRows.splice(index, 1); rerender(); },
+    }, "✕");
     return el("div", { class: "builder-row" },
       el("div", { class: "builder-row-head" }, el("span", {}, `Injection ${index + 1}`), rm),
       el("div", { class: "row" },
@@ -243,7 +245,10 @@
       el("option", { value: "" }, "(case)"),
       ...((svc ? svc.cases : []).map((c) =>
         el("option", { value: c, selected: c === stage.case ? "selected" : null }, KARMA.labels.case(c)))));
-    const rm = el("button", { class: "btn secondary", onClick: () => { stages.splice(index, 1); rerender(); } }, "✕");
+    const rm = el("button", {
+      class: "btn secondary", title: "Remove stage", "aria-label": "Remove stage",
+      onClick: () => { stages.splice(index, 1); rerender(); },
+    }, "✕");
 
     // Parameters area: a message until a case is chosen, then one labeled
     // input per declared parameter (prefilled with the default).

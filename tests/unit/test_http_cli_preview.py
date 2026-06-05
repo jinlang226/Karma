@@ -54,7 +54,7 @@ class TestBuildPreview:
             "target": {"service": "s", "case": "c"},
             "flags": {"sandbox": "local"},
         })
-        assert any("solver/local" in w for w in out["warnings"])
+        assert any("locally" in w for w in out["warnings"])
 
     def test_unknown_command_is_error(self):
         out = cli_preview.build_preview({"command": "bogus"})
