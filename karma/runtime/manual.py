@@ -303,6 +303,100 @@ def cleanup_manual_run(run_id: str) -> dict[str, Any]:
     return view
 
 
+def deploy_manual_adversary(
+    run_id: str, scenario: str, *, param_overrides: dict[str, Any] | None = None
+) -> dict[str, Any]:
+    """Inject an adversary scenario into a live manual run.
+
+    Resolves the scenario against the run's service (treating the manual
+    stage as the inject point), then runs its deploy unit with the
+    session's namespace bindings and env. The resolved injection is tracked
+    on the session so :func:`lift_manual_adversary` can later run its lift
+    unit. This is the operator-driven fault injection the UI surfaces.
+
+    Raises
+    ------
+    RuntimeError
+        When the run is unknown/not ready or the scenario cannot resolve.
+    """
+    from ..adversary import resolve_adversary_scenario, deploy as adversary_deploy
+
+    with _lock:
+        session = _sessions.get(run_id)
+        if session is None:
+            raise RuntimeError(f"unknown manual run: {run_id}")
+        if session.get("status") not in ("ready", "passed", "failed"):
+            raise RuntimeError(f"manual run {run_id} is not ready for adversary injection")
+        service = session["service"]
+        resources_dir: Path = session["_resources_dir"]
+        run_dir: Path = session["_run_dir"]
+        role_bindings = session.get("_role_bindings") or {}
+        env_vars = session.get("_env_vars") or {}
+
+    injection = resolve_adversary_scenario(
+        {
+            "scenario": scenario,
+            "inject_at_stage": _MANUAL_STAGE_ID,
+            "param_overrides": param_overrides or {},
+        },
+        {_MANUAL_STAGE_ID: service},
+        resources_dir=resources_dir,
+    )
+    result = adversary_deploy(
+        [injection["deploy_unit"]],
+        role_bindings=role_bindings,
+        log_path=protocol.stage_adversary_log_path(run_dir, _MANUAL_STAGE_ID),
+        env_vars=env_vars,
+    )
+    with _lock:
+        s = _sessions.get(run_id)
+        if s is not None:
+            s.setdefault("_injections", {})[scenario] = injection
+            active = s.setdefault("active_adversary", [])
+            if scenario not in active:
+                active.append(scenario)
+    return {"scenario": scenario, "deploy": result}
+
+
+def lift_manual_adversary(run_id: str, scenario: str) -> dict[str, Any]:
+    """Lift a previously deployed adversary scenario from a manual run.
+
+    Raises
+    ------
+    RuntimeError
+        When the run or the deployed scenario is unknown, or the scenario
+        declared no lift unit.
+    """
+    from ..adversary import lift as adversary_lift
+
+    with _lock:
+        session = _sessions.get(run_id)
+        if session is None:
+            raise RuntimeError(f"unknown manual run: {run_id}")
+        injection = (session.get("_injections") or {}).get(scenario)
+        if injection is None:
+            raise RuntimeError(f"scenario '{scenario}' is not deployed on run {run_id}")
+        if injection.get("lift_unit") is None:
+            raise RuntimeError(f"scenario '{scenario}' declares no lift unit")
+        run_dir: Path = session["_run_dir"]
+        role_bindings = session.get("_role_bindings") or {}
+        env_vars = session.get("_env_vars") or {}
+
+    result = adversary_lift(
+        [injection["lift_unit"]],
+        role_bindings=role_bindings,
+        log_path=protocol.stage_adversary_log_path(run_dir, _MANUAL_STAGE_ID),
+        env_vars=env_vars,
+    )
+    with _lock:
+        s = _sessions.get(run_id)
+        if s is not None:
+            active = s.get("active_adversary") or []
+            if scenario in active:
+                active.remove(scenario)
+    return {"scenario": scenario, "lift": result}
+
+
 def get_manual_metrics(run_id: str) -> dict[str, Any]:
     """Return the evidence/metrics artifact for a manual run.
 

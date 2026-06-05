@@ -186,6 +186,46 @@ def list_workflow_files(
     return result
 
 
+def list_adversary_scenarios(resources_dir: Path) -> list[dict[str, Any]]:
+    """Return the adversary scenarios discoverable under *resources_dir*.
+
+    Scenarios live at ``{service}/adversarial/{scenario}/scenario.yaml``.
+    Each entry carries the owning service, scenario name, file path, and a
+    cheap ``has_lift`` flag plus any declared prompt hints so the adversary
+    panel can list and describe them without re-parsing.
+    """
+    import yaml
+
+    result: list[dict[str, Any]] = []
+    if not resources_dir.exists():
+        return result
+    for svc_dir in sorted(resources_dir.iterdir()):
+        adv_dir = svc_dir / "adversarial"
+        if not adv_dir.is_dir():
+            continue
+        for scen_dir in sorted(adv_dir.iterdir()):
+            scenario_file = scen_dir / "scenario.yaml"
+            if not scenario_file.exists():
+                continue
+            entry: dict[str, Any] = {
+                "service": svc_dir.name,
+                "scenario": scen_dir.name,
+                "path": str(scenario_file),
+                "has_lift": False,
+                "prompt_hints": {},
+            }
+            try:
+                data = yaml.safe_load(scenario_file.read_text()) or {}
+                if isinstance(data, dict):
+                    entry["has_lift"] = data.get("lift") is not None
+                    entry["prompt_hints"] = data.get("prompt_hints") or {}
+                    entry["params"] = data.get("params") or {}
+            except Exception:
+                entry["ok"] = False
+            result.append(entry)
+    return result
+
+
 def cluster_status() -> dict[str, Any]:
     """Return a best-effort Kubernetes reachability status for the UI banner.
 
