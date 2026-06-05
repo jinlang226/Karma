@@ -1,0 +1,325 @@
+"""
+Interactive manual-operator run mode.
+
+``run_stage`` runs a whole stage in one synchronous call: it sets the
+scenario up, launches an *agent*, waits for the agent's ``submit.txt``,
+then verifies and tears down. The old framework also supported a *manual*
+mode with no agent at all -- a human operator sets the scenario up, does
+the task by hand against the cluster, then asks for verification. That
+mode was dropped in the refactor; this module restores it.
+
+The lifecycle is split across three calls because a human acts between
+them, so the cluster context (proxy, namespaces, environment) must survive
+between HTTP requests:
+
+1. :func:`start_manual_run` -- create the run, launch the proxy, create
+   namespaces, run preconditions, plant decoys, and write the prompt and
+   credential bundle. Setup runs on a background thread so the caller can
+   poll setup phase; the session ends at ``ready`` (or ``setup_failed``).
+2. :func:`submit_manual_run` -- the operator is done; collect evidence and
+   run the oracle, yielding ``passed`` or ``failed``. Re-runnable so a
+   failed attempt can be retried.
+3. :func:`cleanup_manual_run` -- tear down the proxy and namespaces.
+
+A live session is held in memory keyed by run id. The building blocks are
+the same ones ``runtime.case`` uses, referenced as module attributes so
+tests can substitute fakes (no cluster required).
+"""
+
+from __future__ import annotations
+
+import threading
+import time
+from pathlib import Path
+from typing import Any
+
+from ..transport.k8s.backend import launch_proxy, write_agent_bundle
+from ..environments.registry import get_environment
+from ..oracle import run_oracle
+from ..evidence import collect_evidence
+from .. import protocol
+from ..definitions.cases import load_case_file, normalize_case
+from .case import _run_operation_units, _param_env_vars
+
+
+_MANUAL_STAGE_ID = "manual"
+
+_sessions: dict[str, dict[str, Any]] = {}
+_lock = threading.Lock()
+
+# Keys prefixed with "_" hold non-serializable live objects and are never
+# returned to clients.
+_SERIALIZABLE_SKIP = lambda k: k.startswith("_")
+
+
+def _register(run_id: str, session: dict[str, Any]) -> None:
+    with _lock:
+        _sessions[run_id] = session
+
+
+def _update(run_id: str, updates: dict[str, Any]) -> None:
+    with _lock:
+        if run_id in _sessions:
+            _sessions[run_id].update(updates)
+
+
+def _public_view(session: dict[str, Any]) -> dict[str, Any]:
+    """Return the client-facing subset of *session* (drops live objects)."""
+    return {k: v for k, v in session.items() if not _SERIALIZABLE_SKIP(k)}
+
+
+def get_manual_status(run_id: str) -> dict[str, Any] | None:
+    """Return the public status of a manual run, or ``None`` when unknown."""
+    with _lock:
+        session = _sessions.get(run_id)
+        return _public_view(session) if session else None
+
+
+def _do_setup(run_id: str) -> None:
+    """Run setup steps for the session, updating phase as it progresses."""
+    with _lock:
+        session = _sessions.get(run_id)
+    if session is None:
+        return
+
+    run_dir: Path = session["_run_dir"]
+    resources_dir: Path = session["_resources_dir"]
+    case: dict[str, Any] = session["_case"]
+    ns_roles: list[str] = session["_namespace_roles"]
+
+    proxy_handle = None
+    try:
+        stage_dir = protocol.ensure_stage_dir(run_dir, _MANUAL_STAGE_ID)
+
+        proxy_handle = launch_proxy(run_dir=stage_dir)
+        environment = get_environment(session.get("_environment_provider"))
+        role_bindings = environment.bind_namespace_roles(ns_roles, run_dir.name)
+        environment.ensure_namespaces(role_bindings, run_dir=stage_dir)
+
+        param_env = _param_env_vars(case.get("params"))
+        command_env = {**environment.build_namespace_env_vars(role_bindings), **param_env}
+
+        _update(run_id, {"phase": "precondition"})
+        precond_result = _run_operation_units(
+            case.get("precondition_units") or [],
+            role_bindings=role_bindings,
+            log_path=protocol.stage_precondition_log_path(run_dir, _MANUAL_STAGE_ID),
+            env_vars=command_env,
+            label="precondition",
+        )
+        if not precond_result["ok"]:
+            _update(run_id, {"status": "setup_failed", "phase": "precondition",
+                             "error": "precondition units failed"})
+            return
+
+        _update(run_id, {"phase": "decoy"})
+        decoy_configs = case.get("decoys") or []
+        if decoy_configs:
+            environment.plant_decoys(
+                decoy_configs, role_bindings,
+                resources_dir=resources_dir, run_dir=stage_dir,
+            )
+
+        env_vars = {
+            **environment.build_env_vars(role_bindings, proxy_port=proxy_handle.port),
+            **param_env,
+        }
+        kubeconfig = write_agent_bundle(
+            proxy_handle, run_dir=run_dir, namespace_env_vars=env_vars,
+        )
+
+        _update(run_id, {"phase": "prompt"})
+        prompt = _render_prompt(case, run_dir, ns_roles, env_vars)
+        protocol.stage_prompt_path(run_dir, _MANUAL_STAGE_ID).write_text(prompt)
+
+        with _lock:
+            s = _sessions.get(run_id)
+            if s is not None:
+                s["_proxy"] = proxy_handle
+                s["_env"] = environment
+                s["_role_bindings"] = role_bindings
+                s["_env_vars"] = env_vars
+                s["_stage_dir"] = stage_dir
+                s.update({
+                    "status": "ready",
+                    "phase": "ready",
+                    "prompt_path": str(protocol.stage_prompt_path(run_dir, _MANUAL_STAGE_ID)),
+                    "kubeconfig_path": str(kubeconfig),
+                    "namespace_bindings": role_bindings,
+                })
+    except Exception as exc:
+        _update(run_id, {"status": "setup_failed", "error": str(exc)})
+        if proxy_handle is not None:
+            try:
+                proxy_handle.teardown()
+            except Exception:
+                pass
+
+
+def _render_prompt(
+    case: dict[str, Any], run_dir: Path, ns_roles: list[str], env_vars: dict[str, str]
+) -> str:
+    """Render the operator prompt, falling back to the raw case prompt."""
+    try:
+        from ..definitions.prompts import render_stage_prompt, assemble_agent_prompt
+
+        row = {"stage_id": _MANUAL_STAGE_ID, "namespace_roles": ns_roles, "adversary_hint": None}
+        rendered = render_stage_prompt(case, row, {"id": run_dir.name}, variables=env_vars)
+        return assemble_agent_prompt([rendered], 0, "progressive")
+    except Exception:
+        return str(case.get("prompt", ""))
+
+
+def start_manual_run(
+    service: str,
+    case_name: str,
+    *,
+    runs_dir: Path,
+    resources_dir: Path,
+    param_overrides: dict[str, Any] | None = None,
+    namespace_roles: list[str] | None = None,
+    environment_provider: str | None = None,
+) -> str:
+    """Begin a manual run and return its run id immediately.
+
+    Loads and normalizes the case, then runs setup on a background thread.
+    The caller polls :func:`get_manual_status` until the status leaves
+    ``setup_running`` (it becomes ``ready`` or ``setup_failed``).
+
+    Raises
+    ------
+    RuntimeError
+        When the case file is missing or invalid (surfaced synchronously
+        so the caller gets an immediate 400/404).
+    """
+    case_data = load_case_file(resources_dir, service, case_name)
+    case = normalize_case(case_data, service, case_name, param_overrides)
+
+    run_id = protocol.generate_run_id(f"{service}-{case_name}-manual")
+    run_dir = runs_dir / run_id
+    run_dir.mkdir(parents=True, exist_ok=True)
+    ns_roles = namespace_roles or (
+        case.get("namespace_contract", {}).get("required_roles") or ["default"]
+    )
+
+    _register(run_id, {
+        "run_id": run_id,
+        "service": service,
+        "case_name": case_name,
+        "status": "setup_running",
+        "phase": "starting",
+        "attempts": 0,
+        "error": None,
+        "created_at": time.time(),
+        "_run_dir": run_dir,
+        "_resources_dir": resources_dir,
+        "_case": case,
+        "_namespace_roles": ns_roles,
+        "_environment_provider": environment_provider,
+    })
+
+    threading.Thread(target=_do_setup, args=(run_id,), daemon=True).start()
+    return run_id
+
+
+def submit_manual_run(run_id: str) -> dict[str, Any]:
+    """Verify a ready manual run and return its updated status.
+
+    Collects evidence and runs the oracle against the operator's work,
+    setting the status to ``passed`` or ``failed``. Re-runnable: a failed
+    attempt can be submitted again after more work.
+
+    Raises
+    ------
+    RuntimeError
+        When the run is unknown or not in the ``ready``/``failed`` state.
+    """
+    with _lock:
+        session = _sessions.get(run_id)
+        if session is None:
+            raise RuntimeError(f"unknown manual run: {run_id}")
+        if session.get("status") not in ("ready", "failed"):
+            raise RuntimeError(
+                f"manual run {run_id} is not ready to submit (status="
+                f"{session.get('status')})"
+            )
+        run_dir: Path = session["_run_dir"]
+        case = session["_case"]
+        role_bindings = session.get("_role_bindings") or {}
+        env_vars = session.get("_env_vars") or {}
+
+    _update(run_id, {"status": "verifying", "attempts": session.get("attempts", 0) + 1})
+
+    try:
+        collect_evidence(
+            run_dir=run_dir, stage_id=_MANUAL_STAGE_ID,
+            case=case, role_bindings=role_bindings,
+        )
+        oracle_result = run_oracle(
+            case.get("oracle") or {},
+            role_bindings=role_bindings,
+            run_dir=run_dir,
+            stage_id=_MANUAL_STAGE_ID,
+            env_vars=env_vars,
+        )
+        verdict = oracle_result.get("verdict")
+        status = "passed" if verdict == "pass" else "failed"
+        _update(run_id, {"status": status, "oracle_verdict": verdict})
+    except Exception as exc:
+        _update(run_id, {"status": "failed", "error": str(exc)})
+
+    return get_manual_status(run_id)  # type: ignore[return-value]
+
+
+def cleanup_manual_run(run_id: str) -> dict[str, Any]:
+    """Tear down a manual run's proxy and namespaces and drop the session.
+
+    Safe to call in any state. Returns a final status dict. Never raises on
+    teardown errors; they are recorded but cleanup always completes.
+    """
+    with _lock:
+        session = _sessions.pop(run_id, None)
+    if session is None:
+        return {"run_id": run_id, "status": "unknown"}
+
+    proxy = session.get("_proxy")
+    env = session.get("_env")
+    role_bindings = session.get("_role_bindings")
+    stage_dir = session.get("_stage_dir")
+
+    if proxy is not None:
+        try:
+            proxy.teardown()
+        except Exception:
+            pass
+    if env is not None and role_bindings:
+        try:
+            env.cleanup_namespaces(role_bindings, run_dir=stage_dir)
+        except Exception:
+            pass
+
+    view = _public_view(session)
+    view["status"] = "cleaned"
+    return view
+
+
+def get_manual_metrics(run_id: str) -> dict[str, Any]:
+    """Return the evidence/metrics artifact for a manual run.
+
+    Reads ``stages/manual/evidence.json`` from the run directory. Returns a
+    ``{"status": "pending"}`` marker when the artifact is not yet written.
+    """
+    with _lock:
+        session = _sessions.get(run_id)
+    if session is None:
+        return {"status": "unknown"}
+    run_dir: Path = session["_run_dir"]
+    evidence_path = protocol.stage_evidence_path(run_dir, _MANUAL_STAGE_ID)
+    if not evidence_path.exists():
+        return {"status": "pending", "path": str(evidence_path)}
+    import json
+    try:
+        return {"status": "ok", "path": str(evidence_path),
+                "evidence": json.loads(evidence_path.read_text())}
+    except Exception as exc:
+        return {"status": "error", "error": str(exc)}

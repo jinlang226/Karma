@@ -31,6 +31,7 @@ from .events import hub
 from . import catalog
 from . import judging
 from ...runtime.service import get_run_status
+from ...runtime import manual
 from ...agents.registry import list_agents
 from ...metrics import list_metrics
 
@@ -241,6 +242,50 @@ def create_app(
     @app.route("/api/judge/batches")
     def api_judge_batches():
         return jsonify(judging.list_judge_batches(Path(runs_dir)))
+
+    # --- Manual operator run lifecycle --------------------------------------
+    @app.route("/api/manual/start", methods=["POST"])
+    def api_manual_start():
+        payload = request.get_json(force=True, silent=True) or {}
+        service = str(payload.get("service") or "").strip()
+        case_name = str(payload.get("case_name") or "").strip()
+        if not service or not case_name:
+            return jsonify({"error": "service and case_name are required"}), 400
+        try:
+            run_id = manual.start_manual_run(
+                service,
+                case_name,
+                runs_dir=Path(runs_dir),
+                resources_dir=Path(resources_dir),
+                param_overrides=payload.get("params") or None,
+                namespace_roles=payload.get("namespace_roles") or None,
+                environment_provider=payload.get("environment_provider"),
+            )
+        except RuntimeError as exc:
+            return jsonify({"error": str(exc)}), 400
+        return jsonify({"run_id": run_id}), 201
+
+    @app.route("/api/manual/<run_id>/status")
+    def api_manual_status(run_id):
+        status = manual.get_manual_status(run_id)
+        if status is None:
+            return jsonify({"error": "not found"}), 404
+        return jsonify(status)
+
+    @app.route("/api/manual/<run_id>/submit", methods=["POST"])
+    def api_manual_submit(run_id):
+        try:
+            return jsonify(manual.submit_manual_run(run_id))
+        except RuntimeError as exc:
+            return jsonify({"error": str(exc)}), 409
+
+    @app.route("/api/manual/<run_id>/cleanup", methods=["POST"])
+    def api_manual_cleanup(run_id):
+        return jsonify(manual.cleanup_manual_run(run_id))
+
+    @app.route("/api/manual/<run_id>/metrics")
+    def api_manual_metrics(run_id):
+        return jsonify(manual.get_manual_metrics(run_id))
 
     return app
 
