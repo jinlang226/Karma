@@ -16,8 +16,8 @@ from karma.definitions.cases import (
 
 class TestCasePath:
     def test_returns_correct_path(self, tmp_path):
-        result = case_path(tmp_path, "rabbitmq-experiments", "failover")
-        assert result == tmp_path / "rabbitmq-experiments" / "failover" / "test.yaml"
+        result = case_path(tmp_path, "rabbitmq", "failover")
+        assert result == tmp_path / "rabbitmq" / "failover" / "test.yaml"
 
     def test_does_not_require_file_to_exist(self, tmp_path):
         result = case_path(tmp_path, "svc", "missing-case")
