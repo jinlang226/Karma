@@ -63,3 +63,41 @@ class TestEventHub:
         h.publish("r1", {"n": 1})
         # buffered but not delivered to the removed queue
         assert sub.empty()
+
+    def test_publish_after_close_is_ignored(self):
+        # Regression: an event published after close() must not land after the
+        # terminal sentinel (e.g. a cancel racing a run_complete publish).
+        h = EventHub()
+        sub = h.subscribe("r1")
+        h.publish("r1", {"n": 1})
+        h.close("r1")
+        h.publish("r1", {"type": "run_complete"})  # racing producer
+        seen = []
+        while True:
+            x = sub.get_nowait()
+            seen.append(x)
+            if x is None:
+                break
+        assert seen == [{"n": 1}, None]
+
+    def test_close_is_idempotent(self):
+        h = EventHub()
+        sub = h.subscribe("r1")
+        h.close("r1")
+        h.close("r1")  # second close must not push a second sentinel
+        assert sub.get_nowait() is None
+        assert sub.empty()
+
+    def test_evicts_oldest_finished_streams_past_cap(self):
+        from karma.interfaces.http import events as ev
+        h = EventHub()
+        # Create and finish more streams than the cap; finished ones evict.
+        for i in range(ev._MAX_STREAMS + 10):
+            sid = f"s{i}"
+            h.publish(sid, {"n": i})
+            h.close(sid)
+        # total retained streams stays within the cap
+        assert len(h._buffers) <= ev._MAX_STREAMS
+        # the oldest are gone, the newest remain
+        assert not h.is_known("s0")
+        assert h.is_known(f"s{ev._MAX_STREAMS + 9}")

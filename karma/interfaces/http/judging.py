@@ -20,7 +20,7 @@ from pathlib import Path
 from typing import Any
 
 from ...protocol import generate_run_id
-from ...judge.engine import run_judge, run_judge_batch
+from ...judge.engine import run_judge
 from ...judge.batch import discover_runs, judge_batch_dir
 from .events import hub
 from . import catalog

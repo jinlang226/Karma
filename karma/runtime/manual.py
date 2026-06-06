@@ -95,6 +95,16 @@ def _do_setup(run_id: str) -> None:
         environment = get_environment(session.get("_environment_provider"))
         role_bindings = environment.bind_namespace_roles(ns_roles, run_dir.name)
         environment.ensure_namespaces(role_bindings, run_dir=stage_dir)
+        # Record the live objects on the session immediately so that a failure
+        # in a later setup step (or a cleanup call) can still tear the
+        # namespaces and proxy down -- otherwise they would be orphaned.
+        with _lock:
+            s0 = _sessions.get(run_id)
+            if s0 is not None:
+                s0["_proxy"] = proxy_handle
+                s0["_env"] = environment
+                s0["_role_bindings"] = role_bindings
+                s0["_stage_dir"] = stage_dir
 
         param_env = _param_env_vars(case.get("params"))
         command_env = {**environment.build_namespace_env_vars(role_bindings), **param_env}
@@ -108,9 +118,10 @@ def _do_setup(run_id: str) -> None:
             label="precondition",
         )
         if not precond_result["ok"]:
-            _update(run_id, {"status": "setup_failed", "phase": "precondition",
-                             "error": "precondition units failed"})
-            return
+            # Raise rather than return so the except handler below tears down
+            # the proxy and the namespaces created above.
+            _update(run_id, {"phase": "precondition"})
+            raise RuntimeError("precondition units failed")
 
         _update(run_id, {"phase": "decoy"})
         decoy_configs = case.get("decoys") or []
@@ -152,6 +163,18 @@ def _do_setup(run_id: str) -> None:
         if proxy_handle is not None:
             try:
                 proxy_handle.teardown()
+            except Exception:
+                pass
+        # Tear down any namespaces created before the failure so they are not
+        # orphaned in the cluster.
+        with _lock:
+            s_err = _sessions.get(run_id) or {}
+            env_err = s_err.get("_env")
+            rb_err = s_err.get("_role_bindings")
+            sd_err = s_err.get("_stage_dir")
+        if env_err is not None and rb_err:
+            try:
+                env_err.cleanup_namespaces(rb_err, run_dir=sd_err)
             except Exception:
                 pass
 
@@ -248,7 +271,11 @@ def submit_manual_run(run_id: str) -> dict[str, Any]:
         role_bindings = session.get("_role_bindings") or {}
         env_vars = session.get("_env_vars") or {}
 
-    _update(run_id, {"status": "verifying", "attempts": session.get("attempts", 0) + 1})
+    with _lock:
+        s = _sessions.get(run_id)
+        if s is not None:
+            s["status"] = "verifying"
+            s["attempts"] = s.get("attempts", 0) + 1
 
     try:
         collect_evidence(

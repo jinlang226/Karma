@@ -67,6 +67,16 @@ class TestGetCaseDetail:
         with pytest.raises(RuntimeError):
             catalog.get_case_detail(tmp_path, "svc", "nope")
 
+    def test_rejects_path_traversal_in_names(self, tmp_path):
+        import pytest
+
+        # A traversal segment must be rejected, not used to read outside
+        # resources_dir.
+        for service, case in [("..", "x"), ("svc", ".."), ("svc", "../../etc"),
+                              ("a/b", "c")]:
+            with pytest.raises(RuntimeError, match="invalid"):
+                catalog.get_case_detail(tmp_path, service, case)
+
 
 class TestListRuns:
     def test_lists_runs_newest_first_with_scores(self, tmp_path):

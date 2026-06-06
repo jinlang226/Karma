@@ -96,13 +96,16 @@ class TestStartManualRun:
         manual.cleanup_manual_run(run_id)
 
     def test_precondition_failure_sets_setup_failed(self, tmp_path, monkeypatch):
-        _install_fakes(monkeypatch, precond_ok=False)
+        env, proxy = _install_fakes(monkeypatch, precond_ok=False)
         _write_case(tmp_path / "res", "svc", "c1")
         run_id = manual.start_manual_run(
             "svc", "c1", runs_dir=tmp_path / "runs", resources_dir=tmp_path / "res"
         )
         status = _wait_until(run_id, "setup_failed")
         assert "precondition" in (status.get("error") or "")
+        # namespaces and proxy must be torn down on setup failure, not leaked
+        assert env.cleaned is True
+        assert proxy.torn_down is True
         manual.cleanup_manual_run(run_id)
 
     def test_status_excludes_internal_objects(self, tmp_path, monkeypatch):

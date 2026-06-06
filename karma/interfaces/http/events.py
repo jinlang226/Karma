@@ -27,10 +27,19 @@ from typing import Any
 
 _DEFAULT_BUFFER = 500
 _SUBSCRIBER_MAX = 2000
+_MAX_STREAMS = 256
 
 
 class EventHub:
-    """A buffered, multi-subscriber pub/sub channel keyed by stream id."""
+    """A buffered, multi-subscriber pub/sub channel keyed by stream id.
+
+    Buffers up to ``buffer_size`` recent events per stream and retains at
+    most ``_MAX_STREAMS`` streams, evicting the oldest finished ones first
+    so a long-lived server does not grow without bound. Once a stream is
+    closed it is terminal: late events are ignored and ``close`` is
+    idempotent, so a producer that races a ``close`` (e.g. cancellation)
+    cannot strand an event after the end sentinel.
+    """
 
     def __init__(self, buffer_size: int = _DEFAULT_BUFFER) -> None:
         self._buffers: dict[str, list[dict[str, Any]]] = {}
@@ -39,19 +48,46 @@ class EventHub:
         self._buffer_size = buffer_size
         self._lock = threading.Lock()
 
+    def _evict_locked(self) -> None:
+        """Drop oldest finished streams (then oldest overall) past the cap.
+
+        Caller must hold ``self._lock``. Dict insertion order makes the
+        first keys the oldest. A stream with live subscribers is never
+        evicted so an attached client is not cut off.
+        """
+        while len(self._buffers) > _MAX_STREAMS:
+            victim = None
+            for sid in self._buffers:
+                if self._subscribers.get(sid):
+                    continue
+                victim = sid
+                if sid in self._done:
+                    break  # prefer a finished stream
+            if victim is None:
+                return  # everything left has live subscribers
+            self._buffers.pop(victim, None)
+            self._subscribers.pop(victim, None)
+            self._done.discard(victim)
+
     def publish(self, stream_id: str, event: dict[str, Any]) -> None:
         """Append *event* to the buffer and fan it out to live subscribers.
 
-        The per-stream buffer is trimmed to ``buffer_size`` newest events.
-        A subscriber whose queue is full silently drops the event rather
-        than blocking the publisher.
+        Ignored once the stream is closed, so nothing can land after the
+        end sentinel. The per-stream buffer is trimmed to ``buffer_size``
+        newest events; a subscriber whose queue is full drops the event
+        rather than blocking the publisher.
         """
         with self._lock:
+            if stream_id in self._done:
+                return
+            is_new = stream_id not in self._buffers
             buf = self._buffers.setdefault(stream_id, [])
             buf.append(event)
             overflow = len(buf) - self._buffer_size
             if overflow > 0:
                 del buf[:overflow]
+            if is_new:
+                self._evict_locked()
             subs = list(self._subscribers.get(stream_id, []))
         for q in subs:
             try:
@@ -60,8 +96,14 @@ class EventHub:
                 pass
 
     def close(self, stream_id: str) -> None:
-        """Mark *stream_id* finished and push the end sentinel to subscribers."""
+        """Mark *stream_id* finished and push the end sentinel to subscribers.
+
+        Idempotent: closing an already-closed stream does nothing, so a
+        second ``close`` cannot push a second sentinel.
+        """
         with self._lock:
+            if stream_id in self._done:
+                return
             self._done.add(stream_id)
             subs = list(self._subscribers.get(stream_id, []))
         for q in subs:

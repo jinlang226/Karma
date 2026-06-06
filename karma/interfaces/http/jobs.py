@@ -202,8 +202,7 @@ def get_job_status(run_id: str) -> dict[str, Any] | None:
     """Return the current status dict for *run_id*, or ``None`` when not found.
 
     Merges the local job entry with the runtime status from
-    ``runtime.service.get_run_status``. The ``event_queue`` key is
-    excluded from the returned dict.
+    ``runtime.service.get_run_status``.
     """
     with _jobs_lock:
         job = _active_jobs.get(run_id)
