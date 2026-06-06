@@ -150,6 +150,25 @@ def launch_proxy(
         "--port", str(proxy_port),
         "--control-port", str(control_port),
     ]
+    # The agent talks to the proxy over plain HTTP without credentials, so the
+    # proxy must authenticate to the real API server on the agent's behalf.
+    # Extract the caller's auth from KUBECONFIG and hand it to the proxy.
+    auth = _get_upstream_auth(env)
+    if auth.get("client_cert_file") and auth.get("client_key_file"):
+        cmd += ["--client-cert", auth["client_cert_file"],
+                "--client-key", auth["client_key_file"]]
+    elif auth.get("client_cert_data") and auth.get("client_key_data"):
+        cert_path = run_dir / "proxy-client.crt"
+        key_path = run_dir / "proxy-client.key"
+        cert_path.write_text(auth["client_cert_data"])
+        key_path.write_text(auth["client_key_data"])
+        try:
+            os.chmod(key_path, 0o600)
+        except Exception:
+            pass
+        cmd += ["--client-cert", str(cert_path), "--client-key", str(key_path)]
+    if auth.get("token"):
+        cmd += ["--token", auth["token"]]
     proc = subprocess.Popen(
         cmd, env=merged_env, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True
     )
@@ -162,6 +181,44 @@ def launch_proxy(
     handle = ProxyHandle(proc, proxy_port, run_dir=run_dir, control_port=control_port)
     wait_for_readiness(handle, timeout_sec=readiness_timeout_sec)
     return handle
+
+
+def _get_upstream_auth(env: dict[str, str] | None) -> dict[str, str]:
+    """Extract upstream API-server auth from the caller's KUBECONFIG.
+
+    Returns a dict that may contain ``client_cert_data``/``client_key_data``
+    (PEM strings), ``client_cert_file``/``client_key_file`` (paths), and/or
+    ``token``. Empty when no usable auth is found (e.g. an auth-less local
+    cluster), in which case the proxy forwards unauthenticated as before.
+    """
+    import base64
+    import json as _json
+    import subprocess as sp
+
+    auth: dict[str, str] = {}
+    try:
+        r = sp.run(
+            ["kubectl", "config", "view", "--raw", "--minify", "-o", "json"],
+            capture_output=True, text=True, timeout=5,
+            env={**os.environ, **(env or {})},
+        )
+        cfg = _json.loads(r.stdout or "{}")
+        users = cfg.get("users") or []
+        user = (users[0].get("user") if users else {}) or {}
+        ccd, ckd = user.get("client-certificate-data"), user.get("client-key-data")
+        if ccd and ckd:
+            auth["client_cert_data"] = base64.b64decode(ccd).decode()
+            auth["client_key_data"] = base64.b64decode(ckd).decode()
+        else:
+            cc, ck = user.get("client-certificate"), user.get("client-key")
+            if cc and ck:
+                auth["client_cert_file"] = cc
+                auth["client_key_file"] = ck
+        if user.get("token"):
+            auth["token"] = str(user["token"])
+    except Exception:
+        pass
+    return auth
 
 
 def _get_upstream_url(env: dict[str, str] | None) -> str:
