@@ -106,9 +106,10 @@
       el("div", {}, el("label", {}, "Prompt mode"), modeSel));
     panel.appendChild(top);
     panel.appendChild(el("p", { class: "field-help" },
-      "Prompt mode controls how earlier stages' prompts are shown to the agent: " +
-      "progressive — each stage adds to the previous; concat_stateful — the full " +
-      "running history; concat_blind — only the current stage."));
+      "Workflow id is a short name for this workflow. Prompt mode controls how " +
+      "earlier stages' prompts are shown to the agent — Progressive adds each " +
+      "stage to the previous, Concatenated (stateful) shows the full running " +
+      "history, and Concatenated (blind) shows only the current stage."));
 
     panel.appendChild(el("h3", {}, "Stages"));
     panel.appendChild(el("p", { class: "field-help" },
@@ -143,8 +144,10 @@
       onClick: () => { advRows.push({ scenario: "", injectIndex: 0, liftIndex: -1 }); renderAdv(); },
     }, "+ Add adversary");
     const advHint = scenarios.length
-      ? "Adversary injections fault a stage and (optionally) lift it at a later stage."
-      : "No adversary scenarios found under resources/*/adversarial/.";
+      ? "Optional. Inject an adversarial scenario (a deliberate fault) at a stage " +
+        "to test how the agent diagnoses and recovers, and optionally lift it at a " +
+        "later stage."
+      : "No adversarial scenarios found under resources/*/adversarial/.";
 
     const yaml = el("textarea", { rows: "10", id: "wf-yaml", placeholder: "workflow YAML" });
     const valBtn = el("button", { class: "btn secondary", onClick: () => validateYaml(yaml.value, msg) }, "Validate");
@@ -154,22 +157,33 @@
     // generates it, so the page is not dominated by an empty box up front.
     const output = el("div", { style: "display:none" }, yaml,
       el("div", { class: "toolbar" }, valBtn, runBtn), msg);
+    yaml.addEventListener("input", () => autosize(yaml));
     const genBtn = el("button", { class: "btn", onClick: () => {
       yaml.value = generateYaml(idInput.value, modeSel.value, stages, advRows);
       output.style.display = "";
+      autosize(yaml);
     } }, "Generate YAML");
 
     panel.appendChild(el("div", { class: "toolbar" }, addBtn));
 
-    panel.appendChild(el("h3", {}, "Adversary"));
-    panel.appendChild(el("p", { class: "muted", style: "margin:0 0 10px;font-size:.82rem" }, advHint));
+    panel.appendChild(el("h3", {}, "Adversarial scenario injection"));
+    panel.appendChild(el("p", { class: "field-help" }, advHint));
     panel.appendChild(advList);
     panel.appendChild(el("div", { class: "toolbar" }, addAdvBtn));
 
     panel.appendChild(el("h3", {}, "Generate & run"));
+    panel.appendChild(el("p", { class: "field-help" },
+      "Build the workflow YAML from the stages and injections above. You can edit " +
+      "it, then validate it or run it inline right here."));
     panel.appendChild(el("div", { class: "toolbar" }, genBtn));
     panel.appendChild(output);
     return panel;
+  }
+
+  // Grow the YAML box to fit its content, capped by the CSS max-height.
+  function autosize(ta) {
+    ta.style.height = "auto";
+    ta.style.height = Math.min(ta.scrollHeight + 2, 460) + "px";
   }
 
   function stageOptions(selectedIndex) {
