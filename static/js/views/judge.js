@@ -20,6 +20,11 @@
     const cls = v >= 0.8 ? "ok" : v >= 0.5 ? "warn" : "bad";
     return el("span", { class: "badge " + cls }, v.toFixed(3));
   }
+  function statusBadge(id) {
+    if (!id) return el("span", { class: "muted" }, "—");
+    const st = KARMA.labels.status(id);
+    return el("span", { class: "badge " + st.cls }, st.text);
+  }
 
   function mount(container) { root = container; render(); }
 
@@ -46,8 +51,8 @@
       for (const r of runs) {
         body.appendChild(el("tr", {},
           el("td", {}, r.run_id),
-          el("td", {}, r.status || "—"),
-          el("td", {}, r.judge_status || "—"),
+          el("td", {}, statusBadge(r.status)),
+          el("td", {}, statusBadge(r.judge_status)),
           el("td", {}, scoreCell(r.judge_score)),
           el("td", {}, actionBtns("run", r.path))));
       }

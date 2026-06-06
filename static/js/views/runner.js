@@ -30,20 +30,35 @@
     renderHome();
   }
 
+  function serviceCard(svc) {
+    return el("div", { class: "card", onClick: () => renderService(svc.name) },
+      el("div", { class: "title" }, KARMA.labels.service(svc.name)),
+      el("div", { class: "sub" }, svc.case_count + " case" + (svc.case_count === 1 ? "" : "s")));
+  }
+
   async function renderHome() {
     clear(root);
-    root.appendChild(el("h2", {}, "Manual Runner"));
-    const grid = el("div", { class: "grid" });
-    root.appendChild(grid);
+    root.appendChild(el("h2", {}, "Run a case"));
     try {
       const data = await api.get("/api/services");
       if (!data.services.length) {
-        grid.appendChild(el("p", { class: "muted" }, "No services found under resources/."));
+        root.appendChild(el("p", { class: "muted" }, "No services found under resources/."));
+        return;
       }
-      for (const svc of data.services) {
-        grid.appendChild(el("div", { class: "card", onClick: () => renderService(svc.name) },
-          el("div", { class: "title" }, svc.name),
-          el("div", { class: "sub" }, svc.case_count + " case(s)")));
+      const apps = data.services.filter((s) => !KARMA.labels.isExampleService(s.name));
+      const examples = data.services.filter((s) => KARMA.labels.isExampleService(s.name));
+
+      if (apps.length) {
+        root.appendChild(el("h3", {}, "Applications"));
+        const grid = el("div", { class: "grid" });
+        apps.forEach((s) => grid.appendChild(serviceCard(s)));
+        root.appendChild(grid);
+      }
+      if (examples.length) {
+        root.appendChild(el("h3", {}, "Examples"));
+        const grid = el("div", { class: "grid" });
+        examples.forEach((s) => grid.appendChild(serviceCard(s)));
+        root.appendChild(grid);
       }
     } catch (e) { root.appendChild(errBox(e)); }
   }
@@ -51,7 +66,7 @@
   async function renderService(service) {
     clear(root);
     root.appendChild(backBtn(renderHome));
-    root.appendChild(el("h2", {}, service));
+    root.appendChild(el("h2", {}, KARMA.labels.service(service)));
     const grid = el("div", { class: "grid" });
     root.appendChild(grid);
     try {
@@ -59,7 +74,7 @@
       const svc = data.services.find((s) => s.name === service);
       for (const c of (svc ? svc.cases : [])) {
         grid.appendChild(el("div", { class: "card", onClick: () => renderCase(service, c) },
-          el("div", { class: "title" }, c)));
+          el("div", { class: "title" }, KARMA.labels.case(c))));
       }
     } catch (e) { root.appendChild(errBox(e)); }
   }
@@ -72,13 +87,13 @@
       detail = await api.get(`/api/cases/${service}/${caseName}`);
     } catch (e) { root.appendChild(errBox(e)); return; }
 
-    root.appendChild(el("h2", {}, `${service} / ${caseName}`));
+    root.appendChild(el("h2", {}, `${KARMA.labels.service(service)} · ${KARMA.labels.case(caseName)}`));
 
     // Metadata badges
     const badges = el("div", { class: "toolbar" });
     badges.appendChild(el("span", { class: "badge" }, detail.precondition_count + " preconditions"));
     badges.appendChild(el("span", { class: "badge" }, detail.metrics.length + " metrics"));
-    for (const t of detail.tags) badges.appendChild(el("span", { class: "badge" }, t));
+    for (const t of detail.tags) badges.appendChild(el("span", { class: "badge" }, KARMA.humanize(t)));
     root.appendChild(badges);
 
     // Prompt
@@ -101,7 +116,7 @@
     const row = el("div", { class: "row" });
     const agentSel = el("select", {},
       el("option", { value: "" }, "(none — solver/local)"),
-      ...agents.map((a) => el("option", { value: a }, a)));
+      ...agents.map((a) => el("option", { value: a }, KARMA.labels.agent(a))));
     const sandboxSel = el("select", {},
       el("option", { value: "local" }, "local"),
       el("option", { value: "docker" }, "docker"));
@@ -197,7 +212,8 @@
       let st;
       try { st = await api.get(`/api/manual/${runId}/status`); }
       catch (e) { phase.textContent = "Error: " + e.message; return; }
-      phase.textContent = `Status: ${st.status}` + (st.phase ? ` (phase: ${st.phase})` : "");
+      phase.textContent = `Status: ${KARMA.labels.status(st.status).text}`
+        + (st.phase ? ` (${KARMA.humanize(st.phase)})` : "");
       if (st.status === "setup_running") { setTimeout(poll, 1500); return; }
       if (st.status === "setup_failed") {
         phase.className = "badge bad";
@@ -223,7 +239,7 @@
         phase.textContent = "Verifying…";
         try {
           const r = await api.post(`/api/manual/${runId}/submit`);
-          phase.textContent = "Result: " + r.status + ` (attempt ${r.attempts})`;
+          phase.textContent = "Result: " + KARMA.labels.status(r.status).text + ` (attempt ${r.attempts})`;
           phase.className = r.status === "passed" ? "badge ok" : "badge bad";
         } catch (e) { phase.textContent = "Error: " + e.message; }
       } }, "Submit for verification"));
@@ -276,5 +292,5 @@
     return panel;
   }
 
-  KARMA.registerView({ id: "runner", label: "Runner", mount });
+  KARMA.registerView({ id: "runner", label: "Run", mount });
 })();

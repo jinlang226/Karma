@@ -19,7 +19,7 @@
   ];
 
   const TABS = [
-    ["runner", "Runner", "Browse services and cases, then run one with an agent (streamed live) or set it up and solve it by hand as a manual run."],
+    ["runner", "Run", "Browse services and cases, then run one with an agent (streamed live) or set it up and solve it by hand as a manual run."],
     ["workflow", "Workflow", "Run workflow files or compose a multi-stage workflow — with optional adversary injections — and run it inline."],
     ["judge", "Judge", "List runs and batches with their scores and trigger the LLM judge, with progress streamed live."],
   ];
