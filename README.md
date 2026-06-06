@@ -76,6 +76,26 @@ python orchestrator.py info --agents --metrics
 
 ---
 
+## Web UI
+
+`main.py` serves a single-page web UI from `static/` at the server root.
+Open `http://127.0.0.1:8080` after starting it. Four tabs:
+
+- **Runner** — browse services and cases, inspect a case's prompt and
+  parameters, then run it with an agent (stage events stream live) or as a
+  **manual** run: set the scenario up, do the task by hand against the
+  assigned namespaces, then submit for verification. Includes a command
+  builder that renders the equivalent CLI.
+- **Workflow** — list workflow files and run them, or build a workflow
+  stage-by-stage, validate the YAML, and run it inline; a jobs panel
+  streams progress.
+- **Judge** — list runs and batches with judge scores and trigger a judge
+  (or dry run), with progress streamed to a log.
+- **Adversary** — list adversary scenarios and inject or lift one against a
+  live manual run.
+
+The UI is plain HTML/CSS/JS under `static/` (no build step).
+
 ## HTTP API
 
 Start the server (host/port come from `KARMA_HOST` / `KARMA_PORT`):
@@ -132,14 +152,48 @@ data: {"type": "stage_complete", "stage": {"stage_id": "stage_1", "status": "pas
 
 Request cancellation of a running job.
 
-### `GET /api/cases`, `GET /api/agents`, `GET /api/metrics`
+`POST /api/run` also accepts `{"workflow_path": "<path>"}` to run a workflow
+file on disk by path.
 
-List available cases (grouped by service), registered agents, and registered
-metric plugins.
+### Catalog & listings
 
-### `POST /api/judge`
+| Endpoint | Returns |
+|---|---|
+| `GET /api/services` | services with case counts + cluster status |
+| `GET /api/cases` | cases grouped by service |
+| `GET /api/cases/<service>/<case>` | case detail: prompt, params, contract, metrics |
+| `GET /api/runs` | run history with mean judge scores |
+| `GET /api/workflows` | workflow files with validity/stage count |
+| `GET /api/jobs` | active job registry |
+| `GET /api/agents`, `GET /api/metrics` | registered agents / metric plugins |
 
-Run the judge on a completed run directory. Body: `{"run_dir": "...", "stage_id": "...", "model": "..."}` (`stage_id` and `model` optional).
+### Manual operator runs
+
+| Endpoint | Purpose |
+|---|---|
+| `POST /api/manual/start` | begin a manual run (`{service, case_name, params?}`) |
+| `GET /api/manual/<id>/status` | poll setup phase / verdict |
+| `POST /api/manual/<id>/submit` | verify the operator's work (re-runnable) |
+| `POST /api/manual/<id>/cleanup` | tear down proxy + namespaces |
+| `POST /api/manual/<id>/adversary/deploy` · `/lift` | inject/lift a scenario (`{scenario}`) |
+
+### Judge
+
+| Endpoint | Purpose |
+|---|---|
+| `POST /api/judge` | judge a run dir synchronously (`{run_dir, stage_id?, model?}`) |
+| `POST /api/judge/start` | async judge (`{target_type: run\|batch, target_path, dry_run?}`) |
+| `GET /api/judge/jobs`, `/jobs/<id>`, `/jobs/<id>/stream` | judge job list / status / SSE |
+| `GET /api/judge/runs`, `/api/judge/batches` | runs and cross-run batches with scores |
+
+### Tooling
+
+| Endpoint | Purpose |
+|---|---|
+| `GET /api/cli/options`, `POST /api/cli/preview` | CLI command builder |
+| `POST /api/workflow/import` | validate pasted workflow YAML |
+| `GET /api/adversary/scenarios` | discoverable adversary scenarios |
+| `GET /api/proxy/status` | kubectl-proxy status |
 
 ---
 
@@ -173,14 +227,21 @@ karma/
   metrics/       scoring metric plugins
   judge/         LLM judge client, rubric, and scoring
   adversary/     adversary injection deploy/lift lifecycle
-  runtime/       stage and workflow execution loop, service API
+  runtime/       stage and workflow loop, service API, manual operator mode
   transport/     kubectl proxy and agent bundle
   interfaces/    CLI and HTTP/SSE adapters
+    http/        server, events (SSE hub), jobs, catalog, judging,
+                 cli_preview
+  judge/         engine + batch (cross-run) aggregation
   oracle.py      automated pass/fail verification
   evidence.py    snapshot collection and metric dispatch
   sandbox.py     local and Docker agent launch
   protocol.py    run-directory layout and artifact paths
   settings.py    environment-variable configuration
+static/          web UI (no build step)
+  index.html     app shell
+  css/styles.css
+  js/            api.js, app.js, views/{runner,workflow,judge,adversary}.js
 tests/
   unit/          fast unit tests (no cluster required)
   integration/   end-to-end tests (require live cluster)
