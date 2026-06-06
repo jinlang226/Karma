@@ -270,6 +270,16 @@ def _normalize_operation_block(
 # Public API
 # ---------------------------------------------------------------------------
 
+def _is_safe_segment(name: str) -> bool:
+    """Return ``True`` when *name* is a single safe path component.
+
+    Rejects empty, ``.``/``..``, and any value containing a path separator,
+    so service/case names taken from URLs or request bodies cannot escape
+    *resources_dir* via traversal.
+    """
+    return bool(name) and name not in (".", "..") and "/" not in name and "\\" not in name
+
+
 def case_path(resources_dir: Path, service: str, case_name: str) -> Path:
     """Return the ``test.yaml`` path for *service*/*case_name*.
 
@@ -296,6 +306,9 @@ def load_case_file(resources_dir: Path, service: str, case_name: str) -> dict[st
         pydantic schema validation fails. The error message names the
         offending field path and the reason.
     """
+    for segment, label in ((service, "service"), (case_name, "case")):
+        if not _is_safe_segment(segment):
+            raise RuntimeError(f"invalid {label} name: {segment!r}")
     path = case_path(resources_dir, service, case_name)
     if not path.exists():
         raise RuntimeError(f"case '{case_name}': test.yaml not found at {path}")

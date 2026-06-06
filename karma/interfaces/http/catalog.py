@@ -16,8 +16,14 @@ from __future__ import annotations
 
 import json
 import subprocess
+import time
 from pathlib import Path
 from typing import Any
+
+# Short cache for the cluster probe so /api/services (polled by the UI banner)
+# does not shell out to kubectl on every request.
+_CLUSTER_TTL_SEC = 5.0
+_cluster_cache: dict[str, Any] = {"ts": 0.0, "value": None}
 
 from ...definitions.cases import load_case_file, normalize_case
 from ...definitions.workflows import load_workflow_file, normalize_workflow
@@ -230,10 +236,22 @@ def list_adversary_scenarios(resources_dir: Path) -> list[dict[str, Any]]:
 def cluster_status() -> dict[str, Any]:
     """Return a best-effort Kubernetes reachability status for the UI banner.
 
-    Shells out to ``kubectl cluster-info`` with a short timeout. Never
-    raises: a missing binary, an unreachable cluster, or a timeout all map
-    to a structured status string rather than an exception.
+    Shells out to ``kubectl cluster-info`` with a short timeout, cached for
+    a few seconds. Never raises: a missing binary, an unreachable cluster,
+    or a timeout all map to a structured status string rather than an
+    exception.
     """
+    now = time.monotonic()
+    if _cluster_cache["value"] is not None and now - _cluster_cache["ts"] < _CLUSTER_TTL_SEC:
+        return _cluster_cache["value"]
+    result = _probe_cluster()
+    _cluster_cache["value"] = result
+    _cluster_cache["ts"] = now
+    return result
+
+
+def _probe_cluster() -> dict[str, Any]:
+    """Run the actual ``kubectl cluster-info`` probe (uncached)."""
     try:
         proc = subprocess.run(
             ["kubectl", "cluster-info"],

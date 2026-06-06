@@ -32,7 +32,6 @@ from . import catalog
 from . import judging
 from . import cli_preview
 from ...definitions.workflows import normalize_workflow
-from ...runtime.service import get_run_status
 from ...runtime import manual
 from ...agents.registry import list_agents
 from ...metrics import list_metrics
