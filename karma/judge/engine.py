@@ -30,6 +30,7 @@ def run_judge(
     judge_base_url: str | None = None,
     judge_api_key: str | None = None,
     judge_timeout_sec: int | None = None,
+    judge_max_retries: int | None = None,
     dry_run: bool = False,
 ) -> dict[str, Any]:
     """Evaluate one stage with the LLM judge and return the result dict.
@@ -83,6 +84,8 @@ def run_judge(
         llm_kwargs["api_key"] = judge_api_key
     if judge_timeout_sec is not None:
         llm_kwargs["timeout_sec"] = judge_timeout_sec
+    if judge_max_retries is not None:
+        llm_kwargs["max_retries"] = judge_max_retries
     raw_response = call_judge_llm(judge_input, **llm_kwargs)
     # The oracle is authoritative: a stage the oracle failed can never be a
     # judge "pass". Thread its verdict into scoring so determine_verdict can
@@ -111,6 +114,7 @@ def run_judge_batch(
     judge_base_url: str | None = None,
     judge_api_key: str | None = None,
     judge_timeout_sec: int | None = None,
+    judge_max_retries: int | None = None,
     dry_run: bool = False,
 ) -> dict[str, Any]:
     """Evaluate all stages in a run and return a batch result dict.
@@ -157,6 +161,7 @@ def run_judge_batch(
                 judge_base_url=judge_base_url,
                 judge_api_key=judge_api_key,
                 judge_timeout_sec=judge_timeout_sec,
+                judge_max_retries=judge_max_retries,
                 dry_run=dry_run,
             )
         except Exception as exc:
