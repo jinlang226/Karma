@@ -61,6 +61,36 @@ def _add_docker_args(p: argparse.ArgumentParser) -> None:
                    help="Container path to mount the agent credentials at.")
 
 
+def _add_run_extra_args(p: argparse.ArgumentParser) -> None:
+    """Add the cleanup-timeout and llm-env-file flags shared by run subcommands."""
+    p.add_argument("--cleanup-timeout", type=int, default=None,
+                   help="Namespace force-delete timeout (seconds).")
+    p.add_argument("--llm-env-file", default=None,
+                   help="Load KEY=VALUE lines from this file into the environment.")
+
+
+def _load_env_file(path: str | None) -> None:
+    """Load KEY=VALUE lines from *path* into the process environment."""
+    import os
+    if not path:
+        return
+    try:
+        for line in Path(path).read_text().splitlines():
+            line = line.strip()
+            if not line or line.startswith("#") or "=" not in line:
+                continue
+            key, _, value = line.partition("=")
+            os.environ[key.strip()] = value.strip().strip('"').strip("'")
+    except Exception as exc:
+        print(f"could not load --llm-env-file {path}: {exc}", file=sys.stderr)
+
+
+def _environment_config(args: argparse.Namespace) -> dict[str, Any] | None:
+    """Build the environment provider config from CLI flags (cleanup timeout)."""
+    ct = getattr(args, "cleanup_timeout", None)
+    return {"force_delete_timeout_sec": ct} if ct else None
+
+
 def _build_sandbox_options(args: argparse.Namespace) -> dict[str, Any] | None:
     """Build the sandbox_options dict from the docker provisioning flags."""
     opts: dict[str, Any] = {}
@@ -106,6 +136,7 @@ def _build_parser() -> argparse.ArgumentParser:
     wf.add_argument("--verify-timeout", type=int, default=None,
                     help="Override the oracle/verify timeout (seconds).")
     _add_docker_args(wf)
+    _add_run_extra_args(wf)
     wf.add_argument("--output", default="text", choices=["text", "json"])
 
     rc = sub.add_parser("run-case", help="Run a single case.")
@@ -126,6 +157,7 @@ def _build_parser() -> argparse.ArgumentParser:
     rc.add_argument("--judge", action="store_true",
                     help="Run the LLM judge on every stage after the run completes.")
     _add_docker_args(rc)
+    _add_run_extra_args(rc)
     rc.add_argument("--profile", default=None)
     rc.add_argument("--output", default="text", choices=["text", "json"])
 
@@ -148,6 +180,7 @@ def _build_parser() -> argparse.ArgumentParser:
     rb.add_argument("--judge-mode", choices=["off", "post-run", "post-batch"],
                     default="off",
                     help="Judge each run (post-run) or all runs after (post-batch).")
+    _add_run_extra_args(rb)
     rb.add_argument("--profile", default=None)
     rb.add_argument("--output", default="text", choices=["text", "json"])
 
@@ -180,6 +213,10 @@ def _build_parser() -> argparse.ArgumentParser:
                     help="Do not fail the command if the judge errors (default).")
     jg.add_argument("--fail-closed", dest="fail_open", action="store_false",
                     help="Exit non-zero if the judge errors.")
+    jg.add_argument("--exclude-outcome", action="store_true",
+                    help="Hide the oracle verdict from the judge prompt (reduce bias).")
+    jg.add_argument("--llm-env-file", default=None,
+                    help="Load KEY=VALUE lines from this file into the environment.")
     jg.add_argument("--dry-run", action="store_true")
     jg.add_argument("--output", default="text", choices=["text", "json"])
 
@@ -287,6 +324,7 @@ def _cmd_run_workflow(args: argparse.Namespace) -> None:
     resources_dir = Path(merged.get("resources_dir", "resources"))
     runs_dir = Path(merged.get("runs_dir", "runs"))
     _apply_timeout_overrides(args)
+    _load_env_file(getattr(args, "llm_env_file", None))
 
     raw = load_workflow_file(Path(args.workflow))
     workflow = normalize_workflow(raw, resources_dir=resources_dir)
@@ -301,6 +339,7 @@ def _cmd_run_workflow(args: argparse.Namespace) -> None:
         resources_dir=resources_dir,
         agent_name=merged.get("agent"),
         sandbox_mode=merged.get("sandbox", "local"),
+        environment_config=_environment_config(args),
         stage_failure_mode=args.stage_failure_mode,
         final_sweep_mode=args.final_sweep_mode,
         sandbox_options=_build_sandbox_options(args),
@@ -334,6 +373,7 @@ def _cmd_run_case(args: argparse.Namespace) -> None:
     resources_dir = Path(merged.get("resources_dir", "resources"))
     runs_dir = Path(merged.get("runs_dir", "runs"))
     _apply_timeout_overrides(args)
+    _load_env_file(getattr(args, "llm_env_file", None))
 
     result = run_case(
         args.service,
@@ -343,6 +383,7 @@ def _cmd_run_case(args: argparse.Namespace) -> None:
         param_overrides=param_overrides,
         agent_name=merged.get("agent"),
         sandbox_mode=merged.get("sandbox", "local"),
+        environment_config=_environment_config(args),
         agent_timeout_sec=args.timeout,
         max_attempts=args.max_attempts,
         sandbox_options=_build_sandbox_options(args),
@@ -381,6 +422,7 @@ def _cmd_run_batch(args: argparse.Namespace) -> None:
     resources_dir = Path(merged.get("resources_dir", "resources"))
     runs_dir = Path(merged.get("runs_dir", "runs"))
     _apply_timeout_overrides(args)
+    _load_env_file(getattr(args, "llm_env_file", None))
 
     cases = _select_batch_cases(args, resources_dir)
     if not cases:
@@ -397,6 +439,7 @@ def _cmd_run_batch(args: argparse.Namespace) -> None:
             param_overrides=param_overrides,
             agent_name=merged.get("agent"),
             sandbox_mode=merged.get("sandbox", "local"),
+            environment_config=_environment_config(args),
             agent_timeout_sec=args.timeout,
             max_attempts=args.max_attempts,
         )
@@ -496,12 +539,14 @@ def _cmd_judge(args: argparse.Namespace) -> None:
     if not run_dir.exists():
         raise RuntimeError(f"run directory not found: {run_dir}")
 
+    _load_env_file(getattr(args, "llm_env_file", None))
     judge_kwargs = {
         "judge_model": args.model,
         "judge_base_url": args.base_url,
         "judge_api_key": args.api_key,
         "judge_timeout_sec": args.timeout,
         "judge_max_retries": args.max_retries,
+        "include_outcome": not getattr(args, "exclude_outcome", False),
     }
     try:
         if args.batch:
