@@ -209,6 +209,28 @@ def create_app(
             return jsonify({"error": str(exc)}), 500
         return jsonify(result)
 
+    @app.route("/api/judge/preview", methods=["POST"])
+    def api_judge_preview():
+        # Assemble the judge input (oracle + evidence + rubric + prompt) without
+        # calling the LLM, so the UI can show exactly what would be sent.
+        from ...judge.engine import run_judge, run_judge_batch
+        payload = request.get_json(force=True, silent=True) or {}
+        run_dir_str = str(payload.get("run_dir") or "")
+        if not run_dir_str:
+            return jsonify({"error": "run_dir is required"}), 400
+        run_dir_path = Path(run_dir_str)
+        if not run_dir_path.exists():
+            return jsonify({"error": "run_dir not found"}), 404
+        stage_id = payload.get("stage_id")
+        try:
+            if stage_id:
+                result = run_judge(run_dir_path, str(stage_id), dry_run=True)
+            else:
+                result = run_judge_batch(run_dir_path, dry_run=True)
+        except Exception as exc:
+            return jsonify({"error": str(exc)}), 500
+        return jsonify(result)
+
     @app.route("/api/judge/start", methods=["POST"])
     def api_judge_start():
         payload = request.get_json(force=True, silent=True) or {}
@@ -349,6 +371,41 @@ def create_app(
         except ValueError as exc:
             return jsonify({"ok": False, "errors": [str(exc)]})
         return jsonify({"ok": True, "workflow": workflow})
+
+    @app.route("/api/workflow/preview", methods=["POST"])
+    def api_workflow_preview():
+        # Fully resolve a workflow (normalize + load cases + adversary) and
+        # summarize the stages that would run, without executing anything.
+        from ...definitions.workflows import resolve_workflow_rows
+        payload = request.get_json(force=True, silent=True) or {}
+        import yaml as _yaml
+        try:
+            raw = _yaml.safe_load(payload.get("yaml_text") or "") or {}
+        except Exception as exc:
+            return jsonify({"ok": False, "errors": [f"YAML parse error: {exc}"]})
+        if not isinstance(raw, dict):
+            return jsonify({"ok": False, "errors": ["workflow must be a YAML object"]})
+        try:
+            workflow = normalize_workflow(raw, resources_dir=Path(resources_dir))
+            rows = resolve_workflow_rows(workflow, resources_dir=Path(resources_dir))
+        except (ValueError, RuntimeError) as exc:
+            return jsonify({"ok": False, "errors": [str(exc)]})
+        return jsonify({
+            "ok": True,
+            "workflow_id": workflow.get("id"),
+            "prompt_mode": workflow.get("prompt_mode"),
+            "stage_count": len(rows),
+            "stages": [
+                {
+                    "stage_id": r.get("stage_id"),
+                    "service": r.get("service"),
+                    "case_name": r.get("case_name"),
+                    "namespace_roles": r.get("namespace_roles"),
+                    "has_adversary": bool(r.get("adversary_deploy")),
+                }
+                for r in rows
+            ],
+        })
 
     @app.route("/api/adversary/scenarios")
     def api_adversary_scenarios():
