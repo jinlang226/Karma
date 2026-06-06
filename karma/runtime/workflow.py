@@ -181,6 +181,7 @@ def run_workflow_loop(
     on_stage_complete: Any | None = None,
     stage_failure_mode: str = "terminate",
     final_sweep_mode: str = "auto",
+    sandbox_options: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Drive the workflow execution loop and return the final run result.
 
@@ -262,6 +263,7 @@ def run_workflow_loop(
                 stage_prompts=stage_prompts,
                 prompt_mode=prompt_mode,
                 defer_cleanup=True,
+                sandbox_options=sandbox_options,
             )
 
             if on_stage_complete is not None:

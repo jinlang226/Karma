@@ -248,6 +248,7 @@ def write_agent_bundle(
     run_dir: Path,
     namespace_env_vars: dict[str, str],
     source_kubeconfig: Path | None = None,
+    docker: bool = False,
 ) -> Path:
     """Write the agent credential bundle to the run directory.
 
@@ -255,9 +256,13 @@ def write_agent_bundle(
     ``protocol.bundle_kubeconfig_path(run_dir)``. Also writes
     *namespace_env_vars* to ``protocol.bundle_env_path(run_dir)`` as JSON.
 
-    When *source_kubeconfig* is provided its cluster and auth sections
-    are used as the base; otherwise a minimal localhost kubeconfig is
-    generated.
+    The kubeconfig carries no credentials: the proxy authenticates to the
+    real API server on the agent's behalf (see ``launch_proxy``), so
+    *source_kubeconfig* is accepted for API compatibility but not needed.
+
+    When *docker* is True the kubeconfig points at ``host.docker.internal``
+    instead of ``127.0.0.1`` so the agent container can reach the proxy
+    running on the host.
 
     Returns
     -------
@@ -265,7 +270,10 @@ def write_agent_bundle(
         Path to the written kubeconfig file.
     """
     bundle_dir = protocol.ensure_bundle_dir(run_dir)
-    proxy_url = f"http://127.0.0.1:{proxy_handle.port}"
+    # A container cannot reach the host's loopback; Docker exposes the host as
+    # host.docker.internal.
+    proxy_host = "host.docker.internal" if docker else "127.0.0.1"
+    proxy_url = f"http://{proxy_host}:{proxy_handle.port}"
 
     kubeconfig = {
         "apiVersion": "v1",

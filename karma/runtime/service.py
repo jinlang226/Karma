@@ -65,6 +65,7 @@ def run_workflow(
     run_id: str | None = None,
     stage_failure_mode: str = "terminate",
     final_sweep_mode: str = "auto",
+    sandbox_options: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Execute a workflow synchronously and return the final run result.
 
@@ -111,6 +112,15 @@ def run_workflow(
         rows = resolve_workflow_rows(workflow, resources_dir=resources_dir)
         env = get_environment(environment_provider, config=environment_config)
         agent_meta = resolve_agent(agent_name, sandbox_mode=sandbox_mode)
+        # Docker image provisioning: override the tag and/or build the image on
+        # demand (old --agent-tag / --docker-image / --agent-build).
+        opts = sandbox_options or {}
+        image_override = opts.get("image_tag")
+        if image_override:
+            agent_meta["image_tag"] = image_override
+        if opts.get("build_image") and sandbox_mode == "docker" and agent_meta.get("folder"):
+            from ..sandbox import build_agent_image
+            build_agent_image(agent_meta, agent_meta.get("image_tag") or "karma-agent:latest", run_dir)
         prompt_mode = str(workflow.get("prompt_mode") or "progressive")
 
         result = run_workflow_loop(
@@ -125,6 +135,7 @@ def run_workflow(
             on_stage_complete=on_stage_complete,
             stage_failure_mode=stage_failure_mode,
             final_sweep_mode=final_sweep_mode,
+            sandbox_options=sandbox_options,
         )
         result["summary"] = {
             "total_stages": len(rows),
@@ -162,6 +173,7 @@ def run_case(
     max_attempts: int | None = None,
     stage_failure_mode: str = "terminate",
     final_sweep_mode: str = "auto",
+    sandbox_options: dict[str, Any] | None = None,
     run_id: str | None = None,
 ) -> dict[str, Any]:
     """Execute a single case as a 1-stage workflow and return the run result.
@@ -193,6 +205,7 @@ def run_case(
         environment_config=environment_config,
         stage_failure_mode=stage_failure_mode,
         final_sweep_mode=final_sweep_mode,
+        sandbox_options=sandbox_options,
         run_id=run_id,
     )
 

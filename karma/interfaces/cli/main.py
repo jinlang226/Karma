@@ -43,6 +43,40 @@ from ...definitions.workflows import load_workflow_file, normalize_workflow
 # Argument parser
 # ---------------------------------------------------------------------------
 
+def _add_docker_args(p: argparse.ArgumentParser) -> None:
+    """Add the docker-sandbox provisioning flags shared by run subcommands."""
+    p.add_argument("--agent-build", action="store_true",
+                   help="Build the agent's Docker image before running.")
+    p.add_argument("--agent-tag", default=None, help="Override the agent image tag.")
+    p.add_argument("--docker-image", default=None,
+                   help="Docker image to run as the agent (alias of --agent-tag).")
+    p.add_argument("--agent-cleanup", action="store_true",
+                   help="Remove the agent image after the run.")
+    p.add_argument("--source-kubeconfig", default=None,
+                   help="Source kubeconfig (accepted for compatibility; the proxy "
+                        "authenticates upstream so it is not required).")
+    p.add_argument("--agent-auth-path", default=None,
+                   help="Host path to agent credentials to mount into the container.")
+    p.add_argument("--agent-auth-dest", default=None,
+                   help="Container path to mount the agent credentials at.")
+
+
+def _build_sandbox_options(args: argparse.Namespace) -> dict[str, Any] | None:
+    """Build the sandbox_options dict from the docker provisioning flags."""
+    opts: dict[str, Any] = {}
+    if getattr(args, "agent_build", False):
+        opts["build_image"] = True
+    tag = getattr(args, "agent_tag", None) or getattr(args, "docker_image", None)
+    if tag:
+        opts["image_tag"] = tag
+    if getattr(args, "source_kubeconfig", None):
+        opts["source_kubeconfig"] = args.source_kubeconfig
+    ap, ad = getattr(args, "agent_auth_path", None), getattr(args, "agent_auth_dest", None)
+    if ap and ad:
+        opts["extra_mounts"] = [(Path(ap), str(ad))]
+    return opts or None
+
+
 def _build_parser() -> argparse.ArgumentParser:
     """Return the top-level argument parser with all subcommands registered."""
     parser = argparse.ArgumentParser(
@@ -71,6 +105,7 @@ def _build_parser() -> argparse.ArgumentParser:
                     help="Override the precondition timeout (seconds).")
     wf.add_argument("--verify-timeout", type=int, default=None,
                     help="Override the oracle/verify timeout (seconds).")
+    _add_docker_args(wf)
     wf.add_argument("--output", default="text", choices=["text", "json"])
 
     rc = sub.add_parser("run-case", help="Run a single case.")
@@ -90,6 +125,7 @@ def _build_parser() -> argparse.ArgumentParser:
                     help="Override the oracle/verify timeout (seconds).")
     rc.add_argument("--judge", action="store_true",
                     help="Run the LLM judge on every stage after the run completes.")
+    _add_docker_args(rc)
     rc.add_argument("--profile", default=None)
     rc.add_argument("--output", default="text", choices=["text", "json"])
 
@@ -267,10 +303,27 @@ def _cmd_run_workflow(args: argparse.Namespace) -> None:
         sandbox_mode=merged.get("sandbox", "local"),
         stage_failure_mode=args.stage_failure_mode,
         final_sweep_mode=args.final_sweep_mode,
+        sandbox_options=_build_sandbox_options(args),
     )
     _print_result(result, args.output)
     if getattr(args, "judge", False):
         _maybe_inline_judge(result, runs_dir, args.output)
+    _maybe_cleanup_image(args)
+
+
+def _maybe_cleanup_image(args: argparse.Namespace) -> None:
+    """Remove the agent Docker image after the run when --agent-cleanup is set."""
+    if not getattr(args, "agent_cleanup", False):
+        return
+    tag = (getattr(args, "agent_tag", None) or getattr(args, "docker_image", None)
+           or (f"karma-agent-{args.agent}:latest" if getattr(args, "agent", None) else None))
+    if not tag:
+        return
+    import subprocess
+    try:
+        subprocess.run(["docker", "rmi", "-f", tag], capture_output=True, text=True)
+    except Exception as exc:
+        print(f"image cleanup failed: {exc}", file=sys.stderr)
 
 
 def _cmd_run_case(args: argparse.Namespace) -> None:
@@ -292,10 +345,12 @@ def _cmd_run_case(args: argparse.Namespace) -> None:
         sandbox_mode=merged.get("sandbox", "local"),
         agent_timeout_sec=args.timeout,
         max_attempts=args.max_attempts,
+        sandbox_options=_build_sandbox_options(args),
     )
     _print_result(result, args.output)
     if getattr(args, "judge", False):
         _maybe_inline_judge(result, runs_dir, args.output)
+    _maybe_cleanup_image(args)
 
 
 def _select_batch_cases(args: argparse.Namespace, resources_dir: Path) -> list[tuple[str, str]]:

@@ -280,6 +280,7 @@ def run_stage(
     stage_prompts: list[str],
     prompt_mode: str,
     defer_cleanup: bool = False,
+    sandbox_options: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Execute one workflow stage and return its result dict.
 
@@ -385,10 +386,14 @@ def run_stage(
         deploy_result = adversary_deploy(adv_deploy_units, role_bindings=role_bindings, log_path=adv_log, env_vars=env_vars_adv)
 
         # Step 6: write agent bundle
+        opts = sandbox_options or {}
+        src_kc = opts.get("source_kubeconfig")
         agent_kubeconfig = write_agent_bundle(
             proxy_handle,
             run_dir=run_dir,
             namespace_env_vars=env_vars_adv,
+            source_kubeconfig=Path(src_kc) if src_kc else None,
+            docker=(sandbox_mode == "docker"),
         )
 
         # Step 7: render and write prompt
@@ -424,6 +429,7 @@ def run_stage(
                 run_dir=stage_dir,
                 agent_timeout_sec=row.get("agent_timeout_sec") or 900,
                 kubeconfig_path=agent_kubeconfig,
+                extra_mounts=opts.get("extra_mounts"),
             )
 
             # Step 9: wait for submit, agent exit, or timeout
