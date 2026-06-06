@@ -67,7 +67,7 @@
         body.appendChild(el("tr", {},
           el("td", {}, f.name), el("td", {}, f.id || "—"),
           el("td", {}, String(f.stage_count == null ? "—" : f.stage_count)),
-          el("td", {}, f.prompt_mode || "—"), el("td", {}, status),
+          el("td", {}, f.prompt_mode ? KARMA.labels.promptMode(f.prompt_mode) : "—"), el("td", {}, status),
           el("td", {}, runBtn)));
       }
     }).catch((e) => body.appendChild(el("tr", {}, el("td", { colspan: "6" }, errBox(e)))));
@@ -92,9 +92,9 @@
 
     const idInput = el("input", { value: "ui-workflow" });
     const modeSel = el("select", {},
-      el("option", { value: "progressive" }, "progressive"),
-      el("option", { value: "concat_stateful" }, "concat_stateful"),
-      el("option", { value: "concat_blind" }, "concat_blind"));
+      el("option", { value: "progressive" }, KARMA.labels.promptMode("progressive")),
+      el("option", { value: "concat_stateful" }, KARMA.labels.promptMode("concat_stateful")),
+      el("option", { value: "concat_blind" }, KARMA.labels.promptMode("concat_blind")));
     const top = el("div", { class: "row" },
       el("div", {}, el("label", {}, "Workflow id"), idInput),
       el("div", {}, el("label", {}, "Prompt mode"), modeSel));
@@ -163,7 +163,7 @@
     return stages.map((s, i) => el("option", {
       value: String(i),
       selected: i === selectedIndex ? "selected" : null,
-    }, `stage_${i + 1}${s.service ? " (" + s.service + ")" : ""}`));
+    }, `stage_${i + 1}${s.service ? " (" + KARMA.labels.service(s.service) + ")" : ""}`));
   }
 
   function advRow(adv, index, rerender) {
@@ -175,7 +175,7 @@
       el("option", { value: "" }, "(scenario)"),
       ...choices.map((s) => el("option", {
         value: s.scenario, selected: s.scenario === adv.scenario ? "selected" : null,
-      }, s.scenario)));
+      }, KARMA.labels.scenario(s.scenario))));
     const injectSel = el("select", {
       onChange: (e) => { adv.injectIndex = Number(e.target.value); adv.scenario = ""; rerender(); },
     }, ...stageOptions(adv.injectIndex));
@@ -192,12 +192,12 @@
 
   function stageRow(stage, index, rerender) {
     const svcSel = el("select", { onChange: (e) => { stage.service = e.target.value; stage.case = ""; rerender(); } },
-      ...services.map((s) => el("option", { value: s.name, selected: s.name === stage.service ? "selected" : null }, s.name)));
+      ...services.map((s) => el("option", { value: s.name, selected: s.name === stage.service ? "selected" : null }, KARMA.labels.service(s.name))));
     const svc = services.find((s) => s.name === stage.service);
     const caseSel = el("select", { onChange: (e) => { stage.case = e.target.value; } },
       el("option", { value: "" }, "(case)"),
       ...((svc ? svc.cases : []).map((c) =>
-        el("option", { value: c, selected: c === stage.case ? "selected" : null }, c))));
+        el("option", { value: c, selected: c === stage.case ? "selected" : null }, KARMA.labels.case(c)))));
     const ovr = el("input", { value: stage.overrides, placeholder: "key=value, key2=value2",
       onInput: (e) => { stage.overrides = e.target.value; } });
     const rm = el("button", { class: "btn secondary", onClick: () => { stages.splice(index, 1); rerender(); } }, "✕");
@@ -284,22 +284,16 @@
         el("th", {}, "Run ID"), el("th", {}, "Kind"), el("th", {}, "Status"))));
       const body = el("tbody", {});
       for (const j of jobs) {
+        const st = KARMA.labels.status(j.status);
         body.appendChild(el("tr", {},
           el("td", {}, j.run_id || "—"),
-          el("td", {}, j.kind || "—"),
-          el("td", {}, el("span", { class: "badge " + badgeClass(j.status) }, j.status || "—"))));
+          el("td", {}, KARMA.humanize(j.kind) || "—"),
+          el("td", {}, el("span", { class: "badge " + st.cls }, st.text))));
       }
       if (!jobs.length) body.appendChild(el("tr", {}, el("td", { colspan: "3", class: "muted" }, "No active jobs.")));
       tbl.appendChild(body);
       host.appendChild(tbl);
     } catch (e) { host.appendChild(errBox(e)); }
-  }
-
-  function badgeClass(s) {
-    if (s === "complete") return "ok";
-    if (s === "error" || s === "failed") return "bad";
-    if (s === "running") return "run";
-    return "";
   }
 
   function streamInto(runId) {
