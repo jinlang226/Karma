@@ -31,6 +31,7 @@ def run_judge(
     judge_api_key: str | None = None,
     judge_timeout_sec: int | None = None,
     judge_max_retries: int | None = None,
+    include_outcome: bool = True,
     dry_run: bool = False,
 ) -> dict[str, Any]:
     """Evaluate one stage with the LLM judge and return the result dict.
@@ -73,6 +74,7 @@ def run_judge(
     """
     rubric = load_rubric(run_dir, stage_id, overrides=rubric_overrides)
     judge_input = build_judge_input(run_dir, stage_id, rubric=rubric)
+    judge_input["_include_outcome"] = include_outcome
 
     if dry_run:
         return {"stage_id": stage_id, "dry_run": True, "input": judge_input}
@@ -115,6 +117,7 @@ def run_judge_batch(
     judge_api_key: str | None = None,
     judge_timeout_sec: int | None = None,
     judge_max_retries: int | None = None,
+    include_outcome: bool = True,
     dry_run: bool = False,
 ) -> dict[str, Any]:
     """Evaluate all stages in a run and return a batch result dict.
@@ -162,6 +165,7 @@ def run_judge_batch(
                 judge_api_key=judge_api_key,
                 judge_timeout_sec=judge_timeout_sec,
                 judge_max_retries=judge_max_retries,
+                include_outcome=include_outcome,
                 dry_run=dry_run,
             )
         except Exception as exc:

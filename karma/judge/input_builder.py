@@ -140,11 +140,19 @@ def render_judge_prompt(
     ns_list: list[str] = raw_ns if isinstance(raw_ns, list) else []
     ns_str = ", ".join(ns_list) if ns_list else "(none)"
 
+    # The oracle verdict is always used authoritatively in scoring, but it can
+    # be hidden from the judge PROMPT to reduce outcome bias (the LLM otherwise
+    # tends to echo the verdict). Controlled by run_judge's include_outcome.
+    if judge_input.get("_include_outcome", True):
+        verdict_text = str(oracle.get("verdict") or "unknown")
+    else:
+        verdict_text = "(hidden to reduce outcome bias)"
+
     ctx: dict[str, str] = {
         "stage_id": str(judge_input.get("stage_id") or ""),
         "prompt_text": str(judge_input.get("prompt_text") or "(not available)"),
         "submit_text": str(judge_input.get("submit_text") or "(not submitted)"),
-        "oracle_verdict": str(oracle.get("verdict") or "unknown"),
+        "oracle_verdict": verdict_text,
         "total_calls": str(trace_facts.get("total_calls") or 0),
         "mutation_calls": str(trace_facts.get("mutation_calls") or 0),
         "read_calls": str(trace_facts.get("read_calls") or 0),

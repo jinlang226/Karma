@@ -58,6 +58,7 @@ def judge_batch_dir(
     judge_api_key: str | None = None,
     judge_timeout_sec: int | None = None,
     judge_max_retries: int | None = None,
+    include_outcome: bool = True,
     dry_run: bool = False,
     on_run_complete: Any | None = None,
 ) -> dict[str, Any]:
@@ -90,6 +91,7 @@ def judge_batch_dir(
             judge_api_key=judge_api_key,
             judge_timeout_sec=judge_timeout_sec,
             judge_max_retries=judge_max_retries,
+            include_outcome=include_outcome,
             dry_run=dry_run,
         )
         score = None if dry_run else _mean_stage_score(stage_results)

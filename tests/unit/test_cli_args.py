@@ -69,6 +69,21 @@ class TestSubcommandParsing:
         # no docker flags -> None (local runs pass sandbox_options=None)
         assert _build_sandbox_options(_parse(["run-case", "demo", "cm"])) is None
 
+    def test_remaining_compat_flags(self):
+        from karma.interfaces.cli.main import _environment_config
+        ns = _parse(["run-case", "demo", "cm", "--cleanup-timeout", "99",
+                     "--llm-env-file", "/f"])
+        assert ns.cleanup_timeout == 99 and ns.llm_env_file == "/f"
+        assert _environment_config(ns) == {"force_delete_timeout_sec": 99}
+        assert _parse(["judge", "r", "--exclude-outcome"]).exclude_outcome is True
+
+    def test_include_outcome_controls_judge_prompt(self):
+        from karma.judge.input_builder import render_judge_prompt
+        ji = {"rubric": {"items": [], "passing_threshold": 0.5},
+              "oracle": {"verdict": "fail"}, "trace_facts": {}}
+        assert "Verdict: fail" in render_judge_prompt({**ji, "_include_outcome": True})
+        assert "hidden to reduce" in render_judge_prompt({**ji, "_include_outcome": False})
+
     def test_info_flags(self):
         assert _parse(["info", "--agents", "--metrics"]).command == "info"
 
