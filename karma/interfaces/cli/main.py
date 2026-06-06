@@ -62,6 +62,15 @@ def _build_parser() -> argparse.ArgumentParser:
                     help="Resolve rows and print without running.")
     wf.add_argument("--judge", action="store_true",
                     help="Run the LLM judge on every stage after the run completes.")
+    wf.add_argument("--stage-failure-mode", choices=["terminate", "continue"],
+                    default="terminate",
+                    help="terminate (fail-fast) or continue past a failed stage.")
+    wf.add_argument("--final-sweep-mode", choices=["auto", "off", "full"],
+                    default="auto", help="Control the final regression sweep.")
+    wf.add_argument("--setup-timeout", type=int, default=None,
+                    help="Override the precondition timeout (seconds).")
+    wf.add_argument("--verify-timeout", type=int, default=None,
+                    help="Override the oracle/verify timeout (seconds).")
     wf.add_argument("--output", default="text", choices=["text", "json"])
 
     rc = sub.add_parser("run-case", help="Run a single case.")
@@ -73,10 +82,38 @@ def _build_parser() -> argparse.ArgumentParser:
     rc.add_argument("--resources-dir", default="resources")
     rc.add_argument("--param", action="append", default=[], metavar="KEY=VALUE")
     rc.add_argument("--timeout", type=int, default=900)
+    rc.add_argument("--max-attempts", type=int, default=None,
+                    help="Total attempt cap (the stage runs retries + 1 times).")
+    rc.add_argument("--setup-timeout", type=int, default=None,
+                    help="Override the precondition timeout (seconds).")
+    rc.add_argument("--verify-timeout", type=int, default=None,
+                    help="Override the oracle/verify timeout (seconds).")
     rc.add_argument("--judge", action="store_true",
                     help="Run the LLM judge on every stage after the run completes.")
     rc.add_argument("--profile", default=None)
     rc.add_argument("--output", default="text", choices=["text", "json"])
+
+    rb = sub.add_parser("run-batch", help="Run many cases sequentially.")
+    rb.add_argument("--all", action="store_true", help="Run every case under resources/.")
+    rb.add_argument("--service", default=None, help="Run all cases in this service.")
+    rb.add_argument("--case", action="append", default=[], metavar="SERVICE/CASE",
+                    help="Run a specific case (repeatable).")
+    rb.add_argument("--agent", default=None)
+    rb.add_argument("--sandbox", default="local", choices=["local", "docker"])
+    rb.add_argument("--runs-dir", default="runs")
+    rb.add_argument("--resources-dir", default="resources")
+    rb.add_argument("--param", action="append", default=[], metavar="KEY=VALUE")
+    rb.add_argument("--timeout", type=int, default=900)
+    rb.add_argument("--max-attempts", type=int, default=None)
+    rb.add_argument("--setup-timeout", type=int, default=None)
+    rb.add_argument("--verify-timeout", type=int, default=None)
+    rb.add_argument("--results-json", default=None,
+                    help="Write per-case results to this JSON file.")
+    rb.add_argument("--judge-mode", choices=["off", "post-run", "post-batch"],
+                    default="off",
+                    help="Judge each run (post-run) or all runs after (post-batch).")
+    rb.add_argument("--profile", default=None)
+    rb.add_argument("--output", default="text", choices=["text", "json"])
 
     mn = sub.add_parser(
         "manual",
@@ -186,12 +223,26 @@ def _print_result(result: dict[str, Any], output_format: str) -> None:
 # Subcommand handlers
 # ---------------------------------------------------------------------------
 
+def _apply_timeout_overrides(args: argparse.Namespace) -> None:
+    """Map the per-phase timeout flags onto the settings the runtime reads.
+
+    ``--setup-timeout`` -> precondition timeout, ``--verify-timeout`` ->
+    oracle timeout. Scoped to this process (the settings singleton).
+    """
+    from ...settings import settings as _settings
+    if getattr(args, "setup_timeout", None):
+        _settings.precondition_timeout_sec = args.setup_timeout
+    if getattr(args, "verify_timeout", None):
+        _settings.oracle_timeout_sec = args.verify_timeout
+
+
 def _cmd_run_workflow(args: argparse.Namespace) -> None:
     """Handle the ``run-workflow`` subcommand."""
     profile = load_profile(args.profile) if args.profile else {}
     merged = merge_profile(vars(args), profile)
     resources_dir = Path(merged.get("resources_dir", "resources"))
     runs_dir = Path(merged.get("runs_dir", "runs"))
+    _apply_timeout_overrides(args)
 
     raw = load_workflow_file(Path(args.workflow))
     workflow = normalize_workflow(raw, resources_dir=resources_dir)
@@ -206,6 +257,8 @@ def _cmd_run_workflow(args: argparse.Namespace) -> None:
         resources_dir=resources_dir,
         agent_name=merged.get("agent"),
         sandbox_mode=merged.get("sandbox", "local"),
+        stage_failure_mode=args.stage_failure_mode,
+        final_sweep_mode=args.final_sweep_mode,
     )
     _print_result(result, args.output)
     if getattr(args, "judge", False):
@@ -219,6 +272,7 @@ def _cmd_run_case(args: argparse.Namespace) -> None:
     param_overrides = _parse_param_overrides(args.param)
     resources_dir = Path(merged.get("resources_dir", "resources"))
     runs_dir = Path(merged.get("runs_dir", "runs"))
+    _apply_timeout_overrides(args)
 
     result = run_case(
         args.service,
@@ -229,10 +283,83 @@ def _cmd_run_case(args: argparse.Namespace) -> None:
         agent_name=merged.get("agent"),
         sandbox_mode=merged.get("sandbox", "local"),
         agent_timeout_sec=args.timeout,
+        max_attempts=args.max_attempts,
     )
     _print_result(result, args.output)
     if getattr(args, "judge", False):
         _maybe_inline_judge(result, runs_dir, args.output)
+
+
+def _select_batch_cases(args: argparse.Namespace, resources_dir: Path) -> list[tuple[str, str]]:
+    """Return the (service, case) pairs selected by --all / --service / --case."""
+    all_cases = sorted(
+        (p.parent.parent.name, p.parent.name)
+        for p in resources_dir.glob("*/*/test.yaml")
+    )
+    if args.case:
+        wanted = {tuple(c.split("/", 1)) for c in args.case if "/" in c}
+        return [c for c in all_cases if c in wanted]
+    if args.service:
+        return [c for c in all_cases if c[0] == args.service]
+    if args.all:
+        return all_cases
+    return []
+
+
+def _cmd_run_batch(args: argparse.Namespace) -> None:
+    """Handle the ``run-batch`` subcommand: run many cases sequentially.
+
+    Selects cases via --all / --service / --case, runs each through the same
+    ``run_case`` path, aggregates results, optionally writes them to JSON, and
+    optionally judges per-run or after the whole batch.
+    """
+    profile = load_profile(args.profile) if args.profile else {}
+    merged = merge_profile(vars(args), profile)
+    resources_dir = Path(merged.get("resources_dir", "resources"))
+    runs_dir = Path(merged.get("runs_dir", "runs"))
+    _apply_timeout_overrides(args)
+
+    cases = _select_batch_cases(args, resources_dir)
+    if not cases:
+        print("no cases selected (use --all, --service NAME, or --case SVC/CASE)",
+              file=sys.stderr)
+        sys.exit(1)
+    param_overrides = _parse_param_overrides(args.param)
+
+    results: list[dict[str, Any]] = []
+    for service, case in cases:
+        result = run_case(
+            service, case,
+            runs_dir=runs_dir, resources_dir=resources_dir,
+            param_overrides=param_overrides,
+            agent_name=merged.get("agent"),
+            sandbox_mode=merged.get("sandbox", "local"),
+            agent_timeout_sec=args.timeout,
+            max_attempts=args.max_attempts,
+        )
+        results.append({
+            "service": service, "case": case,
+            "run_id": result.get("run_id"), "status": result.get("status"),
+            "summary": result.get("summary"),
+        })
+        _print_result(result, "text")
+        if args.judge_mode == "post-run":
+            _maybe_inline_judge(result, runs_dir, "text")
+
+    if args.judge_mode == "post-batch":
+        print("--- post-batch judging ---")
+        for entry in results:
+            _maybe_inline_judge({"run_id": entry["run_id"]}, runs_dir, "text")
+
+    if args.results_json:
+        Path(args.results_json).write_text(json.dumps(results, indent=2))
+        print(f"results written to {args.results_json}")
+
+    passed = sum(1 for r in results if r["status"] == "complete")
+    if args.output == "json":
+        print(json.dumps({"total": len(results), "complete": passed, "results": results}, indent=2))
+    else:
+        print(f"batch: {passed}/{len(results)} complete")
 
 
 def _cmd_manual(args: argparse.Namespace) -> None:
@@ -347,6 +474,8 @@ def main(argv: list[str] | None = None) -> None:
             _cmd_run_workflow(args)
         elif args.command == "run-case":
             _cmd_run_case(args)
+        elif args.command == "run-batch":
+            _cmd_run_batch(args)
         elif args.command == "manual":
             _cmd_manual(args)
         elif args.command == "judge":

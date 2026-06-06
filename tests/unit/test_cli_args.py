@@ -56,6 +56,47 @@ class TestSubcommandParsing:
     def test_info_flags(self):
         assert _parse(["info", "--agents", "--metrics"]).command == "info"
 
+    def test_workflow_run_controls(self):
+        ns = _parse(["run-workflow", "wf.yaml", "--stage-failure-mode", "continue",
+                     "--final-sweep-mode", "off", "--setup-timeout", "30",
+                     "--verify-timeout", "45"])
+        assert ns.stage_failure_mode == "continue" and ns.final_sweep_mode == "off"
+        assert ns.setup_timeout == 30 and ns.verify_timeout == 45
+
+    def test_run_case_max_attempts_and_timeouts(self):
+        ns = _parse(["run-case", "demo", "cm", "--max-attempts", "3",
+                     "--setup-timeout", "20", "--verify-timeout", "25"])
+        assert ns.max_attempts == 3 and ns.setup_timeout == 20
+
+    def test_run_batch_flags(self):
+        ns = _parse(["run-batch", "--all", "--results-json", "out.json",
+                     "--judge-mode", "post-batch", "--agent", "x"])
+        assert ns.command == "run-batch" and ns.all is True
+        assert ns.results_json == "out.json" and ns.judge_mode == "post-batch"
+        ns2 = _parse(["run-batch", "--service", "demo", "--case", "demo/cm"])
+        assert ns2.service == "demo" and ns2.case == ["demo/cm"]
+
+
+class TestBatchSelection:
+    def test_select_by_service_all_and_explicit(self, tmp_path):
+        from karma.interfaces.cli.main import _select_batch_cases
+        import argparse
+        for svc, case in [("a", "c1"), ("a", "c2"), ("b", "c1")]:
+            p = tmp_path / svc / case / "test.yaml"
+            p.parent.mkdir(parents=True)
+            p.write_text("prompt: x\n")
+
+        def ns(**kw):
+            n = argparse.Namespace(all=False, service=None, case=[])
+            for k, v in kw.items():
+                setattr(n, k, v)
+            return n
+
+        assert len(_select_batch_cases(ns(all=True), tmp_path)) == 3
+        assert {c for c in _select_batch_cases(ns(service="a"), tmp_path)} == {("a", "c1"), ("a", "c2")}
+        assert _select_batch_cases(ns(case=["b/c1"]), tmp_path) == [("b", "c1")]
+        assert _select_batch_cases(ns(), tmp_path) == []
+
 
 class TestInvalidArguments:
     @pytest.mark.parametrize("argv", [
