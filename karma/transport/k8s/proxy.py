@@ -24,7 +24,7 @@ import threading
 import time
 import urllib.request
 import urllib.error
-from http.server import BaseHTTPRequestHandler, HTTPServer
+from http.server import BaseHTTPRequestHandler, HTTPServer, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any
 
@@ -62,6 +62,9 @@ class KubectlProxyServer:
         upstream_url: str,
         log_path: Path,
         port: int,
+        client_cert: str | None = None,
+        client_key: str | None = None,
+        token: str | None = None,
     ) -> None:
         """Initialize the proxy.
 
@@ -73,10 +76,21 @@ class KubectlProxyServer:
             Path to the JSONL call log file.
         port:
             TCP port to listen on.
+        client_cert, client_key:
+            PEM file paths for client-certificate auth to the upstream API
+            server. The agent talks to this proxy over plain HTTP and so
+            cannot present a client cert itself, so the proxy presents it on
+            the agent's behalf (e.g. kind/kubeadm clusters).
+        token:
+            Bearer token for upstream auth (token-based clusters), added as an
+            ``Authorization`` header on each forwarded request.
         """
         self._upstream_url = upstream_url.rstrip("/")
         self._log_path = log_path
         self._port = port
+        self._client_cert = client_cert
+        self._client_key = client_key
+        self._token = token
         self._server: HTTPServer | None = None
         self._stop_event = threading.Event()
 
@@ -89,6 +103,9 @@ class KubectlProxyServer:
         upstream = self._upstream_url
         log_path = self._log_path
         stop_event = self._stop_event
+        client_cert = self._client_cert
+        client_key = self._client_key
+        token = self._token
         log_path.parent.mkdir(parents=True, exist_ok=True)
 
         proxy_self = self
@@ -102,21 +119,30 @@ class KubectlProxyServer:
 
                 headers = {k: v for k, v in self.headers.items()
                            if k.lower() not in ("host", "transfer-encoding")}
+                # The agent kubeconfig points here over plain HTTP with no
+                # credentials; authenticate to the real API server on its behalf.
+                if token:
+                    headers["Authorization"] = f"Bearer {token}"
 
                 req = urllib.request.Request(
                     target_url, data=body, method=self.command, headers=headers
                 )
+                resp_headers: list = []
                 try:
                     import ssl
                     ctx = ssl.create_default_context()
                     ctx.check_hostname = False
                     ctx.verify_mode = ssl.CERT_NONE
+                    if client_cert and client_key:
+                        ctx.load_cert_chain(certfile=client_cert, keyfile=client_key)
                     with urllib.request.urlopen(req, context=ctx, timeout=60) as resp:
                         status = resp.status
                         resp_data = resp.read()
+                        resp_headers = list(resp.headers.items())
                 except urllib.error.HTTPError as exc:
                     status = exc.code
                     resp_data = exc.read()
+                    resp_headers = list(exc.headers.items()) if exc.headers else []
                 except Exception as exc:
                     status = 502
                     resp_data = str(exc).encode()
@@ -130,7 +156,16 @@ class KubectlProxyServer:
                     "duration_ms": duration_ms,
                 })
 
+                # Forward upstream response headers (notably Content-Type and
+                # Content-Encoding) so kubectl can decode discovery responses.
+                # Drop hop-by-hop headers and set our own Content-Length.
                 self.send_response(status)
+                for hk, hv in resp_headers:
+                    if hk.lower() in ("transfer-encoding", "connection",
+                                      "keep-alive", "content-length"):
+                        continue
+                    self.send_header(hk, hv)
+                self.send_header("Content-Length", str(len(resp_data)))
                 self.end_headers()
                 self.wfile.write(resp_data)
 
@@ -144,7 +179,9 @@ class KubectlProxyServer:
             do_DELETE = do_command
             do_HEAD = do_command
 
-        self._server = HTTPServer(("127.0.0.1", self._port), _Handler)
+        # Threaded so a long-poll (kubectl wait / rollout status / --wait
+        # delete) handled in one thread does not block other agent requests.
+        self._server = ThreadingHTTPServer(("127.0.0.1", self._port), _Handler)
         sys.stdout.write(json.dumps({"port": self._port}) + "\n")
         sys.stdout.flush()
 
@@ -243,6 +280,9 @@ def main(argv: list[str] | None = None) -> None:
     parser.add_argument("--log-path", required=True, help="Path to the JSONL call log file")
     parser.add_argument("--port", type=int, default=0, help="Port to listen on (0=random)")
     parser.add_argument("--control-port", type=int, default=0, help="Control endpoint port (0=random)")
+    parser.add_argument("--client-cert", default=None, help="Client cert PEM for upstream auth")
+    parser.add_argument("--client-key", default=None, help="Client key PEM for upstream auth")
+    parser.add_argument("--token", default=None, help="Bearer token for upstream auth")
     args = parser.parse_args(argv)
 
     port = args.port or find_free_port()
@@ -252,6 +292,9 @@ def main(argv: list[str] | None = None) -> None:
         upstream_url=args.upstream_url,
         log_path=Path(args.log_path),
         port=port,
+        client_cert=args.client_cert,
+        client_key=args.client_key,
+        token=args.token,
     )
 
     ctrl_thread = threading.Thread(
