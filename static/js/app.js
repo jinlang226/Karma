@@ -39,6 +39,11 @@
     if (location.hash !== "#" + id) location.hash = id;
     renderNav();
     const container = clear(document.getElementById("view"));
+    // Restart the enter animation on every switch (including the brand -> home),
+    // so navigating always fades the new view in rather than snapping it in.
+    container.style.animation = "none";
+    void container.offsetWidth;   // force reflow so the animation can replay
+    container.style.animation = "";
     const view = KARMA.views.find((v) => v.id === id);
     if (!view) {
       container.appendChild(el("p", { class: "muted" }, "No such view."));
@@ -52,6 +57,40 @@
   }
 
   KARMA.activate = activate;
+
+  // --- Toast / status notifications (bottom-right) -------------------------
+  function ensureToastHost() {
+    let host = document.getElementById("toasts");
+    if (!host) {
+      host = el("div", { id: "toasts" });
+      document.body.appendChild(host);
+    }
+    return host;
+  }
+
+  // KARMA.toast(message, type) -- type: "error" | "success" | "info".
+  // Errors persist longer; status toasts auto-dismiss. All have a close ✕.
+  KARMA.toast = function toast(message, type) {
+    type = type || "info";
+    const host = ensureToastHost();
+    const node = el("div", { class: "toast " + type });
+    node.appendChild(el("span", { class: "toast-msg" }, String(message || "")));
+    const close = el("button", {
+      class: "toast-close", title: "Dismiss", onClick: () => dismiss(),
+    }, "✕");
+    node.appendChild(close);
+    host.appendChild(node);
+    const ttl = type === "error" ? 12000 : type === "success" ? 5000 : 7000;
+    let timer = setTimeout(dismiss, ttl);
+    function dismiss() {
+      clearTimeout(timer);
+      timer = null;
+      node.classList.add("leaving");
+      setTimeout(() => node.remove(), 200);
+    }
+    return node;
+  };
+  KARMA.toastError = (e) => KARMA.toast(e && e.message ? e.message : String(e), "error");
 
   async function refreshClusterBanner() {
     const banner = document.getElementById("cluster-banner");
