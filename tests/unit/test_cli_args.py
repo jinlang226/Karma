@@ -58,6 +58,17 @@ class TestSubcommandParsing:
         assert ns.batch is True and ns.max_retries == 5 and ns.fail_open is False
         assert _parse(["judge", "runs/r"]).fail_open is True  # fail-open default
 
+    def test_docker_provisioning_flags(self):
+        from karma.interfaces.cli.main import _build_sandbox_options
+        ns = _parse(["run-case", "demo", "cm", "--sandbox", "docker", "--agent", "x",
+                     "--agent-build", "--agent-tag", "t:1", "--agent-cleanup",
+                     "--agent-auth-path", "/h", "--agent-auth-dest", "/c"])
+        opts = _build_sandbox_options(ns)
+        assert opts["build_image"] is True and opts["image_tag"] == "t:1"
+        assert opts["extra_mounts"][0][1] == "/c"
+        # no docker flags -> None (local runs pass sandbox_options=None)
+        assert _build_sandbox_options(_parse(["run-case", "demo", "cm"])) is None
+
     def test_info_flags(self):
         assert _parse(["info", "--agents", "--metrics"]).command == "info"
 
