@@ -21,8 +21,9 @@
 
   async function mount(container) {
     root = container;
+    stages = [];   // start each mount with a fresh builder
     if (!services.length) {
-      try { services = (await api.get("/api/services")).services; } catch (_e) { services = []; }
+      try { services = (await api.get("/api/services")).services || []; } catch (_e) { services = []; }
     }
     render();
   }

@@ -77,21 +77,28 @@
 
       const es = new EventSource(path);
       let gotAny = false;
+      let finished = false;
+      function finish() {
+        if (finished) return;
+        finished = true;
+        es.close();
+        onDone && onDone();
+      }
       es.onmessage = (e) => {
         gotAny = true;
         let obj;
         try { obj = JSON.parse(e.data); } catch (_e) { return; }
-        if (obj && obj.type === "done") {
-          es.close();
-          onDone && onDone();
-          return;
-        }
+        if (obj && obj.type === "done") { finish(); return; }
         onEvent && onEvent(obj);
       };
       es.onerror = () => {
-        es.close();
-        if (!gotAny) startPolling();   // SSE never worked -> fall back
-        else onDone && onDone();        // stream ended
+        // EventSource fires onerror both on a transient drop (it would
+        // auto-reconnect) and when the server closes the stream after the
+        // terminal event. We only treat it as terminal once: if SSE never
+        // delivered anything, fall back to polling; otherwise finish once.
+        if (finished) return;
+        if (!gotAny) { es.close(); startPolling(); }
+        else finish();
       };
       return { close() { closed = true; es.close(); clearTimeout(pollTimer); } };
     },

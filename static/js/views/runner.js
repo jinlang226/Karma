@@ -124,7 +124,8 @@
 
     const actions = el("div", { class: "toolbar" });
     actions.appendChild(el("button", { class: "btn", onClick: () =>
-      startAgentRun(service, caseName, collectParams(), agentSel.value, sandboxSel.value, status) },
+      startAgentRun(service, caseName, collectParams(), agentSel.value, sandboxSel.value,
+        Number(timeoutInput.value) || 900, status) },
       "Run with agent"));
     actions.appendChild(el("button", { class: "btn secondary", onClick: () =>
       startManualRun(service, caseName, collectParams(), status) },
@@ -138,22 +139,22 @@
   }
 
   // --- Agent run ------------------------------------------------------------
-  async function startAgentRun(service, caseName, params, agent, sandbox, status) {
+  async function startAgentRun(service, caseName, params, agent, sandbox, timeout, status) {
     clear(status);
     status.appendChild(el("h3", {}, "Agent run"));
     const log = el("pre", { class: "log" }, "Submitting…\n");
     status.appendChild(log);
-    let handle = null;
     try {
       const { run_id } = await api.post("/api/run", {
         service, case_name: caseName, params, agent: agent || null, sandbox,
+        agent_timeout_sec: timeout,
       });
       log.textContent += `run_id: ${run_id}\n`;
       const cancelBtn = el("button", { class: "btn secondary", onClick: () => {
         api.post(`/api/run/${run_id}/cancel`).catch(() => {});
       } }, "Cancel");
       status.insertBefore(cancelBtn, log);
-      handle = api.stream(`/api/run/${run_id}/stream`, {
+      api.stream(`/api/run/${run_id}/stream`, {
         statusPath: `/api/run/${run_id}/status`,
         onEvent: (ev) => {
           if (ev.type === "stage_complete") {

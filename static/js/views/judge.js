@@ -101,8 +101,7 @@
             const where = ev.stage_id ? `${ev.run_id}/${ev.stage_id}` : ev.run_id;
             log.textContent += `  ${where}: verdict=${ev.verdict ?? "-"} score=${ev.score ?? "-"}\n`;
           } else if (ev.type === "judge_complete") {
-            log.textContent += `judge ${ev.status}\n`;
-            render();
+            log.textContent += `judge ${ev.status} — switch subtabs to refresh scores\n`;
           }
           log.scrollTop = log.scrollHeight;
         },
