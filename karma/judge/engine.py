@@ -27,6 +27,9 @@ def run_judge(
     *,
     rubric_overrides: dict[str, Any] | None = None,
     judge_model: str | None = None,
+    judge_base_url: str | None = None,
+    judge_api_key: str | None = None,
+    judge_timeout_sec: int | None = None,
     dry_run: bool = False,
 ) -> dict[str, Any]:
     """Evaluate one stage with the LLM judge and return the result dict.
@@ -73,7 +76,14 @@ def run_judge(
     if dry_run:
         return {"stage_id": stage_id, "dry_run": True, "input": judge_input}
 
-    raw_response = call_judge_llm(judge_input, model=judge_model)
+    llm_kwargs: dict[str, Any] = {"model": judge_model}
+    if judge_base_url is not None:
+        llm_kwargs["base_url"] = judge_base_url
+    if judge_api_key is not None:
+        llm_kwargs["api_key"] = judge_api_key
+    if judge_timeout_sec is not None:
+        llm_kwargs["timeout_sec"] = judge_timeout_sec
+    raw_response = call_judge_llm(judge_input, **llm_kwargs)
     # The oracle is authoritative: a stage the oracle failed can never be a
     # judge "pass". Thread its verdict into scoring so determine_verdict can
     # enforce that (judge_input["oracle"] is the persisted oracle result dict).
@@ -98,6 +108,9 @@ def run_judge_batch(
     stage_ids: list[str] | None = None,
     rubric_overrides: dict[str, Any] | None = None,
     judge_model: str | None = None,
+    judge_base_url: str | None = None,
+    judge_api_key: str | None = None,
+    judge_timeout_sec: int | None = None,
     dry_run: bool = False,
 ) -> dict[str, Any]:
     """Evaluate all stages in a run and return a batch result dict.
@@ -141,6 +154,9 @@ def run_judge_batch(
                 sid,
                 rubric_overrides=rubric_overrides,
                 judge_model=judge_model,
+                judge_base_url=judge_base_url,
+                judge_api_key=judge_api_key,
+                judge_timeout_sec=judge_timeout_sec,
                 dry_run=dry_run,
             )
         except Exception as exc:
