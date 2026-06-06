@@ -24,6 +24,7 @@
     const nav = document.getElementById("nav");
     clear(nav);
     for (const view of KARMA.views) {
+      if (view.hidden) continue;   // e.g. home -- reachable via the brand, not a tab
       nav.appendChild(
         el("button", {
           class: "tab" + (view.id === activeId ? " active" : ""),
@@ -72,6 +73,8 @@
 
   function boot() {
     renderNav();
+    const brand = document.querySelector("#topbar .brand");
+    if (brand) brand.addEventListener("click", () => activate("home"));
     const fromHash = (location.hash || "").replace(/^#/, "");
     const initial =
       KARMA.views.find((v) => v.id === fromHash) ? fromHash :

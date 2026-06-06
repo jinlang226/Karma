@@ -73,5 +73,6 @@
     container.appendChild(concepts);
   }
 
-  KARMA.registerView({ id: "home", label: "Home", mount });
+  // hidden: the brand in the top bar is the way back here, so it is not a tab.
+  KARMA.registerView({ id: "home", label: "Home", mount, hidden: true });
 })();
