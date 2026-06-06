@@ -54,6 +54,10 @@ def judge_batch_dir(
     *,
     rubric_overrides: dict[str, Any] | None = None,
     judge_model: str | None = None,
+    judge_base_url: str | None = None,
+    judge_api_key: str | None = None,
+    judge_timeout_sec: int | None = None,
+    judge_max_retries: int | None = None,
     dry_run: bool = False,
     on_run_complete: Any | None = None,
 ) -> dict[str, Any]:
@@ -82,6 +86,10 @@ def judge_batch_dir(
             run_dir,
             rubric_overrides=rubric_overrides,
             judge_model=judge_model,
+            judge_base_url=judge_base_url,
+            judge_api_key=judge_api_key,
+            judge_timeout_sec=judge_timeout_sec,
+            judge_max_retries=judge_max_retries,
             dry_run=dry_run,
         )
         score = None if dry_run else _mean_stage_score(stage_results)

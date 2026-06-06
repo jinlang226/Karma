@@ -136,6 +136,14 @@ def _build_parser() -> argparse.ArgumentParser:
                     help="API key for the judge LLM (else from the environment).")
     jg.add_argument("--timeout", type=int, default=None,
                     help="Per-request judge LLM timeout in seconds.")
+    jg.add_argument("--max-retries", type=int, default=None,
+                    help="Judge LLM retry attempts on transient errors.")
+    jg.add_argument("--batch", action="store_true",
+                    help="Treat run_dir as a batch dir and judge every run under it.")
+    jg.add_argument("--fail-open", dest="fail_open", action="store_true", default=True,
+                    help="Do not fail the command if the judge errors (default).")
+    jg.add_argument("--fail-closed", dest="fail_open", action="store_false",
+                    help="Exit non-zero if the judge errors.")
     jg.add_argument("--dry-run", action="store_true")
     jg.add_argument("--output", default="text", choices=["text", "json"])
 
@@ -438,11 +446,23 @@ def _cmd_judge(args: argparse.Namespace) -> None:
         "judge_base_url": args.base_url,
         "judge_api_key": args.api_key,
         "judge_timeout_sec": args.timeout,
+        "judge_max_retries": args.max_retries,
     }
-    if args.stage:
-        result = run_judge(run_dir, args.stage, dry_run=args.dry_run, **judge_kwargs)
-    else:
-        result = run_judge_batch(run_dir, dry_run=args.dry_run, **judge_kwargs)
+    try:
+        if args.batch:
+            # Cross-run batch: judge every run under run_dir (old `judge batch`).
+            from ...judge.batch import judge_batch_dir
+            result = judge_batch_dir(run_dir, dry_run=args.dry_run, **judge_kwargs)
+        elif args.stage:
+            result = run_judge(run_dir, args.stage, dry_run=args.dry_run, **judge_kwargs)
+        else:
+            result = run_judge_batch(run_dir, dry_run=args.dry_run, **judge_kwargs)
+    except Exception as exc:
+        if args.fail_open:
+            print(f"judge error (continuing, --fail-open): {exc}", file=sys.stderr)
+            return
+        print(f"judge error: {exc}", file=sys.stderr)
+        sys.exit(1)
     _print_result(result, args.output)
 
 

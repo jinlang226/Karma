@@ -53,6 +53,11 @@ class TestSubcommandParsing:
         assert _parse(["run-case", "demo", "configmap-update", "--judge"]).judge is True
         assert _parse(["run-workflow", "wf.yaml", "--judge"]).judge is True
 
+    def test_judge_batch_and_failure_flags(self):
+        ns = _parse(["judge", "runs/", "--batch", "--max-retries", "5", "--fail-closed"])
+        assert ns.batch is True and ns.max_retries == 5 and ns.fail_open is False
+        assert _parse(["judge", "runs/r"]).fail_open is True  # fail-open default
+
     def test_info_flags(self):
         assert _parse(["info", "--agents", "--metrics"]).command == "info"
 
