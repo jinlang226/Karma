@@ -35,14 +35,21 @@
   }
 
   function serviceCard(svc) {
-    return el("div", { class: "card", onClick: () => renderService(svc.name) },
+    const desc = KARMA.labels.serviceDescription(svc.name);
+    const names = (svc.cases || []).map((c) => KARMA.labels.case(c));
+    const shown = names.slice(0, 6).join(", ");
+    const more = names.length > 6 ? ` +${names.length - 6} more` : "";
+    return el("div", { class: "card service-card", onClick: () => renderService(svc.name) },
       el("div", { class: "title" }, KARMA.labels.service(svc.name)),
-      el("div", { class: "sub" }, svc.case_count + " case" + (svc.case_count === 1 ? "" : "s")));
+      desc ? el("div", { class: "service-desc" }, desc) : null,
+      el("div", { class: "service-cases" },
+        el("span", { class: "count" }, `${svc.case_count} case${svc.case_count === 1 ? "" : "s"}`),
+        shown ? "  ·  " + shown + more : ""));
   }
 
   async function renderHome() {
     clear(root);
-    root.appendChild(el("h2", {}, "Run a case"));
+    root.appendChild(el("h2", {}, "Run a Case"));
     try {
       const data = await api.get("/api/services");
       if (!data.services.length) {
@@ -54,13 +61,13 @@
 
       if (apps.length) {
         root.appendChild(el("h3", {}, "Applications"));
-        const grid = el("div", { class: "grid" });
+        const grid = el("div", { class: "service-grid" });
         apps.forEach((s) => grid.appendChild(serviceCard(s)));
         root.appendChild(grid);
       }
       if (examples.length) {
         root.appendChild(el("h3", {}, "Examples"));
-        const grid = el("div", { class: "grid" });
+        const grid = el("div", { class: "service-grid" });
         examples.forEach((s) => grid.appendChild(serviceCard(s)));
         root.appendChild(grid);
       }
