@@ -128,7 +128,7 @@
     renderStages();
 
     const addBtn = el("button", { class: "btn secondary", onClick: () => {
-      stages.push({ service: services[0] ? services[0].name : "", case: "", overrides: "" });
+      stages.push({ service: services[0] ? services[0].name : "", case: "", overrides: {}, _defaults: {} });
       renderStages();
     } }, "+ Add stage");
 
@@ -222,43 +222,62 @@
   }
 
   function stageRow(stage, index, rerender) {
-    const svcSel = el("select", { onChange: (e) => { stage.service = e.target.value; stage.case = ""; rerender(); } },
+    function resetCase() { stage.case = ""; stage.overrides = {}; stage._defaults = {}; }
+    const svcSel = el("select", { onChange: (e) => { stage.service = e.target.value; resetCase(); rerender(); } },
       ...services.map((s) => el("option", { value: s.name, selected: s.name === stage.service ? "selected" : null }, KARMA.labels.service(s.name))));
     const svc = services.find((s) => s.name === stage.service);
-    const caseSel = el("select", { onChange: (e) => { stage.case = e.target.value; loadParams(); } },
+    const caseSel = el("select", { onChange: (e) => {
+      stage.case = e.target.value; stage.overrides = {}; stage._defaults = {}; loadParams();
+    } },
       el("option", { value: "" }, "(case)"),
       ...((svc ? svc.cases : []).map((c) =>
         el("option", { value: c, selected: c === stage.case ? "selected" : null }, KARMA.labels.case(c)))));
-    const ovr = el("input", { value: stage.overrides, placeholder: "key=value, key2=value2",
-      onInput: (e) => { stage.overrides = e.target.value; } });
     const rm = el("button", { class: "btn secondary", onClick: () => { stages.splice(index, 1); rerender(); } }, "✕");
 
-    // Show the chosen case's parameters so the user knows what they can override.
-    const paramHelp = el("p", { class: "field-help" });
-    async function loadParams() {
-      paramHelp.textContent = "";
-      if (!stage.service || !stage.case) return;
-      try {
-        const d = await api.get(`/api/cases/${stage.service}/${stage.case}`);
-        if (d.params && d.params.length) {
-          paramHelp.textContent = "Parameters: " + d.params.map((p) =>
-            `${p.name} (default: ${p.default == null ? "—" : p.default})` +
-            (p.description ? ` — ${p.description}` : "")).join("  ·  ");
-        } else {
-          paramHelp.textContent = "This case has no parameters.";
-        }
-      } catch (_e) { /* leave help blank on error */ }
+    // Parameters area: a message until a case is chosen, then one labeled
+    // input per declared parameter (prefilled with the default).
+    const paramsBox = el("div", { class: "stage-params" });
+    function note(text) {
+      clear(paramsBox);
+      paramsBox.appendChild(el("p", { class: "field-help", style: "margin:0" }, text));
     }
-    if (stage.case) loadParams();
+    async function loadParams() {
+      if (!stage.service || !stage.case) { note("Please choose a service and a case."); return; }
+      note("Loading parameters…");
+      let d;
+      try {
+        d = await api.get(`/api/cases/${stage.service}/${stage.case}`);
+      } catch (e) { note("Couldn't load parameters."); KARMA.toastError(e); return; }
+      const params = d.params || [];
+      stage._defaults = {};
+      if (!params.length) { note("This case isn't parameterized."); return; }
+      clear(paramsBox);
+      paramsBox.appendChild(el("label", {}, "Parameters"));
+      const grid = el("div", { class: "param-grid" });
+      for (const p of params) {
+        const def = p.default == null ? "" : String(p.default);
+        stage._defaults[p.name] = def;
+        if (stage.overrides[p.name] === undefined) stage.overrides[p.name] = def;
+        const input = el("input", {
+          value: stage.overrides[p.name],
+          onInput: (e) => { stage.overrides[p.name] = e.target.value; },
+        });
+        grid.appendChild(el("div", {},
+          el("label", {}, KARMA.labels.case(p.name)),
+          input,
+          p.description ? el("div", { class: "field-help", style: "margin:4px 0 0" }, p.description) : null));
+      }
+      paramsBox.appendChild(grid);
+    }
+    loadParams();
 
     return el("div", { class: "builder-row" },
       el("div", { class: "builder-row-head" }, `Stage ${index + 1}`),
       el("div", { class: "row" },
         el("div", {}, el("label", {}, "Service"), svcSel),
         el("div", {}, el("label", {}, "Case"), caseSel),
-        el("div", {}, el("label", {}, "Param overrides (key=value, comma-separated)"), ovr),
         el("div", { style: "flex:0" }, el("label", {}, " "), rm)),
-      paramHelp);
+      paramsBox);
   }
 
   function generateYaml(id, mode, stageRows, adversaryRows) {
@@ -267,13 +286,13 @@
       lines.push(`    - id: stage_${i + 1}`);
       lines.push(`      service: ${s.service}`);
       lines.push(`      case: ${s.case}`);
-      const pairs = (s.overrides || "").split(",").map((x) => x.trim()).filter(Boolean);
-      if (pairs.length) {
+      // Emit only params the user changed from the case default.
+      const ov = s.overrides || {};
+      const defs = s._defaults || {};
+      const changed = Object.keys(ov).filter((k) => ov[k] !== "" && ov[k] !== (defs[k] ?? ""));
+      if (changed.length) {
         lines.push(`      param_overrides:`);
-        for (const p of pairs) {
-          const [k, ...rest] = p.split("=");
-          lines.push(`        ${k.trim()}: ${rest.join("=").trim()}`);
-        }
+        for (const k of changed) lines.push(`        ${k}: ${ov[k]}`);
       }
     });
     const advs = (adversaryRows || []).filter((a) => a.scenario);
