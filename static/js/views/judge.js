@@ -14,7 +14,11 @@
   let root;
   let sub = "runs";
 
-  function errBox(e) { return el("div", { class: "error-box" }, e.message || String(e)); }
+  function errBox(e) {
+    const m = e.message || String(e);
+    KARMA.toast(m, "error");
+    return el("div", { class: "error-box" }, m);
+  }
   function scoreCell(v) {
     if (v == null) return el("span", { class: "muted" }, "—");
     const cls = v >= 0.8 ? "ok" : v >= 0.5 ? "warn" : "bad";
@@ -107,12 +111,14 @@
             log.textContent += `  ${where}: verdict=${ev.verdict ?? "-"} score=${ev.score ?? "-"}\n`;
           } else if (ev.type === "judge_complete") {
             log.textContent += `judge ${ev.status} — switch subtabs to refresh scores\n`;
+            KARMA.toast("Judge " + (ev.status || "complete"),
+              ev.status === "error" ? "error" : "success");
           }
           log.scrollTop = log.scrollHeight;
         },
         onDone: () => { log.textContent += "— judge stream ended —\n"; },
       });
-    } catch (e) { log.textContent += "Error: " + e.message + "\n"; }
+    } catch (e) { log.textContent += "Error: " + e.message + "\n"; KARMA.toastError(e); }
   }
 
   KARMA.registerView({ id: "judge", label: "Judge", mount });

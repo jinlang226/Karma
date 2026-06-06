@@ -17,7 +17,11 @@
   let root;
   let agents = [];
 
-  function errBox(e) { return el("div", { class: "error-box" }, e.message || String(e)); }
+  function errBox(e) {
+    const m = e.message || String(e);
+    KARMA.toast(m, "error");
+    return el("div", { class: "error-box" }, m);
+  }
   function backBtn(fn) {
     return el("button", { class: "btn secondary", onClick: fn }, "← Back");
   }
@@ -181,6 +185,8 @@
             log.textContent += `stage ${s.stage_id}: ${s.status} (oracle=${s.oracle_verdict})\n`;
           } else if (ev.type === "run_complete") {
             log.textContent += `run complete: ${ev.status}\n`;
+            KARMA.toast("Run " + KARMA.labels.status(ev.status).text.toLowerCase(),
+              ev.status === "complete" ? "success" : "error");
           } else if (ev.type === "cancelled") {
             log.textContent += "cancelled\n";
           }
@@ -190,6 +196,7 @@
       });
     } catch (e) {
       log.textContent += "Error: " + e.message + "\n";
+      KARMA.toastError(e);
     }
   }
 
@@ -206,12 +213,12 @@
     try {
       const resp = await api.post("/api/manual/start", { service, case_name: caseName, params });
       runId = resp.run_id;
-    } catch (e) { phase.textContent = "Error: " + e.message; return; }
+    } catch (e) { phase.textContent = "Error: " + e.message; KARMA.toastError(e); return; }
 
     async function poll() {
       let st;
       try { st = await api.get(`/api/manual/${runId}/status`); }
-      catch (e) { phase.textContent = "Error: " + e.message; return; }
+      catch (e) { phase.textContent = "Error: " + e.message; KARMA.toastError(e); return; }
       phase.textContent = `Status: ${KARMA.labels.status(st.status).text}`
         + (st.phase ? ` (${KARMA.humanize(st.phase)})` : "");
       if (st.status === "setup_running") { setTimeout(poll, 1500); return; }
@@ -241,7 +248,9 @@
           const r = await api.post(`/api/manual/${runId}/submit`);
           phase.textContent = "Result: " + KARMA.labels.status(r.status).text + ` (attempt ${r.attempts})`;
           phase.className = r.status === "passed" ? "badge ok" : "badge bad";
-        } catch (e) { phase.textContent = "Error: " + e.message; }
+          KARMA.toast("Manual run " + KARMA.labels.status(r.status).text.toLowerCase(),
+            r.status === "passed" ? "success" : "error");
+        } catch (e) { phase.textContent = "Error: " + e.message; KARMA.toastError(e); }
       } }, "Submit for verification"));
       bar.appendChild(el("button", { class: "btn secondary", onClick: async () => {
         await api.post(`/api/manual/${runId}/cleanup`).catch(() => {});
@@ -282,7 +291,7 @@
         });
         out.textContent = res.command_multi_line || res.command_one_line || "";
         warn.textContent = [...(res.errors || []), ...(res.warnings || [])].join(" | ");
-      } catch (e) { out.textContent = "Error: " + e.message; }
+      } catch (e) { out.textContent = "Error: " + e.message; KARMA.toastError(e); }
     }
 
     body.appendChild(el("div", { class: "toolbar" }, refresh, copy));

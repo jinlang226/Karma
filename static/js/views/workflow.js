@@ -23,7 +23,11 @@
   let stages = [];      // builder stage rows: {service, case, overrides}
   let advRows = [];     // builder adversary rows: {scenario, injectIndex, liftIndex}
 
-  function errBox(e) { return el("div", { class: "error-box" }, e.message || String(e)); }
+  function errBox(e) {
+    const m = e.message || String(e);
+    KARMA.toast(m, "error");
+    return el("div", { class: "error-box" }, m);
+  }
 
   async function mount(container) {
     root = container;
@@ -79,9 +83,11 @@
     if (out) out.textContent = `Submitting ${path}…\n`;
     try {
       const { run_id } = await api.post("/api/run", { workflow_path: path });
+      KARMA.toast("Workflow started: " + run_id, "info");
       streamInto(run_id);
     } catch (e) {
       if (out) out.textContent += "Error: " + e.message + "\n";
+      KARMA.toastError(e);
     }
   }
 
@@ -105,6 +111,11 @@
       "running history; concat_blind — only the current stage."));
 
     panel.appendChild(el("h3", {}, "Stages"));
+    panel.appendChild(el("p", { class: "field-help" },
+      "Each stage runs one case, in order. Pick a service and case and the case's " +
+      "parameters appear below the row; use param overrides (key=value, comma-separated) " +
+      "to change them. Reference an earlier stage's value with " +
+      "${stages.<stage-id>.params.<name>}."));
     const stageList = el("div", { class: "builder-list" });
     panel.appendChild(stageList);
 
@@ -136,12 +147,17 @@
       : "No adversary scenarios found under resources/*/adversarial/.";
 
     const yaml = el("textarea", { rows: "10", id: "wf-yaml", placeholder: "workflow YAML" });
-    const genBtn = el("button", { class: "btn", onClick: () => {
-      yaml.value = generateYaml(idInput.value, modeSel.value, stages, advRows);
-    } }, "Generate YAML");
     const valBtn = el("button", { class: "btn secondary", onClick: () => validateYaml(yaml.value, msg) }, "Validate");
     const runBtn = el("button", { class: "btn", onClick: () => runInlineYaml(yaml.value, msg) }, "Run inline");
     const msg = el("div", { class: "muted" });
+    // The output (editable YAML + validate/run) is hidden until the user
+    // generates it, so the page is not dominated by an empty box up front.
+    const output = el("div", { style: "display:none" }, yaml,
+      el("div", { class: "toolbar" }, valBtn, runBtn), msg);
+    const genBtn = el("button", { class: "btn", onClick: () => {
+      yaml.value = generateYaml(idInput.value, modeSel.value, stages, advRows);
+      output.style.display = "";
+    } }, "Generate YAML");
 
     panel.appendChild(el("div", { class: "toolbar" }, addBtn));
 
@@ -152,9 +168,7 @@
 
     panel.appendChild(el("h3", {}, "Generate & run"));
     panel.appendChild(el("div", { class: "toolbar" }, genBtn));
-    panel.appendChild(yaml);
-    panel.appendChild(el("div", { class: "toolbar" }, valBtn, runBtn));
-    panel.appendChild(msg);
+    panel.appendChild(output);
     return panel;
   }
 
@@ -163,7 +177,7 @@
     return stages.map((s, i) => el("option", {
       value: String(i),
       selected: i === selectedIndex ? "selected" : null,
-    }, `stage_${i + 1}${s.service ? " (" + KARMA.labels.service(s.service) + ")" : ""}`));
+    }, `Stage ${i + 1}${s.service ? " (" + KARMA.labels.service(s.service) + ")" : ""}`));
   }
 
   function advRow(adv, index, rerender) {
@@ -183,29 +197,53 @@
       el("option", { value: "-1", selected: adv.liftIndex === -1 ? "selected" : null }, "(no lift)"),
       ...stageOptions(adv.liftIndex));
     const rm = el("button", { class: "btn secondary", onClick: () => { advRows.splice(index, 1); rerender(); } }, "✕");
-    return el("div", { class: "row builder-row" },
-      el("div", {}, el("label", {}, "Inject at"), injectSel),
-      el("div", {}, el("label", {}, "Scenario"), scenSel),
-      el("div", {}, el("label", {}, "Lift at"), liftSel),
-      el("div", { style: "flex:0" }, el("label", {}, " "), rm));
+    return el("div", { class: "builder-row" },
+      el("div", { class: "builder-row-head" }, `Injection ${index + 1}`),
+      el("div", { class: "row" },
+        el("div", {}, el("label", {}, "Inject at"), injectSel),
+        el("div", {}, el("label", {}, "Scenario"), scenSel),
+        el("div", {}, el("label", {}, "Lift at"), liftSel),
+        el("div", { style: "flex:0" }, el("label", {}, " "), rm)));
   }
 
   function stageRow(stage, index, rerender) {
     const svcSel = el("select", { onChange: (e) => { stage.service = e.target.value; stage.case = ""; rerender(); } },
       ...services.map((s) => el("option", { value: s.name, selected: s.name === stage.service ? "selected" : null }, KARMA.labels.service(s.name))));
     const svc = services.find((s) => s.name === stage.service);
-    const caseSel = el("select", { onChange: (e) => { stage.case = e.target.value; } },
+    const caseSel = el("select", { onChange: (e) => { stage.case = e.target.value; loadParams(); } },
       el("option", { value: "" }, "(case)"),
       ...((svc ? svc.cases : []).map((c) =>
         el("option", { value: c, selected: c === stage.case ? "selected" : null }, KARMA.labels.case(c)))));
     const ovr = el("input", { value: stage.overrides, placeholder: "key=value, key2=value2",
       onInput: (e) => { stage.overrides = e.target.value; } });
     const rm = el("button", { class: "btn secondary", onClick: () => { stages.splice(index, 1); rerender(); } }, "✕");
-    return el("div", { class: "row builder-row" },
-      el("div", {}, el("label", {}, `Stage ${index + 1} service`), svcSel),
-      el("div", {}, el("label", {}, "Case"), caseSel),
-      el("div", {}, el("label", {}, "Param overrides"), ovr),
-      el("div", { style: "flex:0" }, el("label", {}, " "), rm));
+
+    // Show the chosen case's parameters so the user knows what they can override.
+    const paramHelp = el("p", { class: "field-help" });
+    async function loadParams() {
+      paramHelp.textContent = "";
+      if (!stage.service || !stage.case) return;
+      try {
+        const d = await api.get(`/api/cases/${stage.service}/${stage.case}`);
+        if (d.params && d.params.length) {
+          paramHelp.textContent = "Parameters: " + d.params.map((p) =>
+            `${p.name} (default: ${p.default == null ? "—" : p.default})` +
+            (p.description ? ` — ${p.description}` : "")).join("  ·  ");
+        } else {
+          paramHelp.textContent = "This case has no parameters.";
+        }
+      } catch (_e) { /* leave help blank on error */ }
+    }
+    if (stage.case) loadParams();
+
+    return el("div", { class: "builder-row" },
+      el("div", { class: "builder-row-head" }, `Stage ${index + 1}`),
+      el("div", { class: "row" },
+        el("div", {}, el("label", {}, "Service"), svcSel),
+        el("div", {}, el("label", {}, "Case"), caseSel),
+        el("div", {}, el("label", {}, "Param overrides (key=value, comma-separated)"), ovr),
+        el("div", { style: "flex:0" }, el("label", {}, " "), rm)),
+      paramHelp);
   }
 
   function generateYaml(id, mode, stageRows, adversaryRows) {
@@ -248,8 +286,9 @@
       } else {
         msg.className = "badge bad";
         msg.textContent = (res.errors || []).join("; ");
+        KARMA.toast((res.errors || ["Invalid workflow"]).join("; "), "error");
       }
-    } catch (e) { msg.className = "badge bad"; msg.textContent = e.message; }
+    } catch (e) { msg.className = "badge bad"; msg.textContent = e.message; KARMA.toastError(e); }
   }
 
   async function runInlineYaml(text, msg) {
@@ -258,8 +297,9 @@
     try {
       const { run_id } = await api.post("/api/run", { workflow_yaml: text });
       msg.textContent = "Started run " + run_id;
+      KARMA.toast("Workflow started: " + run_id, "info");
       streamInto(run_id);
-    } catch (e) { msg.className = "badge bad"; msg.textContent = e.message; }
+    } catch (e) { msg.className = "badge bad"; msg.textContent = e.message; KARMA.toastError(e); }
   }
 
   // --- Jobs panel -----------------------------------------------------------
@@ -308,6 +348,8 @@
           log.textContent += `stage ${s.stage_id}: ${s.status}\n`;
         } else if (ev.type === "run_complete") {
           log.textContent += `run complete: ${ev.status}\n`;
+          KARMA.toast("Run " + KARMA.labels.status(ev.status).text.toLowerCase(),
+            ev.status === "complete" ? "success" : "error");
           refreshJobs();
         }
         log.scrollTop = log.scrollHeight;
