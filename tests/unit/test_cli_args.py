@@ -43,9 +43,15 @@ class TestSubcommandParsing:
 
     def test_judge_all_flags(self):
         ns = _parse(["judge", "runs/r1", "--stage", "stage_1", "--model",
-                     "gpt-4o", "--dry-run", "--output", "json"])
+                     "gpt-4o", "--base-url", "http://x", "--api-key", "k",
+                     "--timeout", "30", "--dry-run", "--output", "json"])
         assert ns.command == "judge" and ns.run_dir == "runs/r1"
         assert ns.stage == "stage_1" and ns.dry_run is True
+        assert ns.base_url == "http://x" and ns.api_key == "k" and ns.timeout == 30
+
+    def test_inline_judge_flag(self):
+        assert _parse(["run-case", "demo", "configmap-update", "--judge"]).judge is True
+        assert _parse(["run-workflow", "wf.yaml", "--judge"]).judge is True
 
     def test_info_flags(self):
         assert _parse(["info", "--agents", "--metrics"]).command == "info"

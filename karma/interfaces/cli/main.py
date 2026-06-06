@@ -60,6 +60,8 @@ def _build_parser() -> argparse.ArgumentParser:
     wf.add_argument("--profile", default=None)
     wf.add_argument("--dry-run", action="store_true",
                     help="Resolve rows and print without running.")
+    wf.add_argument("--judge", action="store_true",
+                    help="Run the LLM judge on every stage after the run completes.")
     wf.add_argument("--output", default="text", choices=["text", "json"])
 
     rc = sub.add_parser("run-case", help="Run a single case.")
@@ -71,6 +73,8 @@ def _build_parser() -> argparse.ArgumentParser:
     rc.add_argument("--resources-dir", default="resources")
     rc.add_argument("--param", action="append", default=[], metavar="KEY=VALUE")
     rc.add_argument("--timeout", type=int, default=900)
+    rc.add_argument("--judge", action="store_true",
+                    help="Run the LLM judge on every stage after the run completes.")
     rc.add_argument("--profile", default=None)
     rc.add_argument("--output", default="text", choices=["text", "json"])
 
@@ -89,6 +93,12 @@ def _build_parser() -> argparse.ArgumentParser:
     jg.add_argument("run_dir")
     jg.add_argument("--stage", default=None)
     jg.add_argument("--model", default=None)
+    jg.add_argument("--base-url", default=None,
+                    help="OpenAI-compatible base URL for the judge LLM.")
+    jg.add_argument("--api-key", default=None,
+                    help="API key for the judge LLM (else from the environment).")
+    jg.add_argument("--timeout", type=int, default=None,
+                    help="Per-request judge LLM timeout in seconds.")
     jg.add_argument("--dry-run", action="store_true")
     jg.add_argument("--output", default="text", choices=["text", "json"])
 
@@ -127,6 +137,33 @@ def _parse_param_overrides(param_args: list[str]) -> dict[str, Any]:
             value = raw_value
         result[key.strip()] = value
     return result
+
+
+def _maybe_inline_judge(
+    result: dict[str, Any], runs_dir: Path, output_format: str
+) -> None:
+    """Run the judge on every stage of a just-completed run and print it.
+
+    Restores the old inline post-run judging: ``run-case``/``run-workflow``
+    with ``--judge`` score the run immediately instead of requiring a
+    separate ``judge`` invocation.
+    """
+    from ...judge.engine import run_judge_batch
+
+    run_id = result.get("run_id")
+    if not run_id:
+        return
+    try:
+        batch = run_judge_batch(runs_dir / str(run_id))
+    except Exception as exc:
+        print(f"inline judge failed: {exc}", file=sys.stderr)
+        return
+    if output_format == "json":
+        print(json.dumps(batch, indent=2))
+    else:
+        print("judge:")
+        for sid, res in batch.items():
+            print(f"  stage {sid}: {res.get('verdict')} (score {res.get('score')})")
 
 
 def _print_result(result: dict[str, Any], output_format: str) -> None:
@@ -171,6 +208,8 @@ def _cmd_run_workflow(args: argparse.Namespace) -> None:
         sandbox_mode=merged.get("sandbox", "local"),
     )
     _print_result(result, args.output)
+    if getattr(args, "judge", False):
+        _maybe_inline_judge(result, runs_dir, args.output)
 
 
 def _cmd_run_case(args: argparse.Namespace) -> None:
@@ -192,6 +231,8 @@ def _cmd_run_case(args: argparse.Namespace) -> None:
         agent_timeout_sec=args.timeout,
     )
     _print_result(result, args.output)
+    if getattr(args, "judge", False):
+        _maybe_inline_judge(result, runs_dir, args.output)
 
 
 def _cmd_manual(args: argparse.Namespace) -> None:
@@ -265,14 +306,16 @@ def _cmd_judge(args: argparse.Namespace) -> None:
     if not run_dir.exists():
         raise RuntimeError(f"run directory not found: {run_dir}")
 
+    judge_kwargs = {
+        "judge_model": args.model,
+        "judge_base_url": args.base_url,
+        "judge_api_key": args.api_key,
+        "judge_timeout_sec": args.timeout,
+    }
     if args.stage:
-        result = run_judge(
-            run_dir, args.stage,
-            judge_model=args.model,
-            dry_run=args.dry_run,
-        )
+        result = run_judge(run_dir, args.stage, dry_run=args.dry_run, **judge_kwargs)
     else:
-        result = run_judge_batch(run_dir, judge_model=args.model)
+        result = run_judge_batch(run_dir, dry_run=args.dry_run, **judge_kwargs)
     _print_result(result, args.output)
 
 
