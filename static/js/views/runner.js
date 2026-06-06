@@ -183,7 +183,7 @@
     const status = el("div", { class: "panel", id: "run-status" });
     status.appendChild(el("p", { class: "muted" }, "Run output appears here."));
 
-    const actions = el("div", { class: "toolbar" });
+    const actions = el("div", { class: "toolbar run-actions" });
     actions.appendChild(el("button", { class: "btn", onClick: () =>
       startAgentRun(service, caseName, collectParams(), agentSel.value, sandboxSel.value,
         Number(timeoutInput.value) || 900, status) },
