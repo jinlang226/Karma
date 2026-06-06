@@ -53,6 +53,18 @@
   // Services that are examples, not benchmarked applications.
   const EXAMPLE_SERVICES = new Set(["demo"]);
 
+  // One-line intro per service (fallback: empty).
+  const SERVICE_DESC = {
+    cockroachdb: "Distributed SQL database — deployment, certificate rotation, scaling, upgrades, and recovery.",
+    mongodb: "Document database replica sets — deployment, TLS, users and roles, scaling, and upgrades.",
+    elasticsearch: "Search & analytics cluster — node scaling, certificate rotation, snapshots, and upgrades.",
+    "nginx-ingress": "Ingress controller — TLS secrets, rate limiting, canary routing, and class upgrades.",
+    "rabbitmq-experiments": "Message broker — queues, policies, TLS rotation, blue/green migration, and failover.",
+    ray: "Distributed compute — cluster deploy/teardown, worker scaling, job submission, and recovery.",
+    spark: "Big-data processing — job tuning, autoscaling, multi-tenancy, and ETL/OOM scenarios.",
+    demo: "Tiny example tasks for trying KARMA end to end.",
+  };
+
   const AGENTS = { cli_runner: "CLI Runner", react: "ReAct" };
 
   const PROMPT_MODES = {
@@ -82,6 +94,7 @@
   KARMA.humanize = humanize;
   KARMA.labels = {
     service: (id) => SERVICES[id] || humanize(id),
+    serviceDescription: (id) => SERVICE_DESC[id] || "",
     isExampleService: (id) => EXAMPLE_SERVICES.has(id),
     case: (id) => humanize(id),
     scenario: (id) => humanize(id),

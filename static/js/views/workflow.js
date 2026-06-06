@@ -102,8 +102,9 @@
       el("option", { value: "concat_stateful" }, KARMA.labels.promptMode("concat_stateful")),
       el("option", { value: "concat_blind" }, KARMA.labels.promptMode("concat_blind")));
     const top = el("div", { class: "row" },
-      el("div", {}, el("label", {}, "Workflow id"), idInput),
-      el("div", {}, el("label", {}, "Prompt mode"), modeSel));
+      el("div", {}, el("label", {}, "Workflow ID"), idInput),
+      el("div", {}, el("label", {}, "Prompt Mode"), modeSel));
+    panel.appendChild(el("h3", {}, "Basics"));
     panel.appendChild(top);
     panel.appendChild(el("p", { class: "field-help" },
       "Workflow id is a short name for this workflow. Prompt mode controls how " +
@@ -149,7 +150,7 @@
         "later stage."
       : "No adversarial scenarios found under resources/*/adversarial/.";
 
-    const yaml = el("textarea", { rows: "10", id: "wf-yaml", placeholder: "workflow YAML" });
+    const yaml = el("textarea", { rows: "3", id: "wf-yaml", placeholder: "workflow YAML" });
     const valBtn = el("button", { class: "btn secondary", onClick: () => validateYaml(yaml.value, msg) }, "Validate");
     const runBtn = el("button", { class: "btn", onClick: () => runInlineYaml(yaml.value, msg) }, "Run inline");
     const msg = el("div", { class: "muted" });
@@ -166,12 +167,12 @@
 
     panel.appendChild(el("div", { class: "toolbar" }, addBtn));
 
-    panel.appendChild(el("h3", {}, "Adversarial scenario injection"));
+    panel.appendChild(el("h3", {}, "Adversarial Scenario Injection"));
     panel.appendChild(el("p", { class: "field-help" }, advHint));
     panel.appendChild(advList);
     panel.appendChild(el("div", { class: "toolbar" }, addAdvBtn));
 
-    panel.appendChild(el("h3", {}, "Generate & run"));
+    panel.appendChild(el("h3", {}, "Generate & Run"));
     panel.appendChild(el("p", { class: "field-help" },
       "Build the workflow YAML from the stages and injections above. You can edit " +
       "it, then validate it or run it inline right here."));
