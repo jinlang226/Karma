@@ -110,6 +110,10 @@
     row.appendChild(el("div", {}, el("label", {}, "Sandbox"), sandboxSel));
     row.appendChild(el("div", {}, el("label", {}, "Timeout (s)"), timeoutInput));
     cfg.appendChild(row);
+    cfg.appendChild(el("p", { class: "field-help" },
+      "Agent — which agent attempts the task (none = solver/local, no agent process). " +
+      "Sandbox — run the agent locally or in a Docker container. " +
+      "Timeout — seconds before the agent run is stopped."));
 
     function collectParams() {
       const out = {};

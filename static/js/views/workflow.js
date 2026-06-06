@@ -99,6 +99,10 @@
       el("div", {}, el("label", {}, "Workflow id"), idInput),
       el("div", {}, el("label", {}, "Prompt mode"), modeSel));
     panel.appendChild(top);
+    panel.appendChild(el("p", { class: "field-help" },
+      "Prompt mode controls how earlier stages' prompts are shown to the agent: " +
+      "progressive — each stage adds to the previous; concat_stateful — the full " +
+      "running history; concat_blind — only the current stage."));
 
     panel.appendChild(el("h3", {}, "Stages"));
     const stageList = el("div", { class: "builder-list" });
