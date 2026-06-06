@@ -3,10 +3,14 @@
  *
  * Three panels:
  *   - Files: the workflow YAML files on disk (/api/workflows), each runnable.
- *   - Builder: add stages (service + case + param overrides) and a prompt
+ *   - Builder: add stages (service + case + param overrides), optionally add
+ *     adversary injections (scenario + inject/lift stage), pick a prompt
  *     mode, generate YAML, validate it via /api/workflow/import, and run it
  *     inline through /api/run with a workflow_yaml payload.
  *   - Jobs: the active job list (/api/jobs) plus a live log for a started run.
+ *
+ * Adversary injection is an option of building a workflow (it lives in the
+ * builder under spec.adversary), not a separate feature.
  */
 (function () {
   "use strict";
@@ -15,16 +19,20 @@
 
   let root;
   let services = [];
-  let stages = [];   // builder stage rows: {service, case, overrides}
+  let scenarios = [];   // available adversary scenarios: {service, scenario, has_lift}
+  let stages = [];      // builder stage rows: {service, case, overrides}
+  let advRows = [];     // builder adversary rows: {scenario, injectIndex, liftIndex}
 
   function errBox(e) { return el("div", { class: "error-box" }, e.message || String(e)); }
 
   async function mount(container) {
     root = container;
     stages = [];   // start each mount with a fresh builder
+    advRows = [];
     if (!services.length) {
       try { services = (await api.get("/api/services")).services || []; } catch (_e) { services = []; }
     }
+    try { scenarios = await api.get("/api/adversary/scenarios") || []; } catch (_e) { scenarios = []; }
     render();
   }
 
@@ -106,19 +114,71 @@
       renderStages();
     } }, "+ Add stage");
 
+    // Adversary injections -- an option of the workflow, not a separate tab.
+    const advList = el("div", {});
+    function renderAdv() {
+      clear(advList);
+      advRows.forEach((adv, i) => advList.appendChild(advRow(adv, i, renderAdv)));
+    }
+    renderAdv();
+    const addAdvBtn = el("button", {
+      class: "btn secondary",
+      disabled: !scenarios.length ? "disabled" : null,
+      onClick: () => { advRows.push({ scenario: "", injectIndex: 0, liftIndex: -1 }); renderAdv(); },
+    }, "+ Add adversary");
+    const advHint = scenarios.length
+      ? "Adversary injections fault a stage and (optionally) lift it at a later stage."
+      : "No adversary scenarios found under resources/*/adversarial/.";
+
     const yaml = el("textarea", { rows: "10", id: "wf-yaml", placeholder: "workflow YAML" });
     const genBtn = el("button", { class: "btn", onClick: () => {
-      yaml.value = generateYaml(idInput.value, modeSel.value, stages);
+      yaml.value = generateYaml(idInput.value, modeSel.value, stages, advRows);
     } }, "Generate YAML");
     const valBtn = el("button", { class: "btn secondary", onClick: () => validateYaml(yaml.value, msg) }, "Validate");
     const runBtn = el("button", { class: "btn", onClick: () => runInlineYaml(yaml.value, msg) }, "Run inline");
     const msg = el("div", { class: "muted" });
 
-    panel.appendChild(el("div", { class: "toolbar" }, addBtn, genBtn));
+    panel.appendChild(el("div", { class: "toolbar" }, addBtn));
+    panel.appendChild(el("h3", {}, "Adversary"));
+    panel.appendChild(el("p", { class: "muted", style: "margin:0 0 8px;font-size:.82rem" }, advHint));
+    panel.appendChild(advList);
+    panel.appendChild(el("div", { class: "toolbar" }, addAdvBtn, genBtn));
     panel.appendChild(yaml);
     panel.appendChild(el("div", { class: "toolbar" }, valBtn, runBtn));
     panel.appendChild(msg);
     return panel;
+  }
+
+  function stageOptions(selectedIndex) {
+    // Stage ids are positional: stage_1..stage_N, mirroring generateYaml.
+    return stages.map((s, i) => el("option", {
+      value: String(i),
+      selected: i === selectedIndex ? "selected" : null,
+    }, `stage_${i + 1}${s.service ? " (" + s.service + ")" : ""}`));
+  }
+
+  function advRow(adv, index, rerender) {
+    // The scenario must belong to the service of its inject stage (the backend
+    // resolves it under that stage's service), so filter scenarios by it.
+    const injectService = (stages[adv.injectIndex] || {}).service;
+    const choices = scenarios.filter((s) => !injectService || s.service === injectService);
+    const scenSel = el("select", { onChange: (e) => { adv.scenario = e.target.value; } },
+      el("option", { value: "" }, "(scenario)"),
+      ...choices.map((s) => el("option", {
+        value: s.scenario, selected: s.scenario === adv.scenario ? "selected" : null,
+      }, s.scenario)));
+    const injectSel = el("select", {
+      onChange: (e) => { adv.injectIndex = Number(e.target.value); adv.scenario = ""; rerender(); },
+    }, ...stageOptions(adv.injectIndex));
+    const liftSel = el("select", { onChange: (e) => { adv.liftIndex = Number(e.target.value); } },
+      el("option", { value: "-1", selected: adv.liftIndex === -1 ? "selected" : null }, "(no lift)"),
+      ...stageOptions(adv.liftIndex));
+    const rm = el("button", { class: "btn secondary", onClick: () => { advRows.splice(index, 1); rerender(); } }, "✕");
+    return el("div", { class: "row", style: "margin-top:8px" },
+      el("div", {}, el("label", {}, "Inject at"), injectSel),
+      el("div", {}, el("label", {}, "Scenario"), scenSel),
+      el("div", {}, el("label", {}, "Lift at"), liftSel),
+      el("div", { style: "flex:0" }, el("label", {}, " "), rm));
   }
 
   function stageRow(stage, index, rerender) {
@@ -139,7 +199,7 @@
       el("div", { style: "flex:0" }, el("label", {}, " "), rm));
   }
 
-  function generateYaml(id, mode, stageRows) {
+  function generateYaml(id, mode, stageRows, adversaryRows) {
     const lines = [`metadata:`, `  id: ${id}`, `spec:`, `  prompt_mode: ${mode}`, `  stages:`];
     stageRows.forEach((s, i) => {
       lines.push(`    - id: stage_${i + 1}`);
@@ -154,6 +214,17 @@
         }
       }
     });
+    const advs = (adversaryRows || []).filter((a) => a.scenario);
+    if (advs.length) {
+      lines.push(`  adversary:`);
+      for (const a of advs) {
+        lines.push(`    - scenario: ${a.scenario}`);
+        lines.push(`      inject_at_stage: stage_${a.injectIndex + 1}`);
+        if (a.liftIndex >= 0) {
+          lines.push(`      lift_at_stage: stage_${a.liftIndex + 1}`);
+        }
+      }
+    }
     return lines.join("\n") + "\n";
   }
 
