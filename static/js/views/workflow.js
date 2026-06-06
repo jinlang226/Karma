@@ -100,7 +100,8 @@
       el("div", {}, el("label", {}, "Prompt mode"), modeSel));
     panel.appendChild(top);
 
-    const stageList = el("div", {});
+    panel.appendChild(el("h3", {}, "Stages"));
+    const stageList = el("div", { class: "builder-list" });
     panel.appendChild(stageList);
 
     function renderStages() {
@@ -115,7 +116,7 @@
     } }, "+ Add stage");
 
     // Adversary injections -- an option of the workflow, not a separate tab.
-    const advList = el("div", {});
+    const advList = el("div", { class: "builder-list" });
     function renderAdv() {
       clear(advList);
       advRows.forEach((adv, i) => advList.appendChild(advRow(adv, i, renderAdv)));
@@ -139,10 +140,14 @@
     const msg = el("div", { class: "muted" });
 
     panel.appendChild(el("div", { class: "toolbar" }, addBtn));
+
     panel.appendChild(el("h3", {}, "Adversary"));
-    panel.appendChild(el("p", { class: "muted", style: "margin:0 0 8px;font-size:.82rem" }, advHint));
+    panel.appendChild(el("p", { class: "muted", style: "margin:0 0 10px;font-size:.82rem" }, advHint));
     panel.appendChild(advList);
-    panel.appendChild(el("div", { class: "toolbar" }, addAdvBtn, genBtn));
+    panel.appendChild(el("div", { class: "toolbar" }, addAdvBtn));
+
+    panel.appendChild(el("h3", {}, "Generate & run"));
+    panel.appendChild(el("div", { class: "toolbar" }, genBtn));
     panel.appendChild(yaml);
     panel.appendChild(el("div", { class: "toolbar" }, valBtn, runBtn));
     panel.appendChild(msg);
@@ -174,7 +179,7 @@
       el("option", { value: "-1", selected: adv.liftIndex === -1 ? "selected" : null }, "(no lift)"),
       ...stageOptions(adv.liftIndex));
     const rm = el("button", { class: "btn secondary", onClick: () => { advRows.splice(index, 1); rerender(); } }, "✕");
-    return el("div", { class: "row", style: "margin-top:8px" },
+    return el("div", { class: "row builder-row" },
       el("div", {}, el("label", {}, "Inject at"), injectSel),
       el("div", {}, el("label", {}, "Scenario"), scenSel),
       el("div", {}, el("label", {}, "Lift at"), liftSel),
@@ -192,7 +197,7 @@
     const ovr = el("input", { value: stage.overrides, placeholder: "key=value, key2=value2",
       onInput: (e) => { stage.overrides = e.target.value; } });
     const rm = el("button", { class: "btn secondary", onClick: () => { stages.splice(index, 1); rerender(); } }, "✕");
-    return el("div", { class: "row", style: "margin-top:8px" },
+    return el("div", { class: "row builder-row" },
       el("div", {}, el("label", {}, `Stage ${index + 1} service`), svcSel),
       el("div", {}, el("label", {}, "Case"), caseSel),
       el("div", {}, el("label", {}, "Param overrides"), ovr),
