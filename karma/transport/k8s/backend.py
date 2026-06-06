@@ -134,7 +134,12 @@ def launch_proxy(
     from .proxy import find_free_port
 
     run_dir.mkdir(parents=True, exist_ok=True)
-    log_path = protocol.stage_kubectl_log_path(run_dir, run_dir.name)
+    # ``run_dir`` here is the stage directory, so the kubectl log lives directly
+    # in it -- the same path evidence reads via
+    # ``protocol.stage_kubectl_log_path(run_root, stage_id)``. Computing it as
+    # ``stage_kubectl_log_path(run_dir, run_dir.name)`` double-nests
+    # (stages/<id>/stages/<id>/...) and silently empties evidence + metrics.
+    log_path = run_dir / "kubectl_log.jsonl"
 
     proxy_port = find_free_port()
     control_port = find_free_port()
