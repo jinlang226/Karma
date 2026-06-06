@@ -50,6 +50,24 @@ class TestTranslateUiRequest:
                 {"workflow_yaml": ":\n  bad: [unclosed"}, resources_dir=tmp_path
             )
 
+    def test_workflow_path_loads_and_normalizes(self, tmp_path):
+        wf = tmp_path / "wf.yaml"
+        wf.write_text(
+            "metadata:\n  id: from-file\n"
+            "spec:\n  stages:\n    - id: s1\n      service: svc\n      case: c\n"
+        )
+        result = translate_ui_request(
+            {"workflow_path": str(wf)}, resources_dir=tmp_path
+        )
+        assert result["id"] == "from-file"
+        assert len(result["stages"]) == 1
+
+    def test_workflow_path_missing_raises_value_error(self, tmp_path):
+        with pytest.raises(ValueError):
+            translate_ui_request(
+                {"workflow_path": str(tmp_path / "nope.yaml")}, resources_dir=tmp_path
+            )
+
     def test_single_case_normalized_semantics_stable(self, tmp_path):
         """Two identical payloads must produce structurally identical workflows."""
         payload = {"service": "svc", "case_name": "case"}

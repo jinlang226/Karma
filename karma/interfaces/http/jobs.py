@@ -13,7 +13,11 @@ import threading
 from pathlib import Path
 from typing import Any
 
-from ...definitions.workflows import single_case_to_workflow, normalize_workflow
+from ...definitions.workflows import (
+    single_case_to_workflow,
+    normalize_workflow,
+    load_workflow_file,
+)
 from ...runtime.service import run_workflow, get_run_status
 from ...protocol import generate_run_id
 from .events import hub
@@ -83,6 +87,14 @@ def translate_ui_request(
             raw = yaml.safe_load(payload["workflow_yaml"]) or {}
         except Exception as exc:
             raise ValueError(f"failed to parse workflow YAML: {exc}") from exc
+        return normalize_workflow(raw, resources_dir=resources_dir)
+
+    if "workflow_path" in payload:
+        from pathlib import Path as _Path
+        try:
+            raw = load_workflow_file(_Path(str(payload["workflow_path"])))
+        except RuntimeError as exc:
+            raise ValueError(str(exc)) from exc
         return normalize_workflow(raw, resources_dir=resources_dir)
 
     service = str(payload.get("service") or "").strip()
