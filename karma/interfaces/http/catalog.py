@@ -135,6 +135,7 @@ def list_runs(runs_dir: Path) -> list[dict[str, Any]]:
 
         entry: dict[str, Any] = {
             "run_id": run_dir.name,
+            "path": str(run_dir),
             "status": data.get("status", "unknown"),
             "judged": False,
         }
