@@ -63,6 +63,8 @@ def run_workflow(
     environment_config: dict[str, Any] | None = None,
     on_stage_complete: Any | None = None,
     run_id: str | None = None,
+    stage_failure_mode: str = "terminate",
+    final_sweep_mode: str = "auto",
 ) -> dict[str, Any]:
     """Execute a workflow synchronously and return the final run result.
 
@@ -121,6 +123,8 @@ def run_workflow(
             environment=env,
             prompt_mode=prompt_mode,
             on_stage_complete=on_stage_complete,
+            stage_failure_mode=stage_failure_mode,
+            final_sweep_mode=final_sweep_mode,
         )
         result["summary"] = {
             "total_stages": len(rows),
@@ -155,6 +159,9 @@ def run_case(
     environment_config: dict[str, Any] | None = None,
     namespace_roles: list[str] | None = None,
     agent_timeout_sec: int = 900,
+    max_attempts: int | None = None,
+    stage_failure_mode: str = "terminate",
+    final_sweep_mode: str = "auto",
     run_id: str | None = None,
 ) -> dict[str, Any]:
     """Execute a single case as a 1-stage workflow and return the run result.
@@ -166,12 +173,15 @@ def run_case(
 
     Returns the same result dict as :func:`run_workflow`.
     """
+    # --max-attempts is a total attempt cap; the loop runs retries + 1 attempts.
+    retries = max(0, max_attempts - 1) if max_attempts else 0
     workflow = single_case_to_workflow(
         service,
         case_name,
         param_overrides,
         agent_timeout_sec=agent_timeout_sec,
         namespace_roles=namespace_roles,
+        retries=retries,
     )
     return run_workflow(
         workflow,
@@ -181,6 +191,8 @@ def run_case(
         sandbox_mode=sandbox_mode,
         environment_provider=environment_provider,
         environment_config=environment_config,
+        stage_failure_mode=stage_failure_mode,
+        final_sweep_mode=final_sweep_mode,
         run_id=run_id,
     )
 

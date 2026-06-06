@@ -396,6 +396,7 @@ def single_case_to_workflow(
     prompt_mode: str = _DEFAULT_PROMPT_MODE,
     agent_timeout_sec: int = _DEFAULT_AGENT_TIMEOUT_SEC,
     namespace_roles: list[str] | None = None,
+    retries: int = 0,
 ) -> dict[str, Any]:
     """Return a 1-stage workflow dict for a single-case run.
 
@@ -440,7 +441,7 @@ def single_case_to_workflow(
                 "param_overrides": dict(param_overrides or {}),
                 "namespaces": namespaces,
                 "agent_timeout_sec": agent_timeout_sec,
-                "retries": 0,
+                "retries": max(0, int(retries)),
                 "_warnings": [],
             }
         ],

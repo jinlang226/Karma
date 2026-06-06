@@ -179,6 +179,8 @@ def run_workflow_loop(
     environment: Any,
     prompt_mode: str,
     on_stage_complete: Any | None = None,
+    stage_failure_mode: str = "terminate",
+    final_sweep_mode: str = "auto",
 ) -> dict[str, Any]:
     """Drive the workflow execution loop and return the final run result.
 
@@ -210,6 +212,15 @@ def run_workflow_loop(
         Optional callable invoked with the stage result dict after each
         stage (including retries). Used by the HTTP SSE path to push
         progress events to the UI.
+    stage_failure_mode:
+        ``"terminate"`` (default) stops the workflow at the first stage that
+        does not pass (fail-fast). ``"continue"`` runs the remaining stages
+        anyway; the overall status is still ``"failed"``.
+    final_sweep_mode:
+        Controls the final regression sweep. ``"auto"`` (default) sweeps when
+        the workflow completed with more than one passed stage; ``"off"``
+        never sweeps; ``"full"`` sweeps whenever at least one stage passed
+        (even on a failed workflow).
 
     Returns
     -------
@@ -278,7 +289,9 @@ def run_workflow_loop(
                     pass
         else:
             workflow_status = "failed"
-            break
+            if stage_failure_mode != "continue":
+                break
+            # "continue": record the failure but keep running later stages.
 
         _write_workflow_state(run_dir, {
             "run_id": run_id,
@@ -302,8 +315,14 @@ def run_workflow_loop(
         except Exception:
             full_bindings, full_env = {}, {}
 
+    if final_sweep_mode == "off":
+        run_sweep = False
+    elif final_sweep_mode == "full":
+        run_sweep = len(completed_stage_ids) >= 1
+    else:  # "auto" / "inherit"
+        run_sweep = workflow_status == "complete" and len(completed_stage_ids) > 1
     regression_sweep = None
-    if workflow_status == "complete" and len(completed_stage_ids) > 1:
+    if run_sweep:
         # A sweep failure is diagnostic only; it must not crash the run result.
         try:
             regression_sweep = _run_final_regression_sweep(
