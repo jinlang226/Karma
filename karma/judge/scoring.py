@@ -30,7 +30,17 @@ def _extract_json(text: str) -> Any:
     try:
         return json.loads(candidate)
     except Exception:
-        return None
+        pass
+    # Fallback for prose-wrapped output (common with CLI-backed models): grab
+    # the outermost JSON array or object embedded in the text.
+    for open_ch, close_ch in (("[", "]"), ("{", "}")):
+        start, end = text.find(open_ch), text.rfind(close_ch)
+        if 0 <= start < end:
+            try:
+                return json.loads(text[start:end + 1])
+            except Exception:
+                continue
+    return None
 
 
 # ---------------------------------------------------------------------------
