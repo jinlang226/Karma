@@ -374,7 +374,15 @@ def resolve_workflow_rows(
             "service": service,
             "case_name": case_name,
             "case": normalized,
-            "namespace_roles": stage.get("namespaces") or [_DEFAULT_NAMESPACE_ALIAS],
+            # Explicit per-stage namespaces win; otherwise honour the case's
+            # declared required_roles (a single run-case never sets namespaces,
+            # so without this multi-role cases silently bind only "default" and
+            # their $BENCH_NS_<ROLE> references expand empty).
+            "namespace_roles": (
+                stage.get("namespaces")
+                or (normalized.get("namespace_contract") or {}).get("required_roles")
+                or [_DEFAULT_NAMESPACE_ALIAS]
+            ),
             "adversary_deploy": deploy_units,
             "adversary_lift": lift_units,
             "adversary_hint": hint,
@@ -426,7 +434,10 @@ def single_case_to_workflow(
     if prompt_mode not in _VALID_PROMPT_MODES:
         prompt_mode = _DEFAULT_PROMPT_MODE
 
-    namespaces = namespace_roles if namespace_roles is not None else [_DEFAULT_NAMESPACE_ALIAS]
+    # None (no explicit override) is passed through so resolve_workflow_rows can
+    # derive the roles from the case's namespace_contract.required_roles. Forcing
+    # [default] here would mask multi-role cases (e.g. source/target).
+    namespaces = namespace_roles
     workflow_id = f"{service}/{case_name}"
 
     return {
