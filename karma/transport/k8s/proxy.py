@@ -33,6 +33,20 @@ from typing import Any
 # Port utilities
 # ---------------------------------------------------------------------------
 
+def _is_streaming_request(path: str) -> bool:
+    """True for watch/follow requests (``kubectl wait``, ``rollout status``,
+    ``logs -f``), whose upstream response is an unbounded stream that must be
+    forwarded incrementally rather than buffered with ``resp.read()``."""
+    from urllib.parse import urlparse, parse_qs
+    q = parse_qs(urlparse(path).query)
+
+    def _truthy(key: str) -> bool:
+        v = q.get(key)
+        return bool(v) and str(v[0]).lower() in ("true", "1")
+
+    return _truthy("watch") or _truthy("follow")
+
+
 def find_free_port() -> int:
     """Return an available TCP port on localhost.
 
@@ -126,10 +140,12 @@ class KubectlProxyServer:
                 if token:
                     headers["Authorization"] = f"Bearer {token}"
 
+                streaming = _is_streaming_request(self.path)
                 req = urllib.request.Request(
                     target_url, data=body, method=self.command, headers=headers
                 )
                 resp_headers: list = []
+                resp = None
                 try:
                     import ssl
                     ctx = ssl.create_default_context()
@@ -137,17 +153,67 @@ class KubectlProxyServer:
                     ctx.verify_mode = ssl.CERT_NONE
                     if client_cert and client_key:
                         ctx.load_cert_chain(certfile=client_cert, keyfile=client_key)
-                    with urllib.request.urlopen(req, context=ctx, timeout=60) as resp:
-                        status = resp.status
-                        resp_data = resp.read()
-                        resp_headers = list(resp.headers.items())
+                    # Watch/follow streams stay open; give them a long read
+                    # window (kubectl applies its own --timeout and closes).
+                    resp = urllib.request.urlopen(
+                        req, context=ctx, timeout=600 if streaming else 60
+                    )
+                    status = resp.status
+                    resp_headers = list(resp.headers.items())
+                    resp_data = None if streaming else resp.read()
                 except urllib.error.HTTPError as exc:
                     status = exc.code
                     resp_data = exc.read()
                     resp_headers = list(exc.headers.items()) if exc.headers else []
+                    streaming = False
                 except Exception as exc:
                     status = 502
                     resp_data = str(exc).encode()
+                    streaming = False
+
+                def _fwd_headers() -> None:
+                    # Forward Content-Type / Content-Encoding so kubectl can
+                    # decode; drop hop-by-hop + length/encoding we re-set.
+                    for hk, hv in resp_headers:
+                        if hk.lower() in ("transfer-encoding", "connection",
+                                          "keep-alive", "content-length"):
+                            continue
+                        self.send_header(hk, hv)
+
+                if streaming and resp is not None:
+                    # Stream the watch incrementally: HTTP/1.0 connection-close
+                    # framing (no Content-Length), flushing each chunk so the
+                    # agent's `kubectl wait`/`rollout status` see events as they
+                    # arrive instead of blocking on a buffered read.
+                    self.send_response(status)
+                    _fwd_headers()
+                    self.send_header("Connection", "close")
+                    self.end_headers()
+                    try:
+                        while True:
+                            chunk = resp.read(4096)
+                            if not chunk:
+                                break
+                            self.wfile.write(chunk)
+                            self.wfile.flush()
+                    except Exception:
+                        pass  # client closed (watch satisfied) or upstream ended
+                    finally:
+                        try:
+                            resp.close()
+                        except Exception:
+                            pass
+                else:
+                    if resp is not None:
+                        try:
+                            resp.close()
+                        except Exception:
+                            pass
+                    self.send_response(status)
+                    _fwd_headers()
+                    self.send_header("Content-Length", str(len(resp_data)))
+                    self.end_headers()
+                    self.wfile.write(resp_data)
 
                 duration_ms = int((time.time() - start_ts) * 1000)
                 proxy_self._log_call({
@@ -156,20 +222,8 @@ class KubectlProxyServer:
                     "path": self.path,
                     "status": status,
                     "duration_ms": duration_ms,
+                    "streamed": bool(streaming),
                 })
-
-                # Forward upstream response headers (notably Content-Type and
-                # Content-Encoding) so kubectl can decode discovery responses.
-                # Drop hop-by-hop headers and set our own Content-Length.
-                self.send_response(status)
-                for hk, hv in resp_headers:
-                    if hk.lower() in ("transfer-encoding", "connection",
-                                      "keep-alive", "content-length"):
-                        continue
-                    self.send_header(hk, hv)
-                self.send_header("Content-Length", str(len(resp_data)))
-                self.end_headers()
-                self.wfile.write(resp_data)
 
             def log_message(self, fmt: str, *args: Any) -> None:
                 pass  # suppress default access log
