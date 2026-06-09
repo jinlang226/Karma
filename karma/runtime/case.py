@@ -408,6 +408,7 @@ def run_stage(
     proxy_handle = None
     agent_process = None
     role_bindings: dict[str, str] = {}
+    ns_baseline: set[str] = set()
 
     try:
         from ..definitions.prompts import render_stage_prompt, assemble_agent_prompt
@@ -419,6 +420,15 @@ def run_stage(
         ns_roles = row.get("namespace_roles") or ["default"]
         role_bindings = environment.bind_namespace_roles(ns_roles, run_dir.name)
         environment.ensure_namespaces(role_bindings, run_dir=stage_dir)
+        # Snapshot namespaces (incl. the role namespaces just created) so the
+        # teardown can remove any literal namespaces the case creates in its
+        # preconditions (mongodb, cockroachdb, ...) which the per-role cleanup
+        # does not cover.
+        if hasattr(environment, "list_namespaces"):
+            try:
+                ns_baseline = environment.list_namespaces()
+            except Exception:
+                ns_baseline = set()
 
         # Step 3: run precondition units
         precond_log = protocol.stage_precondition_log_path(run_dir, stage_id)
@@ -621,5 +631,12 @@ def run_stage(
         if not defer_cleanup and role_bindings and environment is not None:
             try:
                 environment.cleanup_namespaces(role_bindings, run_dir=stage_dir)
+            except Exception:
+                pass
+        # Also remove any literal namespaces the case created in preconditions
+        # (deferred to the workflow loop for multi-stage runs that share state).
+        if not defer_cleanup and ns_baseline and hasattr(environment, "cleanup_created_namespaces"):
+            try:
+                environment.cleanup_created_namespaces(ns_baseline, run_dir=stage_dir)
             except Exception:
                 pass

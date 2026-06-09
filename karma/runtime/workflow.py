@@ -237,6 +237,14 @@ def run_workflow_loop(
     stage_prompts: list[str] = []
     completed_stage_ids: set[str] = set()
     deployed_scenario_ids: set[str] = set()
+    # Snapshot namespaces before any stage runs so the deferred teardown can
+    # also remove case-created literal namespaces (mongodb, rabbitmq, ...).
+    ns_baseline: set[str] = set()
+    if environment is not None and hasattr(environment, "list_namespaces"):
+        try:
+            ns_baseline = environment.list_namespaces()
+        except Exception:
+            ns_baseline = set()
 
     all_injections = [
         inj
@@ -350,6 +358,11 @@ def run_workflow_loop(
     if full_bindings and environment is not None:
         try:
             environment.cleanup_namespaces(full_bindings, run_dir=run_dir)
+        except Exception:
+            pass
+    if ns_baseline and environment is not None and hasattr(environment, "cleanup_created_namespaces"):
+        try:
+            environment.cleanup_created_namespaces(ns_baseline, run_dir=run_dir)
         except Exception:
             pass
 
