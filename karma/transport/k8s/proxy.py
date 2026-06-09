@@ -65,6 +65,7 @@ class KubectlProxyServer:
         client_cert: str | None = None,
         client_key: str | None = None,
         token: str | None = None,
+        bind_host: str = "127.0.0.1",
     ) -> None:
         """Initialize the proxy.
 
@@ -88,6 +89,7 @@ class KubectlProxyServer:
         self._upstream_url = upstream_url.rstrip("/")
         self._log_path = log_path
         self._port = port
+        self._bind_host = bind_host
         self._client_cert = client_cert
         self._client_key = client_key
         self._token = token
@@ -181,7 +183,7 @@ class KubectlProxyServer:
 
         # Threaded so a long-poll (kubectl wait / rollout status / --wait
         # delete) handled in one thread does not block other agent requests.
-        self._server = ThreadingHTTPServer(("127.0.0.1", self._port), _Handler)
+        self._server = ThreadingHTTPServer((self._bind_host, self._port), _Handler)
         sys.stdout.write(json.dumps({"port": self._port}) + "\n")
         sys.stdout.flush()
 
@@ -283,6 +285,8 @@ def main(argv: list[str] | None = None) -> None:
     parser.add_argument("--client-cert", default=None, help="Client cert PEM for upstream auth")
     parser.add_argument("--client-key", default=None, help="Client key PEM for upstream auth")
     parser.add_argument("--token", default=None, help="Bearer token for upstream auth")
+    parser.add_argument("--bind-host", default="127.0.0.1",
+                        help="Address to bind (0.0.0.0 for docker-sandbox reachability)")
     args = parser.parse_args(argv)
 
     port = args.port or find_free_port()
@@ -295,6 +299,7 @@ def main(argv: list[str] | None = None) -> None:
         client_cert=args.client_cert,
         client_key=args.client_key,
         token=args.token,
+        bind_host=args.bind_host,
     )
 
     ctrl_thread = threading.Thread(
