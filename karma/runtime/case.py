@@ -55,6 +55,7 @@ def _run_operation_units(
     log_path: Path,
     env_vars: dict[str, str] | None = None,
     label: str = "operation",
+    phase_timeout_sec: float | None = None,
 ) -> dict[str, Any]:
     """Execute a list of probe/apply/verify operation units in order.
 
@@ -76,11 +77,19 @@ def _run_operation_units(
     ``verify_interval_sec`` between attempts. All command output is
     appended to *log_path*.
 
+    ``phase_timeout_sec`` bounds the wall-clock time of the whole phase
+    (``None`` = unbounded, the default for callers that do not opt in).
+    When set, each command's timeout is capped to the remaining budget and
+    the phase aborts as soon as the deadline passes -- this is what makes
+    ``--setup-timeout`` (``settings.precondition_timeout_sec``) actually
+    bound the precondition phase, mirroring the oracle's wall-clock cap.
+
     Returns
     -------
     dict
         Keys: ``ok`` (bool), ``units`` (list[dict] of per-unit outcomes),
-        ``output`` (str).
+        ``output`` (str), ``timed_out`` (bool -- True if the phase budget
+        was exhausted).
     """
     import os
     import subprocess
@@ -92,32 +101,80 @@ def _run_operation_units(
     unit_outcomes: list[dict[str, Any]] = []
     overall_ok = True
 
+    # Wall-clock deadline for the whole phase. ``None`` means unbounded.
+    deadline = (time.monotonic() + phase_timeout_sec) if phase_timeout_sec else None
+    timed_out = False
+
+    def _exec(cmd_entry: dict[str, Any], default_to: int, phase: str, unit_id: str):
+        """Run one command, capping its timeout to the remaining phase budget.
+
+        Returns the subprocess return code, or ``None`` if the command did
+        not complete (error or timeout). A timeout that occurs once the phase
+        budget is the binding constraint sets the enclosing ``timed_out`` flag.
+        """
+        nonlocal timed_out
+        cmd = cmd_entry["command"]
+        base_to = cmd_entry.get("timeout_sec") or default_to
+        cmd_to = base_to
+        capped = False  # True once the phase budget is the binding constraint.
+        if deadline is not None:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                timed_out = True
+                marker = "[setup timeout: phase budget exhausted]"
+                all_output.append(f"$ {cmd}\n{marker}\n")
+                with log_path.open("a") as fh:
+                    fh.write(f"[{label}:{unit_id}:{phase}] $ {cmd}\n{marker}\n")
+                return None
+            cmd_to = max(1, min(base_to, int(remaining)))
+            capped = cmd_to < base_to
+        try:
+            proc = subprocess.run(
+                cmd, shell=True, capture_output=True, text=True, env=env, timeout=cmd_to
+            )
+            out = proc.stdout + proc.stderr
+            all_output.append(f"$ {cmd}\n{out}")
+            with log_path.open("a") as fh:
+                fh.write(f"[{label}:{unit_id}:{phase}] $ {cmd}\n{out}\n")
+            if cmd_entry.get("sleep"):
+                time.sleep(cmd_entry["sleep"])
+            return proc.returncode
+        except subprocess.TimeoutExpired:
+            # A timeout while the budget was capping this command (or the
+            # deadline has since passed) is a phase timeout; a timeout at the
+            # command's own declared limit is an ordinary command failure.
+            if capped or (deadline is not None and time.monotonic() >= deadline):
+                timed_out = True
+                marker = f"[setup timeout after {cmd_to}s]"
+            else:
+                marker = f"[timed out after {cmd_to}s]"
+            all_output.append(f"$ {cmd}\n{marker}\n")
+            with log_path.open("a") as fh:
+                fh.write(f"[{label}:{unit_id}:{phase}] $ {cmd}\n{marker}\n")
+            return None
+        except Exception as exc:
+            all_output.append(f"$ {cmd}\n[error: {exc}]\n")
+            with log_path.open("a") as fh:
+                fh.write(f"[{label}:{unit_id}:{phase}] $ {cmd}\n[error: {exc}]\n")
+            return None
+
     for unit in units or []:
+        if timed_out:
+            break
         unit_id = unit.get("id") or unit.get("name") or "unknown"
         on_fail = unit.get("on_probe_fail", "skip")
 
         # Probe
         probe_ok = True
         for cmd_entry in unit.get("probe_commands") or []:
-            cmd = cmd_entry["command"]
-            to = cmd_entry.get("timeout_sec") or 30
-            try:
-                proc = subprocess.run(
-                    cmd, shell=True, capture_output=True, text=True, env=env, timeout=to
-                )
-                out = proc.stdout + proc.stderr
-                all_output.append(f"$ {cmd}\n{out}")
-                with log_path.open("a") as fh:
-                    fh.write(f"[{label}:{unit_id}:probe] $ {cmd}\n{out}\n")
-                if cmd_entry.get("sleep"):
-                    time.sleep(cmd_entry["sleep"])
-                if proc.returncode != 0:
-                    probe_ok = False
-                    break
-            except Exception as exc:
+            rc = _exec(cmd_entry, 30, "probe", unit_id)
+            if rc != 0:
                 probe_ok = False
-                all_output.append(f"$ {cmd}\n[error: {exc}]\n")
                 break
+        if timed_out:
+            overall_ok = False
+            unit_outcomes.append({"id": unit_id, "ok": False, "phase": "probe", "timed_out": True})
+            break
 
         if probe_ok:
             # Target state already present -> no apply needed.
@@ -135,26 +192,14 @@ def _run_operation_units(
         # Apply
         apply_ok = True
         for cmd_entry in unit.get("apply_commands") or []:
-            cmd = cmd_entry["command"]
-            to = cmd_entry.get("timeout_sec") or _settings.command_timeout_sec
-            try:
-                proc = subprocess.run(
-                    cmd, shell=True, capture_output=True, text=True, env=env, timeout=to
-                )
-                out = proc.stdout + proc.stderr
-                all_output.append(f"$ {cmd}\n{out}")
-                with log_path.open("a") as fh:
-                    fh.write(f"[{label}:{unit_id}:apply] $ {cmd}\n{out}\n")
-                if cmd_entry.get("sleep"):
-                    time.sleep(cmd_entry["sleep"])
-                if proc.returncode != 0:
-                    apply_ok = False
-                    break
-            except Exception as exc:
+            rc = _exec(cmd_entry, _settings.command_timeout_sec, "apply", unit_id)
+            if rc != 0:
                 apply_ok = False
-                all_output.append(f"[apply error: {exc}]\n")
                 break
-
+        if timed_out:
+            overall_ok = False
+            unit_outcomes.append({"id": unit_id, "ok": False, "phase": "apply", "timed_out": True})
+            break
         if not apply_ok:
             overall_ok = False
             unit_outcomes.append({"id": unit_id, "ok": False, "phase": "apply"})
@@ -169,30 +214,65 @@ def _run_operation_units(
                 time.sleep(interval)
             verify_ok = True
             for cmd_entry in unit.get("verify_commands") or []:
-                cmd = cmd_entry["command"]
-                to = cmd_entry.get("timeout_sec") or 30
-                try:
-                    proc = subprocess.run(
-                        cmd, shell=True, capture_output=True, text=True, env=env, timeout=to
-                    )
-                    out = proc.stdout + proc.stderr
-                    all_output.append(f"$ {cmd}\n{out}")
-                    with log_path.open("a") as fh:
-                        fh.write(f"[{label}:{unit_id}:verify] $ {cmd}\n{out}\n")
-                    if proc.returncode != 0:
-                        verify_ok = False
-                        break
-                except Exception:
+                rc = _exec(cmd_entry, 30, "verify", unit_id)
+                if rc != 0:
                     verify_ok = False
                     break
-            if verify_ok:
+            if verify_ok or timed_out:
                 break
+        if timed_out:
+            overall_ok = False
+            unit_outcomes.append({"id": unit_id, "ok": False, "phase": "verify", "timed_out": True})
+            break
 
         unit_outcomes.append({"id": unit_id, "ok": verify_ok, "phase": "verify"})
         if not verify_ok:
             overall_ok = False
 
-    return {"ok": overall_ok, "units": unit_outcomes, "output": "".join(all_output)}
+    return {
+        "ok": overall_ok,
+        "units": unit_outcomes,
+        "output": "".join(all_output),
+        "timed_out": timed_out,
+    }
+
+
+def _command_list_budget_seconds(
+    commands: list[dict[str, Any]] | None, default_to: int
+) -> int:
+    """Worst-case wall-clock budget for a command list.
+
+    Sum of each command's declared (or default) timeout plus any post-command
+    sleep. Mirrors the old ``_command_list_budget_seconds``.
+    """
+    total = 0
+    for entry in commands or []:
+        total += int(entry.get("timeout_sec") or default_to) + int(entry.get("sleep") or 0)
+    return total
+
+
+def _precondition_auto_budget_seconds(units: list[dict[str, Any]]) -> int:
+    """Computed wall-clock budget for the precondition phase (``auto`` mode).
+
+    Per unit: probe + apply + verify*retries + the inter-retry interval gaps,
+    using the same per-command timeout defaults the runner applies (probe/verify
+    30s, apply ``command_timeout_sec``), plus a fixed slack. Used as the floor in
+    ``setup_timeout_mode == "auto"`` so a legitimately slow precondition is not
+    killed by a too-small ``--setup-timeout``. Ported from the old
+    ``precondition_units_budget_seconds`` / ``compute_setup_timeout_auto``.
+    """
+    from ..settings import settings as _settings
+    total = 0
+    for unit in units or []:
+        probe = _command_list_budget_seconds(unit.get("probe_commands"), 30)
+        apply_ = _command_list_budget_seconds(
+            unit.get("apply_commands"), _settings.command_timeout_sec
+        )
+        verify_once = _command_list_budget_seconds(unit.get("verify_commands"), 30)
+        retries = max(1, int(unit.get("verify_retries") or 1))
+        interval = max(0, int(float(unit.get("verify_interval_sec") or 0)))
+        total += probe + apply_ + verify_once * retries + interval * max(0, retries - 1)
+    return total + 60  # slack, matching the old auto budget
 
 
 def _param_env_vars(params: dict[str, Any] | None) -> dict[str, str]:
@@ -348,21 +428,42 @@ def run_stage(
         # ($BENCH_PARAM_<KEY>) env vars that case/scenario commands reference.
         param_env = _param_env_vars(case.get("params"))
         command_env = {**environment.build_namespace_env_vars(role_bindings), **param_env}
+        from ..settings import settings as _settings
+        # "fixed" caps at the literal precondition timeout; "auto" floors it at
+        # the per-case computed budget so a slow-but-legitimate precondition is
+        # not killed (restores the old --setup-timeout-mode behaviour).
+        if (_settings.setup_timeout_mode or "auto") == "auto":
+            phase_timeout = max(
+                _settings.precondition_timeout_sec,
+                _precondition_auto_budget_seconds(precond_units),
+            )
+        else:
+            phase_timeout = _settings.precondition_timeout_sec
         precond_result = _run_operation_units(
             precond_units,
             role_bindings=role_bindings,
             log_path=precond_log,
             env_vars=command_env,
             label="precondition",
+            phase_timeout_sec=phase_timeout,
         )
         if not precond_result["ok"]:
+            # A budget-exhausted phase (``--setup-timeout``) is reported
+            # distinctly from a genuine precondition command failure.
+            timed_out = precond_result.get("timed_out")
+            error_msg = (
+                f"setup timeout: preconditions exceeded "
+                f"{int(_settings.precondition_timeout_sec)}s"
+                if timed_out
+                else "precondition units failed"
+            )
             return {
                 "stage_id": stage_id,
-                "status": "error",
+                "status": "timeout" if timed_out else "error",
                 "oracle_verdict": None,
                 "submitted": False,
                 "duration_sec": time.monotonic() - start_time,
-                "error": "precondition units failed",
+                "error": error_msg,
                 "evidence_path": str(protocol.stage_evidence_path(run_dir, stage_id)),
                 "oracle_path": str(protocol.stage_oracle_path(run_dir, stage_id)),
             }
@@ -417,7 +518,12 @@ def run_stage(
         # In that case there is nothing to launch or wait on, so the stage
         # outcome is determined solely by the oracle verdict.
         agent_env_vars = {**env_vars_adv, "KUBECONFIG": str(agent_kubeconfig)}
-        no_agent = not (agent_meta.get("folder") or agent_meta.get("entrypoint"))
+        # A per-run launch command (--agent-cmd) is itself an agent to launch,
+        # even when no agent is registered (folder/entrypoint absent).
+        command_override = opts.get("agent_cmd")
+        no_agent = not (
+            agent_meta.get("folder") or agent_meta.get("entrypoint") or command_override
+        )
         if no_agent:
             submitted = False
             stage_status_before_oracle = "running"
@@ -430,6 +536,7 @@ def run_stage(
                 agent_timeout_sec=row.get("agent_timeout_sec") or 900,
                 kubeconfig_path=agent_kubeconfig,
                 extra_mounts=opts.get("extra_mounts"),
+                command_override=command_override,
             )
 
             # Step 9: wait for submit, agent exit, or timeout
