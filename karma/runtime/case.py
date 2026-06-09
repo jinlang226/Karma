@@ -413,8 +413,13 @@ def run_stage(
     try:
         from ..definitions.prompts import render_stage_prompt, assemble_agent_prompt
 
-        # Step 1: launch proxy
-        proxy_handle = launch_proxy(run_dir=stage_dir)
+        # Step 1: launch proxy. In docker mode the agent container reaches the
+        # proxy via host.docker.internal, so it must bind all interfaces (a
+        # 127.0.0.1-only listener refuses the container's connection).
+        proxy_handle = launch_proxy(
+            run_dir=stage_dir,
+            bind_host="0.0.0.0" if sandbox_mode == "docker" else "127.0.0.1",
+        )
 
         # Step 2: bind namespace roles
         ns_roles = row.get("namespace_roles") or ["default"]

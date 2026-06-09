@@ -111,6 +111,7 @@ def launch_proxy(
     run_dir: Path,
     readiness_timeout_sec: int = 15,
     env: dict[str, str] | None = None,
+    bind_host: str = "127.0.0.1",
 ) -> ProxyHandle:
     """Launch the kubectl proxy daemon on a random available port.
 
@@ -154,6 +155,7 @@ def launch_proxy(
         "--log-path", str(log_path),
         "--port", str(proxy_port),
         "--control-port", str(control_port),
+        "--bind-host", bind_host,
     ]
     # The agent talks to the proxy over plain HTTP without credentials, so the
     # proxy must authenticate to the real API server on the agent's behalf.
