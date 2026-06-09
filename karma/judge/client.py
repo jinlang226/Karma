@@ -24,11 +24,57 @@ import time
 from typing import Any
 
 _DEFAULT_MODEL = "gpt-4o"
+_DEFAULT_CLAUDE_MODEL = "sonnet"
 _DEFAULT_MAX_TOKENS = 2048
 _DEFAULT_TEMPERATURE = 0.0
 _DEFAULT_TIMEOUT_SEC = 120
 _DEFAULT_MAX_RETRIES = 3
 _RETRY_BASE_DELAY_SEC = 2.0
+
+
+def _resolve_backend(backend: str | None, api_key: str | None) -> str:
+    """Pick the judge backend: 'openai' or 'claude_cli'.
+
+    Explicit arg wins, then ``KARMA_JUDGE_BACKEND``; otherwise auto -- use the
+    ``claude`` CLI (ambient Claude auth, like the agent) when no
+    OpenAI-compatible key is available, so judging works without an API key.
+    """
+    chosen = (backend or os.environ.get("KARMA_JUDGE_BACKEND") or "").strip().lower()
+    if chosen in ("openai", "claude_cli"):
+        return chosen
+    has_key = (
+        api_key
+        or os.environ.get("OPENAI_API_KEY")
+        or os.environ.get("KARMA_JUDGE_API_KEY")
+    )
+    return "openai" if has_key else "claude_cli"
+
+
+def _call_claude_cli(
+    prompt: str, model: str, timeout_sec: int
+) -> dict[str, Any]:
+    """Run the judge prompt through the ``claude`` CLI and return a response.
+
+    Uses ``claude --print`` (the same mechanism the claude_code agent uses),
+    which authenticates via the ambient Claude login and needs no API key.
+    Returns the same shape as the OpenAI path so scoring is backend-agnostic.
+    """
+    import subprocess
+
+    proc = subprocess.run(
+        ["claude", "--print", "--model", model,
+         "--dangerously-skip-permissions", prompt],
+        capture_output=True, text=True, timeout=timeout_sec,
+    )
+    if proc.returncode != 0:
+        raise RuntimeError(
+            f"claude CLI judge failed (exit {proc.returncode}): "
+            f"{(proc.stderr or '').strip()[:300]}"
+        )
+    content = (proc.stdout or "").strip()
+    if not content:
+        raise RuntimeError("claude CLI judge returned empty output")
+    return {"content": content, "model": model, "usage": {}, "finish_reason": "stop"}
 
 
 def _build_client(
@@ -73,6 +119,7 @@ def call_judge_llm(
     model: str | None = None,
     base_url: str | None = None,
     api_key: str | None = None,
+    backend: str | None = None,
     max_tokens: int = _DEFAULT_MAX_TOKENS,
     temperature: float = _DEFAULT_TEMPERATURE,
     timeout_sec: int = _DEFAULT_TIMEOUT_SEC,
@@ -119,16 +166,23 @@ def call_judge_llm(
     from .input_builder import render_judge_prompt
 
     prompt = render_judge_prompt(judge_input)
-    resolved_model = (
-        model or os.environ.get("KARMA_JUDGE_MODEL") or _DEFAULT_MODEL
-    )
-    client = _build_client(
-        base_url=base_url, api_key=api_key, timeout_sec=timeout_sec
-    )
+    resolved_backend = _resolve_backend(backend, api_key)
 
-    last_exc: Exception | None = None
-    for attempt in range(max_retries + 1):
-        try:
+    if resolved_backend == "claude_cli":
+        # Ambient Claude auth (the claude CLI), no API key -- same as the agent.
+        resolved_model = model or os.environ.get("KARMA_JUDGE_MODEL") or _DEFAULT_CLAUDE_MODEL
+        if resolved_model.startswith("gpt-"):  # an OpenAI default carried over
+            resolved_model = _DEFAULT_CLAUDE_MODEL
+
+        def _call() -> dict[str, Any]:
+            return _call_claude_cli(prompt, resolved_model, timeout_sec)
+    else:
+        resolved_model = model or os.environ.get("KARMA_JUDGE_MODEL") or _DEFAULT_MODEL
+        client = _build_client(
+            base_url=base_url, api_key=api_key, timeout_sec=timeout_sec
+        )
+
+        def _call() -> dict[str, Any]:
             response = client.chat.completions.create(
                 model=resolved_model,
                 messages=[{"role": "user", "content": prompt}],
@@ -146,6 +200,11 @@ def call_judge_llm(
                 },
                 "finish_reason": choice.finish_reason,
             }
+
+    last_exc: Exception | None = None
+    for attempt in range(max_retries + 1):
+        try:
+            return _call()
         except Exception as exc:
             last_exc = exc
             if attempt < max_retries:
