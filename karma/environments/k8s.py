@@ -20,6 +20,11 @@ from typing import Any
 _PLACEHOLDER_RE = re.compile(r"\{\{namespace\.([A-Za-z0-9_-]+)\}\}")
 _NAMESPACE_PREFIX = "karma"
 _FORCE_DELETE_TIMEOUT_SEC = 120
+# Never deleted by the case-created-namespace sweep.
+_PROTECTED_NAMESPACES = frozenset({
+    "default", "kube-system", "kube-public", "kube-node-lease",
+    "local-path-storage",
+})
 
 
 class K8sEnvironment:
@@ -165,6 +170,39 @@ class K8sEnvironment:
                     raise RuntimeError(
                         f"failed to delete namespace '{ns_name}' for role '{role}': {exc}"
                     ) from exc
+
+    def list_namespaces(self) -> set[str]:
+        """Return the set of namespace names currently in the cluster."""
+        try:
+            out = self._kubectl(
+                ["get", "namespaces", "-o", "name"], check=False, timeout=30
+            ).stdout
+        except Exception:
+            return set()
+        return {ln.split("/", 1)[-1].strip() for ln in out.splitlines() if ln.strip()}
+
+    def cleanup_created_namespaces(
+        self, baseline: set[str], *, run_dir: Path, force: bool = False
+    ) -> list[str]:
+        """Delete namespaces created since *baseline*.
+
+        Cases that manage their own literal namespaces (e.g. ``mongodb``,
+        ``cockroachdb``) create them in preconditions; the per-role teardown
+        (:meth:`cleanup_namespaces`) only removes the ``karma-*`` role
+        namespaces, so those literal namespaces would otherwise leak across
+        runs. This removes every namespace not present in *baseline* and not a
+        protected system namespace. Returns the names deleted.
+        """
+        created = sorted(self.list_namespaces() - set(baseline) - _PROTECTED_NAMESPACES)
+        for ns_name in created:
+            args = ["delete", "namespace", ns_name, "--ignore-not-found", "--wait=false"]
+            if force:
+                args += ["--grace-period=0", "--force"]
+            try:
+                self._kubectl(args, check=False, timeout=self._force_timeout)
+            except Exception:
+                pass
+        return created
 
     def render_manifest(
         self,
