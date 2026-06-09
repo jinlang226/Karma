@@ -109,6 +109,34 @@ class TestSingleCaseToWorkflow:
         wf = single_case_to_workflow("svc", "case")
         assert wf["adversary"] == []
 
+    def test_no_explicit_roles_passes_none_for_case_contract(self):
+        # Must NOT force ["default"] -- that masks a multi-role case's contract.
+        wf = single_case_to_workflow("svc", "case")
+        assert wf["stages"][0]["namespaces"] is None
+
+
+class TestResolveRowsNamespaceRoles:
+    """resolve_workflow_rows must honour the case's required_roles."""
+
+    def test_multi_role_case_binds_its_required_roles(self):
+        # A single run-case never sets stage namespaces; the resolver must take
+        # the roles from the case's namespace_contract (regression for the bug
+        # where multi-role cases silently bound only "default").
+        wf = single_case_to_workflow("demo", "configmap-update-two-ns")
+        rows = resolve_workflow_rows(wf, resources_dir=Path("resources"))
+        assert rows[0]["namespace_roles"] == ["source", "target"]
+
+    def test_single_role_case_defaults(self):
+        wf = single_case_to_workflow("demo", "configmap-update")
+        rows = resolve_workflow_rows(wf, resources_dir=Path("resources"))
+        assert rows[0]["namespace_roles"] == ["default"]
+
+    def test_explicit_stage_namespaces_win(self):
+        wf = single_case_to_workflow("demo", "configmap-update-two-ns",
+                                     namespace_roles=["only"])
+        rows = resolve_workflow_rows(wf, resources_dir=Path("resources"))
+        assert rows[0]["namespace_roles"] == ["only"]
+
 
 class TestGetAllStageIds:
     def test_returns_ordered_ids(self):
