@@ -52,6 +52,9 @@ def _add_docker_args(p: argparse.ArgumentParser) -> None:
                    help="Docker image to run as the agent (alias of --agent-tag).")
     p.add_argument("--agent-cleanup", action="store_true",
                    help="Remove the agent image after the run.")
+    p.add_argument("--agent-cmd", default=None,
+                   help="Per-run agent launch command: replaces the entrypoint "
+                        "(local) or the image's default command (docker).")
     p.add_argument("--source-kubeconfig", default=None,
                    help="Source kubeconfig (accepted for compatibility; the proxy "
                         "authenticates upstream so it is not required).")
@@ -65,8 +68,44 @@ def _add_run_extra_args(p: argparse.ArgumentParser) -> None:
     """Add the cleanup-timeout and llm-env-file flags shared by run subcommands."""
     p.add_argument("--cleanup-timeout", type=int, default=None,
                    help="Namespace force-delete timeout (seconds).")
+    p.add_argument("--setup-timeout-mode", choices=["fixed", "auto"], default=None,
+                   help="How --setup-timeout is applied: 'fixed' is a hard cap; "
+                        "'auto' (default) floors it at the per-case computed budget.")
     p.add_argument("--llm-env-file", default=None,
                    help="Load KEY=VALUE lines from this file into the environment.")
+
+
+def _add_inline_judge_args(p: argparse.ArgumentParser) -> None:
+    """Add judge-LLM controls for the inline post-run judge on run subcommands.
+
+    These mirror the standalone ``judge`` subcommand's flags but are
+    judge-prefixed so they do not collide with a run's own ``--timeout`` /
+    ``--model``. They take effect when the run requests judging (``--judge`` or
+    ``--judge-mode``); otherwise the judge falls back to ``KARMA_JUDGE_*`` env.
+    """
+    p.add_argument("--judge-model", default=None, help="Judge LLM model.")
+    p.add_argument("--judge-base-url", default=None,
+                   help="OpenAI-compatible base URL for the judge LLM.")
+    p.add_argument("--judge-api-key", default=None,
+                   help="API key for the judge LLM (else from the environment).")
+    p.add_argument("--judge-timeout", type=int, default=None,
+                   help="Per-request judge LLM timeout in seconds.")
+    p.add_argument("--judge-max-retries", type=int, default=None,
+                   help="Judge LLM retry attempts on transient errors.")
+    p.add_argument("--judge-exclude-outcome", action="store_true",
+                   help="Hide the oracle verdict from the judge prompt (reduce bias).")
+
+
+def _inline_judge_kwargs(args: argparse.Namespace) -> dict[str, Any]:
+    """Collect the inline judge-LLM overrides into run_judge(_batch) kwargs."""
+    return {
+        "judge_model": getattr(args, "judge_model", None),
+        "judge_base_url": getattr(args, "judge_base_url", None),
+        "judge_api_key": getattr(args, "judge_api_key", None),
+        "judge_timeout_sec": getattr(args, "judge_timeout", None),
+        "judge_max_retries": getattr(args, "judge_max_retries", None),
+        "include_outcome": not getattr(args, "judge_exclude_outcome", False),
+    }
 
 
 def _load_env_file(path: str | None) -> None:
@@ -104,6 +143,8 @@ def _build_sandbox_options(args: argparse.Namespace) -> dict[str, Any] | None:
     ap, ad = getattr(args, "agent_auth_path", None), getattr(args, "agent_auth_dest", None)
     if ap and ad:
         opts["extra_mounts"] = [(Path(ap), str(ad))]
+    if getattr(args, "agent_cmd", None):
+        opts["agent_cmd"] = args.agent_cmd
     return opts or None
 
 
@@ -137,6 +178,7 @@ def _build_parser() -> argparse.ArgumentParser:
                     help="Override the oracle/verify timeout (seconds).")
     _add_docker_args(wf)
     _add_run_extra_args(wf)
+    _add_inline_judge_args(wf)
     wf.add_argument("--output", default="text", choices=["text", "json"])
 
     rc = sub.add_parser("run-case", help="Run a single case.")
@@ -158,6 +200,7 @@ def _build_parser() -> argparse.ArgumentParser:
                     help="Run the LLM judge on every stage after the run completes.")
     _add_docker_args(rc)
     _add_run_extra_args(rc)
+    _add_inline_judge_args(rc)
     rc.add_argument("--profile", default=None)
     rc.add_argument("--output", default="text", choices=["text", "json"])
 
@@ -181,6 +224,7 @@ def _build_parser() -> argparse.ArgumentParser:
                     default="off",
                     help="Judge each run (post-run) or all runs after (post-batch).")
     _add_run_extra_args(rb)
+    _add_inline_judge_args(rb)
     rb.add_argument("--profile", default=None)
     rb.add_argument("--output", default="text", choices=["text", "json"])
 
@@ -258,13 +302,16 @@ def _parse_param_overrides(param_args: list[str]) -> dict[str, Any]:
 
 
 def _maybe_inline_judge(
-    result: dict[str, Any], runs_dir: Path, output_format: str
+    result: dict[str, Any], runs_dir: Path, output_format: str,
+    judge_kwargs: dict[str, Any] | None = None,
 ) -> None:
     """Run the judge on every stage of a just-completed run and print it.
 
     Restores the old inline post-run judging: ``run-case``/``run-workflow``
     with ``--judge`` score the run immediately instead of requiring a
-    separate ``judge`` invocation.
+    separate ``judge`` invocation. *judge_kwargs* carries the inline
+    judge-LLM overrides (``--judge-model`` etc.); when absent the judge falls
+    back to ``KARMA_JUDGE_*`` env.
     """
     from ...judge.engine import run_judge_batch
 
@@ -272,7 +319,7 @@ def _maybe_inline_judge(
     if not run_id:
         return
     try:
-        batch = run_judge_batch(runs_dir / str(run_id))
+        batch = run_judge_batch(runs_dir / str(run_id), **(judge_kwargs or {}))
     except Exception as exc:
         print(f"inline judge failed: {exc}", file=sys.stderr)
         return
@@ -313,6 +360,8 @@ def _apply_timeout_overrides(args: argparse.Namespace) -> None:
     from ...settings import settings as _settings
     if getattr(args, "setup_timeout", None):
         _settings.precondition_timeout_sec = args.setup_timeout
+    if getattr(args, "setup_timeout_mode", None):
+        _settings.setup_timeout_mode = args.setup_timeout_mode
     if getattr(args, "verify_timeout", None):
         _settings.oracle_timeout_sec = args.verify_timeout
 
@@ -346,7 +395,7 @@ def _cmd_run_workflow(args: argparse.Namespace) -> None:
     )
     _print_result(result, args.output)
     if getattr(args, "judge", False):
-        _maybe_inline_judge(result, runs_dir, args.output)
+        _maybe_inline_judge(result, runs_dir, args.output, _inline_judge_kwargs(args))
     _maybe_cleanup_image(args)
 
 
@@ -390,7 +439,7 @@ def _cmd_run_case(args: argparse.Namespace) -> None:
     )
     _print_result(result, args.output)
     if getattr(args, "judge", False):
-        _maybe_inline_judge(result, runs_dir, args.output)
+        _maybe_inline_judge(result, runs_dir, args.output, _inline_judge_kwargs(args))
     _maybe_cleanup_image(args)
 
 
@@ -450,12 +499,14 @@ def _cmd_run_batch(args: argparse.Namespace) -> None:
         })
         _print_result(result, "text")
         if args.judge_mode == "post-run":
-            _maybe_inline_judge(result, runs_dir, "text")
+            _maybe_inline_judge(result, runs_dir, "text", _inline_judge_kwargs(args))
 
     if args.judge_mode == "post-batch":
         print("--- post-batch judging ---")
         for entry in results:
-            _maybe_inline_judge({"run_id": entry["run_id"]}, runs_dir, "text")
+            _maybe_inline_judge(
+                {"run_id": entry["run_id"]}, runs_dir, "text", _inline_judge_kwargs(args)
+            )
 
     if args.results_json:
         Path(args.results_json).write_text(json.dumps(results, indent=2))

@@ -187,6 +187,7 @@ def launch_agent(
     agent_timeout_sec: int,
     kubeconfig_path: Path | None = None,
     extra_mounts: list[tuple[Path, str]] | None = None,
+    command_override: str | None = None,
 ) -> AgentProcess:
     """Launch the agent process and return a handle to it.
 
@@ -198,6 +199,11 @@ def launch_agent(
     ``/workspace``, and *kubeconfig_path* mounted when provided.
     *extra_mounts* supplies additional ``(host_path, container_path)`` bind
     mounts.
+
+    *command_override* (the old ``--agent-cmd``) supplies a per-run launch
+    command: in local mode it is run via the shell in place of the registered
+    entrypoint; in docker mode it is appended to ``docker run ... <image>`` as
+    the container command, overriding the image's default.
 
     Returns without waiting for the agent to complete. The caller is
     responsible for calling :meth:`AgentProcess.wait` or
@@ -212,10 +218,19 @@ def launch_agent(
     merged_env = {**os.environ, **env_vars}
 
     if sandbox_mode == "local":
+        log_path = run_dir / "agent.log"
+        if command_override:
+            # Per-run launch command (old --agent-cmd): run the given command
+            # line through the shell, replacing the registered entrypoint.
+            with log_path.open("w") as log_fh:
+                proc = subprocess.Popen(
+                    command_override, shell=True, env=merged_env,
+                    cwd=str(run_dir), stdout=log_fh, stderr=log_fh,
+                )
+            return AgentProcess(proc, sandbox_mode="local", run_dir=run_dir)
         entrypoint = agent_meta.get("entrypoint") or "entrypoint.sh"
         folder = agent_meta.get("folder")
         cmd = [str(Path(folder) / entrypoint)] if folder else [entrypoint]
-        log_path = run_dir / "agent.log"
         with log_path.open("w") as log_fh:
             proc = subprocess.Popen(
                 cmd, env=merged_env, cwd=str(run_dir),
@@ -234,6 +249,10 @@ def launch_agent(
     for host_path, container_path in (extra_mounts or []):
         docker_cmd += ["-v", f"{host_path}:{container_path}"]
     docker_cmd.append(image_tag)
+    if command_override:
+        # Override the image's default command (old --agent-cmd, docker mode).
+        import shlex
+        docker_cmd += shlex.split(command_override)
 
     try:
         result = subprocess.run(docker_cmd, capture_output=True, text=True)

@@ -41,6 +41,10 @@ class Settings:
     # Execution limits
     command_timeout_sec: int = 120
     precondition_timeout_sec: int = 600
+    # How precondition_timeout_sec is applied: "fixed" uses it as a hard cap;
+    # "auto" uses max(precondition_timeout_sec, per-case computed budget) so a
+    # legitimately slow precondition is not killed by a too-small literal.
+    setup_timeout_mode: str = "auto"
     oracle_timeout_sec: int = 120
 
     # Logging
@@ -81,6 +85,7 @@ class Settings:
             anthropic_api_key=_opt("ANTHROPIC_API_KEY"),
             command_timeout_sec=_int("KARMA_COMMAND_TIMEOUT_SEC", 120),
             precondition_timeout_sec=_int("KARMA_PRECONDITION_TIMEOUT_SEC", 600),
+            setup_timeout_mode=_str("KARMA_SETUP_TIMEOUT_MODE", "auto"),
             oracle_timeout_sec=_int("KARMA_ORACLE_TIMEOUT_SEC", 120),
             log_level=_str("KARMA_LOG_LEVEL", "INFO"),
         )

@@ -113,6 +113,77 @@ class TestRunOperationUnits:
         result = _run_operation_units([], role_bindings={}, log_path=log)
         assert "output" in result
 
+    def test_phase_timeout_aborts_slow_apply(self, tmp_path):
+        # A precondition apply that sleeps past the phase budget must be
+        # aborted -- this is what makes --setup-timeout actually bound the
+        # precondition phase. The call returns near the budget with
+        # timed_out=True instead of running the full sleep.
+        units = [
+            {
+                "id": "unit:slow",
+                "probe_commands": [{"command": "false", "sleep": 0}],
+                "apply_commands": [{"command": "sleep 30", "sleep": 0}],
+                "verify_commands": [{"command": "true", "sleep": 0}],
+                "verify_retries": 1,
+                "verify_interval_sec": 0.0,
+                "on_probe_fail": "skip",
+            }
+        ]
+        log = tmp_path / "ops.log"
+        start = time.monotonic()
+        result = _run_operation_units(
+            units, role_bindings={}, log_path=log, phase_timeout_sec=1
+        )
+        elapsed = time.monotonic() - start
+        assert result["ok"] is False
+        assert result["timed_out"] is True
+        assert elapsed < 10  # aborted near the 1s budget, not the 30s sleep
+
+    def test_phase_timeout_none_runs_fast_units_to_completion(self, tmp_path):
+        # The default (unbounded) path is unchanged: fast units succeed and
+        # timed_out is False.
+        units = [
+            {
+                "id": "unit:fast",
+                "probe_commands": [{"command": "false", "sleep": 0}],
+                "apply_commands": [{"command": "true", "sleep": 0}],
+                "verify_commands": [{"command": "true", "sleep": 0}],
+                "verify_retries": 1,
+                "verify_interval_sec": 0.0,
+                "on_probe_fail": "skip",
+            }
+        ]
+        log = tmp_path / "ops.log"
+        result = _run_operation_units(
+            units, role_bindings={}, log_path=log, phase_timeout_sec=None
+        )
+        assert result["ok"] is True
+        assert result["timed_out"] is False
+
+
+class TestPreconditionAutoBudget:
+    """The 'auto' setup-timeout budget computed per case."""
+
+    def test_budget_sums_unit_timeouts_plus_slack(self):
+        from karma.runtime.case import _precondition_auto_budget_seconds
+
+        units = [
+            {
+                "probe_commands": [{"command": "x", "timeout_sec": 5}],
+                "apply_commands": [{"command": "y", "timeout_sec": 50}],
+                "verify_commands": [{"command": "z", "timeout_sec": 10}],
+                "verify_retries": 3,
+                "verify_interval_sec": 2,
+            }
+        ]
+        # probe 5 + apply 50 + verify 10*3 + interval 2*(3-1) = 89, + 60 slack
+        assert _precondition_auto_budget_seconds(units) == 149
+
+    def test_empty_units_budget_is_slack_only(self):
+        from karma.runtime.case import _precondition_auto_budget_seconds
+
+        assert _precondition_auto_budget_seconds([]) == 60
+
 
 class TestRunStage:
     """Smoke tests for run_stage error capture behavior."""

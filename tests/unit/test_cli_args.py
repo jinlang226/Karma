@@ -69,6 +69,34 @@ class TestSubcommandParsing:
         # no docker flags -> None (local runs pass sandbox_options=None)
         assert _build_sandbox_options(_parse(["run-case", "demo", "cm"])) is None
 
+    def test_agent_cmd_override_flows_into_sandbox_options(self):
+        from karma.interfaces.cli.main import _build_sandbox_options
+        ns = _parse(["run-case", "demo", "cm", "--agent-cmd", "python agent.py --go"])
+        assert ns.agent_cmd == "python agent.py --go"
+        assert _build_sandbox_options(ns)["agent_cmd"] == "python agent.py --go"
+        # also accepted on run-workflow
+        assert _parse(["run-workflow", "wf.yaml", "--agent-cmd", "x"]).agent_cmd == "x"
+
+    def test_inline_judge_overrides_map_to_kwargs(self):
+        from karma.interfaces.cli.main import _inline_judge_kwargs
+        for argv in (["run-case", "demo", "cm"], ["run-workflow", "wf.yaml"],
+                     ["run-batch", "--all"]):
+            ns = _parse(argv + [
+                "--judge-model", "m", "--judge-base-url", "http://b",
+                "--judge-api-key", "k", "--judge-timeout", "9",
+                "--judge-max-retries", "0", "--judge-exclude-outcome",
+            ])
+            kw = _inline_judge_kwargs(ns)
+            assert kw["judge_model"] == "m" and kw["judge_base_url"] == "http://b"
+            assert kw["judge_api_key"] == "k" and kw["judge_timeout_sec"] == 9
+            assert kw["judge_max_retries"] == 0 and kw["include_outcome"] is False
+
+    def test_setup_timeout_mode_flag(self):
+        assert _parse(["run-case", "d", "c", "--setup-timeout-mode", "fixed"]).setup_timeout_mode == "fixed"
+        assert _parse(["run-case", "d", "c"]).setup_timeout_mode is None  # default: settings wins
+        with pytest.raises(SystemExit):
+            _parse(["run-case", "d", "c", "--setup-timeout-mode", "bogus"])
+
     def test_remaining_compat_flags(self):
         from karma.interfaces.cli.main import _environment_config
         ns = _parse(["run-case", "demo", "cm", "--cleanup-timeout", "99",
