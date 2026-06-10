@@ -49,6 +49,11 @@ def workflow_state_path(run_dir: Path) -> Path:
     return run_dir / "workflow_state.json"
 
 
+def run_config_path(run_dir: Path) -> Path:
+    """Return the path to the run's submitted config (agent/sandbox/params)."""
+    return run_dir / "config.json"
+
+
 def bundle_dir(run_dir: Path) -> Path:
     """Return the path to the agent credential bundle directory."""
     return run_dir / "bundle"

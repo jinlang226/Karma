@@ -166,7 +166,36 @@ def create_app(
 
     @app.route("/api/runs")
     def api_runs():
-        return jsonify(catalog.list_runs(Path(runs_dir)))
+        # History from disk, overlaid with live in-memory jobs so a running run
+        # appears (and shows "running") before its run.json is written.
+        by_id = {r["run_id"]: r for r in catalog.list_runs(Path(runs_dir))}
+        for job in list_jobs():
+            rid = job.get("run_id")
+            if not rid:
+                continue
+            if rid in by_id:
+                if job.get("status"):
+                    by_id[rid]["status"] = job["status"]
+            else:
+                by_id[rid] = {
+                    "run_id": rid, "status": job.get("status", "running"),
+                    "passed": 0, "failed": 0, "judged": False,
+                }
+        runs = sorted(by_id.values(), key=lambda r: r["run_id"], reverse=True)
+        return jsonify(runs)
+
+    @app.route("/api/run/<run_id>")
+    def api_run_detail(run_id):
+        try:
+            detail = catalog.get_run_detail(Path(runs_dir), run_id)
+        except RuntimeError as exc:
+            return jsonify({"error": str(exc)}), 404
+        # Overlay live status while the run is still active (run.json is only
+        # written at the end), so the detail view knows to stream + offer Cancel.
+        job = get_job_status(run_id)
+        if job and job.get("status"):
+            detail["status"] = job["status"]
+        return jsonify(detail)
 
     @app.route("/api/workflows", methods=["GET", "POST"])
     def api_workflows():

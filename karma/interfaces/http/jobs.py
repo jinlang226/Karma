@@ -9,6 +9,7 @@ through an identical ``runtime.service`` stack with no further branching.
 
 from __future__ import annotations
 
+import json
 import threading
 from pathlib import Path
 from typing import Any
@@ -19,7 +20,7 @@ from ...definitions.workflows import (
     load_workflow_file,
 )
 from ...runtime.service import run_workflow, get_run_status
-from ...protocol import generate_run_id
+from ...protocol import generate_run_id, run_config_path
 from .events import hub
 
 
@@ -169,6 +170,24 @@ def submit_job(
     )
     run_id = generate_run_id(str(workflow.get("id") or "workflow"))
     _register_job(run_id, {"run_id": run_id, "status": "running", "kind": "run"})
+
+    # Persist the submitted config so the Results view can show what was run.
+    try:
+        run_dir = Path(runs_dir) / run_id
+        run_dir.mkdir(parents=True, exist_ok=True)
+        run_config_path(run_dir).write_text(json.dumps({
+            "agent": payload.get("agent"),
+            "sandbox": str(payload.get("sandbox") or "local"),
+            "params": payload.get("params") or {},
+            "service": payload.get("service"),
+            "case_name": payload.get("case_name"),
+            "workflow_path": payload.get("workflow_path"),
+            "workflow_id": workflow.get("id"),
+            "prompt_mode": payload.get("prompt_mode") or workflow.get("prompt_mode"),
+            "agent_timeout_sec": payload.get("agent_timeout_sec"),
+        }, indent=2))
+    except Exception:
+        pass
 
     def _stage_cb(stage_result: dict[str, Any]) -> None:
         hub.publish(

@@ -135,7 +135,7 @@
     const sid = stage.stage_id || "?";
     const st = KARMA.labels && KARMA.labels.status
       ? KARMA.labels.status(stage.status) : { text: stage.status, cls: "bad" };
-    const wrap = el("div", { class: "stage-detail" });
+    const wrap = el("div", { class: "stage-detail " + (st.cls || "bad") });
     wrap.appendChild(el("div", { class: "stage-detail-head" },
       el("strong", {}, sid),
       el("span", { class: "badge " + (st.cls || "bad") }, st.text || stage.status || "?"),
