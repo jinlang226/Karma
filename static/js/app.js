@@ -175,6 +175,25 @@
     return wrap;
   };
 
+  // A read-only panel of a workflow's stages (service/case/param overrides).
+  // Shared by the Workflow detail view and the Results run detail.
+  KARMA.workflowStagesPanel = function (wf, title) {
+    const panel = el("div", { class: "panel" });
+    panel.appendChild(el("h3", {}, title || "Workflow stages"));
+    for (const s of (wf.stages || [])) {
+      const row = el("div", { class: "builder-row" });
+      row.appendChild(el("div", { class: "builder-row-head" }, el("span", {}, s.id)));
+      row.appendChild(el("div", { class: "kv" }, el("span", { class: "k" }, "Service"), el("span", {}, KARMA.labels.service(s.service))));
+      row.appendChild(el("div", { class: "kv" }, el("span", { class: "k" }, "Case"), el("span", {}, KARMA.labels.case(s.case_name))));
+      for (const [k, v] of Object.entries(s.param_overrides || {})) {
+        row.appendChild(el("div", { class: "kv" }, el("span", { class: "k" }, KARMA.labels.case(k)), el("span", {}, String(v))));
+      }
+      panel.appendChild(row);
+    }
+    if (!(wf.stages || []).length) panel.appendChild(el("p", { class: "muted" }, "No stages."));
+    return panel;
+  };
+
   async function refreshClusterBanner() {
     const banner = document.getElementById("cluster-banner");
     if (!banner) return;
