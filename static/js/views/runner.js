@@ -226,6 +226,7 @@
           if (ev.type === "stage_complete") {
             const s = ev.stage || {};
             log.textContent += `stage ${s.stage_id}: ${s.status} (oracle=${s.oracle_verdict})\n`;
+            if (s.status !== "pass") status.appendChild(KARMA.stageDetail(run_id, s));
           } else if (ev.type === "run_complete") {
             log.textContent += `run complete: ${ev.status}\n`;
             KARMA.toast("Run " + KARMA.labels.status(ev.status).text.toLowerCase(),
