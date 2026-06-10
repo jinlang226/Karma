@@ -113,7 +113,7 @@
           onClick: () => runWorkflowFile(f.path),
         }, "Run");
         body.appendChild(el("tr", {},
-          el("td", {}, el("span", { class: "crumb-link", onClick: () => renderWorkflowDetail(f.name, f.path) }, f.name)),
+          el("td", {}, el("span", { class: "crumb-link", onClick: () => renderWorkflowDetail(f.name, f.path) }, f.name.replace(/\.ya?ml$/i, ""))),
           el("td", {}, f.id || "—"),
           el("td", {}, String(f.stage_count == null ? "—" : f.stage_count)),
           el("td", {}, f.prompt_mode ? KARMA.labels.promptMode(f.prompt_mode) : "—"), el("td", {}, status),
@@ -133,10 +133,11 @@
     try { wf = await api.get(`/api/workflows/${name}`); }
     catch (e) { root.appendChild(errBox(e)); return; }
 
-    // Status line directly under the heading: stage count + prompt mode.
-    root.appendChild(el("p", { class: "field-help" },
-      `${(wf.stages || []).length} stages`
-      + (wf.prompt_mode ? " · " + KARMA.labels.promptMode(wf.prompt_mode) : "")));
+    // Status badges directly under the heading (same style as the case detail).
+    const badges = el("div", { class: "toolbar" });
+    badges.appendChild(el("span", { class: "badge" }, `${(wf.stages || []).length} stages`));
+    if (wf.prompt_mode) badges.appendChild(el("span", { class: "badge" }, KARMA.labels.promptMode(wf.prompt_mode)));
+    root.appendChild(badges);
 
     root.appendChild(runConfigPanel());
 

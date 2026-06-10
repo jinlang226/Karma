@@ -185,6 +185,7 @@ def submit_job(
             "workflow_id": workflow.get("id"),
             "prompt_mode": payload.get("prompt_mode") or workflow.get("prompt_mode"),
             "agent_timeout_sec": payload.get("agent_timeout_sec"),
+            "stage_total": len(workflow.get("stages") or []),
         }, indent=2))
     except Exception:
         pass
