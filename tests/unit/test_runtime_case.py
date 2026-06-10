@@ -277,3 +277,42 @@ class TestRunStage:
         assert result["status"] == "pass"
         assert result["submitted"] is False
         assert result["oracle_verdict"] == "pass"
+
+
+def test_apply_namespace_binding_maps_roles_to_identities():
+    """A stage's namespace_binding maps case roles onto identity namespaces."""
+    from karma.runtime.case import _apply_namespace_binding
+    ident = {"cluster_a": "ns-a", "cluster_b": "ns-b"}
+    # alternating migration: a_to_b
+    out = _apply_namespace_binding(ident, {"source": "cluster_a", "target": "cluster_b", "default": "cluster_b"})
+    assert out["source"] == "ns-a"
+    assert out["target"] == "ns-b"
+    assert out["default"] == "ns-b"
+    # identities are kept so manifests referencing them still resolve
+    assert out["cluster_a"] == "ns-a" and out["cluster_b"] == "ns-b"
+
+
+def test_apply_namespace_binding_passthrough_without_binding():
+    """Without a binding the identities are the roles (unchanged behaviour)."""
+    from karma.runtime.case import _apply_namespace_binding
+    ident = {"default": "ns-x"}
+    assert _apply_namespace_binding(ident, None) == ident
+    assert _apply_namespace_binding(ident, {}) == ident
+
+
+def test_resolve_workflow_carries_namespace_binding(tmp_path):
+    """resolve_workflow_rows must carry a stage's namespace_binding onto the row."""
+    from karma.definitions.workflows import normalize_workflow, resolve_workflow_rows
+    from pathlib import Path
+    raw = {
+        "metadata": {"id": "wf"},
+        "spec": {"stages": [{
+            "id": "s1", "service": "demo", "case": "configmap-update",
+            "namespaces": ["cluster_a", "cluster_b"],
+            "namespace_binding": {"source": "cluster_a", "target": "cluster_b"},
+        }]},
+    }
+    norm = normalize_workflow(raw, resources_dir=Path("resources"))
+    assert norm["stages"][0]["namespace_binding"] == {"source": "cluster_a", "target": "cluster_b"}
+    rows = resolve_workflow_rows(norm, resources_dir=Path("resources"))
+    assert rows[0]["namespace_binding"] == {"source": "cluster_a", "target": "cluster_b"}

@@ -303,6 +303,31 @@ def _param_env_vars(params: dict[str, Any] | None) -> dict[str, str]:
     return out
 
 
+def _apply_namespace_binding(
+    identity_bindings: dict[str, str],
+    binding: dict[str, str] | None,
+) -> dict[str, str]:
+    """Map a case's logical roles onto physical namespaces.
+
+    *identity_bindings* maps a stage's declared namespace identities (e.g.
+    ``cluster_a``) to physical namespace names. *binding* maps a case role
+    (e.g. ``source``) to one of those identities. The result maps each case
+    role to that identity's physical namespace, so ``$BENCH_NS_SOURCE`` etc.
+    resolve. Identities not remapped are kept so manifests that reference them
+    directly still work. Without a *binding*, the identities are the roles.
+    """
+    if not binding:
+        return dict(identity_bindings)
+    bound: dict[str, str] = {}
+    for role, identity in binding.items():
+        physical = identity_bindings.get(identity)
+        if physical is not None:
+            bound[role] = physical
+    for identity, physical in identity_bindings.items():
+        bound.setdefault(identity, physical)
+    return bound
+
+
 def _wait_for_submit(
     submit_path: Path,
     *,
@@ -409,6 +434,7 @@ def run_stage(
     proxy_handle = None
     agent_process = None
     role_bindings: dict[str, str] = {}
+    identity_bindings: dict[str, str] = {}
     ns_baseline: set[str] = set()
 
     try:
@@ -422,10 +448,18 @@ def run_stage(
             bind_host="0.0.0.0" if sandbox_mode == "docker" else "127.0.0.1",
         )
 
-        # Step 2: bind namespace roles
+        # Step 2: bind namespace roles. namespace_roles are the physical
+        # namespace *identities* we create and tear down; an optional
+        # namespace_binding maps the case's logical roles (source/target/...)
+        # onto those identities (how a migration alternates direction across
+        # stages). The mapped role_bindings drive env vars, commands, and
+        # manifests; the identities drive create/cleanup.
         ns_roles = row.get("namespace_roles") or ["default"]
-        role_bindings = environment.bind_namespace_roles(ns_roles, run_dir.name)
-        environment.ensure_namespaces(role_bindings, run_dir=stage_dir)
+        identity_bindings = environment.bind_namespace_roles(ns_roles, run_dir.name)
+        environment.ensure_namespaces(identity_bindings, run_dir=stage_dir)
+        role_bindings = _apply_namespace_binding(
+            identity_bindings, row.get("namespace_binding")
+        )
         # Snapshot namespaces (incl. the role namespaces just created) so the
         # teardown can remove any literal namespaces the case creates in its
         # preconditions (mongodb, cockroachdb, ...) which the per-role cleanup
@@ -640,9 +674,11 @@ def run_stage(
             cleanup_agent(agent_process)
         if proxy_handle is not None:
             proxy_handle.teardown()
-        if not defer_cleanup and role_bindings and environment is not None:
+        if not defer_cleanup and identity_bindings and environment is not None:
             try:
-                environment.cleanup_namespaces(role_bindings, run_dir=stage_dir)
+                # Tear down the physical identity namespaces (role_bindings may
+                # alias several roles onto the same identity).
+                environment.cleanup_namespaces(identity_bindings, run_dir=stage_dir)
             except Exception as exc:
                 warn(f"failed to delete stage namespaces: {exc}")
         # Also remove any literal namespaces the case created in preconditions
