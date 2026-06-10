@@ -30,6 +30,7 @@ from .case import run_stage
 from ..oracle import run_regression_sweep
 from ..adversary import collect_pending_lift_units
 from .. import protocol
+from .._warn import warn
 
 
 # ---------------------------------------------------------------------------
@@ -47,8 +48,8 @@ def _write_workflow_state(run_dir: Path, state: dict[str, Any]) -> None:
     try:
         tmp.write_text(json.dumps(state, indent=2))
         tmp.rename(path)
-    except Exception:
-        pass
+    except Exception as exc:
+        warn(f"failed to write workflow state: {exc}")
 
 
 def _should_retry(stage_result: dict[str, Any], retries_remaining: int) -> bool:
@@ -295,8 +296,8 @@ def run_workflow_loop(
             if prompt_path.exists():
                 try:
                     stage_prompts.append(prompt_path.read_text())
-                except Exception:
-                    pass
+                except Exception as exc:
+                    warn(f"failed to read {stage_id} prompt for history: {exc}")
         else:
             workflow_status = "failed"
             if stage_failure_mode != "continue":
@@ -338,8 +339,9 @@ def run_workflow_loop(
             regression_sweep = _run_final_regression_sweep(
                 rows, stage_results, run_dir=run_dir, environment=environment
             )
-        except Exception:
+        except Exception as exc:
             regression_sweep = None
+            warn(f"regression sweep failed: {exc}")
 
     adversary_cleanup = None
     if deployed_scenario_ids:
@@ -358,8 +360,8 @@ def run_workflow_loop(
     if full_bindings and environment is not None:
         try:
             environment.cleanup_namespaces(full_bindings, run_dir=run_dir)
-        except Exception:
-            pass
+        except Exception as exc:
+            warn(f"failed to delete workflow namespaces: {exc}")
     if ns_baseline and environment is not None and hasattr(environment, "cleanup_created_namespaces"):
         try:
             environment.cleanup_created_namespaces(ns_baseline, run_dir=run_dir)
@@ -377,8 +379,8 @@ def run_workflow_loop(
 
     try:
         protocol.run_meta_path(run_dir).write_text(json.dumps(result, indent=2))
-    except Exception:
-        pass
+    except Exception as exc:
+        warn(f"failed to write run metadata: {exc}")
 
     _write_workflow_state(run_dir, {
         "run_id": run_id,

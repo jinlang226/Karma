@@ -42,6 +42,7 @@ from ..evidence import collect_evidence
 from ..adversary import deploy as adversary_deploy, lift as adversary_lift, report as adversary_report
 from ..definitions.cases import discover_case_decoys
 from .. import protocol
+from .._warn import warn
 
 
 # ---------------------------------------------------------------------------
@@ -642,8 +643,8 @@ def run_stage(
         if not defer_cleanup and role_bindings and environment is not None:
             try:
                 environment.cleanup_namespaces(role_bindings, run_dir=stage_dir)
-            except Exception:
-                pass
+            except Exception as exc:
+                warn(f"failed to delete stage namespaces: {exc}")
         # Also remove any literal namespaces the case created in preconditions
         # (deferred to the workflow loop for multi-stage runs that share state).
         if not defer_cleanup and ns_baseline and hasattr(environment, "cleanup_created_namespaces"):

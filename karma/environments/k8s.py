@@ -17,6 +17,8 @@ import time
 from pathlib import Path
 from typing import Any
 
+from .._warn import warn
+
 _PLACEHOLDER_RE = re.compile(r"\{\{namespace\.([A-Za-z0-9_-]+)\}\}")
 _NAMESPACE_PREFIX = "karma"
 _FORCE_DELETE_TIMEOUT_SEC = 120
@@ -177,7 +179,8 @@ class K8sEnvironment:
             out = self._kubectl(
                 ["get", "namespaces", "-o", "name"], check=False, timeout=30
             ).stdout
-        except Exception:
+        except Exception as exc:
+            warn(f"failed to list namespaces: {exc}")
             return set()
         return {ln.split("/", 1)[-1].strip() for ln in out.splitlines() if ln.strip()}
 
@@ -200,8 +203,8 @@ class K8sEnvironment:
                 args += ["--grace-period=0", "--force"]
             try:
                 self._kubectl(args, check=False, timeout=self._force_timeout)
-            except Exception:
-                pass
+            except Exception as exc:
+                warn(f"failed to delete namespace {ns_name}: {exc}")
         return created
 
     def render_manifest(
