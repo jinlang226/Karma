@@ -201,6 +201,12 @@ def submit_job(
             except Exception:
                 pass
 
+    def _progress_cb(stage_id: str, message: str) -> None:
+        hub.publish(run_id, {
+            "type": "progress", "run_id": run_id,
+            "stage_id": stage_id, "message": message,
+        })
+
     def _run() -> None:
         try:
             result = run_workflow(
@@ -210,6 +216,7 @@ def submit_job(
                 agent_name=payload.get("agent"),
                 sandbox_mode=str(payload.get("sandbox") or "local"),
                 on_stage_complete=_stage_cb,
+                on_progress=_progress_cb,
                 run_id=run_id,
             )
             _update_job(run_id, {"status": result.get("status", "complete")})

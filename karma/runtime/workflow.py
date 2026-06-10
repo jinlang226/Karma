@@ -183,6 +183,7 @@ def run_workflow_loop(
     environment: Any,
     prompt_mode: str,
     on_stage_complete: Any | None = None,
+    on_progress: Any | None = None,
     stage_failure_mode: str = "terminate",
     final_sweep_mode: str = "auto",
     sandbox_options: dict[str, Any] | None = None,
@@ -262,8 +263,15 @@ def run_workflow_loop(
         stage_id = row["stage_id"]
         retries = row.get("retries", 0)
         stage_result: dict[str, Any] = {}
+        # Per-stage progress sink: tag each fine-grained message with this stage.
+        stage_progress = None
+        if on_progress is not None:
+            stage_progress = (lambda sid: lambda msg: on_progress(sid, msg))(stage_id)
 
         for attempt in range(retries + 1):
+            if on_progress is not None:
+                on_progress(stage_id, f"▶ stage {stage_id}"
+                            + (f" (attempt {attempt + 1})" if attempt else ""))
             stage_result = run_stage(
                 row,
                 run_dir=run_dir,
@@ -276,6 +284,7 @@ def run_workflow_loop(
                 prompt_mode=prompt_mode,
                 defer_cleanup=True,
                 sandbox_options=sandbox_options,
+                on_progress=stage_progress,
             )
 
             if on_stage_complete is not None:

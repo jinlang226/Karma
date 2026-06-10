@@ -223,7 +223,9 @@
       api.stream(`/api/run/${run_id}/stream`, {
         statusPath: `/api/run/${run_id}/status`,
         onEvent: (ev) => {
-          if (ev.type === "stage_complete") {
+          if (ev.type === "progress") {
+            log.textContent += `  ${ev.message}\n`;
+          } else if (ev.type === "stage_complete") {
             const s = ev.stage || {};
             log.textContent += `stage ${s.stage_id}: ${s.status} (oracle=${s.oracle_verdict})\n`;
             if (s.status !== "pass") status.appendChild(KARMA.stageDetail(run_id, s));
