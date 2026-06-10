@@ -180,6 +180,8 @@
   KARMA.workflowStagesPanel = function (wf, title) {
     const panel = el("div", { class: "panel" });
     panel.appendChild(el("h3", {}, title || "Workflow stages"));
+    // Scrollable so a many-stage workflow (e.g. 30 stages) stays a bounded block.
+    const list = el("div", { class: "stage-scroll" });
     for (const s of (wf.stages || [])) {
       const row = el("div", { class: "builder-row" });
       row.appendChild(el("div", { class: "builder-row-head" }, el("span", {}, s.id)));
@@ -188,9 +190,10 @@
       for (const [k, v] of Object.entries(s.param_overrides || {})) {
         row.appendChild(el("div", { class: "kv" }, el("span", { class: "k" }, KARMA.labels.case(k)), el("span", {}, String(v))));
       }
-      panel.appendChild(row);
+      list.appendChild(row);
     }
-    if (!(wf.stages || []).length) panel.appendChild(el("p", { class: "muted" }, "No stages."));
+    if (!(wf.stages || []).length) list.appendChild(el("p", { class: "muted" }, "No stages."));
+    panel.appendChild(list);
     return panel;
   };
 
