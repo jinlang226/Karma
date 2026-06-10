@@ -19,6 +19,9 @@
 
   let root;
   let services = [];
+  let agents = [];      // available agent names, for the run-config selectors
+  let runAgent = "";    // agent applied to workflow runs ("" = no agent)
+  let runSandbox = "local";
   let scenarios = [];   // available adversary scenarios: {service, scenario, has_lift}
   let stages = [];      // builder stage rows: {service, case, overrides}
   let advRows = [];     // builder adversary rows: {scenario, injectIndex, liftIndex}
@@ -36,6 +39,9 @@
     if (!services.length) {
       try { services = (await api.get("/api/services")).services || []; } catch (_e) { services = []; }
     }
+    if (!agents.length) {
+      try { agents = await api.get("/api/agents"); } catch (_e) { agents = []; }
+    }
     try { scenarios = await api.get("/api/adversary/scenarios") || []; } catch (_e) { scenarios = []; }
     render();
   }
@@ -43,9 +49,31 @@
   function render() {
     clear(root);
     root.appendChild(el("h2", {}, "Workflows"));
+    root.appendChild(runConfigPanel());
     root.appendChild(filesPanel());
     root.appendChild(builderPanel());
     root.appendChild(jobsPanel());
+  }
+
+  // Agent + sandbox applied to every workflow run started from this page.
+  // Without this, workflow runs went out with no agent and always failed.
+  function runConfigPanel() {
+    const agentSel = el("select", { onChange: (e) => { runAgent = e.target.value; } },
+      el("option", { value: "" }, "None — run locally"),
+      ...agents.map((a) => el("option", {
+        value: a, selected: a === runAgent ? "selected" : null,
+      }, KARMA.labels.agent(a))));
+    const sandboxSel = el("select", { onChange: (e) => { runSandbox = e.target.value; } },
+      el("option", { value: "local", selected: runSandbox === "local" ? "selected" : null }, "Local"),
+      el("option", { value: "docker", selected: runSandbox === "docker" ? "selected" : null }, "Docker"));
+    return el("div", { class: "panel" },
+      el("h3", {}, "Run Config"),
+      el("p", { class: "field-help" },
+        "Agent and sandbox used for runs started below (files or the builder). " +
+        "Pick an agent — without one the workflow runs with no agent and its oracle fails."),
+      el("div", { class: "row" },
+        el("div", {}, el("label", {}, "Agent"), agentSel),
+        el("div", {}, el("label", {}, "Sandbox"), sandboxSel)));
   }
 
   // --- Files panel ----------------------------------------------------------
@@ -95,7 +123,9 @@
     const out = document.getElementById("wf-jobs-log");
     if (out) out.textContent = `Submitting ${path}…\n`;
     try {
-      const { run_id } = await api.post("/api/run", { workflow_path: path });
+      const { run_id } = await api.post("/api/run", {
+        workflow_path: path, agent: runAgent || null, sandbox: runSandbox,
+      });
       KARMA.toast("Workflow started: " + run_id, "info");
       streamInto(run_id);
     } catch (e) {
@@ -264,15 +294,27 @@
 
   function stageRow(stage, index, rerender) {
     function resetCase() { stage.case = ""; stage.overrides = {}; stage._defaults = {}; }
-    const svcSel = el("select", { onChange: (e) => { stage.service = e.target.value; resetCase(); rerender(); } },
-      ...services.map((s) => el("option", { value: s.name, selected: s.name === stage.service ? "selected" : null }, KARMA.labels.service(s.name))));
-    const svc = services.find((s) => s.name === stage.service);
+    // The case dropdown is repopulated in place when the service changes, so
+    // choosing a service does not rebuild the whole stage list (which felt like
+    // the page refreshing -- it dropped the open dropdown and focus).
     const caseSel = el("select", { onChange: (e) => {
       stage.case = e.target.value; stage.overrides = {}; stage._defaults = {}; loadParams();
+    } });
+    function fillCases() {
+      clear(caseSel);
+      caseSel.appendChild(el("option", { value: "" }, "(case)"));
+      const svc = services.find((s) => s.name === stage.service);
+      for (const c of (svc ? svc.cases : [])) {
+        caseSel.appendChild(el("option", {
+          value: c, selected: c === stage.case ? "selected" : null,
+        }, KARMA.labels.case(c)));
+      }
+    }
+    const svcSel = el("select", { onChange: (e) => {
+      stage.service = e.target.value; resetCase(); fillCases(); note("Please choose a service and a case.");
     } },
-      el("option", { value: "" }, "(case)"),
-      ...((svc ? svc.cases : []).map((c) =>
-        el("option", { value: c, selected: c === stage.case ? "selected" : null }, KARMA.labels.case(c)))));
+      ...services.map((s) => el("option", { value: s.name, selected: s.name === stage.service ? "selected" : null }, KARMA.labels.service(s.name))));
+    fillCases();
     const rm = el("button", {
       class: "btn secondary", title: "Remove stage", "aria-label": "Remove stage",
       onClick: () => { stages.splice(index, 1); rerender(); },
@@ -372,7 +414,9 @@
     msg.className = "muted";
     msg.textContent = "Submitting…";
     try {
-      const { run_id } = await api.post("/api/run", { workflow_yaml: text });
+      const { run_id } = await api.post("/api/run", {
+        workflow_yaml: text, agent: runAgent || null, sandbox: runSandbox,
+      });
       msg.textContent = "Started run " + run_id;
       KARMA.toast("Workflow started: " + run_id, "info");
       streamInto(run_id);
