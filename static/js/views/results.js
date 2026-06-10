@@ -131,6 +131,16 @@
       root.appendChild(p);
     }
 
+    // If the run came from a saved workflow, show its definition (stages).
+    if (cfg.workflow_path) {
+      const wfName = String(cfg.workflow_path).split("/").pop();
+      const slot = el("div", {});
+      root.appendChild(slot);
+      api.get(`/api/workflows/${wfName}`)
+        .then((wf) => { slot.appendChild(KARMA.workflowStagesPanel(wf, "Workflow definition")); })
+        .catch(() => {});
+    }
+
     // Judge (terminal) or Cancel (running), with an inline judge log.
     const judgeLog = el("pre", { class: "log", style: "display:none" });
     const actions = el("div", { class: "toolbar" });

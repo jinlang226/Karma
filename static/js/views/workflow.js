@@ -126,35 +126,25 @@
   // builder to override params and save a renamed copy).
   async function renderWorkflowDetail(name, path) {
     clear(root);
-    KARMA.setBreadcrumb({ back: render, crumbs: [{ label: "Workflows", onClick: render }, { label: name }] });
-    root.appendChild(el("h2", {}, name));
+    const display = name.replace(/\.ya?ml$/i, "");   // drop the .yaml suffix
+    KARMA.setBreadcrumb({ back: render, crumbs: [{ label: "Workflows", onClick: render }, { label: display }] });
+    root.appendChild(el("h2", {}, display));
     let wf;
     try { wf = await api.get(`/api/workflows/${name}`); }
     catch (e) { root.appendChild(errBox(e)); return; }
 
+    // Status line directly under the heading: stage count + prompt mode.
+    root.appendChild(el("p", { class: "field-help" },
+      `${(wf.stages || []).length} stages`
+      + (wf.prompt_mode ? " · " + KARMA.labels.promptMode(wf.prompt_mode) : "")));
+
     root.appendChild(runConfigPanel());
 
-    const meta = el("div", { class: "toolbar" });
-    meta.appendChild(el("span", { class: "badge" }, `${(wf.stages || []).length} stages`));
-    if (wf.prompt_mode) meta.appendChild(el("span", { class: "badge" }, KARMA.labels.promptMode(wf.prompt_mode)));
-    meta.appendChild(el("button", { class: "btn", onClick: () => runWorkflowFile(path) }, "Run"));
-    meta.appendChild(el("button", { class: "btn secondary", onClick: () => customizeInBuilder(name, wf) }, "Customize / duplicate"));
-    root.appendChild(meta);
+    root.appendChild(el("div", { class: "toolbar" },
+      el("button", { class: "btn", onClick: () => runWorkflowFile(path) }, "Run"),
+      el("button", { class: "btn secondary", onClick: () => customizeInBuilder(name, wf) }, "Customize / duplicate")));
 
-    const panel = el("div", { class: "panel" });
-    panel.appendChild(el("h3", {}, "Stages"));
-    for (const s of (wf.stages || [])) {
-      const row = el("div", { class: "builder-row" });
-      row.appendChild(el("div", { class: "builder-row-head" }, el("span", {}, s.id)));
-      row.appendChild(el("div", { class: "kv" }, el("span", { class: "k" }, "Service"), el("span", {}, KARMA.labels.service(s.service))));
-      row.appendChild(el("div", { class: "kv" }, el("span", { class: "k" }, "Case"), el("span", {}, KARMA.labels.case(s.case_name))));
-      const ov = s.param_overrides || {};
-      for (const [k, v] of Object.entries(ov)) {
-        row.appendChild(el("div", { class: "kv" }, el("span", { class: "k" }, KARMA.labels.case(k)), el("span", {}, String(v))));
-      }
-      panel.appendChild(row);
-    }
-    root.appendChild(panel);
+    root.appendChild(KARMA.workflowStagesPanel(wf, "Stages"));
     root.appendChild(jobsPanel());   // so Run output shows on this page too
   }
 
