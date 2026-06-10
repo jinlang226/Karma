@@ -65,6 +65,10 @@ preconditionUnits:
         sleep: 1
       - command: "/bin/sh -c 'kubectl -n ${BENCH_NS_TARGET} create secret generic {{params.green_cluster_prefix}}-admin --from-literal=username=admin --from-literal=password=adminpass --dry-run=client -o yaml | kubectl apply -f -'"
         sleep: 1
+      - command: "/bin/sh -c 'kubectl -n ${BENCH_NS_SOURCE} create secret generic {{params.blue_cluster_prefix}}-app --from-literal=username=app --from-literal=password=apppass --dry-run=client -o yaml | kubectl apply -f -'"
+        sleep: 1
+      - command: "/bin/sh -c 'kubectl -n ${BENCH_NS_TARGET} create secret generic {{params.green_cluster_prefix}}-app --from-literal=username=app --from-literal=password=apppass --dry-run=client -o yaml | kubectl apply -f -'"
+        sleep: 1
     verify:
       - command: "/bin/sh -c 'set -e; kubectl -n ${BENCH_NS_SOURCE} get secret {{params.blue_cluster_prefix}}-erlang-cookie >/dev/null; kubectl -n ${BENCH_NS_TARGET} get secret {{params.green_cluster_prefix}}-erlang-cookie >/dev/null'"
         timeout_sec: 20
@@ -163,6 +167,12 @@ preconditionUnits:
         sleep: 1
       - command: "envsubst '$BENCH_NAMESPACE $BENCH_NS_SOURCE $BENCH_NS_TARGET $BENCH_PARAM_CLUSTER_PREFIX $BENCH_PARAM_BLUE_CLUSTER_PREFIX $BENCH_PARAM_GREEN_CLUSTER_PREFIX $BENCH_PARAM_FROM_VERSION' < resources/rabbitmq/blue_green_migration/resource/setup-job-target.yaml | kubectl -n ${BENCH_NS_TARGET} apply -f -"
         sleep: 1
+      # Wait for the setup jobs to finish creating the /app vhost + app-queue
+      # before seeding -- the seed job only publishes to an existing queue.
+      - command: "kubectl -n ${BENCH_NS_SOURCE} wait --for=condition=complete job/${BENCH_PARAM_BLUE_CLUSTER_PREFIX}-setup --timeout=150s"
+        timeout_sec: 160
+      - command: "kubectl -n ${BENCH_NS_TARGET} wait --for=condition=complete job/${BENCH_PARAM_GREEN_CLUSTER_PREFIX}-setup --timeout=150s"
+        timeout_sec: 160
     verify:
       - command: "python3 resources/rabbitmq/blue_green_migration/setup_precondition_check.py --source-namespace ${BENCH_NS_SOURCE} --target-namespace ${BENCH_NS_TARGET} --bootstrap-only"
         timeout_sec: 60
@@ -173,8 +183,20 @@ preconditionUnits:
       - command: "python3 resources/rabbitmq/blue_green_migration/setup_precondition_check.py --source-namespace ${BENCH_NS_SOURCE} --target-namespace ${BENCH_NS_TARGET} --seed-only"
         timeout_sec: 40
     apply:
-      - command: "python3 resources/rabbitmq/blue_green_migration/setup_precondition_check.py --source-namespace ${BENCH_NS_SOURCE} --target-namespace ${BENCH_NS_TARGET} --seed-only --apply"
-        timeout_sec: 120
+      # Seed the source cluster: the migration-seed configmap (seed_count) in
+      # both namespaces, then the seed job that publishes that many messages to
+      # the source app-queue via the management API. (The check script only
+      # verifies -- it never seeded; the prior `--apply` arg did not exist.)
+      - command: "kubectl -n ${BENCH_NS_SOURCE} apply -f resources/rabbitmq/blue_green_migration/resource/seed-configmap.yaml"
+        timeout_sec: 30
+      - command: "kubectl -n ${BENCH_NS_TARGET} apply -f resources/rabbitmq/blue_green_migration/resource/seed-configmap.yaml"
+        timeout_sec: 30
+      - command: "kubectl -n ${BENCH_NS_SOURCE} delete job ${BENCH_PARAM_BLUE_CLUSTER_PREFIX}-seed --ignore-not-found"
+        timeout_sec: 30
+      - command: "envsubst '$BENCH_PARAM_BLUE_CLUSTER_PREFIX' < resources/rabbitmq/blue_green_migration/resource/seed-job.yaml | kubectl -n ${BENCH_NS_SOURCE} apply -f -"
+        timeout_sec: 30
+      - command: "kubectl -n ${BENCH_NS_SOURCE} wait --for=condition=complete job/${BENCH_PARAM_BLUE_CLUSTER_PREFIX}-seed --timeout=150s"
+        timeout_sec: 160
     verify:
       - command: "python3 resources/rabbitmq/blue_green_migration/setup_precondition_check.py --source-namespace ${BENCH_NS_SOURCE} --target-namespace ${BENCH_NS_TARGET} --seed-only"
         timeout_sec: 40
