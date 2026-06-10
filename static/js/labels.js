@@ -85,6 +85,7 @@
     failed: { text: "Failed", cls: "bad" },
     error: { text: "Error", cls: "bad" },
     cancelled: { text: "Cancelled", cls: "warn" },
+    interrupted: { text: "Interrupted", cls: "warn" },
     cleaned: { text: "Cleaned up", cls: "" },
     pending: { text: "Not judged", cls: "" },
     judged: { text: "Judged", cls: "ok" },

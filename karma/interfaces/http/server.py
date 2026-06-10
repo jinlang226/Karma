@@ -525,6 +525,14 @@ def main(
     resolved_host = os.environ.get("KARMA_HOST", host)
     resolved_port = int(os.environ.get("KARMA_PORT", port))
 
+    # Runs marked "running" on disk are orphans from a previous process (a
+    # restart kills their background thread); flag them so they don't show as
+    # running forever.
+    from .jobs import reconcile_stale_runs
+    n = reconcile_stale_runs(Path(resolved_runs))
+    if n:
+        print(f"reconciled {n} interrupted run(s) from a previous session")
+
     app = create_app(
         resources_dir=resolved_resources,
         runs_dir=resolved_runs,
