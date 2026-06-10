@@ -124,7 +124,8 @@ class TestCancelJob:
         assert jobs._active_jobs["cj1"]["status"] == "cancelled"
         del jobs._active_jobs["cj1"]
 
-    def test_publishes_cancel_and_ends_stream_on_hub(self):
+    def test_publishes_cancel_and_sets_flag(self):
+        import queue
         from karma.interfaces.http import jobs
         from karma.interfaces.http.events import hub
         jobs._active_jobs["cj2"] = {"run_id": "cj2", "status": "running"}
@@ -132,10 +133,17 @@ class TestCancelJob:
         cancel_job("cj2")
         first = sub.get_nowait()
         assert first["type"] == "cancelled"
-        # stream is closed: terminal sentinel follows
-        assert sub.get_nowait() is None
+        # The run id is flagged so the running workflow thread stops.
+        assert "cj2" in jobs._cancel_requested
+        # The stream is NOT closed here -- the workflow thread streams its final
+        # cancelled run_complete and closes the stream when it actually stops.
+        try:
+            assert sub.get_nowait() is not None  # no terminal sentinel yet
+        except queue.Empty:
+            pass
         hub.unsubscribe("cj2", sub)
         hub.forget("cj2")
+        jobs._cancel_requested.discard("cj2")
         del jobs._active_jobs["cj2"]
 
 

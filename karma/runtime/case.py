@@ -341,6 +341,7 @@ def _wait_for_submit(
     agent_timeout_sec: int,
     poll_interval_sec: float = 1.0,
     agent_process: Any = None,
+    should_cancel: Any = None,
 ) -> tuple[bool, str | None, bool]:
     """Poll for the agent's submit file until it appears, the agent exits, or
     the timeout expires.
@@ -359,6 +360,9 @@ def _wait_for_submit(
     """
     deadline = time.monotonic() + agent_timeout_sec
     while time.monotonic() < deadline:
+        if should_cancel is not None and should_cancel():
+            # Cancelled mid-run: end the wait so the caller terminates the agent.
+            return False, None, True
         if submit_path.exists():
             try:
                 return True, submit_path.read_text(), False
@@ -395,6 +399,7 @@ def run_stage(
     defer_cleanup: bool = False,
     sandbox_options: dict[str, Any] | None = None,
     on_progress: Any | None = None,
+    should_cancel: Any | None = None,
 ) -> dict[str, Any]:
     """Execute one workflow stage and return its result dict.
 
@@ -615,6 +620,7 @@ def run_stage(
                 submit_path,
                 agent_timeout_sec=row.get("agent_timeout_sec") or 900,
                 agent_process=agent_process,
+                should_cancel=should_cancel,
             )
             agent_process.terminate()
             # A crashed/early-exiting agent is not a timeout; let the oracle
@@ -630,6 +636,22 @@ def run_stage(
                     on_progress(f"• agent: exited without submit ({_dur}s)")
                 else:
                     on_progress(f"⏱ agent: timed out ({_dur}s)")
+
+        # Cancelled mid-run: skip evidence/oracle and return a cancelled result
+        # (the finally block still tears the stage down).
+        if should_cancel is not None and should_cancel():
+            if on_progress:
+                on_progress("⊘ cancelled")
+            return {
+                "stage_id": stage_id,
+                "status": "cancelled",
+                "oracle_verdict": None,
+                "submitted": submitted,
+                "duration_sec": time.monotonic() - start_time,
+                "error": "cancelled",
+                "evidence_path": str(protocol.stage_evidence_path(run_dir, stage_id)),
+                "oracle_path": str(protocol.stage_oracle_path(run_dir, stage_id)),
+            }
 
         # Step 10: collect evidence
         evidence = collect_evidence(

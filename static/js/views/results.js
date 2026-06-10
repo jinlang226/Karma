@@ -123,25 +123,6 @@
     if (d.duration_sec) badges.appendChild(el("span", { class: "muted" }, Math.round(d.duration_sec) + "s"));
     root.appendChild(badges);
 
-    if (cfg.params && Object.keys(cfg.params).length) {
-      const p = el("div", { class: "panel" });
-      p.appendChild(el("h3", {}, "Config"));
-      for (const [k, v] of Object.entries(cfg.params)) {
-        p.appendChild(el("div", { class: "kv" }, el("span", { class: "k" }, k), el("span", {}, String(v))));
-      }
-      root.appendChild(p);
-    }
-
-    // If the run came from a saved workflow, show its definition (stages).
-    if (cfg.workflow_path) {
-      const wfName = String(cfg.workflow_path).split("/").pop();
-      const slot = el("div", {});
-      root.appendChild(slot);
-      api.get(`/api/workflows/${wfName}`)
-        .then((wf) => { slot.appendChild(KARMA.workflowStagesPanel(wf, "Workflow definition")); })
-        .catch(() => {});
-    }
-
     // Judge (terminal) or Cancel (running), with an inline judge log.
     const judgeLog = el("pre", { class: "log", style: "display:none" });
     const actions = el("div", { class: "toolbar" });
@@ -149,9 +130,19 @@
       actions.appendChild(el("button", { class: "btn", onClick: () => startJudge("run", runId, false, judgeLog) }, "Judge"));
       actions.appendChild(el("button", { class: "btn secondary", onClick: () => startJudge("run", runId, true, judgeLog) }, "Dry run"));
     } else {
-      actions.appendChild(el("button", { class: "btn secondary", onClick: () => {
-        api.post(`/api/run/${runId}/cancel`).catch(() => {});
-      } }, "Cancel"));
+      const cancelBtn = el("button", { class: "btn secondary" }, "Cancel");
+      cancelBtn.addEventListener("click", () => {
+        cancelBtn.disabled = "disabled";
+        cancelBtn.textContent = "Cancelling…";
+        api.post(`/api/run/${runId}/cancel`)
+          .then(() => KARMA.toast("Cancelling run — it stops at the current step", "info"))
+          .catch((e) => {
+            KARMA.toastError(e);
+            cancelBtn.disabled = null;
+            cancelBtn.textContent = "Cancel";
+          });
+      });
+      actions.appendChild(cancelBtn);
     }
     root.appendChild(actions);
     root.appendChild(judgeLog);
@@ -195,6 +186,25 @@
         },
         onDone: () => {},
       });
+    }
+
+    // Supplementary info, below the Stages / Live block.
+    if (cfg.params && Object.keys(cfg.params).length) {
+      const p = el("div", { class: "panel" });
+      p.appendChild(el("h3", {}, "Config"));
+      for (const [k, v] of Object.entries(cfg.params)) {
+        p.appendChild(el("div", { class: "kv" }, el("span", { class: "k" }, k), el("span", {}, String(v))));
+      }
+      root.appendChild(p);
+    }
+    // If the run came from a saved workflow, show its definition (stages).
+    if (cfg.workflow_path) {
+      const wfName = String(cfg.workflow_path).split("/").pop();
+      const slot = el("div", {});
+      root.appendChild(slot);
+      api.get(`/api/workflows/${wfName}`)
+        .then((wf) => { slot.appendChild(KARMA.workflowStagesPanel(wf, "Workflow definition")); })
+        .catch(() => {});
     }
   }
 

@@ -25,6 +25,7 @@ from .events import hub
 
 
 _active_jobs: dict[str, dict[str, Any]] = {}
+_cancel_requested: set[str] = set()
 _jobs_lock = threading.Lock()
 
 
@@ -217,6 +218,7 @@ def submit_job(
                 sandbox_mode=str(payload.get("sandbox") or "local"),
                 on_stage_complete=_stage_cb,
                 on_progress=_progress_cb,
+                should_cancel=lambda: run_id in _cancel_requested,
                 run_id=run_id,
             )
             _update_job(run_id, {"status": result.get("status", "complete")})
@@ -235,6 +237,8 @@ def submit_job(
                 "error": str(exc),
             })
         finally:
+            with _jobs_lock:
+                _cancel_requested.discard(run_id)
             hub.close(run_id)
 
     threading.Thread(target=_run, daemon=True).start()
@@ -277,9 +281,14 @@ def cancel_job(run_id: str) -> bool:
         job = _active_jobs.get(run_id)
     if job is None:
         return False
+    # Signal the running workflow thread to stop: it polls this between stages
+    # and during the agent wait, terminates the agent, and ends with a
+    # cancelled run_complete (which closes the stream). We do not close the hub
+    # here so that final cancelled event still reaches attached clients.
+    with _jobs_lock:
+        _cancel_requested.add(run_id)
     _update_job(run_id, {"status": "cancelled"})
     hub.publish(run_id, {"type": "cancelled", "run_id": run_id})
-    hub.close(run_id)
     return True
 
 
