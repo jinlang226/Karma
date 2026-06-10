@@ -271,6 +271,27 @@ def get_run_detail(runs_dir: Path, run_id: str) -> dict[str, Any]:
 _UI_SUBDIR = "ui"
 
 
+def get_workflow_detail(
+    workflows_dir: Path, resources_dir: Path, name: str
+) -> dict[str, Any]:
+    """Return the full normalized workflow for a saved file (its stages with
+    service/case/param_overrides), for the detail + customize view. Path-safe:
+    *name* is a basename confined to workflows_dir (or its ui/ subdir).
+
+    Raises
+    ------
+    RuntimeError
+        When the name is unsafe or no matching file exists.
+    """
+    if not _SAFE_ID.match(name) or ".." in name or "/" in name:
+        raise RuntimeError("invalid workflow name")
+    for base in (workflows_dir, workflows_dir / _UI_SUBDIR):
+        path = base / name
+        if path.is_file():
+            return normalize_workflow(load_workflow_file(path), resources_dir=resources_dir)
+    raise RuntimeError(f"workflow not found: {name}")
+
+
 def list_workflow_files(
     workflows_dir: Path, resources_dir: Path
 ) -> list[dict[str, Any]]:

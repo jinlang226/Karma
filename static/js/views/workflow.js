@@ -22,6 +22,7 @@
   let agents = [];      // available agent names, for the run-config selectors
   let runAgent = "";    // agent applied to workflow runs ("" = no agent)
   let runSandbox = "local";
+  let builderId = "ui-workflow";  // default name for builder saves (set when customizing)
   let scenarios = [];   // available adversary scenarios: {service, scenario, has_lift}
   let stages = [];      // builder stage rows: {service, case, overrides}
   let advRows = [];     // builder adversary rows: {scenario, injectIndex, liftIndex}
@@ -82,7 +83,8 @@
     panel.appendChild(el("h3", {}, "Saved Workflows"));
     panel.appendChild(el("p", { class: "field-help" },
       "Predefined workflows from the workflows/ folder, plus any you save from the " +
-      "builder below (kept under workflows/ui/). Click Run to execute one."));
+      "builder below (kept under workflows/ui/). Click a name to view and customize " +
+      "it, or Run to execute one."));
     const tbl = el("table", {}, el("thead", {}, el("tr", {},
       el("th", {}, "File"), el("th", {}, "ID"), el("th", {}, "Stages"),
       el("th", {}, "Prompt mode"), el("th", {}, "Status"), el("th", {}, ""))));
@@ -111,12 +113,66 @@
           onClick: () => runWorkflowFile(f.path),
         }, "Run");
         body.appendChild(el("tr", {},
-          el("td", {}, f.name), el("td", {}, f.id || "—"),
+          el("td", {}, el("span", { class: "crumb-link", onClick: () => renderWorkflowDetail(f.name, f.path) }, f.name)),
+          el("td", {}, f.id || "—"),
           el("td", {}, String(f.stage_count == null ? "—" : f.stage_count)),
           el("td", {}, f.prompt_mode ? KARMA.labels.promptMode(f.prompt_mode) : "—"), el("td", {}, status),
           el("td", {}, runBtn)));
       }
     }).catch((e) => body.appendChild(el("tr", {}, el("td", { colspan: "6" }, errBox(e)))));
+  }
+
+  // Saved-workflow detail: read-only stages + run + "customize" (load into the
+  // builder to override params and save a renamed copy).
+  async function renderWorkflowDetail(name, path) {
+    clear(root);
+    KARMA.setBreadcrumb({ back: render, crumbs: [{ label: "Workflows", onClick: render }, { label: name }] });
+    root.appendChild(el("h2", {}, name));
+    let wf;
+    try { wf = await api.get(`/api/workflows/${name}`); }
+    catch (e) { root.appendChild(errBox(e)); return; }
+
+    root.appendChild(runConfigPanel());
+
+    const meta = el("div", { class: "toolbar" });
+    meta.appendChild(el("span", { class: "badge" }, `${(wf.stages || []).length} stages`));
+    if (wf.prompt_mode) meta.appendChild(el("span", { class: "badge" }, KARMA.labels.promptMode(wf.prompt_mode)));
+    meta.appendChild(el("button", { class: "btn", onClick: () => runWorkflowFile(path) }, "Run"));
+    meta.appendChild(el("button", { class: "btn secondary", onClick: () => customizeInBuilder(name, wf) }, "Customize / duplicate"));
+    root.appendChild(meta);
+
+    const panel = el("div", { class: "panel" });
+    panel.appendChild(el("h3", {}, "Stages"));
+    for (const s of (wf.stages || [])) {
+      const row = el("div", { class: "builder-row" });
+      row.appendChild(el("div", { class: "builder-row-head" }, el("span", {}, s.id)));
+      row.appendChild(el("div", { class: "kv" }, el("span", { class: "k" }, "Service"), el("span", {}, KARMA.labels.service(s.service))));
+      row.appendChild(el("div", { class: "kv" }, el("span", { class: "k" }, "Case"), el("span", {}, KARMA.labels.case(s.case_name))));
+      const ov = s.param_overrides || {};
+      for (const [k, v] of Object.entries(ov)) {
+        row.appendChild(el("div", { class: "kv" }, el("span", { class: "k" }, KARMA.labels.case(k)), el("span", {}, String(v))));
+      }
+      panel.appendChild(row);
+    }
+    root.appendChild(panel);
+    root.appendChild(jobsPanel());   // so Run output shows on this page too
+  }
+
+  // Load a saved workflow into the builder so the user can override params and
+  // save it under a new name (a customized copy).
+  function customizeInBuilder(name, wf) {
+    stages = (wf.stages || []).map((s) => ({
+      service: s.service, case: s.case_name,
+      overrides: { ...(s.param_overrides || {}) }, _defaults: {},
+    }));
+    advRows = [];
+    builderId = name.replace(/\.ya?ml$/i, "") + "-copy";
+    render();
+    setTimeout(() => {
+      const b = document.getElementById("wf-builder");
+      if (b) b.scrollIntoView({ behavior: "smooth", block: "start" });
+    }, 0);
+    KARMA.toast("Loaded into builder — edit params and Save to workflows as a copy", "info");
   }
 
   async function runWorkflowFile(path) {
@@ -136,9 +192,9 @@
 
   // --- Builder panel --------------------------------------------------------
   function builderPanel() {
-    const panel = el("div", { class: "panel" });
+    const panel = el("div", { class: "panel", id: "wf-builder" });
 
-    const idInput = el("input", { value: "ui-workflow" });
+    const idInput = el("input", { value: builderId });
     const modeSel = el("select", {},
       el("option", { value: "progressive" }, KARMA.labels.promptMode("progressive")),
       el("option", { value: "concat_stateful" }, KARMA.labels.promptMode("concat_stateful")),
@@ -441,7 +497,6 @@
   async function refreshJobs() {
     const host = document.getElementById("wf-jobs-table");
     if (!host) return;
-    clear(host);
     try {
       const jobs = await api.get("/api/jobs");
       const tbl = el("table", {}, el("thead", {}, el("tr", {},
@@ -456,8 +511,11 @@
       }
       if (!jobs.length) body.appendChild(el("tr", {}, el("td", { colspan: "3", class: "muted" }, "No active jobs.")));
       tbl.appendChild(body);
+      // Clear + append AFTER the fetch so two concurrent refreshes (e.g.
+      // run_complete + onDone) don't each append a table -> duplicate rows.
+      clear(host);
       host.appendChild(tbl);
-    } catch (e) { host.appendChild(errBox(e)); }
+    } catch (e) { clear(host); host.appendChild(errBox(e)); }
   }
 
   function streamInto(runId) {
