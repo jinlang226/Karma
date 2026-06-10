@@ -184,6 +184,7 @@ def run_workflow_loop(
     prompt_mode: str,
     on_stage_complete: Any | None = None,
     on_progress: Any | None = None,
+    should_cancel: Any | None = None,
     stage_failure_mode: str = "terminate",
     final_sweep_mode: str = "auto",
     sandbox_options: dict[str, Any] | None = None,
@@ -260,6 +261,9 @@ def run_workflow_loop(
     workflow_status = "complete"
 
     for idx, row in enumerate(rows):
+        if should_cancel is not None and should_cancel():
+            workflow_status = "cancelled"
+            break
         stage_id = row["stage_id"]
         retries = row.get("retries", 0)
         stage_result: dict[str, Any] = {}
@@ -285,6 +289,7 @@ def run_workflow_loop(
                 defer_cleanup=True,
                 sandbox_options=sandbox_options,
                 on_progress=stage_progress,
+                should_cancel=should_cancel,
             )
 
             if on_stage_complete is not None:
@@ -310,6 +315,9 @@ def run_workflow_loop(
                     stage_prompts.append(prompt_path.read_text())
                 except Exception as exc:
                     warn(f"failed to read {stage_id} prompt for history: {exc}")
+        elif stage_result.get("status") == "cancelled":
+            workflow_status = "cancelled"
+            break
         else:
             workflow_status = "failed"
             if stage_failure_mode != "continue":
