@@ -59,9 +59,10 @@
       "status and failure logs, and to judge it."));
     root.appendChild(subtabs());
     if (sub === "batches") { renderBatches(); return; }
-    // Transparent host: the (white) panel is only built after the fetch, so the
-    // area shows the page background while loading instead of a blank white box.
-    const host = el("div", {});
+    // Transparent host with a muted placeholder: the (white) panel is only
+    // built after the fetch, so the area keeps the page background while loading
+    // instead of flashing a blank white box.
+    const host = el("div", {}, el("p", { class: "muted" }, "Loading runs…"));
     root.appendChild(host);
     loadRuns(host);
   }
@@ -180,7 +181,9 @@
       api.stream(`/api/run/${runId}/stream`, {
         statusPath: `/api/run/${runId}/status`,
         onEvent: (ev) => {
-          if (ev.type === "stage_complete") {
+          if (ev.type === "progress") {
+            live.textContent += `  ${ev.message}\n`;
+          } else if (ev.type === "stage_complete") {
             const s = ev.stage || {};
             live.textContent += `stage ${s.stage_id}: ${s.status} (oracle=${s.oracle_verdict})\n`;
             if (s.stage_id) { byId[s.stage_id] = s; renderStages(); }

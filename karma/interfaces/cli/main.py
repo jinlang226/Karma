@@ -382,6 +382,10 @@ def _cmd_run_workflow(args: argparse.Namespace) -> None:
         print(json.dumps(workflow, indent=2, default=str))
         return
 
+    # Detailed live progress to stderr (stdout stays clean for the result).
+    def _progress(stage_id: str, message: str) -> None:
+        print(f"  {message}", file=sys.stderr, flush=True)
+
     result = run_workflow(
         workflow,
         runs_dir=runs_dir,
@@ -389,6 +393,7 @@ def _cmd_run_workflow(args: argparse.Namespace) -> None:
         agent_name=merged.get("agent"),
         sandbox_mode=merged.get("sandbox", "local"),
         environment_config=_environment_config(args),
+        on_progress=_progress,
         stage_failure_mode=args.stage_failure_mode,
         final_sweep_mode=args.final_sweep_mode,
         sandbox_options=_build_sandbox_options(args),

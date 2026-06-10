@@ -57,6 +57,7 @@ def _run_operation_units(
     env_vars: dict[str, str] | None = None,
     label: str = "operation",
     phase_timeout_sec: float | None = None,
+    on_progress: Any | None = None,
 ) -> dict[str, Any]:
     """Execute a list of probe/apply/verify operation units in order.
 
@@ -164,6 +165,8 @@ def _run_operation_units(
             break
         unit_id = unit.get("id") or unit.get("name") or "unknown"
         on_fail = unit.get("on_probe_fail", "skip")
+        if on_progress:
+            on_progress(f"    • {label}: {unit_id}")
 
         # Probe
         probe_ok = True
@@ -180,6 +183,8 @@ def _run_operation_units(
         if probe_ok:
             # Target state already present -> no apply needed.
             unit_outcomes.append({"id": unit_id, "ok": True, "skipped": True})
+            if on_progress:
+                on_progress(f"    ✓ {label}: {unit_id} (already present)")
             continue
         if on_fail == "error":
             # Probe failure is fatal: apply cannot establish the state
@@ -227,6 +232,8 @@ def _run_operation_units(
             break
 
         unit_outcomes.append({"id": unit_id, "ok": verify_ok, "phase": "verify"})
+        if on_progress:
+            on_progress(f"    {'✓' if verify_ok else '✗'} {label}: {unit_id}")
         if not verify_ok:
             overall_ok = False
 
@@ -387,6 +394,7 @@ def run_stage(
     prompt_mode: str,
     defer_cleanup: bool = False,
     sandbox_options: dict[str, Any] | None = None,
+    on_progress: Any | None = None,
 ) -> dict[str, Any]:
     """Execute one workflow stage and return its result dict.
 
@@ -489,6 +497,8 @@ def run_stage(
             )
         else:
             phase_timeout = _settings.precondition_timeout_sec
+        if on_progress:
+            on_progress(f"▶ setup: standing up scenario ({len(precond_units)} checks)")
         precond_result = _run_operation_units(
             precond_units,
             role_bindings=role_bindings,
@@ -496,6 +506,7 @@ def run_stage(
             env_vars=command_env,
             label="precondition",
             phase_timeout_sec=phase_timeout,
+            on_progress=on_progress,
         )
         if not precond_result["ok"]:
             # A budget-exhausted phase (``--setup-timeout``) is reported
@@ -584,6 +595,9 @@ def run_stage(
             submitted = False
             stage_status_before_oracle = "running"
         else:
+            if on_progress:
+                on_progress("▶ agent: launching")
+            _agent_start = time.monotonic()
             agent_process = launch_agent(
                 agent_meta,
                 sandbox_mode=sandbox_mode,
@@ -608,6 +622,14 @@ def run_stage(
             stage_status_before_oracle = (
                 "running" if (submitted or agent_exited) else "timeout"
             )
+            if on_progress:
+                _dur = int(time.monotonic() - _agent_start)
+                if submitted:
+                    on_progress(f"✓ agent: submitted ({_dur}s)")
+                elif agent_exited:
+                    on_progress(f"• agent: exited without submit ({_dur}s)")
+                else:
+                    on_progress(f"⏱ agent: timed out ({_dur}s)")
 
         # Step 10: collect evidence
         evidence = collect_evidence(
@@ -619,6 +641,8 @@ def run_stage(
 
         # Step 11: run oracle
         oracle_config = case.get("oracle") or {}
+        if on_progress:
+            on_progress("▶ oracle: verifying")
         oracle_result = run_oracle(
             oracle_config,
             role_bindings=role_bindings,
@@ -627,6 +651,8 @@ def run_stage(
             env_vars=env_vars_adv,
         )
         oracle_verdict = oracle_result.get("verdict")
+        if on_progress:
+            on_progress(f"{'✓' if oracle_verdict == 'pass' else '✗'} oracle: {oracle_verdict}")
 
         # Step 12: adversary lift
         adv_lift_units = row.get("adversary_lift") or []
