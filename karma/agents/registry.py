@@ -29,6 +29,18 @@ _REGISTRY: dict[str, dict[str, Any]] = {
         "entrypoint": "entrypoint.sh",
         "description": "CLI-driven agent for scripted or solver-based runs.",
     },
+    "claude_code": {
+        "folder": _AGENTS_DIR / "claude_code",
+        "dockerfile": _AGENTS_DIR / "claude_code" / "Dockerfile",
+        "entrypoint": "entrypoint.sh",
+        "description": "Claude Code CLI agent (local sandbox: host `claude` subprocess).",
+    },
+    "codex": {
+        "folder": _AGENTS_DIR / "codex",
+        "dockerfile": _AGENTS_DIR / "codex" / "Dockerfile",
+        "entrypoint": "entrypoint.sh",
+        "description": "OpenAI Codex CLI agent (docker sandbox; mount ~/.codex/auth.json).",
+    },
 }
 
 
