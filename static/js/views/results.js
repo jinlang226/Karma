@@ -59,16 +59,21 @@
       "status and failure logs, and to judge it."));
     root.appendChild(subtabs());
     if (sub === "batches") { renderBatches(); return; }
-    const panel = el("div", { class: "panel" });
-    root.appendChild(panel);
-    loadRuns(panel);
+    // Transparent host: the (white) panel is only built after the fetch, so the
+    // area shows the page background while loading instead of a blank white box.
+    const host = el("div", {});
+    root.appendChild(host);
+    loadRuns(host);
   }
 
-  async function loadRuns(panel) {
+  async function loadRuns(host) {
     let runs;
     try { runs = await api.get("/api/runs"); }
-    catch (e) { clear(panel); panel.appendChild(errBox(e)); return; }
-    clear(panel);
+    catch (e) {
+      const p = el("div", { class: "panel" }); p.appendChild(errBox(e));
+      clear(host); host.appendChild(p); return;
+    }
+    const panel = el("div", { class: "panel" });
     const tbl = el("table", {}, el("thead", {}, el("tr", {},
       el("th", {}, "Run"), el("th", {}, "Status"), el("th", {}, "Stages"),
       el("th", {}, "Agent"), el("th", {}, "Score"))));
@@ -87,10 +92,12 @@
     if (!runs.length) body.appendChild(el("tr", {}, el("td", { colspan: "5", class: "muted" }, "No runs yet.")));
     tbl.appendChild(body);
     panel.appendChild(tbl);
+    clear(host);
+    host.appendChild(panel);
     // Auto-refresh while any run is still active so progress updates in place.
     if (runs.some((r) => !isTerminal(r.status))) {
       refreshTimer = setTimeout(() => {
-        if (sub === "runs" && document.body.contains(panel)) loadRuns(panel);
+        if (sub === "runs" && document.body.contains(host)) loadRuns(host);
       }, 3000);
     }
   }

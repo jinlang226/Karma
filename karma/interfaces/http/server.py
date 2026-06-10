@@ -213,6 +213,14 @@ def create_app(
             catalog.list_workflow_files(Path(workflows_dir), Path(resources_dir))
         )
 
+    @app.route("/api/workflows/<name>")
+    def api_workflow_detail(name):
+        try:
+            return jsonify(catalog.get_workflow_detail(
+                Path(workflows_dir), Path(resources_dir), name))
+        except (RuntimeError, ValueError) as exc:
+            return jsonify({"error": str(exc)}), 404
+
     @app.route("/api/jobs")
     def api_jobs():
         return jsonify(list_jobs())
