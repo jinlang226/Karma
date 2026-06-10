@@ -256,7 +256,7 @@ def normalize_workflow(
         WorkflowSchema.model_validate(raw)
     except ValidationError as exc:
         details = "; ".join(
-            f"{'.' .join(str(loc) for loc in e['loc'])}: {e['msg']}"
+            f"{'.'.join(str(loc) for loc in e['loc'])}: {e['msg']}"
             for e in exc.errors()
         )
         raise ValueError(
