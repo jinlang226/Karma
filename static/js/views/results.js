@@ -20,7 +20,7 @@
   let sub = "runs";        // "runs" | "batches"
   let refreshTimer = null;
 
-  const TERMINAL = ["complete", "failed", "error", "passed", "cancelled"];
+  const TERMINAL = ["complete", "failed", "error", "passed", "cancelled", "interrupted"];
   function isTerminal(s) { return TERMINAL.includes(s); }
 
   function errBox(e) {

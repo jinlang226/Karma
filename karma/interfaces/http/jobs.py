@@ -305,3 +305,35 @@ def list_jobs(*, status_filter: str | None = None) -> list[dict[str, Any]]:
         for job in jobs
         if status_filter is None or job.get("status") == status_filter
     ]
+
+
+def reconcile_stale_runs(runs_dir: Path) -> int:
+    """Mark on-disk runs still flagged ``running`` as ``interrupted``.
+
+    Called at server startup, when the in-memory job table is empty -- so any
+    run whose state file still says ``running`` was orphaned by a previous
+    process (e.g. a restart killed its background thread). Without this they
+    show as ``running`` forever in the Results list. Returns the count fixed.
+    """
+    fixed = 0
+    if not runs_dir.exists():
+        return 0
+    for run_dir in runs_dir.iterdir():
+        if not run_dir.is_dir():
+            continue
+        for name in ("workflow_state.json", "run.json"):
+            path = run_dir / name
+            if not path.exists():
+                continue
+            try:
+                data = json.loads(path.read_text())
+            except Exception:
+                continue
+            if data.get("status") == "running":
+                data["status"] = "interrupted"
+                try:
+                    path.write_text(json.dumps(data, indent=2))
+                    fixed += 1
+                except Exception:
+                    pass
+    return fixed
