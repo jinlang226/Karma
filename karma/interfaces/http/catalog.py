@@ -147,6 +147,21 @@ def list_runs(runs_dir: Path) -> list[dict[str, Any]]:
             "judged": False,
         }
 
+        # Per-stage pass/fail progress + the submitted config, so the Results
+        # list can show "2/3 passed" and which agent/target ran.
+        stages = data.get("stages") or data.get("stage_results") or []
+        entry["passed"] = sum(1 for s in stages if s.get("status") == "pass")
+        entry["failed"] = sum(
+            1 for s in stages if s.get("status") in ("fail", "failed", "error", "timeout")
+        )
+        cfg = _read_json(run_dir / "config.json") or {}
+        entry["agent"] = cfg.get("agent")
+        entry["sandbox"] = cfg.get("sandbox")
+        entry["target"] = (
+            cfg.get("workflow_id")
+            or (f"{cfg.get('service')}/{cfg.get('case_name')}" if cfg.get("service") else None)
+        )
+
         stages_dir = run_dir / "stages"
         if stages_dir.exists():
             stage_ids = sorted(
@@ -216,6 +231,39 @@ def get_stage_detail(runs_dir: Path, run_id: str, stage_id: str) -> dict[str, An
         "oracle": _read_json(sdir / "oracle.json"),
         "agent_log": _tail(sdir / "agent.log"),
         "prompt": _tail(sdir / "prompt.txt", max_bytes=4096),
+    }
+
+
+def get_run_detail(runs_dir: Path, run_id: str) -> dict[str, Any]:
+    """Return a run's header detail for the Results view: status, the submitted
+    config, and the per-stage status list. Drill into a stage via
+    :func:`get_stage_detail`.
+
+    Raises
+    ------
+    RuntimeError
+        When the id is unsafe or the run directory is missing.
+    """
+    if not _SAFE_ID.match(run_id) or ".." in run_id:
+        raise RuntimeError("invalid run id")
+    run_dir = runs_dir / run_id
+    if not run_dir.is_dir():
+        raise RuntimeError(f"run not found: {run_id}")
+    meta = _read_json(run_dir / "run.json") or _read_json(run_dir / "workflow_state.json") or {}
+    config = _read_json(run_dir / "config.json") or {}
+    raw_stages = meta.get("stages") or meta.get("stage_results") or []
+    stages = [{
+        "stage_id": s.get("stage_id"),
+        "status": s.get("status"),
+        "oracle_verdict": s.get("oracle_verdict"),
+        "error": s.get("error"),
+    } for s in raw_stages]
+    return {
+        "run_id": run_id,
+        "status": meta.get("status", "unknown"),
+        "config": config,
+        "stages": stages,
+        "duration_sec": meta.get("duration_sec"),
     }
 
 
