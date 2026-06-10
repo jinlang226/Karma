@@ -97,6 +97,7 @@ def create_app(
                 payload,
                 runs_dir=runs_dir,
                 resources_dir=resources_dir,
+                workflows_dir=Path(workflows_dir),
             )
         except (ValueError, RuntimeError) as exc:
             return jsonify({"error": str(exc)}), 400
