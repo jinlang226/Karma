@@ -28,6 +28,7 @@
       nav.appendChild(
         el("button", {
           class: "tab" + (view.id === activeId ? " active" : ""),
+          "aria-current": view.id === activeId ? "page" : null,
           onClick: () => activate(view.id),
         }, view.label)
       );
@@ -88,7 +89,8 @@
   function ensureToastHost() {
     let host = document.getElementById("toasts");
     if (!host) {
-      host = el("div", { id: "toasts" });
+      // role=status + aria-live so screen readers announce toasts as they appear.
+      host = el("div", { id: "toasts", role: "status", "aria-live": "polite" });
       document.body.appendChild(host);
     }
     return host;

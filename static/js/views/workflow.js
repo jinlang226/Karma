@@ -381,7 +381,7 @@
 
   // --- Jobs panel -----------------------------------------------------------
   function jobsPanel() {
-    const panel = el("div", { class: "panel" });
+    const panel = el("div", { class: "panel", id: "wf-jobs-panel" });
     panel.appendChild(el("h3", {}, "Jobs"));
     panel.appendChild(el("p", { class: "field-help" },
       "Runs started from this page while the server is up. Click Refresh to update."));
@@ -419,6 +419,9 @@
   function streamInto(runId) {
     const log = document.getElementById("wf-jobs-log");
     if (!log) return;
+    // Bring the Jobs section into view so the live run output is visible at once.
+    const panel = document.getElementById("wf-jobs-panel");
+    if (panel) panel.scrollIntoView({ behavior: "smooth", block: "start" });
     const detail = document.getElementById("wf-jobs-detail");
     if (detail) clear(detail);
     log.textContent = `Streaming ${runId}…\n`;
