@@ -295,11 +295,16 @@ def launch_agent(
     container_id = result.stdout.strip()
     # Attach log streaming in background by running docker logs -f as a subprocess.
     log_path = run_dir / "agent.log"
+    # `docker logs -f` inherits its own dup of this fd, so the parent's copy can
+    # be closed right after Popen -- otherwise it leaks a descriptor per run.
     log_fh = log_path.open("w")
-    logs_proc = subprocess.Popen(
-        ["docker", "logs", "-f", container_id],
-        stdout=log_fh, stderr=log_fh,
-    )
+    try:
+        logs_proc = subprocess.Popen(
+            ["docker", "logs", "-f", container_id],
+            stdout=log_fh, stderr=log_fh,
+        )
+    finally:
+        log_fh.close()
     # We return the logs proc as the handle's proc so .wait() tracks container termination.
     return AgentProcess(logs_proc, sandbox_mode="docker", container_id=container_id, run_dir=run_dir)
 
