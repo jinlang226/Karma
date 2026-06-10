@@ -62,7 +62,7 @@
           el("td", {}, statusBadge(r.status)),
           el("td", {}, statusBadge(r.judge_status)),
           el("td", {}, scoreCell(r.judge_score)),
-          el("td", {}, actionBtns("run", r.path))));
+          el("td", {}, actionBtns("run", r.path, r.status))));
       }
       if (!runs.length) body.appendChild(el("tr", {}, el("td", { colspan: "5", class: "muted" }, "No runs found.")));
       tbl.appendChild(body);
@@ -93,7 +93,13 @@
     } catch (e) { panel.appendChild(errBox(e)); }
   }
 
-  function actionBtns(targetType, targetPath) {
+  // Only a finished run/batch can be judged; a still-running one has no
+  // complete results yet. `status` undefined (batches) => always judgeable.
+  const TERMINAL = ["complete", "failed", "error", "passed", "cancelled"];
+  function actionBtns(targetType, targetPath, status) {
+    if (status !== undefined && !TERMINAL.includes(status)) {
+      return el("span", { class: "muted", title: "Run is still in progress" }, "in progress");
+    }
     return el("span", { class: "toolbar", style: "margin:0" },
       el("button", { class: "btn", onClick: () => startJudge(targetType, targetPath, false) }, "Judge"),
       el("button", { class: "btn secondary", onClick: () => startJudge(targetType, targetPath, true) }, "Dry run"));

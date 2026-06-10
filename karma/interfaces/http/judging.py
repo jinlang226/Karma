@@ -129,6 +129,17 @@ def start_judge_job(
     if not path.exists():
         raise ValueError(f"target path not found: {target_path}")
 
+    # A run that is still in progress has no complete results to judge.
+    if target_type == "run":
+        state = (catalog._read_json(path / "workflow_state.json")
+                 or catalog._read_json(path / "run.json") or {})
+        status = str(state.get("status") or "")
+        if status and status not in ("complete", "failed", "error", "passed", "cancelled"):
+            raise ValueError(
+                f"run '{path.name}' is still in progress ({status}); "
+                "wait for it to finish before judging"
+            )
+
     job_id = generate_run_id(f"judge-{target_type}")
     _register(job_id, {
         "job_id": job_id,
