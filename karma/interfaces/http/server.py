@@ -115,7 +115,11 @@ def create_app(
 
     @app.route("/api/run/<run_id>/stream")
     def api_run_stream(run_id):
-        if not hub.is_known(run_id):
+        # A just-submitted run is a registered job but has no buffered events
+        # yet -- its first stage can be tens of seconds away. Accept it (the
+        # live subscriber then receives events as they fire) instead of 404-ing
+        # the race between the UI opening the stream and the first event.
+        if not hub.is_known(run_id) and get_job_status(run_id) is None:
             return jsonify({"error": "not found"}), 404
         return Response(
             _sse_stream(run_id),
