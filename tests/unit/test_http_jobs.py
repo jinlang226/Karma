@@ -152,3 +152,15 @@ def test_stream_route_accepts_run_before_first_event(monkeypatch):
         assert jobs.get_job_status("run-xyz") is not None  # but the job exists
     finally:
         jobs._active_jobs.pop("run-xyz", None)
+
+
+def test_workflow_path_confined_at_http_boundary(tmp_path):
+    """With workflows_dir set (the HTTP boundary), a traversal path is rejected;
+    without it (direct callers) any path is allowed."""
+    from karma.interfaces.http.jobs import translate_ui_request
+    import pytest as _pytest
+    with _pytest.raises(ValueError):
+        translate_ui_request(
+            {"workflow_path": "../etc/passwd"},
+            resources_dir=tmp_path, workflows_dir=tmp_path / "workflows",
+        )

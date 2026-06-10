@@ -37,6 +37,9 @@
   function activate(id) {
     activeId = id;
     if (location.hash !== "#" + id) location.hash = id;
+    // Switching views: close any live SSE stream so it stops firing into the
+    // page we are leaving (stale toasts / appends to detached nodes).
+    if (KARMA.api && KARMA.api.closeAllStreams) KARMA.api.closeAllStreams();
     renderNav();
     if (KARMA.setBreadcrumb) KARMA.setBreadcrumb(null);   // each view sets its own
     const container = clear(document.getElementById("view"));

@@ -52,6 +52,7 @@ def translate_ui_request(
     payload: dict[str, Any],
     *,
     resources_dir: Path,
+    workflows_dir: Path | None = None,
 ) -> dict[str, Any]:
     """Return a normalized workflow dict from a raw UI form submission.
 
@@ -91,8 +92,20 @@ def translate_ui_request(
 
     if "workflow_path" in payload:
         from pathlib import Path as _Path
+        candidate = _Path(str(payload["workflow_path"]))
+        load_path = candidate
+        # When a workflows_dir is supplied (the HTTP boundary), confine the path
+        # to that tree -- reject absolute paths and ".." traversal so the
+        # endpoint can't be driven to read arbitrary files. Direct callers
+        # (omit workflows_dir) are unrestricted.
+        if workflows_dir is not None:
+            root = _Path(workflows_dir).resolve()
+            load_path = (candidate.resolve() if candidate.is_absolute()
+                         else (_Path.cwd() / candidate).resolve())
+            if load_path != root and root not in load_path.parents:
+                raise ValueError("workflow_path must be under the workflows/ directory")
         try:
-            raw = load_workflow_file(_Path(str(payload["workflow_path"])))
+            raw = load_workflow_file(load_path)
         except RuntimeError as exc:
             raise ValueError(str(exc)) from exc
         return normalize_workflow(raw, resources_dir=resources_dir)
@@ -124,6 +137,7 @@ def submit_job(
     *,
     runs_dir: Path,
     resources_dir: Path,
+    workflows_dir: Path | None = None,
     on_stage_complete: Any | None = None,
 ) -> str:
     """Translate a UI payload, run it in the background, and return the run ID.
@@ -150,7 +164,9 @@ def submit_job(
         Run ID for :func:`get_job_status`, :func:`cancel_job`, and the SSE
         stream.
     """
-    workflow = translate_ui_request(payload, resources_dir=resources_dir)
+    workflow = translate_ui_request(
+        payload, resources_dir=resources_dir, workflows_dir=workflows_dir
+    )
     run_id = generate_run_id(str(workflow.get("id") or "workflow"))
     _register_job(run_id, {"run_id": run_id, "status": "running", "kind": "run"})
 

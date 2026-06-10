@@ -36,7 +36,18 @@
     return data;
   }
 
+  // The UI shows one live stream at a time. Track active stream handles so a
+  // new stream (or a view switch) can close stale ones -- otherwise old
+  // EventSources keep firing into the page and garble it (interleaved logs,
+  // cross-view toasts, appends to detached nodes).
+  const _streams = new Set();
+  function closeAllStreams() {
+    for (const h of [..._streams]) { try { h.close(); } catch (_e) { /* ignore */ } }
+    _streams.clear();
+  }
+
   KARMA.api = {
+    closeAllStreams,
     get: (path) => request("GET", path),
     post: (path, body) => request("POST", path, body),
 
@@ -47,6 +58,7 @@
      * (if given) when EventSource is missing or errors immediately.
      */
     stream(path, { onEvent, onDone, statusPath, pollMs = 2000 } = {}) {
+      closeAllStreams();   // only one live stream in the UI at a time
       let closed = false;
       let pollTimer = null;
 
@@ -72,7 +84,9 @@
 
       if (typeof EventSource === "undefined") {
         startPolling();
-        return { close() { closed = true; clearTimeout(pollTimer); } };
+        const handle = { close() { closed = true; clearTimeout(pollTimer); _streams.delete(handle); } };
+        _streams.add(handle);
+        return handle;
       }
 
       const es = new EventSource(path);
@@ -100,7 +114,9 @@
         if (!gotAny) { es.close(); startPolling(); }
         else finish();
       };
-      return { close() { closed = true; es.close(); clearTimeout(pollTimer); } };
+      const handle = { close() { closed = true; es.close(); clearTimeout(pollTimer); _streams.delete(handle); } };
+      _streams.add(handle);
+      return handle;
     },
   };
 
