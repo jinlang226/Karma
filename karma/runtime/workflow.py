@@ -26,7 +26,7 @@ import time
 from pathlib import Path
 from typing import Any
 
-from .case import run_stage
+from .case import run_stage, _apply_namespace_binding
 from ..oracle import run_regression_sweep
 from ..adversary import collect_pending_lift_units
 from .. import protocol
@@ -101,7 +101,10 @@ def _run_final_regression_sweep(
         stage_id = row["stage_id"]
         case = row.get("case") or {}
         roles = row.get("namespace_roles") or ["default"]
-        bindings = environment.bind_namespace_roles(roles, run_dir.name)
+        bindings = _apply_namespace_binding(
+            environment.bind_namespace_roles(roles, run_dir.name),
+            row.get("namespace_binding"),
+        )
         oracle_configs.append((stage_id, case.get("oracle") or {}))
         role_bindings_map[stage_id] = bindings
         env_vars_map[stage_id] = {

@@ -58,6 +58,10 @@ class _StageSpec(BaseModel):
     case: str
     param_overrides: dict[str, Any] = {}
     namespaces: list[str] = []
+    # Maps a case's logical roles (e.g. source/target/default) onto the
+    # physical namespace identities declared in `namespaces` (e.g.
+    # cluster_a/cluster_b). Lets a migration alternate direction across stages.
+    namespace_binding: dict[str, str] = {}
     agent_timeout_sec: int = _DEFAULT_AGENT_TIMEOUT_SEC
     retries: int = 0
 
@@ -282,6 +286,9 @@ def normalize_workflow(
             "case_name": str(s.get("case") or ""),
             "param_overrides": resolved_overrides,
             "namespaces": ns_list,
+            "namespace_binding": {
+                str(k): str(v) for k, v in (s.get("namespace_binding") or {}).items()
+            },
             "agent_timeout_sec": int(s.get("agent_timeout_sec") or _DEFAULT_AGENT_TIMEOUT_SEC),
             "retries": int(s.get("retries") or 0),
             "_warnings": w,
@@ -383,6 +390,7 @@ def resolve_workflow_rows(
                 or (normalized.get("namespace_contract") or {}).get("required_roles")
                 or [_DEFAULT_NAMESPACE_ALIAS]
             ),
+            "namespace_binding": stage.get("namespace_binding") or None,
             "adversary_deploy": deploy_units,
             "adversary_lift": lift_units,
             "adversary_hint": hint,
