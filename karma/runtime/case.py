@@ -532,7 +532,13 @@ def run_stage(
         # (e.g. `run-case` with no --agent, or an operator-driven manual run).
         # In that case there is nothing to launch or wait on, so the stage
         # outcome is determined solely by the oracle verdict.
-        agent_env_vars = {**env_vars_adv, "KUBECONFIG": str(agent_kubeconfig)}
+        # In docker mode the kubeconfig is bind-mounted at /root/.kube/config
+        # (see write_agent_bundle/launch_agent), so KUBECONFIG must point there,
+        # not at the host path the container cannot see.
+        kubeconfig_env = (
+            "/root/.kube/config" if sandbox_mode == "docker" else str(agent_kubeconfig)
+        )
+        agent_env_vars = {**env_vars_adv, "KUBECONFIG": kubeconfig_env}
         # A per-run launch command (--agent-cmd) is itself an agent to launch,
         # even when no agent is registered (folder/entrypoint absent).
         command_override = opts.get("agent_cmd")
