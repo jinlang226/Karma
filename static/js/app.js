@@ -115,6 +115,61 @@
   };
   KARMA.toastError = (e) => KARMA.toast(e && e.message ? e.message : String(e), "error");
 
+  // --- Stage failure detail -----------------------------------------------
+  function logBlock(title, text) {
+    return el("div", { class: "log-block" },
+      el("div", { class: "log-block-title" }, title),
+      el("pre", { class: "log" }, text));
+  }
+
+  // A failure-detail block for one stage: status + error inline, plus a lazy
+  // "view logs" expander that pulls the triggering precondition command, the
+  // oracle output, and the agent log from /api/run/<id>/stages/<stage_id>.
+  // `stage` is the stage object from a stage_complete event.
+  KARMA.stageDetail = function stageDetail(runId, stage) {
+    const sid = stage.stage_id || "?";
+    const st = KARMA.labels && KARMA.labels.status
+      ? KARMA.labels.status(stage.status) : { text: stage.status, cls: "bad" };
+    const wrap = el("div", { class: "stage-detail" });
+    wrap.appendChild(el("div", { class: "stage-detail-head" },
+      el("strong", {}, sid),
+      el("span", { class: "badge " + (st.cls || "bad") }, st.text || stage.status || "?"),
+      stage.oracle_verdict ? el("span", { class: "muted" }, "oracle: " + stage.oracle_verdict) : null));
+    if (stage.error) wrap.appendChild(el("div", { class: "stage-error" }, stage.error));
+
+    const body = el("div", { class: "stage-logs", style: "display:none" });
+    let loaded = false;
+    const toggle = el("button", { class: "btn secondary small" }, "▸ view logs");
+    toggle.addEventListener("click", async () => {
+      const open = body.style.display === "none";
+      body.style.display = open ? "" : "none";
+      toggle.textContent = open ? "▾ hide logs" : "▸ view logs";
+      if (!open || loaded) return;
+      loaded = true;
+      body.appendChild(el("span", { class: "muted" }, "Loading…"));
+      try {
+        const d = await KARMA.api.get(`/api/run/${runId}/stages/${sid}`);
+        clear(body);
+        if (d.precondition_log)
+          body.appendChild(logBlock("Setup (the command that triggered the failure)", d.precondition_log));
+        if (d.oracle) {
+          const o = d.oracle;
+          body.appendChild(logBlock("Oracle" + (o.verdict ? ` (${o.verdict})` : ""),
+            o.output || JSON.stringify(o, null, 2)));
+        }
+        if (d.agent_log) body.appendChild(logBlock("Agent log", d.agent_log));
+        if (!d.precondition_log && !d.oracle && !d.agent_log)
+          body.appendChild(el("p", { class: "muted" }, "No logs captured for this stage."));
+      } catch (e) {
+        clear(body);
+        body.appendChild(el("div", { class: "error-box" }, e.message));
+      }
+    });
+    wrap.appendChild(toggle);
+    wrap.appendChild(body);
+    return wrap;
+  };
+
   async function refreshClusterBanner() {
     const banner = document.getElementById("cluster-banner");
     if (!banner) return;

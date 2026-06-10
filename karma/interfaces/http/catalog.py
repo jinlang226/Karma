@@ -15,6 +15,7 @@ route functions there call into this module and serialize the result.
 from __future__ import annotations
 
 import json
+import re
 import subprocess
 import time
 from pathlib import Path
@@ -162,6 +163,60 @@ def list_runs(runs_dir: Path) -> list[dict[str, Any]]:
                 entry["judge_score"] = round(sum(scores) / len(scores), 3)
         runs.append(entry)
     return runs
+
+
+_SAFE_ID = re.compile(r"^[A-Za-z0-9._-]+$")
+
+
+def _tail(path: Path, max_bytes: int = 16384) -> str | None:
+    """Return up to the last *max_bytes* of a text file, or None if absent."""
+    try:
+        data = path.read_text(errors="replace")
+    except Exception:
+        return None
+    if len(data) > max_bytes:
+        return "...(earlier output truncated)...\n" + data[-max_bytes:]
+    return data
+
+
+def get_stage_detail(runs_dir: Path, run_id: str, stage_id: str) -> dict[str, Any]:
+    """Return one stage's artifacts for the UI: its status/error plus the
+    precondition log (the command that triggered a setup failure), the oracle
+    result (expected vs actual), and the agent log.
+
+    Raises
+    ------
+    RuntimeError
+        When the ids are unsafe or the run/stage directory is missing.
+    """
+    if not (_SAFE_ID.match(run_id) and _SAFE_ID.match(stage_id)) \
+            or ".." in run_id or ".." in stage_id:
+        raise RuntimeError("invalid run or stage id")
+    run_dir = runs_dir / run_id
+    sdir = run_dir / "stages" / stage_id
+    if not sdir.is_dir():
+        raise RuntimeError(f"stage not found: {run_id}/{stage_id}")
+
+    status = error = oracle_verdict = None
+    meta = _read_json(run_dir / "run.json") or _read_json(run_dir / "workflow_state.json") or {}
+    for s in (meta.get("stages") or []):
+        if s.get("stage_id") == stage_id:
+            status = s.get("status")
+            error = s.get("error")
+            oracle_verdict = s.get("oracle_verdict")
+            break
+
+    return {
+        "run_id": run_id,
+        "stage_id": stage_id,
+        "status": status,
+        "error": error,
+        "oracle_verdict": oracle_verdict,
+        "precondition_log": _tail(sdir / "precondition.log"),
+        "oracle": _read_json(sdir / "oracle.json"),
+        "agent_log": _tail(sdir / "agent.log"),
+        "prompt": _tail(sdir / "prompt.txt", max_bytes=4096),
+    }
 
 
 # Subfolder under workflows/ where UI-built workflows are saved.

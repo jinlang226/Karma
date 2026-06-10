@@ -131,6 +131,13 @@ def create_app(
             },
         )
 
+    @app.route("/api/run/<run_id>/stages/<stage_id>")
+    def api_run_stage(run_id, stage_id):
+        try:
+            return jsonify(catalog.get_stage_detail(Path(runs_dir), run_id, stage_id))
+        except RuntimeError as exc:
+            return jsonify({"error": str(exc)}), 404
+
     @app.route("/api/run/<run_id>/cancel", methods=["POST"])
     def api_run_cancel(run_id):
         if not cancel_job(run_id):

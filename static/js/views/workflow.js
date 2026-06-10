@@ -389,6 +389,7 @@
       el("button", { class: "btn secondary", onClick: refreshJobs }, "Refresh")));
     panel.appendChild(el("div", { id: "wf-jobs-table" }));
     panel.appendChild(el("pre", { class: "log", id: "wf-jobs-log" }, "Run output appears here.\n"));
+    panel.appendChild(el("div", { id: "wf-jobs-detail" }));
     setTimeout(refreshJobs, 0);
     return panel;
   }
@@ -418,6 +419,8 @@
   function streamInto(runId) {
     const log = document.getElementById("wf-jobs-log");
     if (!log) return;
+    const detail = document.getElementById("wf-jobs-detail");
+    if (detail) clear(detail);
     log.textContent = `Streaming ${runId}…\n`;
     api.stream(`/api/run/${runId}/stream`, {
       statusPath: `/api/run/${runId}/status`,
@@ -425,6 +428,7 @@
         if (ev.type === "stage_complete") {
           const s = ev.stage || {};
           log.textContent += `stage ${s.stage_id}: ${s.status}\n`;
+          if (s.status !== "pass" && detail) detail.appendChild(KARMA.stageDetail(runId, s));
         } else if (ev.type === "run_complete") {
           log.textContent += `run complete: ${ev.status}\n`;
           KARMA.toast("Run " + KARMA.labels.status(ev.status).text.toLowerCase(),
