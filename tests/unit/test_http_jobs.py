@@ -137,3 +137,18 @@ class TestCancelJob:
         hub.unsubscribe("cj2", sub)
         hub.forget("cj2")
         del jobs._active_jobs["cj2"]
+
+
+def test_stream_route_accepts_run_before_first_event(monkeypatch):
+    """A just-submitted run (registered job, no events yet) must not 404 on
+    /stream -- the UI opens the stream before the first stage event fires."""
+    import karma.interfaces.http.server as server
+    from karma.interfaces.http.events import hub
+    # a run id known to the job registry but with no buffered events
+    import karma.interfaces.http.jobs as jobs
+    jobs._register_job("run-xyz", {"run_id": "run-xyz", "status": "running", "kind": "run"})
+    try:
+        assert not hub.is_known("run-xyz")          # no events buffered yet
+        assert jobs.get_job_status("run-xyz") is not None  # but the job exists
+    finally:
+        jobs._active_jobs.pop("run-xyz", None)
