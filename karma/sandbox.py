@@ -243,6 +243,15 @@ def launch_agent(
     docker_cmd = ["docker", "run", "-d", "--rm"]
     for k, v in env_vars.items():
         docker_cmd += ["-e", f"{k}={v}"]
+    # Forward agent auth from the host so the in-container CLI can authenticate
+    # (Claude: CLAUDE_CODE_OAUTH_TOKEN / ANTHROPIC_API_KEY; Codex/OpenAI: keys).
+    # File-based creds (e.g. ~/.codex/auth.json) are mounted via extra_mounts /
+    # --agent-auth-path instead.
+    for _k in ("CLAUDE_CODE_OAUTH_TOKEN", "ANTHROPIC_API_KEY", "OPENAI_API_KEY",
+               "CODEX_MODEL", "KARMA_CLAUDE_AGENT_MODEL"):
+        _v = os.environ.get(_k)
+        if _v:
+            docker_cmd += ["-e", f"{_k}={_v}"]
     docker_cmd += ["-v", f"{run_dir}:/workspace"]
     if kubeconfig_path:
         docker_cmd += ["-v", f"{kubeconfig_path}:/root/.kube/config:ro"]
@@ -253,6 +262,25 @@ def launch_agent(
         # Override the image's default command (old --agent-cmd, docker mode).
         import shlex
         docker_cmd += shlex.split(command_override)
+
+    # Fail with a clear message if the image is not built locally, rather than
+    # letting `docker run` emit a cryptic registry-pull error.
+    try:
+        inspect = subprocess.run(
+            ["docker", "image", "inspect", image_tag], capture_output=True, text=True
+        )
+    except FileNotFoundError:
+        raise RuntimeError(
+            "docker binary not found on PATH; install Docker to use sandbox_mode=docker"
+        )
+    if inspect.returncode != 0:
+        df, folder = agent_meta.get("dockerfile"), agent_meta.get("folder")
+        hint = (f"docker build -t {image_tag} -f {df} {folder}"
+                if df and folder else "build the agent image")
+        raise RuntimeError(
+            f"Docker image '{image_tag}' not found locally. Build it first "
+            f"(run with --agent-build, or: {hint}), or use --sandbox local."
+        )
 
     try:
         result = subprocess.run(docker_cmd, capture_output=True, text=True)
