@@ -79,7 +79,7 @@
       el("th", {}, "Agent"), el("th", {}, "Score"))));
     const body = el("tbody", {});
     for (const r of runs) {
-      const total = r.stage_count != null ? r.stage_count : ((r.passed || 0) + (r.failed || 0));
+      const total = r.stage_total || (r.stage_count != null ? r.stage_count : ((r.passed || 0) + (r.failed || 0)));
       const prog = total ? `${r.passed || 0}/${total}` : "—";
       const agent = r.agent ? KARMA.labels.agent(r.agent) : el("span", { class: "muted" }, "none");
       body.appendChild(el("tr", { class: "clickable", onClick: () => renderDetail(r.run_id) },
