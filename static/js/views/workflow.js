@@ -61,7 +61,10 @@
     const body = el("tbody", { id: "wf-files-body" });
     tbl.appendChild(body);
     panel.appendChild(el("div", { class: "scroll-list" }, tbl));
-    loadFiles();
+    // Defer until the panel is in the DOM -- loadFiles looks the tbody up by id,
+    // which fails if called before this panel is appended (same pattern the
+    // Jobs panel uses).
+    setTimeout(loadFiles, 0);
     return panel;
   }
 
