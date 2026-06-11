@@ -180,58 +180,44 @@
   // Palette for adversary injections (distinct, theme-friendly).
   const ADV_COLORS = ["#c6632d", "#2f6f6d", "#7b5ea7", "#b08900", "#a23b5e", "#3a7d44"];
 
-  KARMA.workflowStagesPanel = function (wf, title) {
+  KARMA.workflowStagesPanel = function (wf, title, onStageClick) {
     const panel = el("div", { class: "panel" });
     panel.appendChild(el("h3", {}, title || "Workflow stages"));
     const stages = wf.stages || [];
-    // Map stage id -> order index, then resolve each injection's covered range.
     const idx = {};
     stages.forEach((s, i) => { idx[s.id] = i; });
     const injections = (wf.adversary || []).map((a, i) => ({
       scenario: a.scenario, inject: a.inject_at_stage, lift: a.lift_at_stage,
       color: ADV_COLORS[i % ADV_COLORS.length],
-      from: idx[a.inject_at_stage], to: idx[a.lift_at_stage],
+      from: idx[a.inject_at_stage],
+      to: (idx[a.lift_at_stage] == null ? idx[a.inject_at_stage] : idx[a.lift_at_stage]),
     })).filter((a) => a.from != null);
     // Scrollable so a many-stage workflow (e.g. 30 stages) stays a bounded block.
     const list = el("div", { class: "stage-scroll" });
     stages.forEach((s, i) => {
-      const line = el("div", { class: "stage-line" });
-      // Left gutter: one VERTICAL lane per injection, colored over its window,
-      // so overlapping injections sit in separate columns (not stacked stripes).
-      if (injections.length) {
-        const gutter = el("div", { class: "adv-gutter" });
-        injections.forEach((a) => {
-          const cell = el("div", { class: "adv-cell" });
-          if (i >= a.from && i <= a.to) {
-            cell.style.background = a.color;
-            if (i === a.from) cell.classList.add("adv-start");
-            if (i === a.to) cell.classList.add("adv-end");
-          }
-          gutter.appendChild(cell);
-        });
-        line.appendChild(gutter);
+      const cover = injections.filter((a) => i >= a.from && i <= a.to);
+      const row = el("div", { class: "builder-row" + (cover.length ? " stage-injected" : "") + (onStageClick ? " clickable" : "") });
+      // Tint the WHOLE box with the covering injection color(s).
+      if (cover.length === 1) {
+        row.style.background = cover[0].color + "1f";
+        row.style.borderColor = cover[0].color + "77";
+      } else if (cover.length > 1) {
+        row.style.background = `linear-gradient(135deg, ${cover.map((a) => a.color + "2b").join(", ")})`;
       }
-      const row = el("div", { class: "builder-row" });
-      row.appendChild(el("div", { class: "builder-row-head" }, el("span", {}, s.id)));
+      if (onStageClick && s.service && s.case_name) row.addEventListener("click", () => onStageClick(s));
+      // Header: stage id + inject/lift marks INSIDE the box.
+      const head = el("div", { class: "builder-row-head" }, el("span", {}, s.id));
+      injections.filter((a) => a.from === i).forEach((a) => head.appendChild(
+        el("span", { class: "adv-badge", style: `color:${a.color};border-color:${a.color}` }, "⚠ " + KARMA.labels.scenario(a.scenario))));
+      injections.filter((a) => a.to === i).forEach((a) => head.appendChild(
+        el("span", { class: "adv-badge lift", style: `color:${a.color}` }, "↑ lifted")));
+      row.appendChild(head);
       row.appendChild(el("div", { class: "kv" }, el("span", { class: "k" }, "Service"), el("span", {}, KARMA.labels.service(s.service))));
       row.appendChild(el("div", { class: "kv" }, el("span", { class: "k" }, "Case"), el("span", {}, KARMA.labels.case(s.case_name))));
       for (const [k, v] of Object.entries(s.param_overrides || {})) {
         row.appendChild(el("div", { class: "kv" }, el("span", { class: "k" }, KARMA.labels.case(k)), el("span", {}, String(v))));
       }
-      line.appendChild(row);
-      // Right column: inject/lift markers stacked VERTICALLY, one per injection.
-      const marks = [];
-      injections.forEach((a) => { if (a.from === i) marks.push({ t: "⚠ " + KARMA.labels.scenario(a.scenario), c: a.color, b: true }); });
-      injections.forEach((a) => { if (a.to === i) marks.push({ t: "↑ lifted", c: a.color, b: false }); });
-      if (marks.length) {
-        const col = el("div", { class: "adv-labels" });
-        marks.forEach((m) => col.appendChild(el("span", {
-          class: "adv-badge" + (m.b ? "" : " lift"),
-          style: m.b ? `color:${m.c};border-color:${m.c}` : `color:${m.c}`,
-        }, m.t)));
-        line.appendChild(col);
-      }
-      list.appendChild(line);
+      list.appendChild(row);
     });
     if (!stages.length) list.appendChild(el("p", { class: "muted" }, "No stages."));
     panel.appendChild(list);

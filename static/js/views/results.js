@@ -209,6 +209,7 @@
     // If the run came from a workflow, show its stage definition + adversary.
     // HTTP runs store workflow_path; CLI run-workflow stores workflow_id (the
     // file stem). Single-case runs have a "service/case" id -> no saved file.
+    const onStage = (s) => KARMA.showCase(s.service, s.case_name);
     const wfRef = cfg.workflow_path
       ? String(cfg.workflow_path).split("/").pop()
       : (cfg.workflow_id && !cfg.workflow_id.includes("/") ? cfg.workflow_id + ".yaml" : null);
@@ -216,8 +217,12 @@
       const slot = el("div", {});
       root.appendChild(slot);
       api.get(`/api/workflows/${wfRef}`)
-        .then((wf) => { slot.appendChild(KARMA.workflowStagesPanel(wf, "Stages")); })
+        .then((wf) => { slot.appendChild(KARMA.workflowStagesPanel(wf, "Stages", onStage)); })
         .catch(() => {});
+    } else if (cfg.service && cfg.case_name) {
+      // Single-case run: synthesize a one-stage block from the config.
+      const oneStage = { stages: [{ id: "stage_1", service: cfg.service, case_name: cfg.case_name, param_overrides: cfg.params || {} }] };
+      root.appendChild(KARMA.workflowStagesPanel(oneStage, "Stage", onStage));
     }
   }
 
