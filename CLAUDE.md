@@ -91,7 +91,7 @@ Use the project virtualenv at `.venv` (Python 3.14, pytest 9 installed).
 ### Run a single test case (CLI)
 
 ```bash
-python orchestrator.py run-case rabbitmq-experiments failover \
+python orchestrator.py run-case rabbitmq failover \
   --agent cli_runner --sandbox local
 ```
 
@@ -186,3 +186,87 @@ external setup:
 - **Docstrings:** every function has a docstring; every file has a header/overview
   comment. Keep docstrings short enough not to truncate on a normal terminal
   width — prefer concise one-to-three-line summaries.
+
+## WORK LOG — real-agent validation & hardening (2026-06-11)
+
+**Status: largely complete — see `FINAL_REPORT.md` for the full writeup.** The
+plan below is the historical task list; the headline outcomes are: 58/79 (73%)
+real-agent pass rate, 2 framework regressions fixed (`required_roles: []`
+namespace + per-command timeout), 3 mongodb case bugs fixed, the adversary
+capstone + regression sweep validated, agent-log/retry/judge/UI features
+delivered. Remaining: 4 deep rabbitmq/cockroachdb porting bugs + nginx multi-node
+(reported, not fixed) and the adversary-cases-in-Cases-tab follow-up.
+
+### Original plan (added 2026-06-11)
+
+Hardening sequence on the `refactor` branch. Every test/oracle/precondition fix is
+referenced against the OLD repo at `../kubernetes-microservice-benchmark` (it has
+`app/`, 94 cases). Validation runs live in `runs/` (real `claude_code`/**sonnet** agent
+runs). Driver: `/tmp/mt/driver.py` (env `MT_RUNS`/`MT_RESULTS`; runs
+`orchestrator.py run-case <svc> <case> --agent claude_code --sandbox local --timeout N`).
+Framework verdict so far: CLEAN — the only framework bug was the `required_roles: []`
+namespace regression (fixed, 2 commits).
+
+**Locked decisions:** retry is a WORKFLOW-level, stage-agnostic setting (one
+`max_attempts`, default 1, applies to every stage), retries on oracle **fail**, each
+attempt re-runs the whole stage with the FULL per-stage time limit. Keep the agent time
+limit MODEST (do not bloat to 30 min) — fix the verbose agent log FIRST, then reason
+through time-up failures via the log. Judge: score **0–100.0, 0.1 precision**; input =
+stage config + prompt + **agent log** + **regression-sweep result**; run on ALL runs incl.
+failed. Prioritize SPEED (parallel clusters OK; the monthly spend limit auto-stops the
+agent — handle/resume if hit). Adversary capstone ≈ **10 stages**, 1–2 injections.
+
+**PHASE A — code only, commit each (no cluster/agent):**
+- A1 (7) agent.log: `karma/agents/claude_code/entrypoint.sh` → `--verbose`/
+  `--output-format stream-json`; stream full turn-by-turn to agent.log, extract final
+  result for submit.txt. (Today agent.log is 0 bytes everywhere; agent K8s actions ARE in
+  `kubectl_log.jsonl`.)
+- A2 (6-analysis) old-repo diff of the 10 test bugs → regression vs pre-existing + correct version.
+- A3 (1) retry: `_should_retry` (workflow.py) include `"fail"`; workflow-level `max_attempts`
+  through `run_workflow`→loop; add a Run Config UI control next to agent/sandbox.
+- A4 (3) fix judge "target path not found" (Results-page Judge button → judging endpoint path).
+- A5 (4) judge upgrades: 100.0/0.1 score (rubric+scoring in `karma/judge/`); input += agent log
+  + regression sweep; run-on-failed.
+- A6 (2) UI: (a) Results page sometimes all-white on launch — fix mount/background; (b) Workflow
+  builder param boxes — flexible grid, width by count, max 4/row (today fixed at 4 even for 2).
+
+**PHASE B — cluster + agent (speed-first, parallel OK):**
+- B1 (6+7+5) per test bug: apply old-repo-referenced fix → real-agent re-run → confirm fixed AND
+  agent.log populated (verbose). Revert if it turns out not a bug.
+- B2 (5) re-run time-up cases; diagnose via verbose log (stuck/looping vs genuinely needs time).
+- B3 (8) build + run adversary ~10-stage workflow (real agent) → verifies adversary inject/lift,
+  regression sweep, and full judge pipeline.
+- B4 final report + judge ALL runs.
+
+**KEY DATA — the 10 test bugs (all errored ≥3×, real):**
+- precondition: `cockroachdb/certificate-rotation` (waits `phase=Running` then execs `cockroach
+  init` → "container not found db"; fix `--for=condition=Ready`); `mongodb/deploy` (verify expects
+  running pods pre-agent); `mongodb/external-access-horizons` (unsubstituted `$node_ip` in pod
+  manifest); `mongodb/statefulset-customization` (verifies pods right after deleting them, no
+  recreate wait); `rabbitmq/blue_green_migration` + `rabbitmq/manual_backup_restore` ("no matching
+  resources found"); `rabbitmq/manual_tls_rotation` + `nginx/rate_limit_replica_hard` (120s
+  per-command cap too short for cluster startup / replica scale-up).
+- oracle: `nginx/renew_tls_secret` (oracle aborts on its own missing `INGRESS_NODE_IP`/
+  `INGRESS_HTTPS_PORT` env); `nginx/otel_log_format` (needs traffic generation).
+- 18 agent fails = 7 time-up (cockroachdb/generate-cert, elasticsearch/{full-restart-upgrade-ha-hard,
+  safe-downscale-with-shard-migration}, mongodb/{password-rotation, version-upgrade-hard},
+  rabbitmq/manual_skip_upgrade, ray/deploy_cluster) + 11 submitted-but-wrong.
+
+**A2 FINDINGS (old-repo diff):** OLD repo uses a DIFFERENT schema (flat
+`preOperationCommands`/`verificationCommands`/`detailedInstructions`), NOT the new
+`preconditionUnits` (probe/apply/verify). So bugs are mostly PORTING errors in the new
+probe/apply/verify split, to be fixed by understanding each case's intent then verified
+with a real agent in B1. My earlier surface diagnoses were partly WRONG -- re-verify each:
+- mongodb/deploy: new `verify` expects Running pods its `apply` never creates (apply only
+  makes the namespace) -> porting bug; determine if agent is meant to deploy (fix verify)
+  or precondition should deploy (fix apply) from old detailedInstructions.
+- mongodb/external-access-horizons: `$node_ip` code IDENTICAL in old -> NOT the bug; real
+  cause unknown, re-investigate in B1.
+- cockroachdb/certificate-rotation: `phase=Running`-before-exec is SAME in old (+ 30x retry
+  exec loop) -> NOT a clean regression; real cause likely pod/db container not becoming
+  Ready; --for=condition=Ready fix UNCONFIRMED.
+- nginx/rate_limit_replica_hard: 120s timeouts SAME in old -> too-short timeout, not a
+  regression; may just need a longer timeout_sec (or fresh-cluster image-pull slowness).
+- rabbitmq/blue_green_migration: new multi-namespace (BENCH_NS_SOURCE/TARGET) rollout-status
+  on blue/green statefulset that isn't present -> porting gap in the new structure.
+Every fix MUST be real-agent verified in B1; revert if not actually a bug.
