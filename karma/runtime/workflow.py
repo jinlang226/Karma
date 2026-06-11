@@ -100,7 +100,9 @@ def _run_final_regression_sweep(
     for row in completed_rows:
         stage_id = row["stage_id"]
         case = row.get("case") or {}
-        roles = row.get("namespace_roles") or ["default"]
+        roles = row.get("namespace_roles")
+        if roles is None:
+            roles = ["default"]
         bindings = _apply_namespace_binding(
             environment.bind_namespace_roles(roles, run_dir.name),
             row.get("namespace_binding"),
@@ -334,8 +336,11 @@ def run_workflow_loop(
     # Namespace teardown is deferred from each stage to here (run_stage was
     # called with defer_cleanup=True), so the final sweeps run against the live
     # cluster. Compute the full binding once for the sweeps and the teardown.
+    # `[]` (literal-namespace cases) contributes no role namespaces to clean up;
+    # only a missing/None contract implies the single default role.
     all_roles = sorted({
-        role for row in rows for role in (row.get("namespace_roles") or ["default"])
+        role for row in rows
+        for role in (row.get("namespace_roles") if row.get("namespace_roles") is not None else ["default"])
     })
     full_bindings: dict[str, str] = {}
     full_env: dict[str, str] = {}
