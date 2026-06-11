@@ -49,6 +49,44 @@ from .._warn import warn
 # Internal helpers
 # ---------------------------------------------------------------------------
 
+def _default_timeout_for_command(command: str, phase: str) -> int:
+    """Per-command default timeout (seconds), inferred from the command verb.
+
+    Restores the old monolith's ``default_timeout_sec_for_command``: ``wait`` and
+    ``rollout`` legitimately take minutes (cluster startup), so a flat 120s cap
+    is far too aggressive. An explicit ``timeout_sec`` on the command always
+    wins; this only supplies the default. The phase budget still bounds the
+    total wall-clock of the precondition phase.
+    """
+    base = 600 if phase in ("verify", "verification", "cleanup") else 300
+    toks = (command or "").split()
+    if not toks:
+        return base
+    head = toks[0]
+    if head in ("/bin/sh", "sh", "/bin/bash", "bash"):
+        return base
+    if head == "kubectl" or head.endswith("/kubectl"):
+        # Scan for the kubectl verb directly -- a positional scan picks up flag
+        # values like the "-n <ns>" namespace, which precedes the verb.
+        _verbs = ("wait", "rollout", "apply", "create", "patch", "replace", "label",
+                  "annotate", "scale", "set", "delete", "exec", "logs", "get", "describe")
+        sub = next((p for p in toks[1:] if p in _verbs), None)
+        if sub in ("wait", "rollout"):
+            return 15 * 60
+        if sub in ("apply", "create", "patch", "replace", "label", "annotate", "scale", "set"):
+            return 120
+        if sub == "delete":
+            return 180
+        if sub == "exec":
+            return 300
+        if sub in ("logs", "get", "describe"):
+            return 120
+        return base
+    if head in ("python3", "python"):
+        return 10 * 60 if phase in ("verify", "verification") else base
+    return base
+
+
 def _run_operation_units(
     units: list[dict[str, Any]],
     *,
@@ -116,7 +154,9 @@ def _run_operation_units(
         """
         nonlocal timed_out
         cmd = cmd_entry["command"]
-        base_to = cmd_entry.get("timeout_sec") or default_to
+        # Explicit timeout_sec wins; otherwise infer from the command verb
+        # (wait/rollout get minutes) instead of the flat command_timeout_sec.
+        base_to = cmd_entry.get("timeout_sec") or _default_timeout_for_command(cmd, phase)
         cmd_to = base_to
         capped = False  # True once the phase budget is the binding constraint.
         if deadline is not None:
