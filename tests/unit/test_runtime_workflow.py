@@ -33,8 +33,10 @@ class TestShouldRetry:
     def test_retries_on_timeout_status(self):
         assert _should_retry({"status": "timeout"}, retries_remaining=2) is True
 
-    def test_does_not_retry_on_fail(self):
-        assert _should_retry({"status": "fail"}, retries_remaining=3) is False
+    def test_retries_on_oracle_fail_when_attempts_remain(self):
+        # Restored behaviour: max_attempts re-runs a stage on oracle fail.
+        assert _should_retry({"status": "fail"}, retries_remaining=3) is True
+        assert _should_retry({"status": "fail"}, retries_remaining=0) is False
 
     def test_does_not_retry_when_budget_exhausted(self):
         assert _should_retry({"status": "error"}, retries_remaining=0) is False

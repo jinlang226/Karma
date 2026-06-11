@@ -186,6 +186,7 @@ def submit_job(
             "workflow_id": workflow.get("id"),
             "prompt_mode": payload.get("prompt_mode") or workflow.get("prompt_mode"),
             "agent_timeout_sec": payload.get("agent_timeout_sec"),
+            "max_attempts": payload.get("max_attempts"),
             "stage_total": len(workflow.get("stages") or []),
         }, indent=2))
     except Exception:
@@ -219,6 +220,7 @@ def submit_job(
                 on_stage_complete=_stage_cb,
                 on_progress=_progress_cb,
                 should_cancel=lambda: run_id in _cancel_requested,
+                max_attempts=(int(payload["max_attempts"]) if payload.get("max_attempts") else None),
                 run_id=run_id,
             )
             _update_job(run_id, {"status": result.get("status", "complete")})
