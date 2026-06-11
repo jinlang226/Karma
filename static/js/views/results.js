@@ -206,13 +206,17 @@
       }
       root.appendChild(p);
     }
-    // If the run came from a saved workflow, show its definition (stages).
-    if (cfg.workflow_path) {
-      const wfName = String(cfg.workflow_path).split("/").pop();
+    // If the run came from a workflow, show its stage definition + adversary.
+    // HTTP runs store workflow_path; CLI run-workflow stores workflow_id (the
+    // file stem). Single-case runs have a "service/case" id -> no saved file.
+    const wfRef = cfg.workflow_path
+      ? String(cfg.workflow_path).split("/").pop()
+      : (cfg.workflow_id && !cfg.workflow_id.includes("/") ? cfg.workflow_id + ".yaml" : null);
+    if (wfRef) {
       const slot = el("div", {});
       root.appendChild(slot);
-      api.get(`/api/workflows/${wfName}`)
-        .then((wf) => { slot.appendChild(KARMA.workflowStagesPanel(wf, "Workflow definition")); })
+      api.get(`/api/workflows/${wfRef}`)
+        .then((wf) => { slot.appendChild(KARMA.workflowStagesPanel(wf, "Stages")); })
         .catch(() => {});
     }
   }

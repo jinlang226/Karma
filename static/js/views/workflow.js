@@ -241,7 +241,14 @@
       service: s.service, case: s.case_name,
       overrides: { ...(s.param_overrides || {}) }, _defaults: {},
     }));
-    advRows = [];
+    // Load the workflow's existing adversary injections (map stage ids -> idx).
+    const sidx = {};
+    (wf.stages || []).forEach((s, i) => { sidx[s.id] = i; });
+    advRows = (wf.adversary || []).map((a) => ({
+      scenario: a.scenario,
+      injectIndex: sidx[a.inject_at_stage] != null ? sidx[a.inject_at_stage] : 0,
+      liftIndex: sidx[a.lift_at_stage] != null ? sidx[a.lift_at_stage] : 0,
+    }));
     builderId = name.replace(/\.ya?ml$/i, "") + "-copy";
     render();
     setTimeout(() => {
@@ -291,7 +298,7 @@
       "Each stage runs one case, in order. Pick a service and a case, then fill in the " +
       "parameters that appear below the row. To reuse a value from an earlier stage, " +
       "type ${stages.<stage-id>.params.<name>} as the parameter value."));
-    const stageList = el("div", { class: "builder-list" });
+    const stageList = el("div", { class: "builder-list builder-stage-list" });
     panel.appendChild(stageList);
 
     function renderStages() {
