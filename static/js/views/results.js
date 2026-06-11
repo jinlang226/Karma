@@ -94,10 +94,7 @@
     }
     if (!runs.length) body.appendChild(el("tr", {}, el("td", { colspan: "5", class: "muted" }, "No runs yet.")));
     tbl.appendChild(body);
-    // Bound the (white) table in a scroll-list so a long run history doesn't
-    // fill the whole viewport with one tall panel (the "all white" report); the
-    // page background then shows around it, like Run/Workflow. Sticky header too.
-    panel.appendChild(el("div", { class: "scroll-list" }, tbl));
+    panel.appendChild(tbl);
     clear(host);
     host.appendChild(panel);
     // Auto-refresh while any run is still active so progress updates in place.
