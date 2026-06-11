@@ -92,7 +92,7 @@
       onChange: (e) => toggleAll(e.target.checked),
     });
     const tbl = el("table", {}, el("thead", {}, el("tr", {},
-      el("th", {}, selectAll), el("th", {}, "Name"), el("th", {}, "ID"), el("th", {}, "Stages"),
+      el("th", {}, selectAll), el("th", {}, "Name"), el("th", {}, "Stages"),
       el("th", {}, "Prompt mode"), el("th", {}, "Status"), el("th", {}, ""))));
     const body = el("tbody", { id: "wf-files-body" });
     tbl.appendChild(body);
@@ -111,7 +111,7 @@
     if (!body) return;
     clear(body);
     api.get("/api/workflows").then((files) => {
-      if (!files.length) body.appendChild(el("tr", {}, el("td", { colspan: "7", class: "muted" }, "No workflow files found.")));
+      if (!files.length) body.appendChild(el("tr", {}, el("td", { colspan: "6", class: "muted" }, "No workflow files found.")));
       for (const f of files) {
         const status = f.ok
           ? el("span", { class: "badge ok" }, "OK")
@@ -129,12 +129,11 @@
         body.appendChild(el("tr", {},
           el("td", {}, cb),
           el("td", {}, el("span", { class: "crumb-link", onClick: () => renderWorkflowDetail(f.name, f.path) }, f.name.replace(/\.ya?ml$/i, ""))),
-          el("td", {}, f.id || "—"),
           el("td", {}, String(f.stage_count == null ? "—" : f.stage_count)),
           el("td", {}, f.prompt_mode ? KARMA.labels.promptMode(f.prompt_mode) : "—"), el("td", {}, status),
           el("td", {}, runBtn)));
       }
-    }).catch((e) => body.appendChild(el("tr", {}, el("td", { colspan: "7" }, errBox(e)))));
+    }).catch((e) => body.appendChild(el("tr", {}, el("td", { colspan: "6" }, errBox(e)))));
   }
 
   // Check/uncheck every (enabled) row and sync the `selected` set.
