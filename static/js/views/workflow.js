@@ -23,6 +23,7 @@
   let runAgent = "";    // agent applied to workflow runs ("" = no agent)
   let runSandbox = "local";
   let builderId = "ui-workflow";  // default name for builder saves (set when customizing)
+  const selected = new Set();      // workflow paths checked for "Run selected"
   let scenarios = [];   // available adversary scenarios: {service, scenario, has_lift}
   let stages = [];      // builder stage rows: {service, case, overrides}
   let advRows = [];     // builder adversary rows: {scenario, injectIndex, liftIndex}
@@ -84,12 +85,19 @@
     panel.appendChild(el("p", { class: "field-help" },
       "Predefined workflows from the workflows/ folder, plus any you save from the " +
       "builder below (kept under workflows/ui/). Click a name to view and customize " +
-      "it, or Run to execute one."));
+      "it, Run to execute one, or check several and Run selected (they run one after " +
+      "another on the cluster)."));
+    const selectAll = el("input", {
+      type: "checkbox", title: "Select all",
+      onChange: (e) => toggleAll(e.target.checked),
+    });
     const tbl = el("table", {}, el("thead", {}, el("tr", {},
-      el("th", {}, "File"), el("th", {}, "ID"), el("th", {}, "Stages"),
+      el("th", {}, selectAll), el("th", {}, "Name"), el("th", {}, "ID"), el("th", {}, "Stages"),
       el("th", {}, "Prompt mode"), el("th", {}, "Status"), el("th", {}, ""))));
     const body = el("tbody", { id: "wf-files-body" });
     tbl.appendChild(body);
+    panel.appendChild(el("div", { class: "toolbar" },
+      el("button", { class: "btn", onClick: runSelected }, "Run selected")));
     panel.appendChild(el("div", { class: "scroll-list" }, tbl));
     // Defer until the panel is in the DOM -- loadFiles looks the tbody up by id,
     // which fails if called before this panel is appended (same pattern the
@@ -103,7 +111,7 @@
     if (!body) return;
     clear(body);
     api.get("/api/workflows").then((files) => {
-      if (!files.length) body.appendChild(el("tr", {}, el("td", { colspan: "6", class: "muted" }, "No workflow files found.")));
+      if (!files.length) body.appendChild(el("tr", {}, el("td", { colspan: "7", class: "muted" }, "No workflow files found.")));
       for (const f of files) {
         const status = f.ok
           ? el("span", { class: "badge ok" }, "OK")
@@ -112,14 +120,82 @@
           class: "btn", disabled: !f.ok ? "disabled" : null,
           onClick: () => runWorkflowFile(f.path),
         }, "Run");
+        const cb = el("input", {
+          type: "checkbox", "data-path": f.path,
+          checked: selected.has(f.path) ? "checked" : null,
+          disabled: !f.ok ? "disabled" : null,
+          onChange: (e) => { if (e.target.checked) selected.add(f.path); else selected.delete(f.path); },
+        });
         body.appendChild(el("tr", {},
+          el("td", {}, cb),
           el("td", {}, el("span", { class: "crumb-link", onClick: () => renderWorkflowDetail(f.name, f.path) }, f.name.replace(/\.ya?ml$/i, ""))),
           el("td", {}, f.id || "—"),
           el("td", {}, String(f.stage_count == null ? "—" : f.stage_count)),
           el("td", {}, f.prompt_mode ? KARMA.labels.promptMode(f.prompt_mode) : "—"), el("td", {}, status),
           el("td", {}, runBtn)));
       }
-    }).catch((e) => body.appendChild(el("tr", {}, el("td", { colspan: "6" }, errBox(e)))));
+    }).catch((e) => body.appendChild(el("tr", {}, el("td", { colspan: "7" }, errBox(e)))));
+  }
+
+  // Check/uncheck every (enabled) row and sync the `selected` set.
+  function toggleAll(checked) {
+    const body = document.getElementById("wf-files-body");
+    if (!body) return;
+    body.querySelectorAll("input[data-path]").forEach((cb) => {
+      if (cb.disabled) return;
+      cb.checked = checked;
+      const p = cb.getAttribute("data-path");
+      if (checked) selected.add(p); else selected.delete(p);
+    });
+  }
+
+  // Run every checked workflow one after another -- concurrent runs would
+  // contend for the single cluster. Each streams into the Jobs log; the next
+  // starts only after the previous run_complete (which fires post-cleanup).
+  async function runSelected() {
+    const paths = [...selected];
+    if (!paths.length) { KARMA.toast("Check at least one workflow first.", "error"); return; }
+    const log = document.getElementById("wf-jobs-log");
+    const panel = document.getElementById("wf-jobs-panel");
+    if (panel) panel.scrollIntoView({ behavior: "smooth", block: "start" });
+    if (log) log.textContent = `Running ${paths.length} workflow(s) in sequence…\n`;
+    KARMA.toast(`Running ${paths.length} workflow(s) in sequence`, "info");
+    let done = 0;
+    for (let i = 0; i < paths.length; i++) {
+      const path = paths[i];
+      if (log) log.textContent += `\n[${i + 1}/${paths.length}] ${path}\n`;
+      try {
+        const { run_id } = await api.post("/api/run", {
+          workflow_path: path, agent: runAgent || null, sandbox: runSandbox,
+        });
+        if (log) log.textContent += `  started ${run_id}\n`;
+        await streamToCompletion(run_id, log);
+        done++;
+      } catch (e) {
+        if (log) log.textContent += `  error: ${e.message}\n`;
+      }
+    }
+    if (log) log.textContent += `\n=== finished ${done}/${paths.length} ===\n`;
+    KARMA.toast(`Finished ${done}/${paths.length} run(s)`, done === paths.length ? "success" : "error");
+    refreshJobs();
+  }
+
+  // Resolve once the run reaches run_complete (or the stream ends).
+  function streamToCompletion(runId, log) {
+    return new Promise((resolve) => {
+      let settled = false;
+      const finish = () => { if (!settled) { settled = true; resolve(); } };
+      api.stream(`/api/run/${runId}/stream`, {
+        statusPath: `/api/run/${runId}/status`,
+        onEvent: (ev) => {
+          if (ev.type === "progress") log.textContent += `  ${ev.message}\n`;
+          else if (ev.type === "stage_complete") log.textContent += `  stage ${(ev.stage || {}).stage_id}: ${(ev.stage || {}).status}\n`;
+          else if (ev.type === "run_complete") { log.textContent += `  run complete: ${ev.status}\n`; finish(); }
+          if (log) log.scrollTop = log.scrollHeight;
+        },
+        onDone: finish,
+      });
+    });
   }
 
   // Saved-workflow detail: read-only stages + run + "customize" (load into the
