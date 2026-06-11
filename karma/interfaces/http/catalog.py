@@ -157,6 +157,10 @@ def list_runs(runs_dir: Path) -> list[dict[str, Any]]:
         cfg = _read_json(run_dir / "config.json") or {}
         entry["agent"] = cfg.get("agent")
         entry["sandbox"] = cfg.get("sandbox")
+        # Service/case for the UI to split the run name (service can contain
+        # hyphens, so the run_id alone can't be parsed reliably).
+        entry["service"] = cfg.get("service")
+        entry["case_name"] = cfg.get("case_name")
         # The workflow's true total stage count (config), so a running run shows
         # "1/5" rather than "1/2" (only 2 stage dirs created so far).
         entry["stage_total"] = cfg.get("stage_total")
@@ -178,7 +182,7 @@ def list_runs(runs_dir: Path) -> list[dict[str, Any]]:
                     scores.append(float(jd["score"]))
             if scores:
                 entry["judged"] = True
-                entry["judge_score"] = round(sum(scores) / len(scores), 3)
+                entry["judge_score"] = round(sum(scores) / len(scores), 1)
         runs.append(entry)
     return runs
 

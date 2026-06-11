@@ -51,6 +51,7 @@
 
   function render() {
     clear(root);
+    KARMA.setBreadcrumb(null);   // back to the list -> drop any "Workflows / ..." crumb
     root.appendChild(el("h2", {}, "Workflows"));
     root.appendChild(runConfigPanel());
     root.appendChild(filesPanel());
@@ -135,7 +136,8 @@
         });
         body.appendChild(el("tr", {},
           el("td", {}, cb),
-          el("td", {}, el("span", { class: "crumb-link", onClick: () => renderWorkflowDetail(f.name, f.path) }, f.name.replace(/\.ya?ml$/i, ""))),
+          el("td", {}, el("span", { class: "crumb-link", onClick: () => renderWorkflowDetail(f.name, f.path) },
+            (() => { const w = KARMA.labels.workflowName(f.name); return w.app + (w.name ? " · " + w.name : ""); })())),
           el("td", {}, String(f.stage_count == null ? "—" : f.stage_count)),
           el("td", {}, f.prompt_mode ? KARMA.labels.promptMode(f.prompt_mode) : "—"), el("td", {}, status),
           el("td", {}, runBtn)));
@@ -208,7 +210,8 @@
   // builder to override params and save a renamed copy).
   async function renderWorkflowDetail(name, path) {
     clear(root);
-    const display = name.replace(/\.ya?ml$/i, "");   // drop the .yaml suffix
+    const wn = KARMA.labels.workflowName(name);
+    const display = wn.app + (wn.name ? " · " + wn.name : "");
     KARMA.setBreadcrumb({ back: render, crumbs: [{ label: "Workflows", onClick: render }, { label: display }] });
     root.appendChild(el("h2", {}, display));
     let wf;

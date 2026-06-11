@@ -85,8 +85,11 @@
       const total = r.stage_total || (r.stage_count != null ? r.stage_count : ((r.passed || 0) + (r.failed || 0)));
       const prog = total ? `${r.passed || 0}/${total}` : "—";
       const agent = r.agent ? KARMA.labels.agent(r.agent) : el("span", { class: "muted" }, "none");
+      const p = KARMA.labels.runName(r.run_id, r);
       body.appendChild(el("tr", { class: "clickable", onClick: () => renderDetail(r.run_id) },
-        el("td", {}, el("span", { class: "run-id" }, r.run_id)),
+        el("td", {},
+          el("div", { class: "run-name" }, p.app + (p.name ? " · " + p.name : "")),
+          p.ts ? el("div", { class: "muted run-ts" }, KARMA.labels.formatTs(p.ts)) : null),
         el("td", {}, statusBadge(r.status)),
         el("td", {}, prog),
         el("td", {}, agent),
@@ -109,8 +112,12 @@
   async function renderDetail(runId) {
     stopTimers();
     clear(root);
-    KARMA.setBreadcrumb({ back: render, crumbs: [{ label: "Results", onClick: render }, { label: runId }] });
-    root.appendChild(el("h2", {}, runId));
+    const np = KARMA.labels.runName(runId);
+    const title = np.app + (np.name ? " · " + np.name : "");
+    KARMA.setBreadcrumb({ back: render, crumbs: [{ label: "Results", onClick: render }, { label: title }] });
+    const head = el("h2", {}, title);
+    root.appendChild(head);
+    if (np.ts) root.appendChild(el("div", { class: "muted run-ts" }, KARMA.labels.formatTs(np.ts)));
 
     let d;
     try { d = await api.get(`/api/run/${runId}`); }
