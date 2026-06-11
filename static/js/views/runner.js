@@ -347,5 +347,12 @@
     return { node: panel, refresh };
   }
 
-  KARMA.registerView({ id: "runner", label: "Run", mount });
+  // Cross-view: jump to a case's detail (used by clickable stage boxes in the
+  // workflow/run detail). Activate the Cases tab, then render the case.
+  KARMA.showCase = function (service, caseName) {
+    KARMA.activate("runner");
+    setTimeout(() => { try { renderCase(service, caseName); } catch (e) {} }, 0);
+  };
+
+  KARMA.registerView({ id: "runner", label: "Cases", mount });
 })();

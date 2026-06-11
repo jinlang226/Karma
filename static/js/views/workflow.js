@@ -230,7 +230,7 @@
       el("button", { class: "btn", onClick: () => runWorkflowFile(path) }, "Run"),
       el("button", { class: "btn secondary", onClick: () => customizeInBuilder(name, wf) }, "Customize / duplicate")));
 
-    root.appendChild(KARMA.workflowStagesPanel(wf, "Stages"));
+    root.appendChild(KARMA.workflowStagesPanel(wf, "Stages", (s) => KARMA.showCase(s.service, s.case_name)));
     root.appendChild(jobsPanel());   // so Run output shows on this page too
   }
 
