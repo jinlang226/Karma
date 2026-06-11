@@ -27,15 +27,15 @@ TMP_FILE=".submit.partial"
 STREAM_FILE=".agent.stream.jsonl"
 MODEL="${KARMA_CLAUDE_AGENT_MODEL:-sonnet}"
 
-# Capture the full event stream to a temp file (so we can parse it), then echo
-# it to stdout -> agent.log.
+# Stream the full event log to stdout (-> agent.log) in REAL TIME via tee, and
+# also to a temp file for parsing. Real-time matters: when KARMA times out and
+# kills the agent mid-run, agent.log still holds the partial turn-by-turn (the
+# runs you most want to debug), instead of being lost.
 claude --print --verbose --output-format stream-json \
   --model "$MODEL" \
   --dangerously-skip-permissions \
   "$(cat "$PROMPT_FILE")" \
-  > "$STREAM_FILE" 2>&1
-
-cat "$STREAM_FILE"
+  2>&1 | tee "$STREAM_FILE"
 
 # Extract the agent's final answer for submit.txt: the last `result` event's
 # text, falling back to the last assistant text block if claude emitted no
