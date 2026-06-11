@@ -33,7 +33,7 @@
     // Scores are 0-100 (0.1 precision); tolerate any legacy 0-1 values until re-judged.
     const s = v <= 1 ? v * 100 : v;
     const cls = s >= 80 ? "ok" : s >= 50 ? "warn" : "bad";
-    return el("span", { class: "badge " + cls }, s.toFixed(1) + " / 100");
+    return el("span", { class: "badge " + cls }, s.toFixed(1));
   }
   function statusBadge(id) {
     if (!id) return el("span", { class: "muted" }, "—");
