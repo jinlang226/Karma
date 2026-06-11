@@ -22,6 +22,7 @@
   let agents = [];      // available agent names, for the run-config selectors
   let runAgent = "";    // agent applied to workflow runs ("" = no agent)
   let runSandbox = "local";
+  let runMaxAttempts = 1;   // workflow-level retry cap (1 = no retry)
   let builderId = "ui-workflow";  // default name for builder saves (set when customizing)
   const selected = new Set();      // workflow paths checked for "Run selected"
   let scenarios = [];   // available adversary scenarios: {service, scenario, has_lift}
@@ -68,14 +69,20 @@
     const sandboxSel = el("select", { onChange: (e) => { runSandbox = e.target.value; } },
       el("option", { value: "local", selected: runSandbox === "local" ? "selected" : null }, "Local"),
       el("option", { value: "docker", selected: runSandbox === "docker" ? "selected" : null }, "Docker"));
+    const attemptsInput = el("input", {
+      type: "number", min: "1", step: "1", value: String(runMaxAttempts),
+      onChange: (e) => { runMaxAttempts = Math.max(1, parseInt(e.target.value, 10) || 1); },
+    });
     return el("div", { class: "panel" },
       el("h3", {}, "Run Config"),
       el("p", { class: "field-help" },
         "Agent and sandbox used for runs started below (files or the builder). " +
-        "Pick an agent — without one the workflow runs with no agent and its oracle fails."),
+        "Pick an agent — without one the workflow runs with no agent and its oracle fails. " +
+        "Max attempts re-runs each stage on oracle fail/error/timeout (1 = no retry)."),
       el("div", { class: "row" },
         el("div", {}, el("label", {}, "Agent"), agentSel),
-        el("div", {}, el("label", {}, "Sandbox"), sandboxSel)));
+        el("div", {}, el("label", {}, "Sandbox"), sandboxSel),
+        el("div", {}, el("label", {}, "Max attempts"), attemptsInput)));
   }
 
   // --- Files panel ----------------------------------------------------------
@@ -165,7 +172,7 @@
       if (log) log.textContent += `\n[${i + 1}/${paths.length}] ${path}\n`;
       try {
         const { run_id } = await api.post("/api/run", {
-          workflow_path: path, agent: runAgent || null, sandbox: runSandbox,
+          workflow_path: path, agent: runAgent || null, sandbox: runSandbox, max_attempts: runMaxAttempts,
         });
         if (log) log.textContent += `  started ${run_id}\n`;
         await streamToCompletion(run_id, log);
@@ -246,7 +253,7 @@
     if (out) out.textContent = `Submitting ${path}…\n`;
     try {
       const { run_id } = await api.post("/api/run", {
-        workflow_path: path, agent: runAgent || null, sandbox: runSandbox,
+        workflow_path: path, agent: runAgent || null, sandbox: runSandbox, max_attempts: runMaxAttempts,
       });
       KARMA.toast("Workflow started: " + run_id, "info");
       streamInto(run_id);
@@ -537,7 +544,7 @@
     msg.textContent = "Submitting…";
     try {
       const { run_id } = await api.post("/api/run", {
-        workflow_yaml: text, agent: runAgent || null, sandbox: runSandbox,
+        workflow_yaml: text, agent: runAgent || null, sandbox: runSandbox, max_attempts: runMaxAttempts,
       });
       msg.textContent = "Started run " + run_id;
       KARMA.toast("Workflow started: " + run_id, "info");

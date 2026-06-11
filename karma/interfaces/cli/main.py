@@ -167,6 +167,9 @@ def _build_parser() -> argparse.ArgumentParser:
                     help="Resolve rows and print without running.")
     wf.add_argument("--judge", action="store_true",
                     help="Run the LLM judge on every stage after the run completes.")
+    wf.add_argument("--max-attempts", type=int, default=None,
+                    help="Workflow-level retry cap: re-run each stage up to N times "
+                         "on oracle fail/error/timeout (stage-agnostic; default 1).")
     wf.add_argument("--stage-failure-mode", choices=["terminate", "continue"],
                     default="terminate",
                     help="terminate (fail-fast) or continue past a failed stage.")
@@ -394,6 +397,7 @@ def _cmd_run_workflow(args: argparse.Namespace) -> None:
         sandbox_mode=merged.get("sandbox", "local"),
         environment_config=_environment_config(args),
         on_progress=_progress,
+        max_attempts=args.max_attempts,
         stage_failure_mode=args.stage_failure_mode,
         final_sweep_mode=args.final_sweep_mode,
         sandbox_options=_build_sandbox_options(args),

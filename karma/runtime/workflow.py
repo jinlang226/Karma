@@ -55,13 +55,14 @@ def _write_workflow_state(run_dir: Path, state: dict[str, Any]) -> None:
 def _should_retry(stage_result: dict[str, Any], retries_remaining: int) -> bool:
     """Return ``True`` when the stage should be retried.
 
-    Retry is permitted on ``"error"`` and ``"timeout"`` statuses only.
-    A ``"fail"`` verdict from the oracle is deterministic and is not
-    retried.
+    Retry is permitted on ``"error"``, ``"timeout"``, and oracle ``"fail"``
+    when attempts remain. (The old monolith retried oracle failures via
+    ``oracle_failed_retryable``; restoring that so ``max_attempts`` gives the
+    agent another shot at a fresh stage.) ``"cancelled"`` is never retried.
     """
     if retries_remaining <= 0:
         return False
-    return stage_result.get("status") in ("error", "timeout")
+    return stage_result.get("status") in ("error", "timeout", "fail")
 
 
 def _run_final_regression_sweep(
@@ -187,6 +188,7 @@ def run_workflow_loop(
     on_stage_complete: Any | None = None,
     on_progress: Any | None = None,
     should_cancel: Any | None = None,
+    max_attempts: int | None = None,
     stage_failure_mode: str = "terminate",
     final_sweep_mode: str = "auto",
     sandbox_options: dict[str, Any] | None = None,
@@ -267,7 +269,9 @@ def run_workflow_loop(
             workflow_status = "cancelled"
             break
         stage_id = row["stage_id"]
-        retries = row.get("retries", 0)
+        # Workflow-level max_attempts (stage-agnostic) overrides any per-stage
+        # retries when set, so one Run Config knob applies to every stage.
+        retries = (max(0, max_attempts - 1) if max_attempts else row.get("retries", 0))
         stage_result: dict[str, Any] = {}
         # Per-stage progress sink: tag each fine-grained message with this stage.
         stage_progress = None
