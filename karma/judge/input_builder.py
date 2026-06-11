@@ -80,6 +80,27 @@ def build_judge_input(
         except Exception:
             pass
 
+    # Agent log: the full turn-by-turn (reasoning + every tool call) the
+    # claude_code entrypoint records -- key evidence of HOW the agent worked.
+    agent_log: str | None = None
+    agent_log_path = prompt_path.parent / "agent.log"
+    if agent_log_path.exists():
+        try:
+            txt = agent_log_path.read_text()
+            agent_log = txt if len(txt) <= 24000 else "...[truncated head]...\n" + txt[-24000:]
+        except Exception:
+            pass
+
+    # Regression-sweep result (the post-workflow oracle re-run); present only on
+    # multi-stage runs.
+    regression_sweep: Any = None
+    run_json_path = run_dir / "run.json"
+    if run_json_path.exists():
+        try:
+            regression_sweep = json.loads(run_json_path.read_text()).get("regression_sweep")
+        except Exception:
+            pass
+
     return {
         "stage_id": stage_id,
         "rubric": rubric,
@@ -88,6 +109,8 @@ def build_judge_input(
         "trace_facts": trace_facts,
         "submit_text": submit_text,
         "prompt_text": prompt_text,
+        "agent_log": agent_log,
+        "regression_sweep": regression_sweep,
     }
 
 
@@ -95,6 +118,8 @@ _DEFAULT_JUDGE_TEMPLATE = (
     "You are evaluating an AI agent on a Kubernetes microservice task.\n\n"
     "## Task Prompt\n{prompt_text}\n\n"
     "## Agent Submission\n{submit_text}\n\n"
+    "## Agent Log (turn-by-turn: reasoning + tool calls)\n{agent_log}\n\n"
+    "## Regression Sweep (post-workflow oracle re-run)\n{regression_sweep}\n\n"
     "## Oracle Verification\n"
     "Verdict: {oracle_verdict}\n\n"
     "## Kubernetes API Activity\n"
@@ -152,6 +177,11 @@ def render_judge_prompt(
         "stage_id": str(judge_input.get("stage_id") or ""),
         "prompt_text": str(judge_input.get("prompt_text") or "(not available)"),
         "submit_text": str(judge_input.get("submit_text") or "(not submitted)"),
+        "agent_log": str(judge_input.get("agent_log") or "(not captured)"),
+        "regression_sweep": (
+            json.dumps(judge_input.get("regression_sweep"), indent=2)
+            if judge_input.get("regression_sweep") else "(none — single-stage run)"
+        ),
         "oracle_verdict": verdict_text,
         "total_calls": str(trace_facts.get("total_calls") or 0),
         "mutation_calls": str(trace_facts.get("mutation_calls") or 0),

@@ -46,7 +46,7 @@ def _mean_stage_score(stage_results: dict[str, Any]) -> float | None:
     ]
     if not scores:
         return None
-    return round(sum(scores) / len(scores), 3)
+    return round(sum(scores) / len(scores), 1)
 
 
 def judge_batch_dir(
