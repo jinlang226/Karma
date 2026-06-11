@@ -287,6 +287,7 @@ def create_app(
             job_id = judging.start_judge_job(
                 str(payload.get("target_type") or "run"),
                 str(payload.get("target_path") or ""),
+                runs_dir=Path(runs_dir),
                 judge_model=payload.get("model"),
                 dry_run=bool(payload.get("dry_run")),
             )

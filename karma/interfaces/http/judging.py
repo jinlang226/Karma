@@ -108,6 +108,7 @@ def start_judge_job(
     target_type: str,
     target_path: str,
     *,
+    runs_dir: Path | None = None,
     judge_model: str | None = None,
     dry_run: bool = False,
 ) -> str:
@@ -126,6 +127,12 @@ def start_judge_job(
     if target_type not in ("run", "batch"):
         raise ValueError("target_type must be 'run' or 'batch'")
     path = Path(target_path)
+    # The UI passes a bare run_id (e.g. "demo-configmap-update-..."); resolve it
+    # against runs_dir so the Results-page Judge button works (it has no path).
+    if not path.exists() and runs_dir is not None:
+        candidate = Path(runs_dir) / target_path
+        if candidate.exists():
+            path = candidate
     if not path.exists():
         raise ValueError(f"target path not found: {target_path}")
 
