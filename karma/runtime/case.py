@@ -467,7 +467,12 @@ def run_stage(
         # onto those identities (how a migration alternates direction across
         # stages). The mapped role_bindings drive env vars, commands, and
         # manifests; the identities drive create/cleanup.
-        ns_roles = row.get("namespace_roles") or ["default"]
+        # An explicit empty list means "no roles" (literal-namespace cases) and
+        # must be respected -- `or ["default"]` would re-bind a default and set
+        # BENCH_NAMESPACE, breaking those cases' oracles. Only None -> default.
+        ns_roles = row.get("namespace_roles")
+        if ns_roles is None:
+            ns_roles = ["default"]
         identity_bindings = environment.bind_namespace_roles(ns_roles, run_dir.name)
         environment.ensure_namespaces(identity_bindings, run_dir=stage_dir)
         role_bindings = _apply_namespace_binding(
