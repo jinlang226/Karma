@@ -376,20 +376,28 @@ def resolve_workflow_rows(
             inj for inj in injections if inj.get("inject_at_stage") == stage_id
         ]
 
+        # Namespace roles. Explicit per-stage namespaces win. Otherwise honour
+        # the case's required_roles -- INCLUDING an explicit empty list, which
+        # means "no roles; I manage my own literal namespaces." Binding a
+        # "default" role there would set BENCH_NAMESPACE to a karma-* namespace
+        # and break literal-namespace oracles (e.g. spark's bench_namespace()
+        # default). Only a missing/None contract falls back to one default
+        # namespace (so single-role cases like demo still work).
+        _ns = stage.get("namespaces")
+        _rr = (normalized.get("namespace_contract") or {}).get("required_roles")
+        if _ns:
+            _roles = _ns
+        elif _rr is not None:
+            _roles = _rr
+        else:
+            _roles = [_DEFAULT_NAMESPACE_ALIAS]
+
         row: dict[str, Any] = {
             "stage_id": stage_id,
             "service": service,
             "case_name": case_name,
             "case": normalized,
-            # Explicit per-stage namespaces win; otherwise honour the case's
-            # declared required_roles (a single run-case never sets namespaces,
-            # so without this multi-role cases silently bind only "default" and
-            # their $BENCH_NS_<ROLE> references expand empty).
-            "namespace_roles": (
-                stage.get("namespaces")
-                or (normalized.get("namespace_contract") or {}).get("required_roles")
-                or [_DEFAULT_NAMESPACE_ALIAS]
-            ),
+            "namespace_roles": _roles,
             "namespace_binding": stage.get("namespace_binding") or None,
             "adversary_deploy": deploy_units,
             "adversary_lift": lift_units,
