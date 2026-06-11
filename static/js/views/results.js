@@ -30,8 +30,10 @@
   }
   function scoreCell(v) {
     if (v == null) return el("span", { class: "muted" }, "—");
-    const cls = v >= 0.8 ? "ok" : v >= 0.5 ? "warn" : "bad";
-    return el("span", { class: "badge " + cls }, v.toFixed(3));
+    // Scores are 0-100 (0.1 precision); tolerate any legacy 0-1 values until re-judged.
+    const s = v <= 1 ? v * 100 : v;
+    const cls = s >= 80 ? "ok" : s >= 50 ? "warn" : "bad";
+    return el("span", { class: "badge " + cls }, s.toFixed(1) + " / 100");
   }
   function statusBadge(id) {
     if (!id) return el("span", { class: "muted" }, "—");
@@ -92,7 +94,10 @@
     }
     if (!runs.length) body.appendChild(el("tr", {}, el("td", { colspan: "5", class: "muted" }, "No runs yet.")));
     tbl.appendChild(body);
-    panel.appendChild(tbl);
+    // Bound the (white) table in a scroll-list so a long run history doesn't
+    // fill the whole viewport with one tall panel (the "all white" report); the
+    // page background then shows around it, like Run/Workflow. Sticky header too.
+    panel.appendChild(el("div", { class: "scroll-list" }, tbl));
     clear(host);
     host.appendChild(panel);
     // Auto-refresh while any run is still active so progress updates in place.

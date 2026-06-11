@@ -469,6 +469,9 @@
       clear(paramsBox);
       paramsBox.appendChild(el("label", {}, "Parameters"));
       const grid = el("div", { class: "param-grid" });
+      // Flexible: one column per parameter so a few params fill the width,
+      // capped at 4 per row (more params wrap to the next row).
+      grid.style.gridTemplateColumns = `repeat(${Math.min(params.length, 4)}, minmax(0, 1fr))`;
       for (const p of params) {
         const def = p.default == null ? "" : String(p.default);
         stage._defaults[p.name] = def;
