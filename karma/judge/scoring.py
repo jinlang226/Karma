@@ -212,10 +212,13 @@ def aggregate_scores(
         ``reasoning``, ``raw_response``.
     """
     item_scores = parse_llm_scores(raw_response, rubric=rubric)
-    score = compute_aggregate_score(item_scores, rubric=rubric)
+    aggregate01 = compute_aggregate_score(item_scores, rubric=rubric)
     verdict = determine_verdict(
-        score, rubric=rubric, oracle_verdict=oracle_verdict
+        aggregate01, rubric=rubric, oracle_verdict=oracle_verdict
     )
+    # Report the headline score on a 0-100 scale with 0.1 precision (the LLM
+    # rubric items stay 0-1 internally; the threshold check uses the 0-1 value).
+    score = round(aggregate01 * 100.0, 1)
     reasoning = "\n".join(
         f"{s['id']}: {s['reasoning']}"
         for s in item_scores
@@ -225,6 +228,7 @@ def aggregate_scores(
         "stage_id": stage_id,
         "verdict": verdict,
         "score": score,
+        "score_max": 100.0,
         "rubric_items": item_scores,
         "reasoning": reasoning,
         "raw_response": raw_response,
