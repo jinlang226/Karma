@@ -19,10 +19,12 @@ import threading
 from pathlib import Path
 from typing import Any
 
+import json
+
 from ..definitions.workflows import resolve_workflow_rows, single_case_to_workflow
 from ..environments.registry import get_environment
 from ..agents.registry import resolve_agent
-from ..protocol import generate_run_id
+from ..protocol import generate_run_id, run_config_path
 from .workflow import run_workflow_loop
 from .case import run_stage
 
@@ -107,6 +109,22 @@ def run_workflow(
     effective_run_id = run_id or generate_run_id(str(workflow.get("id") or "workflow"))
     run_dir = runs_dir / effective_run_id
     run_dir.mkdir(parents=True, exist_ok=True)
+
+    # Record agent/sandbox (and case info) so the UI shows them. The HTTP path
+    # writes a richer config.json before calling us; only write when absent so we
+    # don't clobber it. This covers CLI run-case, which otherwise has no
+    # config.json and displays the agent as "none".
+    cfg_path = run_config_path(run_dir)
+    if not cfg_path.exists():
+        wf_id = str(workflow.get("id") or "")
+        cfg: dict[str, Any] = {"agent": agent_name, "sandbox": sandbox_mode, "workflow_id": wf_id}
+        if "/" in wf_id:
+            svc, _, cs = wf_id.partition("/")
+            cfg["service"], cfg["case_name"] = svc, cs
+        try:
+            cfg_path.write_text(json.dumps(cfg, indent=2))
+        except Exception:
+            pass
 
     _register_run(effective_run_id, {"run_id": effective_run_id, "status": "running", "stages": []})
 
