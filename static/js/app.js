@@ -177,23 +177,57 @@
 
   // A read-only panel of a workflow's stages (service/case/param overrides).
   // Shared by the Workflow detail view and the Results run detail.
+  // Palette for adversary injections (distinct, theme-friendly).
+  const ADV_COLORS = ["#c6632d", "#2f6f6d", "#7b5ea7", "#b08900", "#a23b5e", "#3a7d44"];
+
   KARMA.workflowStagesPanel = function (wf, title) {
     const panel = el("div", { class: "panel" });
     panel.appendChild(el("h3", {}, title || "Workflow stages"));
+    const stages = wf.stages || [];
+    // Map stage id -> order index, then resolve each injection's covered range.
+    const idx = {};
+    stages.forEach((s, i) => { idx[s.id] = i; });
+    const injections = (wf.adversary || []).map((a, i) => ({
+      scenario: a.scenario, inject: a.inject_at_stage, lift: a.lift_at_stage,
+      color: ADV_COLORS[i % ADV_COLORS.length],
+      from: idx[a.inject_at_stage], to: idx[a.lift_at_stage],
+    })).filter((a) => a.from != null);
+    const covering = (i) => injections.filter((a) => i >= a.from && i <= (a.to == null ? a.from : a.to));
+
     // Scrollable so a many-stage workflow (e.g. 30 stages) stays a bounded block.
     const list = el("div", { class: "stage-scroll" });
-    for (const s of (wf.stages || [])) {
-      const row = el("div", { class: "builder-row" });
-      row.appendChild(el("div", { class: "builder-row-head" }, el("span", {}, s.id)));
+    stages.forEach((s, i) => {
+      const cover = covering(i);
+      const row = el("div", { class: "builder-row" + (cover.length ? " stage-injected" : "") });
+      if (cover.length) {
+        // One colored left stripe per covering injection (stacked via box-shadow).
+        row.style.boxShadow = cover.map((a, k) => `inset ${(k + 1) * 4}px 0 0 ${a.color}`).join(", ");
+        row.style.paddingLeft = (10 + cover.length * 4) + "px";
+      }
+      const head = el("div", { class: "builder-row-head" }, el("span", {}, s.id));
+      injections.filter((a) => a.from === i).forEach((a) => head.appendChild(
+        el("span", { class: "adv-badge", style: `color:${a.color};border-color:${a.color}` },
+          "⚠ " + KARMA.labels.scenario(a.scenario))));
+      injections.filter((a) => a.to === i).forEach((a) => head.appendChild(
+        el("span", { class: "adv-badge lift", style: `color:${a.color}` }, "↑ lifted")));
+      row.appendChild(head);
       row.appendChild(el("div", { class: "kv" }, el("span", { class: "k" }, "Service"), el("span", {}, KARMA.labels.service(s.service))));
       row.appendChild(el("div", { class: "kv" }, el("span", { class: "k" }, "Case"), el("span", {}, KARMA.labels.case(s.case_name))));
       for (const [k, v] of Object.entries(s.param_overrides || {})) {
         row.appendChild(el("div", { class: "kv" }, el("span", { class: "k" }, KARMA.labels.case(k)), el("span", {}, String(v))));
       }
       list.appendChild(row);
-    }
-    if (!(wf.stages || []).length) list.appendChild(el("p", { class: "muted" }, "No stages."));
+    });
+    if (!stages.length) list.appendChild(el("p", { class: "muted" }, "No stages."));
     panel.appendChild(list);
+    // Legend of the injections (scenario + span).
+    if (injections.length) {
+      const legend = el("div", { class: "adv-legend" });
+      injections.forEach((a) => legend.appendChild(el("span", { class: "adv-legend-item" },
+        el("span", { class: "adv-swatch", style: `background:${a.color}` }),
+        `${KARMA.labels.scenario(a.scenario)} (${a.inject} → ${a.lift})`)));
+      panel.appendChild(legend);
+    }
     return panel;
   };
 
