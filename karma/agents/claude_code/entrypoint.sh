@@ -21,6 +21,11 @@
 # talks to the cluster through the proxy automatically.
 set -uo pipefail
 
+# In the docker sandbox the container runs as root, and Claude Code refuses
+# --dangerously-skip-permissions as root unless it knows it is sandboxed. This
+# env tells it so (harmless in local mode, where we run as a normal user).
+export IS_SANDBOX=1
+
 PROMPT_FILE="prompt.txt"
 SUBMIT_FILE="submit.txt"
 TMP_FILE=".submit.partial"
