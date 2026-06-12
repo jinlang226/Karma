@@ -133,7 +133,12 @@ def list_runs(runs_dir: Path) -> list[dict[str, Any]]:
     if not runs_dir.exists():
         return runs
 
-    for run_dir in sorted(runs_dir.iterdir(), reverse=True):
+    def _run_ts(p):
+        m = re.search(r"(\d{8}_\d{6})", p.name)
+        return m.group(1) if m else p.name
+    # Chronological, newest first (sort by the run_id timestamp, not the name --
+    # the name leads with the service so a name sort groups by service instead).
+    for run_dir in sorted(runs_dir.iterdir(), key=_run_ts, reverse=True):
         if not run_dir.is_dir():
             continue
         state = _read_json(run_dir / "workflow_state.json")
@@ -171,8 +176,11 @@ def list_runs(runs_dir: Path) -> list[dict[str, Any]]:
 
         stages_dir = run_dir / "stages"
         if stages_dir.exists():
+            # Exclude regression-sweep dirs ("<stage>__regression") from the
+            # count -- they are oracle re-runs, not workflow stages.
             stage_ids = sorted(
-                d.name for d in stages_dir.iterdir() if d.is_dir()
+                d.name for d in stages_dir.iterdir()
+                if d.is_dir() and not d.name.endswith("__regression")
             )
             entry["stage_count"] = len(stage_ids)
             scores: list[float] = []

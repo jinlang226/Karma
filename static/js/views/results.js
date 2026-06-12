@@ -119,9 +119,12 @@
     root.appendChild(head);
     if (np.ts) root.appendChild(el("div", { class: "muted run-ts" }, KARMA.labels.formatTs(np.ts)));
 
+    const loading = el("p", { class: "muted" }, "Loading…");
+    root.appendChild(loading);
     let d;
     try { d = await api.get(`/api/run/${runId}`); }
-    catch (e) { root.appendChild(errBox(e)); return; }
+    catch (e) { loading.remove(); root.appendChild(errBox(e)); return; }
+    loading.remove();
     const cfg = d.config || {};
 
     const badges = el("div", { class: "toolbar" });
@@ -157,7 +160,7 @@
     root.appendChild(judgeLog);
 
     const stagesPanel = el("div", { class: "panel" });
-    stagesPanel.appendChild(el("h3", {}, "Stages"));
+    stagesPanel.appendChild(el("h3", {}, "Stage results"));
     const host = el("div", {});
     stagesPanel.appendChild(host);
     root.appendChild(stagesPanel);
