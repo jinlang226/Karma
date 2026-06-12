@@ -217,12 +217,16 @@
     const persisted = lastJudgeLog[runId] || d.judge_log;
     if (persisted) { judgeLog.textContent = persisted; judgeLog.style.display = ""; }
     const actions = el("div", { class: "toolbar" });
-    // A run with no recorded outcome (unknown/absent status) cannot be judged --
-    // surface that instead of offering a Judge button or a (false) live stream.
-    const unknownStatus = !d.status || String(d.status).toLowerCase() === "unknown";
-    if (unknownStatus) {
-      actions.appendChild(el("div", { class: "error-box" },
-        "This run has an unknown status — there is no recorded outcome to judge."));
+    // A run that never finished cleanly (unknown/absent status, or interrupted)
+    // cannot be judged -- surface that instead of offering a Judge button or a
+    // (false) live stream.
+    const st = String(d.status || "").toLowerCase();
+    const unknownStatus = !d.status || st === "unknown";
+    const interrupted = st === "interrupted";
+    if (unknownStatus || interrupted) {
+      actions.appendChild(el("div", { class: "error-box" }, interrupted
+        ? "This run was interrupted — there is no complete outcome to judge."
+        : "This run has an unknown status — there is no recorded outcome to judge."));
     } else if (isTerminal(d.status)) {
       actions.appendChild(el("button", { class: "btn", onClick: () => startJudge("run", runId, false, judgeLog) }, "Judge"));
       actions.appendChild(el("button", { class: "btn secondary", onClick: () => startJudge("run", runId, true, judgeLog) }, "Dry run"));
