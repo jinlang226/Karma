@@ -273,13 +273,29 @@ def get_run_detail(runs_dir: Path, run_id: str) -> dict[str, Any]:
         "oracle_verdict": s.get("oracle_verdict"),
         "error": s.get("error"),
     } for s in raw_stages]
-    return {
+    detail: dict[str, Any] = {
         "run_id": run_id,
         "status": meta.get("status", "unknown"),
         "config": config,
         "stages": stages,
         "duration_sec": meta.get("duration_sec"),
     }
+    # Mean judge score across stages (0-100, 0.1 precision), so the detail header
+    # can show the run's test score without the caller re-reading judge artifacts.
+    stages_dir = run_dir / "stages"
+    if stages_dir.exists():
+        scores: list[float] = []
+        for sid in (s.get("stage_id") for s in raw_stages):
+            if not sid:
+                continue
+            jd = _read_json(stages_dir / str(sid) / "judge.json")
+            if jd and isinstance(jd.get("score"), (int, float)):
+                scores.append(float(jd["score"]))
+        if scores:
+            detail["judged"] = True
+            detail["judge_score"] = round(sum(scores) / len(scores), 1)
+            detail["score_max"] = 100.0
+    return detail
 
 
 # Subfolder under workflows/ where UI-built workflows are saved.
