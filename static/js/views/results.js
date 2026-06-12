@@ -299,12 +299,12 @@
     // inline workflows with no saved file); fall back to the saved workflow file,
     // a synthesized single-case block, or a minimal list from the stage count.
     const onStage = (s) => KARMA.showCase(s.service, s.case_name);
+    const TITLE = "Test details";
     if (cfg.stages && cfg.stages.length) {
-      const title = cfg.stages.length > 1 ? "Stages" : "Stage";
-      root.appendChild(KARMA.workflowStagesPanel({ stages: cfg.stages, adversary: cfg.adversary || [] }, title, onStage));
+      root.appendChild(KARMA.workflowStagesPanel({ stages: cfg.stages, adversary: cfg.adversary || [] }, TITLE, onStage));
     } else if (cfg.service && cfg.case_name) {
       const oneStage = { stages: [{ id: "stage_1", service: cfg.service, case_name: cfg.case_name, param_overrides: cfg.params || {} }] };
-      root.appendChild(KARMA.workflowStagesPanel(oneStage, "Stage", onStage));
+      root.appendChild(KARMA.workflowStagesPanel(oneStage, TITLE, onStage));
     } else {
       // Older run without a stored spec: try its saved file, else synthesize a
       // stage list (from the known stage count) through the SAME panel component
@@ -318,12 +318,12 @@
       const synth = () => {
         if (!total) return;
         const stages = Array.from({ length: total }, (_, i) => ({ id: "stage_" + (i + 1) }));
-        slot.appendChild(KARMA.workflowStagesPanel({ stages, adversary: [] }, total > 1 ? "Stages" : "Stage", onStage));
+        slot.appendChild(KARMA.workflowStagesPanel({ stages, adversary: [] }, TITLE, onStage));
       };
       if (wfRef) {
         let handled = false;
         api.get(`/api/workflows/${wfRef}`)
-          .then((wf) => { handled = true; slot.appendChild(KARMA.workflowStagesPanel(wf, "Stages", onStage)); })
+          .then((wf) => { handled = true; slot.appendChild(KARMA.workflowStagesPanel(wf, TITLE, onStage)); })
           .catch(() => { if (!handled) synth(); });
       } else {
         synth();
