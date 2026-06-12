@@ -183,6 +183,12 @@ def list_runs(runs_dir: Path) -> list[dict[str, Any]]:
                 if d.is_dir() and not d.name.endswith("__regression")
             )
             entry["stage_count"] = len(stage_ids)
+        # Prefer the run-level judge.json; fall back to the per-stage mean.
+        run_judge = _read_json(run_dir / "judge.json")
+        if run_judge and isinstance(run_judge.get("score"), (int, float)):
+            entry["judged"] = True
+            entry["judge_score"] = round(float(run_judge["score"]), 1)
+        elif stages_dir.exists():
             scores: list[float] = []
             for sid in stage_ids:
                 jd = _read_json(stages_dir / sid / "judge.json")
@@ -286,19 +292,34 @@ def get_run_detail(runs_dir: Path, run_id: str) -> dict[str, Any]:
     }
     # Mean judge score across stages (0-100, 0.1 precision), so the detail header
     # can show the run's test score without the caller re-reading judge artifacts.
-    stages_dir = run_dir / "stages"
-    if stages_dir.exists():
-        scores: list[float] = []
-        for sid in (s.get("stage_id") for s in raw_stages):
-            if not sid:
-                continue
-            jd = _read_json(stages_dir / str(sid) / "judge.json")
-            if jd and isinstance(jd.get("score"), (int, float)):
-                scores.append(float(jd["score"]))
-        if scores:
-            detail["judged"] = True
-            detail["judge_score"] = round(sum(scores) / len(scores), 1)
-            detail["score_max"] = 100.0
+    # Prefer the run-level judge.json (objective stage-pass score + regression
+    # adjudication); fall back to the mean of legacy per-stage judge.json.
+    run_judge = _read_json(run_dir / "judge.json")
+    if run_judge and isinstance(run_judge.get("score"), (int, float)):
+        detail["judged"] = True
+        detail["judge_score"] = round(float(run_judge["score"]), 1)
+        detail["score_max"] = float(run_judge.get("score_max") or 100.0)
+        detail["judge_breakdown"] = {
+            k: run_judge.get(k)
+            for k in (
+                "summary", "total_stages", "passed_stages", "base_score",
+                "regression_failures", "legitimate_regressions", "regressions",
+            )
+        }
+    else:
+        stages_dir = run_dir / "stages"
+        if stages_dir.exists():
+            scores: list[float] = []
+            for sid in (s.get("stage_id") for s in raw_stages):
+                if not sid:
+                    continue
+                jd = _read_json(stages_dir / str(sid) / "judge.json")
+                if jd and isinstance(jd.get("score"), (int, float)):
+                    scores.append(float(jd["score"]))
+            if scores:
+                detail["judged"] = True
+                detail["judge_score"] = round(sum(scores) / len(scores), 1)
+                detail["score_max"] = 100.0
     return detail
 
 

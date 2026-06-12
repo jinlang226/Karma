@@ -114,8 +114,9 @@ def _build_client(
 
 
 def call_judge_llm(
-    judge_input: dict[str, Any],
+    judge_input: dict[str, Any] | None,
     *,
+    prompt: str | None = None,
     model: str | None = None,
     base_url: str | None = None,
     api_key: str | None = None,
@@ -163,9 +164,11 @@ def call_judge_llm(
         Keys: ``content`` (str), ``model`` (str), ``usage`` (dict),
         ``finish_reason`` (str).
     """
-    from .input_builder import render_judge_prompt
-
-    prompt = render_judge_prompt(judge_input)
+    # A caller may pass a fully-rendered prompt (e.g. the regression-sweep
+    # adjudicator); otherwise render the standard rubric prompt from the input.
+    if prompt is None:
+        from .input_builder import render_judge_prompt
+        prompt = render_judge_prompt(judge_input)
     resolved_backend = _resolve_backend(backend, api_key)
 
     if resolved_backend == "claude_cli":

@@ -57,29 +57,22 @@ def list_judge_jobs() -> list[dict[str, Any]]:
 def _judge_run_streaming(
     job_id: str, run_dir: Path, judge_model: str | None, dry_run: bool
 ) -> dict[str, Any]:
-    """Judge each stage of *run_dir*, publishing per-stage progress."""
-    stages_dir = run_dir / "stages"
-    stage_ids = (
-        sorted(d.name for d in stages_dir.iterdir() if d.is_dir())
-        if stages_dir.exists()
-        else []
-    )
-    results: dict[str, Any] = {}
-    for sid in stage_ids:
-        try:
-            result = run_judge(run_dir, sid, judge_model=judge_model, dry_run=dry_run)
-        except Exception as exc:
-            result = {"stage_id": sid, "verdict": "error", "error": str(exc)}
-        results[sid] = result
-        hub.publish(job_id, {
-            "type": "judge_progress",
-            "job_id": job_id,
-            "run_id": run_dir.name,
-            "stage_id": sid,
-            "verdict": result.get("verdict"),
-            "score": result.get("score"),
-        })
-    return {"target_type": "run", "run_id": run_dir.name, "stages": results}
+    """Score the run: objective stage-pass score + LLM adjudication of any
+    regression-sweep failures (false-positive filtering)."""
+    from ...judge.run_score import score_run
+
+    hub.publish(job_id, {
+        "type": "judge_progress", "job_id": job_id, "run_id": run_dir.name,
+        "message": "scoring stages and adjudicating regression sweep",
+    })
+    result = score_run(run_dir, judge_model=judge_model, dry_run=dry_run)
+    hub.publish(job_id, {
+        "type": "judge_progress", "job_id": job_id, "run_id": run_dir.name,
+        "score": result.get("score"),
+        "verdict": "pass" if (result.get("score") or 0) >= 50 else "fail",
+        "message": result.get("summary"),
+    })
+    return {"target_type": "run", "run_id": run_dir.name, "result": result}
 
 
 def _judge_batch_streaming(
