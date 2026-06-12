@@ -210,10 +210,11 @@
     if (d.duration_sec) badges.appendChild(el("span", { class: "muted" }, Math.round(d.duration_sec) + "s"));
     root.appendChild(badges);
 
-    // Judge (terminal) or Cancel (running), with an inline judge log. The log is
-    // kept across the post-judge reload (and revisits) via lastJudgeLog.
+    // Judge (terminal) or Cancel (running), with an inline judge log. Shows the
+    // live in-session log if present, else the persisted runs/<id>/judge.log.
     const judgeLog = el("pre", { class: "log", style: "display:none" });
-    if (lastJudgeLog[runId]) { judgeLog.textContent = lastJudgeLog[runId]; judgeLog.style.display = ""; }
+    const persisted = lastJudgeLog[runId] || d.judge_log;
+    if (persisted) { judgeLog.textContent = persisted; judgeLog.style.display = ""; }
     const actions = el("div", { class: "toolbar" });
     if (isTerminal(d.status)) {
       actions.appendChild(el("button", { class: "btn", onClick: () => startJudge("run", runId, false, judgeLog) }, "Judge"));

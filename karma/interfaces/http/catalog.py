@@ -295,6 +295,12 @@ def get_run_detail(runs_dir: Path, run_id: str) -> dict[str, Any]:
     # Prefer the run-level judge.json (objective stage-pass score + regression
     # adjudication); fall back to the mean of legacy per-stage judge.json.
     run_judge = _read_json(run_dir / "judge.json")
+    judge_log_path = run_dir / "judge.log"
+    if judge_log_path.exists():
+        try:
+            detail["judge_log"] = judge_log_path.read_text()
+        except Exception:
+            pass
     if run_judge and isinstance(run_judge.get("score"), (int, float)):
         detail["judged"] = True
         detail["judge_score"] = round(float(run_judge["score"]), 1)
