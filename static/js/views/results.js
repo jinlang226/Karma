@@ -101,6 +101,7 @@
   function render() {
     stopTimers();
     clear(root);
+    KARMA.replayEnter(root);
     // The list is a root page: reset any cross-view back history and record it
     // as the current location so a later jump returns here.
     KARMA.clearHistory();
@@ -172,6 +173,7 @@
   async function renderDetail(runId) {
     stopTimers();
     clear(root);
+    KARMA.replayEnter(root);
     // Record this run detail as the current location so a jump to a Cases
     // sub-page (via a stage click) can return here with the back arrow.
     KARMA.currentLocation = () => KARMA.showRun(runId);

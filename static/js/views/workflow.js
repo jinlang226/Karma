@@ -84,6 +84,7 @@
 
   function render() {
     clear(root);
+    KARMA.replayEnter(root);
     KARMA.setBreadcrumb(null);   // back to the list -> drop any "Workflows / ..." crumb
     root.appendChild(el("h2", {}, "Workflows"));
     root.appendChild(runConfigPanel());
@@ -226,6 +227,13 @@
     const d = f.dir || "";
     return d === folder || d.startsWith(folder ? folder + "/" : "");
   });
+  // Navigate into/out of a folder and fade the new list in (folder nav only --
+  // not on every search keystroke, which also calls renderFiles).
+  function openFolder(folder) {
+    wfFolder = folder;
+    renderFiles();
+    KARMA.replayEnter(document.getElementById("wf-files-body"), "fadeIn 0.25s ease both");
+  }
 
   // One folder row: a select-all-inside checkbox, a clickable folder icon+name
   // that drills into it, and a count of the workflows it contains.
@@ -241,7 +249,7 @@
       },
     });
     const name = folder.split("/").pop();
-    const open = () => { wfFolder = folder; renderFiles(); };
+    const open = () => openFolder(folder);
     // Name + count share one cell spanning the data columns, so the count never
     // gets squeezed into a narrow column and wraps.
     return el("tr", { class: "wf-folder-row" },
@@ -278,7 +286,7 @@
     // and any intermediate segment are clickable; the current folder is plain.
     if (wfFolder) {
       const parent = wfFolder.includes("/") ? wfFolder.slice(0, wfFolder.lastIndexOf("/")) : "";
-      const go = (folder) => () => { wfFolder = folder; renderFiles(); };
+      const go = (folder) => () => openFolder(folder);
       const cell = el("td", { colspan: "6" },
         el("span", { class: "crumb-link", title: "Up one folder", onClick: go(parent) }, "← "),
         el("span", { class: "crumb-link", onClick: go("") }, "workflows"));
@@ -292,10 +300,10 @@
           : el("span", { class: "crumb-link", onClick: go(acc) }, seg));
       });
       body.appendChild(el("tr", { class: "wf-crumb-row" }, cell));
-      // Stick the breadcrumb flush beneath the sticky header. The -1 overlaps the
-      // collapsed header/body border seam so no sub-pixel gap shows between them.
+      // Stick the breadcrumb flush beneath the sticky header. Overlap the
+      // collapsed header/body border seam by 2px so no sub-pixel gap shows.
       const thead = body.parentElement && body.parentElement.querySelector("thead");
-      if (thead) cell.style.top = Math.max(0, thead.offsetHeight - 1) + "px";
+      if (thead) cell.style.top = Math.max(0, Math.round(thead.getBoundingClientRect().height) - 2) + "px";
     }
     for (const sub of subfolders(wfFolder)) body.appendChild(folderRow(sub));
     for (const f of filesIn(wfFolder)) body.appendChild(fileRow(f));
@@ -366,6 +374,7 @@
   // builder to override params and save a renamed copy).
   async function renderWorkflowDetail(name, path) {
     clear(root);
+    KARMA.replayEnter(root);
     KARMA.currentLocation = () => KARMA.showWorkflow(name, path);
     const wn = KARMA.labels.workflowName(name);
     const display = wn.app + (wn.name ? " · " + wn.name : "");
@@ -418,6 +427,7 @@
   // No "Saved Workflows" list (that belongs on the Workflows landing page).
   function renderCustomize(name, path) {
     clear(root);
+    KARMA.replayEnter(root);
     const wn = KARMA.labels.workflowName(name);
     const display = wn.app + (wn.name ? " · " + wn.name : "");
     KARMA.currentLocation = () => renderCustomize(name, path);

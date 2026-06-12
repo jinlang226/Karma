@@ -60,6 +60,7 @@
   // to scroll into view after the grids render (used by breadcrumb crumbs).
   async function renderHome(scrollTo) {
     clear(root);
+    KARMA.replayEnter(root);
     KARMA.clearHistory();
     KARMA.currentLocation = () => KARMA.activate("runner");
     KARMA.setBreadcrumb(null);
@@ -127,6 +128,7 @@
       } catch (_e) { sc = { scenario: sc, params: {} }; }
     }
     clear(root);
+    KARMA.replayEnter(root);
     try {
     KARMA.currentLocation = () => KARMA.showScenario(sc.scenario);
     KARMA.setBreadcrumb({ back: renderHome, crumbs: [
@@ -190,6 +192,7 @@
 
   async function renderService(service, category) {
     clear(root);
+    KARMA.replayEnter(root);
     KARMA.currentLocation = () => renderService(service, category);
     const cat = category || "Applications";
     KARMA.setBreadcrumb({ back: renderHome, crumbs: [
@@ -237,6 +240,7 @@
 
   async function renderCase(service, caseName) {
     clear(root);
+    KARMA.replayEnter(root);
     KARMA.currentLocation = () => KARMA.showCase(service, caseName);
     KARMA.setBreadcrumb({
       back: () => renderService(service),
