@@ -163,6 +163,12 @@ def score_run(
         "regressions": [],
     }
 
+    # Human-readable log, persisted to {run_dir}/judge.log alongside judge.json.
+    log: list[str] = [
+        f"[judge] run {run_dir.name}",
+        f"[judge] {passed}/{total} stages passed -> base score {base_score}",
+    ]
+
     # Only adjudicate when every stage passed -- otherwise the score is purely the
     # objective pass fraction and the LLM is not involved at all.
     if total == 0 or passed < total:
@@ -170,8 +176,10 @@ def score_run(
             f"{passed}/{total} stages passed -> objective score {base_score}."
             if total else "no stages to score."
         )
+        log.append(f"[judge] not all stages passed -> objective score {base_score} (no LLM)")
+        log.append(f"[judge] done: {result['summary']}")
         if not dry_run:
-            _write(run_dir, result)
+            _write(run_dir, result, log)
         return result
 
     sweep = meta.get("regression_sweep") or {}
@@ -186,8 +194,12 @@ def score_run(
             "all stages passed and the regression sweep is clean -> 100.0."
             if sweep else "all stages passed (single-stage / no sweep) -> 100.0."
         )
+        log.append(
+            "[judge] regression sweep clean -> 100.0" if sweep
+            else "[judge] all stages passed, no regression sweep -> 100.0"
+        )
         if not dry_run:
-            _write(run_dir, result)
+            _write(run_dir, result, log)
         return result
 
     # Adjudicate each regression-sweep failure: real regression or false positive?
@@ -204,6 +216,10 @@ def score_run(
         ]
         return result
 
+    log.append(
+        f"[judge] all {total} stages passed; regression sweep has {len(failures)} "
+        f"failure(s) -> adjudicating each (real regression vs false positive)"
+    )
     legit = 0
     regressions: list[dict[str, Any]] = []
     model_used: str | None = None
@@ -228,12 +244,17 @@ def score_run(
         is_legit = bool(verdict.get("legitimate_regression"))
         if is_legit:
             legit += 1
+        reasoning = verdict.get("reasoning") or ""
         regressions.append({
             "stage_id": sid,
             "legitimate": is_legit,
-            "reasoning": verdict.get("reasoning") or "",
+            "reasoning": reasoning,
             "output": output,
         })
+        log.append(
+            f"[judge]   {sid}: {'REAL REGRESSION' if is_legit else 'false positive'} "
+            f"-- {reasoning}"
+        )
 
     score = round((total - legit) / total * 100.0, 1) if total else 0.0
     result["legitimate_regressions"] = legit
@@ -245,13 +266,21 @@ def score_run(
         f"all {total} stages passed; {len(failures)} regression-sweep failure(s): "
         f"{legit} real regression(s), {fp} false positive(s) -> score {score}."
     )
-    _write(run_dir, result)
+    log.append(f"[judge] adjudicated by {model_used or 'judge'}")
+    log.append(f"[judge] done: {result['summary']}")
+    _write(run_dir, result, log)
     return result
 
 
-def _write(run_dir: Path, result: dict[str, Any]) -> None:
-    """Persist the run-level judge result to ``{run_dir}/judge.json``."""
+def _write(run_dir: Path, result: dict[str, Any], log: list[str] | None = None) -> None:
+    """Persist the run-level judge result to ``{run_dir}/judge.json`` and, when
+    provided, the human-readable judge log to ``{run_dir}/judge.log``."""
     try:
         (run_dir / "judge.json").write_text(json.dumps(result, indent=2))
     except Exception:
         pass
+    if log is not None:
+        try:
+            (run_dir / "judge.log").write_text("\n".join(log) + "\n")
+        except Exception:
+            pass
