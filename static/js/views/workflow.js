@@ -82,8 +82,10 @@
   // Agent + sandbox applied to every workflow run started from this page.
   // Without this, workflow runs went out with no agent and always failed.
   function runConfigPanel() {
+    // Default to the first registered agent (a workflow with no agent just runs
+    // setup and fails the oracle, so it is not offered as a choice).
+    if (!runAgent && agents.length) runAgent = agents[0];
     const agentSel = el("select", { onChange: (e) => { runAgent = e.target.value; } },
-      el("option", { value: "" }, "None — run locally"),
       ...agents.map((a) => el("option", {
         value: a, selected: a === runAgent ? "selected" : null,
       }, KARMA.labels.agent(a))));

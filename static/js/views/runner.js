@@ -267,8 +267,8 @@
     const cfg = el("div", { class: "panel" });
     cfg.appendChild(el("h3", {}, "Parameters & Run Config"));
     cfg.appendChild(el("p", { class: "field-help" },
-      "Adjust the case parameters if needed, then choose how to run it: which agent " +
-      "(or none to run locally without one), local or Docker sandbox, and a timeout."));
+      "Adjust the case parameters if needed, then choose how to run it: which agent, " +
+      "local or Docker sandbox, and a timeout."));
     const paramInputs = {};
     for (const p of detail.params) {
       cfg.appendChild(el("label", {}, `${KARMA.labels.case(p.name)}${p.description ? " — " + p.description : ""}`));
@@ -279,7 +279,6 @@
 
     const row = el("div", { class: "row" });
     const agentSel = el("select", {},
-      el("option", { value: "" }, "None — run locally"),
       ...agents.map((a) => el("option", { value: a }, KARMA.labels.agent(a))));
     const sandboxSel = el("select", {},
       el("option", { value: "local" }, "Local"),
