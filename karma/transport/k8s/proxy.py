@@ -189,9 +189,18 @@ class KubectlProxyServer:
                     _fwd_headers()
                     self.send_header("Connection", "close")
                     self.end_headers()
+                    # Use read1(): it returns as soon as ONE socket read yields
+                    # data, so each watch event is forwarded the instant it
+                    # arrives. Plain read(n) on a chunked stream blocks trying to
+                    # accumulate n bytes across multiple events -- a single small
+                    # event (e.g. a Job flipping to Complete) would sit buffered
+                    # until kubectl's own --timeout fired, making `kubectl wait`/
+                    # `rollout status` falsely time out even though the condition
+                    # was already met.
+                    read1 = getattr(resp, "read1", None)
                     try:
                         while True:
-                            chunk = resp.read(4096)
+                            chunk = read1(65536) if read1 is not None else resp.read(4096)
                             if not chunk:
                                 break
                             self.wfile.write(chunk)
