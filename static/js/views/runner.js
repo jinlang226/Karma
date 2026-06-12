@@ -151,18 +151,22 @@
       const grid = el("div", { class: "param-grid" });
       grid.style.gridTemplateColumns = `repeat(${Math.min(keys.length, 4)}, minmax(0, 1fr))`;
       for (const k of keys) {
-        const def = params[k] && params[k].default != null ? String(params[k].default) : "";
+        const pdef = params[k] || {};
+        const def = pdef && pdef.default != null ? String(pdef.default) : "";
+        const desc = pdef && typeof pdef === "object" ? (pdef.description || "") : "";
         overrides[k] = def;
         grid.appendChild(el("div", {},
           el("label", {}, KARMA.labels.case(k)),
           el("input", {
             value: def, placeholder: def,
             onInput: (e) => { overrides[k] = e.target.value; },
-          })));
+          }),
+          desc ? el("div", { class: "field-help", style: "margin:4px 0 0" }, desc) : null));
       }
       panel.appendChild(grid);
     }
-    panel.appendChild(el("div", { class: "toolbar" },
+    // Action sits at the bottom of the Parameters block, separated from the inputs.
+    panel.appendChild(el("div", { class: "toolbar param-action-bottom" },
       el("button", {
         class: "btn",
         onClick: () => KARMA.useScenarioInBuilder(sc.scenario, overrides),

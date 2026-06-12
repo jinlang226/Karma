@@ -441,43 +441,61 @@ def save_workflow(
 
 
 def list_adversary_scenarios(resources_dir: Path) -> list[dict[str, Any]]:
-    """Return the adversary scenarios discoverable under *resources_dir*.
+    """Return the adversary scenarios available to the UI.
 
-    Scenarios live at ``{service}/adversarial/{scenario}/scenario.yaml``.
-    Each entry carries the owning service, scenario name, file path, and a
-    cheap ``has_lift`` flag plus any declared prompt hints so the adversary
-    panel can list and describe them without re-parsing.
+    Scenarios live in the top-level ``adversaries/{service}/{scenario}/
+    scenario.yaml`` tree (a sibling of *resources_dir*); the legacy
+    ``resources/{service}/adversarial/{scenario}/`` location is still scanned
+    as a fallback. Each entry carries the owning service, scenario name, file
+    path, a cheap ``has_lift`` flag, declared prompt hints, and the param
+    declarations (name/default/description) so the adversary panel and the
+    workflow injection editor can describe them without re-parsing.
     """
     import yaml
 
+    # (service_root, is_legacy) pairs: the top-level adversaries/ tree first,
+    # then the legacy in-resources layout. Each yields service subdirectories.
+    roots: list[tuple[Path, bool]] = [(resources_dir.parent / "adversaries", False)]
+    if resources_dir.exists():
+        roots.append((resources_dir, True))
+
     result: list[dict[str, Any]] = []
-    if not resources_dir.exists():
-        return result
-    for svc_dir in sorted(resources_dir.iterdir()):
-        adv_dir = svc_dir / "adversarial"
-        if not adv_dir.is_dir():
+    seen: set[tuple[str, str]] = set()
+    for root, legacy in roots:
+        if not root.is_dir():
             continue
-        for scen_dir in sorted(adv_dir.iterdir()):
-            scenario_file = scen_dir / "scenario.yaml"
-            if not scenario_file.exists():
+        for svc_dir in sorted(root.iterdir()):
+            if not svc_dir.is_dir():
                 continue
-            entry: dict[str, Any] = {
-                "service": svc_dir.name,
-                "scenario": scen_dir.name,
-                "path": str(scenario_file),
-                "has_lift": False,
-                "prompt_hints": {},
-            }
-            try:
-                data = yaml.safe_load(scenario_file.read_text()) or {}
-                if isinstance(data, dict):
-                    entry["has_lift"] = data.get("lift") is not None
-                    entry["prompt_hints"] = data.get("prompt_hints") or {}
-                    entry["params"] = data.get("params") or {}
-            except Exception:
-                entry["ok"] = False
-            result.append(entry)
-    return result
+            # New layout: adversaries/<svc>/<scen>/; legacy: <svc>/adversarial/<scen>/.
+            scen_parent = (svc_dir / "adversarial") if legacy else svc_dir
+            if not scen_parent.is_dir():
+                continue
+            for scen_dir in sorted(scen_parent.iterdir()):
+                scenario_file = scen_dir / "scenario.yaml"
+                if not scenario_file.is_file():
+                    continue
+                key = (svc_dir.name, scen_dir.name)
+                if key in seen:
+                    continue
+                seen.add(key)
+                entry: dict[str, Any] = {
+                    "service": svc_dir.name,
+                    "scenario": scen_dir.name,
+                    "path": str(scenario_file),
+                    "has_lift": False,
+                    "prompt_hints": {},
+                }
+                try:
+                    data = yaml.safe_load(scenario_file.read_text()) or {}
+                    if isinstance(data, dict):
+                        entry["has_lift"] = data.get("lift") is not None
+                        entry["prompt_hints"] = data.get("prompt_hints") or {}
+                        entry["params"] = data.get("params") or {}
+                except Exception:
+                    entry["ok"] = False
+                result.append(entry)
+    return sorted(result, key=lambda e: (e["service"], e["scenario"]))
 
 
 def cluster_status() -> dict[str, Any]:
