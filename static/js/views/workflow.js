@@ -242,12 +242,14 @@
     });
     const name = folder.split("/").pop();
     const open = () => { wfFolder = folder; renderFiles(); };
+    // Name + count share one cell spanning the data columns, so the count never
+    // gets squeezed into a narrow column and wraps.
     return el("tr", { class: "wf-folder-row" },
       el("td", {}, cb),
-      el("td", {}, el("span", { class: "crumb-link wf-folder-link", onClick: open },
-        el("span", { class: "wf-folder-icon" }, "📁"), name + "/")),
-      el("td", {}, ""), el("td", {}, ""),
-      el("td", { class: "muted" }, `${filesUnder(folder).length} workflows`),
+      el("td", { colspan: "4" },
+        el("span", { class: "crumb-link wf-folder-link", onClick: open },
+          el("span", { class: "wf-folder-icon" }, "📁"), name + "/"),
+        el("span", { class: "muted wf-folder-count" }, `${filesUnder(folder).length} workflows`)),
       el("td", {}, el("button", { class: "btn secondary", onClick: open }, "Open")));
   }
 
