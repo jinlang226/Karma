@@ -75,6 +75,48 @@ def _judge_run_streaming(
     return {"target_type": "run", "run_id": run_dir.name, "result": result}
 
 
+def _judge_all_streaming(
+    job_id: str, runs_dir: Path, judge_model: str | None, dry_run: bool
+) -> dict[str, Any]:
+    """Score every finished run under *runs_dir* (the "Judge all" button).
+
+    Each run is scored with the run-level scorer (objective stage-pass + LLM
+    adjudication of regression-sweep failures); in-progress runs are skipped.
+    """
+    from ...judge.run_score import score_run
+
+    run_dirs = (
+        sorted((d for d in runs_dir.iterdir() if d.is_dir()), key=lambda p: p.name)
+        if runs_dir.exists() else []
+    )
+    total = len(run_dirs)
+    results: dict[str, Any] = {}
+    for i, rd in enumerate(run_dirs, start=1):
+        state = (catalog._read_json(rd / "workflow_state.json")
+                 or catalog._read_json(rd / "run.json") or {})
+        status = str(state.get("status") or "")
+        if status and status not in ("complete", "failed", "error", "passed", "cancelled"):
+            hub.publish(job_id, {
+                "type": "judge_progress", "job_id": job_id, "run_id": rd.name,
+                "index": i, "total": total, "message": "skipped (in progress)",
+            })
+            continue
+        try:
+            res = score_run(rd, judge_model=judge_model, dry_run=dry_run)
+            results[rd.name] = {"score": res.get("score"), "summary": res.get("summary")}
+            hub.publish(job_id, {
+                "type": "judge_progress", "job_id": job_id, "run_id": rd.name,
+                "score": res.get("score"), "index": i, "total": total,
+            })
+        except Exception as exc:
+            results[rd.name] = {"error": str(exc)}
+            hub.publish(job_id, {
+                "type": "judge_progress", "job_id": job_id, "run_id": rd.name,
+                "index": i, "total": total, "message": f"error: {exc}",
+            })
+    return {"target_type": "all", "count": len(results), "runs": results}
+
+
 def _judge_batch_streaming(
     job_id: str, batch_dir: Path, judge_model: str | None, dry_run: bool
 ) -> dict[str, Any]:
@@ -117,28 +159,32 @@ def start_judge_job(
     ValueError
         When *target_type* is unknown or *target_path* does not exist.
     """
-    if target_type not in ("run", "batch"):
-        raise ValueError("target_type must be 'run' or 'batch'")
-    path = Path(target_path)
-    # The UI passes a bare run_id (e.g. "demo-configmap-update-..."); resolve it
-    # against runs_dir so the Results-page Judge button works (it has no path).
-    if not path.exists() and runs_dir is not None:
-        candidate = Path(runs_dir) / target_path
-        if candidate.exists():
-            path = candidate
-    if not path.exists():
-        raise ValueError(f"target path not found: {target_path}")
+    if target_type not in ("run", "batch", "all"):
+        raise ValueError("target_type must be 'run', 'batch', or 'all'")
+    if target_type == "all":
+        # Score every run under runs_dir (the "Judge all" button).
+        path = Path(runs_dir) if runs_dir is not None else Path(target_path or "runs")
+    else:
+        path = Path(target_path)
+        # The UI passes a bare run_id (e.g. "demo-configmap-update-..."); resolve it
+        # against runs_dir so the Results-page Judge button works (it has no path).
+        if not path.exists() and runs_dir is not None:
+            candidate = Path(runs_dir) / target_path
+            if candidate.exists():
+                path = candidate
+        if not path.exists():
+            raise ValueError(f"target path not found: {target_path}")
 
-    # A run that is still in progress has no complete results to judge.
-    if target_type == "run":
-        state = (catalog._read_json(path / "workflow_state.json")
-                 or catalog._read_json(path / "run.json") or {})
-        status = str(state.get("status") or "")
-        if status and status not in ("complete", "failed", "error", "passed", "cancelled"):
-            raise ValueError(
-                f"run '{path.name}' is still in progress ({status}); "
-                "wait for it to finish before judging"
-            )
+        # A run that is still in progress has no complete results to judge.
+        if target_type == "run":
+            state = (catalog._read_json(path / "workflow_state.json")
+                     or catalog._read_json(path / "run.json") or {})
+            status = str(state.get("status") or "")
+            if status and status not in ("complete", "failed", "error", "passed", "cancelled"):
+                raise ValueError(
+                    f"run '{path.name}' is still in progress ({status}); "
+                    "wait for it to finish before judging"
+                )
 
     job_id = generate_run_id(f"judge-{target_type}")
     _register(job_id, {
@@ -154,6 +200,8 @@ def start_judge_job(
         try:
             if target_type == "run":
                 result = _judge_run_streaming(job_id, path, judge_model, dry_run)
+            elif target_type == "all":
+                result = _judge_all_streaming(job_id, path, judge_model, dry_run)
             else:
                 result = _judge_batch_streaming(job_id, path, judge_model, dry_run)
             _update(job_id, {"status": "complete", "result": result})

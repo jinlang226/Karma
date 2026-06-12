@@ -63,9 +63,38 @@
   function stopTimers() { if (refreshTimer) { clearTimeout(refreshTimer); refreshTimer = null; } }
 
   function subtabs() {
-    return el("div", { class: "subtabs" },
+    const tabs = el("div", { class: "subtabs" },
       el("button", { class: "tab" + (sub === "runs" ? " active" : ""), onClick: () => { sub = "runs"; render(); } }, "Runs"),
       el("button", { class: "tab" + (sub === "batches" ? " active" : ""), onClick: () => { sub = "batches"; render(); } }, "Batches"));
+    // "Judge all" sits at the far right of the same row -- scores every finished
+    // run (objective stage-pass + LLM adjudication of regression-sweep failures).
+    const judgeAll = el("button", { class: "btn secondary", onClick: () => startJudgeAll(judgeAll) }, "Judge all");
+    return el("div", { class: "subtabs-row" }, tabs, judgeAll);
+  }
+
+  async function startJudgeAll(btn) {
+    btn.disabled = "disabled";
+    btn.textContent = "Judging…";
+    try {
+      const { job_id } = await api.post("/api/judge/start", { target_type: "all" });
+      KARMA.toast("Judging all finished runs…", "info");
+      api.stream(`/api/judge/jobs/${job_id}/stream`, {
+        statusPath: `/api/judge/jobs/${job_id}`,
+        onEvent: (ev) => {
+          if (ev.type === "judge_progress" && ev.index && ev.total) {
+            btn.textContent = `Judging ${ev.index}/${ev.total}…`;
+          } else if (ev.type === "judge_complete") {
+            KARMA.toast("Judge all " + (ev.status || "complete"), ev.status === "error" ? "error" : "success");
+            if (sub === "runs") render();   // refresh the list with new scores
+          }
+        },
+        onDone: () => { btn.disabled = null; btn.textContent = "Judge all"; },
+      });
+    } catch (e) {
+      KARMA.toastError(e);
+      btn.disabled = null;
+      btn.textContent = "Judge all";
+    }
   }
 
   function render() {
