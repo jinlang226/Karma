@@ -115,8 +115,7 @@
       el("div", { class: "title" }, KARMA.labels.scenario(sc.scenario)),
       el("div", { class: "service-desc" }, "Adversary · " + KARMA.labels.service(sc.service)),
       el("div", { class: "service-cases" },
-        el("span", { class: "count" }, `${np} param${np === 1 ? "" : "s"}`),
-        sc.has_lift ? "  ·  has lift" : ""));
+        el("span", { class: "count" }, `${np} param${np === 1 ? "" : "s"}`)));
   }
 
   async function renderScenario(sc) {
