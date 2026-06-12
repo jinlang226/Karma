@@ -23,17 +23,21 @@
     return el("div", { class: "error-box" }, m);
   }
 
-  let pendingCase = null;   // set by KARMA.showCase before activating this tab
+  let pendingCase = null;       // set by KARMA.showCase before activating this tab
+  let pendingScenario = null;   // set by KARMA.showScenario
   async function mount(container) {
     root = container;
     if (!agents.length) {
       try { agents = await api.get("/api/agents"); } catch (_e) { agents = []; }
     }
-    // A pending case (clicked from a stage box) renders instead of the home
-    // grid -- avoids the async renderHome appending under it afterward.
+    // A pending case/scenario (clicked from a stage box) renders instead of the
+    // home grid -- avoids the async renderHome appending under it afterward.
     if (pendingCase) {
       const pc = pendingCase; pendingCase = null;
       renderCase(pc.service, pc.case);
+    } else if (pendingScenario) {
+      const ps = pendingScenario; pendingScenario = null;
+      renderScenario(ps);
     } else {
       renderHome();
     }
@@ -71,6 +75,17 @@
         apps.forEach((s) => grid.appendChild(serviceCard(s)));
         root.appendChild(grid);
       }
+      // Adversary injection scenarios, between Applications and Examples.
+      try {
+        const scenarios = await api.get("/api/adversary/scenarios");
+        if (scenarios && scenarios.length) {
+          root.appendChild(el("h3", {}, "Adversary scenarios"));
+          const grid = el("div", { class: "service-grid" });
+          scenarios.forEach((sc) => grid.appendChild(scenarioCard(sc)));
+          root.appendChild(grid);
+        }
+      } catch (_e) { /* scenarios are optional */ }
+
       if (examples.length) {
         root.appendChild(el("h3", {}, "Examples"));
         const grid = el("div", { class: "service-grid" });
@@ -78,6 +93,51 @@
         root.appendChild(grid);
       }
     } catch (e) { root.appendChild(errBox(e)); }
+  }
+
+  function scenarioCard(sc) {
+    const np = Object.keys(sc.params || {}).length;
+    return el("div", { class: "card service-card", onClick: () => renderScenario(sc) },
+      el("div", { class: "title" }, KARMA.labels.scenario(sc.scenario)),
+      el("div", { class: "service-desc" }, "Adversary · " + KARMA.labels.service(sc.service)),
+      el("div", { class: "service-cases" },
+        el("span", { class: "count" }, `${np} param${np === 1 ? "" : "s"}`),
+        sc.has_lift ? "  ·  has lift" : ""));
+  }
+
+  async function renderScenario(sc) {
+    // sc may be the full object (from a card) or just a name (cross-view).
+    if (typeof sc === "string") {
+      try {
+        const all = await api.get("/api/adversary/scenarios");
+        sc = (all || []).find((x) => x.scenario === sc) || { scenario: sc, params: {} };
+      } catch (_e) { sc = { scenario: sc, params: {} }; }
+    }
+    clear(root);
+    KARMA.setBreadcrumb({ back: renderHome, crumbs: [{ label: "Cases", onClick: renderHome }, { label: KARMA.labels.scenario(sc.scenario) }] });
+    root.appendChild(el("h2", {}, KARMA.labels.scenario(sc.scenario)));
+    root.appendChild(el("p", { class: "field-help" },
+      "Adversary injection scenario" + (sc.service ? " for " + KARMA.labels.service(sc.service) : "") +
+      ". Injected before a stage and lifted after; parameterize it in a workflow's adversary block."));
+    const panel = el("div", { class: "panel" });
+    panel.appendChild(el("h3", {}, "Parameters"));
+    const params = sc.params || {};
+    if (!Object.keys(params).length) panel.appendChild(el("p", { class: "muted" }, "No parameters."));
+    for (const [k, v] of Object.entries(params)) {
+      panel.appendChild(el("div", { class: "kv" }, el("span", { class: "k" }, KARMA.labels.case(k)),
+        el("span", {}, "default: " + (v && v.default != null ? String(v.default) : "—"))));
+    }
+    root.appendChild(panel);
+    if (sc.prompt_hints && Object.keys(sc.prompt_hints).length) {
+      const hp = el("div", { class: "panel" });
+      hp.appendChild(el("h3", {}, "Prompt hints"));
+      for (const [k, v] of Object.entries(sc.prompt_hints)) {
+        hp.appendChild(el("div", { class: "log-block" },
+          el("div", { class: "log-block-title" }, KARMA.humanize(k)),
+          el("pre", { class: "log" }, String(v))));
+      }
+      root.appendChild(hp);
+    }
   }
 
   async function renderService(service) {
@@ -359,6 +419,10 @@
   // workflow/run detail). Activate the Cases tab, then render the case.
   KARMA.showCase = function (service, caseName) {
     pendingCase = { service: service, case: caseName };
+    KARMA.activate("runner");
+  };
+  KARMA.showScenario = function (scenarioName) {
+    pendingScenario = scenarioName;
     KARMA.activate("runner");
   };
 

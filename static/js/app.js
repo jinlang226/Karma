@@ -224,7 +224,10 @@
     // Legend of the injections (scenario + span).
     if (injections.length) {
       const legend = el("div", { class: "adv-legend" });
-      injections.forEach((a) => legend.appendChild(el("span", { class: "adv-legend-item" },
+      injections.forEach((a) => legend.appendChild(el("span", {
+        class: "adv-legend-item clickable",
+        onClick: () => KARMA.showScenario(a.scenario),
+      },
         el("span", { class: "adv-swatch", style: `background:${a.color}` }),
         `${KARMA.labels.scenario(a.scenario)} (${a.inject} → ${a.lift})`)));
       panel.appendChild(legend);
