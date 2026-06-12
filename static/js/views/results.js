@@ -148,9 +148,12 @@
     const np = KARMA.labels.runName(runId);
     const title = np.app + (np.name ? " · " + np.name : "");
     KARMA.setBreadcrumb({ back: render, crumbs: [{ label: "Results", onClick: render }, { label: title }] });
-    const head = el("h2", {}, title);
-    root.appendChild(head);
-    if (np.ts) root.appendChild(el("div", { class: "muted run-ts" }, KARMA.labels.formatTs(np.ts)));
+    const scoreSlot = el("div", { class: "detail-score" });
+    root.appendChild(el("div", { class: "detail-head" },
+      el("div", {},
+        el("h2", { class: "detail-title" }, title),
+        np.ts ? el("div", { class: "muted run-ts" }, KARMA.labels.formatTs(np.ts)) : null),
+      scoreSlot));
 
     const loading = el("p", { class: "muted" }, "Loading…");
     root.appendChild(loading);
@@ -159,6 +162,15 @@
     catch (e) { loading.remove(); root.appendChild(errBox(e)); return; }
     loading.remove();
     const cfg = d.config || {};
+
+    // Test score (mean judge score) top-right beside the heading, larger than it.
+    if (d.judge_score != null) {
+      const s = d.judge_score <= 1 ? d.judge_score * 100 : d.judge_score;
+      const cls = s >= 80 ? "ok" : s >= 50 ? "warn" : "bad";
+      scoreSlot.appendChild(el("span", { class: "score-value " + cls }, s.toFixed(1) + "/100.0"));
+    } else {
+      scoreSlot.appendChild(el("span", { class: "score-value none", title: "Not judged yet" }, "—/100.0"));
+    }
 
     const badges = el("div", { class: "toolbar" });
     badges.appendChild(statusBadge(d.status));
@@ -280,6 +292,10 @@
           } else if (ev.type === "judge_complete") {
             log.textContent += `judge ${ev.status}\n`;
             KARMA.toast("Judge " + (ev.status || "complete"), ev.status === "error" ? "error" : "success");
+            // Reload the detail so the new test score appears beside the heading.
+            if (targetType === "run" && !dryRun && ev.status !== "error") {
+              setTimeout(() => { if (sub === "runs") renderDetail(targetPath); }, 600);
+            }
           }
           log.scrollTop = log.scrollHeight;
         },
