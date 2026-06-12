@@ -233,8 +233,10 @@
       injections.filter((a) => a.to === i).forEach((a) => head.appendChild(
         el("span", { class: "adv-badge lift", style: `color:${a.color}` }, "↑ lifted")));
       row.appendChild(head);
-      row.appendChild(el("div", { class: "kv" }, el("span", { class: "k" }, "Service"), el("span", {}, KARMA.labels.service(s.service))));
-      row.appendChild(el("div", { class: "kv" }, el("span", { class: "k" }, "Case"), el("span", {}, KARMA.labels.case(s.case_name))));
+      // Service/Case are omitted when unknown (e.g. an inline run with no stored
+      // stage spec) so the row keeps the same shape as every other stage box.
+      if (s.service) row.appendChild(el("div", { class: "kv" }, el("span", { class: "k" }, "Service"), el("span", {}, KARMA.labels.service(s.service))));
+      if (s.case_name) row.appendChild(el("div", { class: "kv" }, el("span", { class: "k" }, "Case"), el("span", {}, KARMA.labels.case(s.case_name))));
       for (const [k, v] of Object.entries(s.param_overrides || {})) {
         row.appendChild(el("div", { class: "kv" }, el("span", { class: "k" }, KARMA.labels.case(k)), el("span", {}, String(v))));
       }
