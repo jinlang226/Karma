@@ -188,6 +188,27 @@ def submit_job(
             "agent_timeout_sec": payload.get("agent_timeout_sec"),
             "max_attempts": payload.get("max_attempts"),
             "stage_total": len(workflow.get("stages") or []),
+            # Persist the resolved stage + adversary definitions so the Results
+            # detail can show every stage even when the workflow was run inline
+            # (no saved file) or the file later changes.
+            "stages": [
+                {
+                    "id": s.get("id"),
+                    "service": s.get("service"),
+                    "case_name": s.get("case_name"),
+                    "param_overrides": s.get("param_overrides") or {},
+                }
+                for s in (workflow.get("stages") or [])
+            ],
+            "adversary": [
+                {
+                    "scenario": a.get("scenario"),
+                    "inject_at_stage": a.get("inject_at_stage"),
+                    "lift_at_stage": a.get("lift_at_stage"),
+                    "param_overrides": a.get("param_overrides") or {},
+                }
+                for a in (workflow.get("adversary") or [])
+            ],
         }, indent=2))
     except Exception:
         pass

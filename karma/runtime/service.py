@@ -122,6 +122,28 @@ def run_workflow(
         if "/" in wf_id:
             svc, _, cs = wf_id.partition("/")
             cfg["service"], cfg["case_name"] = svc, cs
+        # Persist the resolved stage + adversary definitions so the Results
+        # detail can show every stage even for a multi-stage CLI workflow run.
+        wf_stages = workflow.get("stages") or []
+        cfg["stage_total"] = len(wf_stages)
+        cfg["stages"] = [
+            {
+                "id": s.get("id"),
+                "service": s.get("service"),
+                "case_name": s.get("case_name"),
+                "param_overrides": s.get("param_overrides") or {},
+            }
+            for s in wf_stages
+        ]
+        cfg["adversary"] = [
+            {
+                "scenario": a.get("scenario"),
+                "inject_at_stage": a.get("inject_at_stage"),
+                "lift_at_stage": a.get("lift_at_stage"),
+                "param_overrides": a.get("param_overrides") or {},
+            }
+            for a in (workflow.get("adversary") or [])
+        ]
         try:
             cfg_path.write_text(json.dumps(cfg, indent=2))
         except Exception:
