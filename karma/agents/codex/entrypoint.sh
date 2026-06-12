@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
-# Codex agent entrypoint (docker sandbox mode).
+# Codex agent entrypoint (works in both local and docker sandbox modes).
 #
-# KARMA mounts the stage dir at /workspace: the task prompt is ./prompt.txt and
+# KARMA runs this with the working directory set to the stage dir (docker mounts
+# it at /workspace; local runs it in place). The task prompt is ./prompt.txt and
 # completion is signalled by creating ./submit.txt (KARMA polls for its
 # existence). We render Codex's answer to a temp file and atomically rename it
 # to submit.txt only after Codex exits -- never create submit.txt early, or the
@@ -20,9 +21,11 @@ TMP_FILE=".submit.partial"
 MODEL_ARG=""
 [ -n "${CODEX_MODEL:-}" ] && MODEL_ARG="-m ${CODEX_MODEL}"
 
-# Headless, non-interactive Codex run (mirrors the old repo's codex profile).
+# Headless, non-interactive Codex run, against the current working directory so
+# it works in both sandbox modes (-C "$PWD" rather than a hardcoded /workspace).
+# tee so the answer lands in BOTH submit.txt and stdout (captured to agent.log).
 codex --dangerously-bypass-approvals-and-sandbox exec ${MODEL_ARG} \
-  -C /workspace --skip-git-repo-check \
-  "$(cat "$PROMPT_FILE")" > "$TMP_FILE"
+  -C "$PWD" --skip-git-repo-check \
+  "$(cat "$PROMPT_FILE")" 2>&1 | tee "$TMP_FILE"
 
 mv -f "$TMP_FILE" "$SUBMIT_FILE"
