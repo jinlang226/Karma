@@ -100,17 +100,73 @@ preconditionUnits:
       - command: "/bin/sh -c 'set -e; kubectl -n ${BENCH_NAMESPACE} get svc {{params.cluster_prefix}} >/dev/null; kubectl -n ${BENCH_NAMESPACE} get svc {{params.cluster_prefix}}-headless >/dev/null'"
         timeout_sec: 20
 
-  - name: seed_and_backup_ready
+  # The original port collapsed seeding/backup/restore-pvc into a script flag
+  # (--apply) the checker never defined, so the StatefulSet, seed/backup jobs and
+  # data PVCs were never created. The units below restore the explicit resource
+  # pipeline: stand up a seeded 3-node cluster, snapshot node-0 into the backup
+  # PVC, then simulate node-0 data loss -- leaving the degraded state the agent
+  # must recover. The setup_precondition_check.py modes remain as probe/verify.
+  - name: backup_pvc_ready
+    on_probe_fail: skip
+    probe:
+      - command: "kubectl -n ${BENCH_NAMESPACE} get pvc {{params.cluster_prefix}}-backup"
+        timeout_sec: 20
+    apply:
+      - command: "envsubst '$BENCH_NAMESPACE $BENCH_NS_SOURCE $BENCH_NS_TARGET $BENCH_PARAM_CLUSTER_PREFIX $BENCH_PARAM_BLUE_CLUSTER_PREFIX $BENCH_PARAM_GREEN_CLUSTER_PREFIX $BENCH_PARAM_FROM_VERSION' < resources/rabbitmq/manual_backup_restore/resource/backup-pvc.yaml | kubectl -n ${BENCH_NAMESPACE} apply -f -"
+        sleep: 1
+    verify:
+      - command: "kubectl -n ${BENCH_NAMESPACE} get pvc {{params.cluster_prefix}}-backup"
+        timeout_sec: 20
+
+  - name: seed_material_ready
     on_probe_fail: skip
     probe:
       - command: "python3 resources/rabbitmq/manual_backup_restore/setup_precondition_check.py --namespace ${BENCH_NAMESPACE} --mode seed-material"
         timeout_sec: 60
     apply:
-      - command: "python3 resources/rabbitmq/manual_backup_restore/setup_precondition_check.py --namespace ${BENCH_NAMESPACE} --mode seed-material --apply"
-        timeout_sec: 300
+      - command: "kubectl -n ${BENCH_NAMESPACE} delete job {{params.cluster_prefix}}-seed --ignore-not-found=true"
+        sleep: 1
+      - command: "/bin/sh -c 'kubectl -n ${BENCH_NAMESPACE} wait --for=delete pod -l job-name={{params.cluster_prefix}}-seed --timeout=120s || true'"
+        sleep: 1
+      - command: "envsubst '$BENCH_NAMESPACE $BENCH_NS_SOURCE $BENCH_NS_TARGET $BENCH_PARAM_CLUSTER_PREFIX $BENCH_PARAM_BLUE_CLUSTER_PREFIX $BENCH_PARAM_GREEN_CLUSTER_PREFIX $BENCH_PARAM_FROM_VERSION' < resources/rabbitmq/manual_backup_restore/resource/statefulset.yaml | kubectl -n ${BENCH_NAMESPACE} apply -f -"
+        sleep: 1
+      - command: "kubectl -n ${BENCH_NAMESPACE} rollout status statefulset/{{params.cluster_prefix}} --timeout=600s"
+        timeout_sec: 660
+        sleep: 1
+      - command: "envsubst '$BENCH_NAMESPACE $BENCH_NS_SOURCE $BENCH_NS_TARGET $BENCH_PARAM_CLUSTER_PREFIX $BENCH_PARAM_BLUE_CLUSTER_PREFIX $BENCH_PARAM_GREEN_CLUSTER_PREFIX $BENCH_PARAM_FROM_VERSION' < resources/rabbitmq/manual_backup_restore/resource/seed-job.yaml | kubectl -n ${BENCH_NAMESPACE} apply -f -"
+        sleep: 1
+      - command: "kubectl -n ${BENCH_NAMESPACE} wait --for=condition=complete job/{{params.cluster_prefix}}-seed --timeout=300s"
+        timeout_sec: 360
+        sleep: 1
+    verify:
+      - command: "python3 resources/rabbitmq/manual_backup_restore/setup_precondition_check.py --namespace ${BENCH_NAMESPACE} --mode seed-material"
+        timeout_sec: 60
+
+  - name: backup_snapshot_ready
+    on_probe_fail: skip
+    probe:
+      - command: "python3 resources/rabbitmq/manual_backup_restore/setup_precondition_check.py --namespace ${BENCH_NAMESPACE} --mode backup-snapshot"
+        timeout_sec: 120
+    apply:
+      - command: "kubectl -n ${BENCH_NAMESPACE} delete job {{params.cluster_prefix}}-backup --ignore-not-found=true"
+        sleep: 1
+      - command: "/bin/sh -c 'kubectl -n ${BENCH_NAMESPACE} wait --for=delete pod -l job-name={{params.cluster_prefix}}-backup --timeout=120s || true'"
+        sleep: 1
+      - command: "kubectl -n ${BENCH_NAMESPACE} scale statefulset/{{params.cluster_prefix}} --replicas=0"
+        sleep: 1
+      - command: "kubectl -n ${BENCH_NAMESPACE} wait --for=delete pod/{{params.cluster_prefix}}-0 pod/{{params.cluster_prefix}}-1 pod/{{params.cluster_prefix}}-2 --timeout=600s"
+        timeout_sec: 660
+        sleep: 1
+      - command: "envsubst '$BENCH_NAMESPACE $BENCH_NS_SOURCE $BENCH_NS_TARGET $BENCH_PARAM_CLUSTER_PREFIX $BENCH_PARAM_BLUE_CLUSTER_PREFIX $BENCH_PARAM_GREEN_CLUSTER_PREFIX $BENCH_PARAM_FROM_VERSION' < resources/rabbitmq/manual_backup_restore/resource/job-backup.yaml | kubectl -n ${BENCH_NAMESPACE} apply -f -"
+        sleep: 1
+      - command: "kubectl -n ${BENCH_NAMESPACE} wait --for=condition=complete job/{{params.cluster_prefix}}-backup --timeout=300s"
+        timeout_sec: 360
+        sleep: 1
+      - command: "kubectl -n ${BENCH_NAMESPACE} delete job {{params.cluster_prefix}}-backup --ignore-not-found=true"
+        sleep: 1
     verify:
       - command: "python3 resources/rabbitmq/manual_backup_restore/setup_precondition_check.py --namespace ${BENCH_NAMESPACE} --mode backup-snapshot"
-        timeout_sec: 60
+        timeout_sec: 120
 
   - name: restore_pvc_ready
     on_probe_fail: skip
@@ -118,8 +174,10 @@ preconditionUnits:
       - command: "python3 resources/rabbitmq/manual_backup_restore/setup_precondition_check.py --namespace ${BENCH_NAMESPACE} --mode restore-pvc"
         timeout_sec: 30
     apply:
-      - command: "python3 resources/rabbitmq/manual_backup_restore/setup_precondition_check.py --namespace ${BENCH_NAMESPACE} --mode restore-pvc --apply"
-        timeout_sec: 120
+      - command: "kubectl -n ${BENCH_NAMESPACE} delete pvc data-{{params.cluster_prefix}}-0 data-{{params.cluster_prefix}}-1 data-{{params.cluster_prefix}}-2 --ignore-not-found=true"
+        sleep: 1
+      - command: "envsubst '$BENCH_NAMESPACE $BENCH_NS_SOURCE $BENCH_NS_TARGET $BENCH_PARAM_CLUSTER_PREFIX $BENCH_PARAM_BLUE_CLUSTER_PREFIX $BENCH_PARAM_GREEN_CLUSTER_PREFIX $BENCH_PARAM_FROM_VERSION' < resources/rabbitmq/manual_backup_restore/resource/data-pvc-0.yaml | kubectl -n ${BENCH_NAMESPACE} apply -f -"
+        sleep: 1
     verify:
       - command: "python3 resources/rabbitmq/manual_backup_restore/setup_precondition_check.py --namespace ${BENCH_NAMESPACE} --mode restore-pvc"
         timeout_sec: 30
