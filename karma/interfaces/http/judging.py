@@ -75,13 +75,27 @@ def _judge_run_streaming(
     return {"target_type": "run", "run_id": run_dir.name, "result": result}
 
 
+def _run_has_score(run_dir: Path) -> bool:
+    """True if *run_dir* already has a run-level score (``judge.json``).
+
+    Used by "Judge all" to skip runs that are already scored under the current
+    (run-level) model. Legacy per-stage ``judge.json`` from the old per-stage
+    rubric does NOT count, so the first "Judge all" upgrades every run to the
+    objective stage-pass + regression-adjudication score.
+    """
+    rj = catalog._read_json(run_dir / "judge.json")
+    return bool(rj and isinstance(rj.get("score"), (int, float)))
+
+
 def _judge_all_streaming(
     job_id: str, runs_dir: Path, judge_model: str | None, dry_run: bool
 ) -> dict[str, Any]:
-    """Score every finished run under *runs_dir* (the "Judge all" button).
+    """Score every UNSCORED finished run under *runs_dir* (the "Judge all" button).
 
     Each run is scored with the run-level scorer (objective stage-pass + LLM
-    adjudication of regression-sweep failures); in-progress runs are skipped.
+    adjudication of regression-sweep failures). In-progress runs and runs that
+    already have a score are skipped (re-judge a single run with its own Judge
+    button).
     """
     from ...judge.run_score import score_run
 
@@ -99,6 +113,12 @@ def _judge_all_streaming(
             hub.publish(job_id, {
                 "type": "judge_progress", "job_id": job_id, "run_id": rd.name,
                 "index": i, "total": total, "message": "skipped (in progress)",
+            })
+            continue
+        if _run_has_score(rd):
+            hub.publish(job_id, {
+                "type": "judge_progress", "job_id": job_id, "run_id": rd.name,
+                "index": i, "total": total, "message": "skipped (already scored)",
             })
             continue
         try:
