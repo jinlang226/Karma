@@ -29,11 +29,22 @@ source .venv/bin/activate
 pip install -r requirements.txt
 ```
 
+### Agents
+
+The agent is the system under test, selected with `--agent`. Registered agents
+(see `karma/agents/registry.py`):
+
+| Agent | Status | Notes |
+|---|---|---|
+| `claude_code` | **working** | `local` runs the host `claude` CLI; `docker` needs `CLAUDE_CODE_OAUTH_TOKEN` (`claude setup-token`) or `ANTHROPIC_API_KEY` |
+| `codex` | **working** | `local` and `docker`; `docker` mounts `~/.codex/auth.json` (`--agent-auth-path`/`--agent-auth-dest`) or set `OPENAI_API_KEY` |
+| `cli_runner`, `react` | **scaffold only** | `entrypoint.sh` calls a `run_agent.py` that does not exist — plug in your own implementation to use them |
+
 ### Run a single test case
 
 ```bash
-python orchestrator.py run-case rabbitmq-experiments failover \
-  --agent   cli_runner \
+python orchestrator.py run-case rabbitmq failover \
+  --agent   claude_code \
   --sandbox local
 ```
 
@@ -41,8 +52,10 @@ python orchestrator.py run-case rabbitmq-experiments failover \
 
 | Flag | Default | Description |
 |---|---|---|
-| `--agent` | none | Agent ID from the agent registry (`cli_runner`, `react`) |
-| `--sandbox` | `local` | `local` or `docker` |
+| `--agent` | none | Agent ID from the registry (`claude_code`, `codex`, …) |
+| `--sandbox` | `local` | `local` (host process) or `docker` (containerized) |
+| `--agent-build` | off | Build the agent's Docker image before running (docker mode) |
+| `--agent-auth-path` / `--agent-auth-dest` | none | Mount a host creds file into the agent container (e.g. `~/.codex/auth.json` → `/root/.codex/auth.json`) |
 | `--param KEY=VALUE` | none | Case parameter override (repeatable; JSON-decoded) |
 | `--timeout` | `900` | Agent timeout in seconds |
 | `--runs-dir` | `runs` | Root directory for run artifacts |
@@ -50,11 +63,19 @@ python orchestrator.py run-case rabbitmq-experiments failover \
 | `--profile` | none | Named profile of default flags |
 | `--output` | `text` | `text` or `json` |
 
+Docker-sandbox example (build the image and mount Codex auth):
+
+```bash
+python orchestrator.py run-case demo configmap-update \
+  --agent codex --sandbox docker --agent-build \
+  --agent-auth-path ~/.codex/auth.json --agent-auth-dest /root/.codex/auth.json
+```
+
 ### Run a workflow
 
 ```bash
 python orchestrator.py run-workflow workflows/workflow-demo.yaml \
-  --agent cli_runner
+  --agent claude_code
 ```
 
 Add `--dry-run` to resolve and print the normalized workflow without
@@ -79,20 +100,18 @@ python orchestrator.py info --agents --metrics
 ## Web UI
 
 `main.py` serves a single-page web UI from `static/` at the server root.
-Open `http://127.0.0.1:8080` after starting it. Four tabs:
+Open `http://127.0.0.1:8080` after starting it. Tabs:
 
-- **Runner** — browse services and cases, inspect a case's prompt and
-  parameters, then run it with an agent (stage events stream live) or as a
-  **manual** run: set the scenario up, do the task by hand against the
-  assigned namespaces, then submit for verification. Includes a command
-  builder that renders the equivalent CLI.
+- **Cases** — browse services and cases (and adversary scenarios), inspect a
+  case's prompt and parameters, then run it with an agent (stage events stream
+  live) or as a **manual** run: set the scenario up, do the task by hand
+  against the assigned namespaces, then submit for verification.
 - **Workflow** — list workflow files and run them, or build a workflow
-  stage-by-stage, validate the YAML, and run it inline; a jobs panel
-  streams progress.
-- **Judge** — list runs and batches with judge scores and trigger a judge
-  (or dry run), with progress streamed to a log.
-- **Adversary** — list adversary scenarios and inject or lift one against a
-  live manual run.
+  stage-by-stage, validate the YAML, and run it inline; a jobs panel streams
+  progress. "Customize" a saved workflow to edit it as a copy.
+- **Results** — every run, live and historical: per-stage status with failure
+  logs, the test score (judge), the regression sweep, and cross-run judge
+  batches. Judge a single run, or "Judge all" to score every unscored run.
 
 The UI is plain HTML/CSS/JS under `static/` (no build step).
 
@@ -117,9 +136,9 @@ workflow YAML, and returns a `run_id`.
 
 ```json
 {
-  "service": "rabbitmq-experiments",
+  "service": "rabbitmq",
   "case_name": "failover",
-  "agent": "cli_runner",
+  "agent": "claude_code",
   "sandbox": "local"
 }
 ```
@@ -129,7 +148,7 @@ workflow YAML, and returns a `run_id`.
 ```json
 {
   "workflow_yaml": "<raw YAML string>",
-  "agent": "cli_runner"
+  "agent": "claude_code"
 }
 ```
 
@@ -182,7 +201,7 @@ file on disk by path.
 | Endpoint | Purpose |
 |---|---|
 | `POST /api/judge` | judge a run dir synchronously (`{run_dir, stage_id?, model?}`) |
-| `POST /api/judge/start` | async judge (`{target_type: run\|batch, target_path, dry_run?}`) |
+| `POST /api/judge/start` | async judge (`{target_type: run\|batch\|all, target_path, dry_run?}`); `all` scores every unscored run |
 | `GET /api/judge/jobs`, `/jobs/<id>`, `/jobs/<id>/stream` | judge job list / status / SSE |
 | `GET /api/judge/runs`, `/api/judge/batches` | runs and cross-run batches with scores |
 

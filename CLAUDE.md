@@ -160,22 +160,35 @@ There are two distinct test locations — know the difference:
 
 ## Current State / Known Gaps
 
-The codebase is **internally complete and fully unit/spec-verified**, and the
-**web UI and full HTTP surface are now built** (Runner, Workflow, Judge, and
-Adversary views over the `/api/*` endpoints; manual-operator runs; cross-run
-judge batches). It is still **not runnable end-to-end** without two pieces of
-external setup:
+The codebase is **internally complete, unit/spec-verified, and runnable
+end-to-end with a real agent** (validated 2026-06-11..12). The **web UI and full
+HTTP surface are built** (Cases/Runner, Workflow, Results+Judge, and Adversary
+views; manual-operator runs; cross-run judge batches).
 
-1. **A Kubernetes cluster.** A real run creates namespaces in a cluster as its
-   first step. Locally this needs Docker running + a `kind` cluster
-   (`open -a Docker` → `kind create cluster` → `kubectl cluster-info`). Without
-   one, the UI loads and all read-only endpoints work; the cluster banner shows
-   "unreachable" and a run fails at namespace creation.
-2. **A real agent.** The registered agents in `karma/agents/` (`cli_runner`,
-   `react`) are scaffolding only — Dockerfile + entrypoint + prompt assets. The
-   `react` entrypoint references a `run_agent.py` that does not exist. KARMA
-   delivers the harness; the agent implementation is plugged in by the user.
-   (Manual-operator mode needs no agent — a human does the task.)
+**Real-agent status:** ~62/79 cases pass with `claude_code`/sonnet; the 4 deep
+porting bugs are fixed and verified. The judge is run-level + objective (score =
+% stages passed; the LLM only adjudicates regression-sweep false positives;
+writes `runs/<id>/judge.json` + `judge.log`).
+
+**Agents** (`karma/agents/`, registry in `registry.py`):
+- `claude_code` — real; **local** sandbox = host `claude` subprocess (proven).
+  **docker** sandbox needs `CLAUDE_CODE_OAUTH_TOKEN` (run `claude setup-token`)
+  or `ANTHROPIC_API_KEY` in the env — the host OAuth login is not forwarded.
+- `codex` — real; works in **local** sandbox; **docker** mounts
+  `~/.codex/auth.json` via `--agent-auth-path/--agent-auth-dest` (or set
+  `OPENAI_API_KEY`). (CLI v0.139, model gpt-5.5.)
+- `cli_runner`, `react` — **empty scaffolds**: their `entrypoint.sh` calls a
+  `run_agent.py` that does not exist. Useful only as a cheap no-LLM precondition
+  check (the agent dies, but setup runs first). Plug in `run_agent.py` to use.
+
+**Still requires external setup:** a reachable Kubernetes cluster (Docker +
+`kind`) — a run creates namespaces as its first step. Manual-operator mode needs
+no agent (a human does the task).
+
+**Local infra (this machine):** kind clusters `kind` (kubeconfig `/tmp/mt/kc-a`)
+and `karma-b` (`/tmp/mt/kc-b`); pin `KUBECONFIG` per run to parallelize. The HTTP
+server (`main.py`) imports modules at startup, so **any backend `.py` change
+needs a server restart**; static JS/CSS is served from disk (browser refresh).
 
 ## Conventions
 
