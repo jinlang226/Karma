@@ -127,6 +127,7 @@
       } catch (_e) { sc = { scenario: sc, params: {} }; }
     }
     clear(root);
+    try {
     KARMA.currentLocation = () => KARMA.showScenario(sc.scenario);
     KARMA.setBreadcrumb({ back: renderHome, crumbs: [
       { label: "Cases", onClick: () => renderHome() },
@@ -176,6 +177,9 @@
           el("pre", { class: "log" }, String(v))));
       }
       root.appendChild(hp);
+    }
+    } catch (e) {
+      root.appendChild(errBox(e));
     }
   }
 
