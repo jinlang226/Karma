@@ -279,6 +279,10 @@ def get_run_detail(runs_dir: Path, run_id: str) -> dict[str, Any]:
         "config": config,
         "stages": stages,
         "duration_sec": meta.get("duration_sec"),
+        # Final-sweep artifacts (multi-stage workflows only): the post-run oracle
+        # re-run per passed stage, and the adversary lift/cleanup report.
+        "regression_sweep": meta.get("regression_sweep"),
+        "adversary_cleanup": meta.get("adversary_cleanup"),
     }
     # Mean judge score across stages (0-100, 0.1 precision), so the detail header
     # can show the run's test score without the caller re-reading judge artifacts.
