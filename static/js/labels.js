@@ -122,7 +122,8 @@
     },
     // Split a workflow file name "<app>-<rest>" into spaced parts.
     workflowName(raw) {
-      const base = String(raw || "").replace(/\.ya?ml$/i, "");
+      // Drop any directory prefix (e.g. "suite/foo.yaml") -- display by basename.
+      const base = String(raw || "").replace(/\.ya?ml$/i, "").split("/").pop();
       const i = base.indexOf("-");
       const app = i > 0 ? base.slice(0, i) : base;
       const name = i > 0 ? base.slice(i + 1) : "";

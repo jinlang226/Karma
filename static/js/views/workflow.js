@@ -27,6 +27,8 @@
   let runMaxAttempts = 1;   // workflow-level retry cap (1 = no retry)
   let builderId = "ui-workflow";  // default name for builder saves (set when customizing)
   const selected = new Set();      // workflow paths checked for "Run selected"
+  let allFiles = [];    // every workflow file from /api/workflows (cached for search)
+  let wfFilter = "";    // current Saved-Workflows search term (lowercased)
   let scenarios = [];   // available adversary scenarios: {service, scenario, has_lift}
   let stages = [];      // builder stage rows: {service, case, overrides}
   let advRows = [];     // builder adversary rows: {scenario, injectIndex, liftIndex}
@@ -113,10 +115,17 @@
     const panel = el("div", { class: "panel" });
     panel.appendChild(el("h3", {}, "Saved Workflows"));
     panel.appendChild(el("p", { class: "field-help" },
-      "Predefined workflows from the workflows/ folder, plus any you save from the " +
-      "builder below (kept under workflows/ui/). Click a name to view and customize " +
-      "it, Run to execute one, or check several and Run selected (they run one after " +
-      "another on the cluster)."));
+      "Every workflow under the workflows/ folder (including subfolders like " +
+      "suite/ and any you save from the builder under ui/), grouped by folder. " +
+      "Click a name to view and customize it, Run to execute one, or check several " +
+      "and Run selected (they run one after another on the cluster)."));
+    // Search box: filters the list by workflow name, id, or folder.
+    const search = el("input", {
+      type: "search", id: "wf-files-search", placeholder: "Search workflows…",
+      value: wfFilter, autocomplete: "off",
+      onInput: (e) => { wfFilter = e.target.value.trim().toLowerCase(); renderFiles(); },
+    });
+    panel.appendChild(el("div", { class: "toolbar" }, search));
     const selectAll = el("input", {
       type: "checkbox", title: "Select all",
       onChange: (e) => toggleAll(e.target.checked),
@@ -140,31 +149,65 @@
     const body = document.getElementById("wf-files-body");
     if (!body) return;
     clear(body);
+    body.appendChild(el("tr", {}, el("td", { colspan: "6", class: "muted" }, "Loading…")));
     api.get("/api/workflows").then((files) => {
-      if (!files.length) body.appendChild(el("tr", {}, el("td", { colspan: "6", class: "muted" }, "No workflow files found.")));
-      for (const f of files) {
-        const status = f.ok
-          ? el("span", { class: "badge ok" }, "OK")
-          : el("span", { class: "badge bad" }, "INVALID");
-        const runBtn = el("button", {
-          class: "btn", disabled: !f.ok ? "disabled" : null,
-          onClick: () => runWorkflowFile(f.path),
-        }, "Run");
-        const cb = el("input", {
-          type: "checkbox", "data-path": f.path,
-          checked: selected.has(f.path) ? "checked" : null,
-          disabled: !f.ok ? "disabled" : null,
-          onChange: (e) => { if (e.target.checked) selected.add(f.path); else selected.delete(f.path); },
-        });
-        body.appendChild(el("tr", {},
-          el("td", {}, cb),
-          el("td", {}, el("span", { class: "crumb-link", onClick: () => renderWorkflowDetail(f.name, f.path) },
-            (() => { const w = KARMA.labels.workflowName(f.name); return w.app + (w.name ? " · " + w.name : ""); })())),
-          el("td", {}, String(f.stage_count == null ? "—" : f.stage_count)),
-          el("td", {}, f.prompt_mode ? KARMA.labels.promptMode(f.prompt_mode) : "—"), el("td", {}, status),
-          el("td", {}, runBtn)));
-      }
-    }).catch((e) => body.appendChild(el("tr", {}, el("td", { colspan: "6" }, errBox(e)))));
+      allFiles = files || [];
+      renderFiles();
+    }).catch((e) => { clear(body); body.appendChild(el("tr", {}, el("td", { colspan: "6" }, errBox(e)))); });
+  }
+
+  // One row for a workflow file.
+  function fileRow(f) {
+    const status = f.ok
+      ? el("span", { class: "badge ok" }, "OK")
+      : el("span", { class: "badge bad" }, "INVALID");
+    const runBtn = el("button", {
+      class: "btn", disabled: !f.ok ? "disabled" : null,
+      onClick: () => runWorkflowFile(f.path),
+    }, "Run");
+    const cb = el("input", {
+      type: "checkbox", "data-path": f.path,
+      checked: selected.has(f.path) ? "checked" : null,
+      disabled: !f.ok ? "disabled" : null,
+      onChange: (e) => { if (e.target.checked) selected.add(f.path); else selected.delete(f.path); },
+    });
+    const w = KARMA.labels.workflowName(f.name);
+    return el("tr", {},
+      el("td", {}, cb),
+      el("td", {}, el("span", { class: "crumb-link", onClick: () => renderWorkflowDetail(f.name, f.path) },
+        w.app + (w.name ? " · " + w.name : ""))),
+      el("td", {}, String(f.stage_count == null ? "—" : f.stage_count)),
+      el("td", {}, f.prompt_mode ? KARMA.labels.promptMode(f.prompt_mode) : "—"),
+      el("td", {}, status),
+      el("td", {}, runBtn));
+  }
+
+  // Render the (optionally filtered) files grouped by their folder so the
+  // directory hierarchy under workflows/ is preserved.
+  function renderFiles() {
+    const body = document.getElementById("wf-files-body");
+    if (!body) return;
+    clear(body);
+    const q = wfFilter;
+    const match = (f) => !q
+      || (f.name || "").toLowerCase().includes(q)
+      || (f.id || "").toLowerCase().includes(q)
+      || (f.dir || "").toLowerCase().includes(q);
+    const files = allFiles.filter(match);
+    if (!files.length) {
+      body.appendChild(el("tr", {}, el("td", { colspan: "6", class: "muted" },
+        allFiles.length ? "No workflows match your search." : "No workflow files found.")));
+      return;
+    }
+    // Group by folder; "" (top level) first, then subfolders alphabetically.
+    const groups = {};
+    for (const f of files) (groups[f.dir || ""] = groups[f.dir || ""] || []).push(f);
+    const dirs = Object.keys(groups).sort((a, b) => (a === "" ? -1 : b === "" ? 1 : a.localeCompare(b)));
+    for (const dir of dirs) {
+      body.appendChild(el("tr", { class: "wf-group-row" },
+        el("td", { colspan: "6", class: "wf-group-label" }, dir === "" ? "workflows/" : "workflows/" + dir + "/")));
+      for (const f of groups[dir]) body.appendChild(fileRow(f));
+    }
   }
 
   // Check/uncheck every (enabled) row and sync the `selected` set.

@@ -213,7 +213,7 @@ def create_app(
             catalog.list_workflow_files(Path(workflows_dir), Path(resources_dir))
         )
 
-    @app.route("/api/workflows/<name>")
+    @app.route("/api/workflows/<path:name>")
     def api_workflow_detail(name):
         try:
             return jsonify(catalog.get_workflow_detail(
