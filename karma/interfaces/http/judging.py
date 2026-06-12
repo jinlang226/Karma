@@ -108,11 +108,14 @@ def _judge_all_streaming(
     for i, rd in enumerate(run_dirs, start=1):
         state = (catalog._read_json(rd / "workflow_state.json")
                  or catalog._read_json(rd / "run.json") or {})
-        status = str(state.get("status") or "")
-        if status and status not in ("complete", "failed", "error", "passed", "cancelled"):
+        status = str(state.get("status") or "").strip().lower()
+        # Only judge runs with a complete outcome. Skip interrupted / unknown /
+        # absent / in-progress runs -- they have nothing to score.
+        if status not in ("complete", "failed", "error", "passed", "cancelled"):
             hub.publish(job_id, {
                 "type": "judge_progress", "job_id": job_id, "run_id": rd.name,
-                "index": i, "total": total, "message": "skipped (in progress)",
+                "index": i, "total": total,
+                "message": f"skipped (not judgeable: {status or 'unknown'})",
             })
             continue
         if _run_has_score(rd):
@@ -195,18 +198,22 @@ def start_judge_job(
         if not path.exists():
             raise ValueError(f"target path not found: {target_path}")
 
-        # A run must have a recorded terminal outcome to be judged.
+        # A run must have a recorded, complete outcome to be judged. An
+        # interrupted or unknown run never finished, so it has nothing to score.
         if target_type == "run":
             state = (catalog._read_json(path / "workflow_state.json")
                      or catalog._read_json(path / "run.json") or {})
             status = str(state.get("status") or "").strip().lower()
-            judgeable = ("complete", "failed", "error", "passed", "cancelled", "interrupted")
-            # An unknown/absent status has no outcome to score -- reject it
-            # explicitly rather than letting it fall through to a judge attempt.
+            judgeable = ("complete", "failed", "error", "passed", "cancelled")
             if status in ("", "unknown"):
                 raise ValueError(
                     f"run '{path.name}' has an unknown status and cannot be judged; "
                     "it has no recorded outcome to score"
+                )
+            if status == "interrupted":
+                raise ValueError(
+                    f"run '{path.name}' was interrupted and cannot be judged; "
+                    "it has no complete outcome to score"
                 )
             if status not in judgeable:
                 raise ValueError(
