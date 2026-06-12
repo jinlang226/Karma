@@ -50,13 +50,13 @@
     container.appendChild(hero);
 
     container.appendChild(el("h3", { class: "home-section" }, "How It Works"));
-    const flow = el("div", { class: "flow" });
+    const flow = el("div", { class: "panel flow-timeline" });
     STEPS.forEach(([t, d], i) => {
-      if (i > 0) flow.appendChild(el("div", { class: "flow-arrow" }, "→"));
       flow.appendChild(el("div", { class: "flow-step" },
         el("div", { class: "flow-num" }, String(i + 1)),
-        el("div", { class: "flow-step-title" }, t),
-        el("div", { class: "flow-step-desc" }, d)));
+        el("div", { class: "flow-body" },
+          el("div", { class: "flow-step-title" }, t),
+          el("div", { class: "flow-step-desc" }, d))));
     });
     container.appendChild(flow);
 
