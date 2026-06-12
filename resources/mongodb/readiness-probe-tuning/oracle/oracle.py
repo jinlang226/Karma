@@ -20,6 +20,17 @@ TUNED_READINESS_FAILURE_THRESHOLD = int(os.environ.get("BENCH_PARAM_TUNED_READIN
 TUNED_LIVENESS_INITIAL_DELAY = int(os.environ.get("BENCH_PARAM_TUNED_LIVENESS_INITIAL_DELAY", "120"))
 TUNED_LIVENESS_TIMEOUT = int(os.environ.get("BENCH_PARAM_TUNED_LIVENESS_TIMEOUT", "5"))
 TUNED_LIVENESS_FAILURE_THRESHOLD = int(os.environ.get("BENCH_PARAM_TUNED_LIVENESS_FAILURE_THRESHOLD", "10"))
+# The faulty baseline the precondition injects. The task only asks to "tune the
+# probes so the replica set becomes stable" -- it never dictates exact values --
+# so the oracle accepts any probe that is strictly MORE TOLERANT than the faulty
+# baseline (and the cluster-stability checks below prove the chosen values work),
+# rather than demanding the exact TUNED_* numbers.
+FAULTY_READINESS_INITIAL_DELAY = int(os.environ.get("BENCH_PARAM_FAULTY_READINESS_INITIAL_DELAY", "5"))
+FAULTY_READINESS_TIMEOUT = int(os.environ.get("BENCH_PARAM_FAULTY_READINESS_TIMEOUT", "1"))
+FAULTY_READINESS_FAILURE_THRESHOLD = int(os.environ.get("BENCH_PARAM_FAULTY_READINESS_FAILURE_THRESHOLD", "2"))
+FAULTY_LIVENESS_INITIAL_DELAY = int(os.environ.get("BENCH_PARAM_FAULTY_LIVENESS_INITIAL_DELAY", "15"))
+FAULTY_LIVENESS_TIMEOUT = int(os.environ.get("BENCH_PARAM_FAULTY_LIVENESS_TIMEOUT", "1"))
+FAULTY_LIVENESS_FAILURE_THRESHOLD = int(os.environ.get("BENCH_PARAM_FAULTY_LIVENESS_FAILURE_THRESHOLD", "2"))
 POD_PREFIX = f"{CLUSTER_PREFIX}-"
 
 
@@ -130,19 +141,21 @@ def check_probes():
     readiness = c.get("readinessProbe", {})
     liveness = c.get("livenessProbe", {})
 
-    if readiness.get("initialDelaySeconds") != TUNED_READINESS_INITIAL_DELAY:
-        errors.append("readiness initialDelaySeconds does not match tuned target")
-    if readiness.get("timeoutSeconds") != TUNED_READINESS_TIMEOUT:
-        errors.append("readiness timeoutSeconds does not match tuned target")
-    if readiness.get("failureThreshold") != TUNED_READINESS_FAILURE_THRESHOLD:
-        errors.append("readiness failureThreshold does not match tuned target")
+    # Each probe field must be made strictly more tolerant than the faulty
+    # baseline (a larger value = more headroom for mongod startup/election).
+    def _more_tolerant(probe, field, faulty, label):
+        val = probe.get(field)
+        if not isinstance(val, int) or val <= faulty:
+            errors.append(
+                f"{label} {field} ({val}) must be increased above the faulty baseline ({faulty})"
+            )
 
-    if liveness.get("initialDelaySeconds") != TUNED_LIVENESS_INITIAL_DELAY:
-        errors.append("liveness initialDelaySeconds does not match tuned target")
-    if liveness.get("timeoutSeconds") != TUNED_LIVENESS_TIMEOUT:
-        errors.append("liveness timeoutSeconds does not match tuned target")
-    if liveness.get("failureThreshold") != TUNED_LIVENESS_FAILURE_THRESHOLD:
-        errors.append("liveness failureThreshold does not match tuned target")
+    _more_tolerant(readiness, "initialDelaySeconds", FAULTY_READINESS_INITIAL_DELAY, "readiness")
+    _more_tolerant(readiness, "timeoutSeconds", FAULTY_READINESS_TIMEOUT, "readiness")
+    _more_tolerant(readiness, "failureThreshold", FAULTY_READINESS_FAILURE_THRESHOLD, "readiness")
+    _more_tolerant(liveness, "initialDelaySeconds", FAULTY_LIVENESS_INITIAL_DELAY, "liveness")
+    _more_tolerant(liveness, "timeoutSeconds", FAULTY_LIVENESS_TIMEOUT, "liveness")
+    _more_tolerant(liveness, "failureThreshold", FAULTY_LIVENESS_FAILURE_THRESHOLD, "liveness")
 
     return fail("Readiness probe tuning probe check failed:", errors)
 

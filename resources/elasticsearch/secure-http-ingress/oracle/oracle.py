@@ -70,14 +70,18 @@ def curl_http_code(args):
 def main():
     errors = []
 
+    # The backend Elasticsearch serves plain HTTP on 9200 (the precondition sets
+    # xpack.security.http.ssl.enabled: false) -- the task is to terminate TLS at
+    # the ingress, not on the ES service itself. Use http here as an "ES is up"
+    # sanity gate.
     es_health = curl_json(
-        ["-k", f"https://{ES_SERVICE}.{NAMESPACE}.svc:9200/_cluster/health"],
+        [f"http://{ES_SERVICE}.{NAMESPACE}.svc:9200/_cluster/health"],
         errors,
-        "Elasticsearch HTTPS",
+        "Elasticsearch HTTP",
     )
     if isinstance(es_health, dict):
         if es_health.get("status") not in {"yellow", "green"}:
-            errors.append(f"Elasticsearch HTTPS health not yellow/green: {es_health.get('status')}")
+            errors.append(f"Elasticsearch health not yellow/green: {es_health.get('status')}")
 
     ingress_health = curl_json(
         [
@@ -95,10 +99,9 @@ def main():
                 f"Ingress HTTPS health not yellow/green: {ingress_health.get('status')}"
             )
 
-    rc, code = curl_http_code([f"http://{ES_SERVICE}.{NAMESPACE}.svc:9200/_cluster/health"])
-    if rc == 0 and code == "200":
-        errors.append("Elasticsearch HTTP still succeeds")
-
+    # NOTE: we intentionally do NOT assert that direct http://es-http:9200 fails.
+    # The backend is plain HTTP by design and only reachable in-cluster; the task
+    # is to block plain HTTP *at the ingress*, which is what the next check covers.
     rc, code = curl_http_code(
         [
             "-H",

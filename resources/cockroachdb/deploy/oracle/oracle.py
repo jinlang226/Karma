@@ -204,12 +204,18 @@ def main():
             cmd_str = _container_command(container)
             if "--insecure" not in cmd_str:
                 errors.append("CockroachDB must run in insecure mode for this case")
-            if "--advertise-host" not in cmd_str:
-                errors.append("CockroachDB start command missing --advertise-host")
+            # Accept either advertise flag: --advertise-host is the legacy spelling,
+            # --advertise-addr the current one.
+            if "--advertise-host" not in cmd_str and "--advertise-addr" not in cmd_str:
+                errors.append("CockroachDB start command missing --advertise-host/--advertise-addr")
             if "crdb-cluster" not in cmd_str:
                 errors.append("CockroachDB advertise host should use the crdb-cluster DNS")
-            if "$(POD_NAME)" not in cmd_str and "${POD_NAME}" not in cmd_str and "$POD_NAME" not in cmd_str:
-                errors.append("CockroachDB advertise host should use the pod name")
+            # The advertised address must be each pod's own stable identity: an
+            # explicit POD_NAME reference, or the pod FQDN via `hostname -f`
+            # (which resolves to <pod>.crdb-cluster... -- equivalent and valid).
+            _pod_id = ("$(POD_NAME)", "${POD_NAME}", "$POD_NAME", "hostname -f", "$(hostname")
+            if not any(tok in cmd_str for tok in _pod_id):
+                errors.append("CockroachDB advertise host should use the pod's stable identity")
 
             required_nodes = [
                 "crdb-cluster-0.crdb-cluster",
