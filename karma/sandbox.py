@@ -252,11 +252,13 @@ def launch_agent(
         _v = os.environ.get(_k)
         if _v:
             docker_cmd += ["-e", f"{_k}={_v}"]
-    docker_cmd += ["-v", f"{run_dir}:/workspace"]
+    # Docker bind mounts require ABSOLUTE host paths -- a relative path (e.g.
+    # --runs-dir runs) is otherwise read as a named volume and rejected.
+    docker_cmd += ["-v", f"{run_dir.resolve()}:/workspace"]
     if kubeconfig_path:
-        docker_cmd += ["-v", f"{kubeconfig_path}:/root/.kube/config:ro"]
+        docker_cmd += ["-v", f"{Path(kubeconfig_path).resolve()}:/root/.kube/config:ro"]
     for host_path, container_path in (extra_mounts or []):
-        docker_cmd += ["-v", f"{host_path}:{container_path}"]
+        docker_cmd += ["-v", f"{Path(host_path).resolve()}:{container_path}"]
     docker_cmd.append(image_tag)
     if command_override:
         # Override the image's default command (old --agent-cmd, docker mode).
