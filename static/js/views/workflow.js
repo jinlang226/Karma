@@ -292,6 +292,9 @@
           : el("span", { class: "crumb-link", onClick: go(acc) }, seg));
       });
       body.appendChild(el("tr", { class: "wf-crumb-row" }, cell));
+      // Stick the breadcrumb directly beneath the sticky header row.
+      const thead = body.parentElement && body.parentElement.querySelector("thead");
+      if (thead) cell.style.top = thead.offsetHeight + "px";
     }
     for (const sub of subfolders(wfFolder)) body.appendChild(folderRow(sub));
     for (const f of filesIn(wfFolder)) body.appendChild(fileRow(f));
