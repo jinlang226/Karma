@@ -29,6 +29,7 @@
   const selected = new Set();      // workflow paths checked for "Run selected"
   let allFiles = [];    // every workflow file from /api/workflows (cached for search)
   let wfFilter = "";    // current Saved-Workflows search term (lowercased)
+  let wfFolder = "";    // folder currently being browsed ("" = workflows/ root)
   let scenarios = [];   // available adversary scenarios: {service, scenario, has_lift}
   let stages = [];      // builder stage rows: {service, case, overrides}
   let advRows = [];     // builder adversary rows: {scenario, injectIndex, liftIndex}
@@ -51,13 +52,23 @@
     }
     try { scenarios = await api.get("/api/adversary/scenarios") || []; } catch (_e) { scenarios = []; }
     if (pendingWorkflow) { const pw = pendingWorkflow; pendingWorkflow = null; renderWorkflowDetail(pw.name, pw.path); return; }
+    let scrollToAdversary = false;
     if (pendingAdvScenario) {
       const ps = pendingAdvScenario; pendingAdvScenario = null;
       // Seed the builder with this adversary injection (params carried over).
       advRows = [{ scenario: ps.scenario, injectIndex: 0, liftIndex: -1, overrides: ps.overrides || {} }];
+      scrollToAdversary = true;
       KARMA.toast("Adversary added to the builder — add a stage, then set its inject/lift points.", "info");
     }
     render();
+    // Arriving from a scenario's "Use in a workflow": jump straight to the
+    // injection section of the builder rather than the top of the page.
+    if (scrollToAdversary) {
+      setTimeout(() => {
+        const target = document.getElementById("wf-adversary");
+        if (target) target.scrollIntoView({ behavior: "smooth", block: "start" });
+      }, 0);
+    }
   }
 
   // Cross-view deep link: open a specific saved workflow's detail (used by the
@@ -112,13 +123,14 @@
 
   // --- Files panel ----------------------------------------------------------
   function filesPanel() {
+    wfFolder = "";   // start browsing at the workflows/ root each time the list renders
     const panel = el("div", { class: "panel" });
     panel.appendChild(el("h3", {}, "Saved Workflows"));
     panel.appendChild(el("p", { class: "field-help" },
-      "Every workflow under the workflows/ folder (including subfolders like " +
-      "suite/ and any you save from the builder under ui/), grouped by folder. " +
-      "Click a name to view and customize it, Run to execute one, or check several " +
-      "and Run selected (they run one after another on the cluster)."));
+      "Every workflow under the workflows/ folder. Open a 📁 folder (e.g. suite/) " +
+      "to see what's inside, or tick its box to select all workflows in it. Click a " +
+      "name to view and customize it, Run to execute one, or check several and Run " +
+      "selected. Search matches loosely across all folders."));
     // Search box: filters the list by workflow name, id, or folder.
     const search = el("input", {
       type: "search", id: "wf-files-search", placeholder: "Search workflows…",
@@ -156,8 +168,9 @@
     }).catch((e) => { clear(body); body.appendChild(el("tr", {}, el("td", { colspan: "6" }, errBox(e)))); });
   }
 
-  // One row for a workflow file.
-  function fileRow(f) {
+  // One row for a workflow file. When *showDir* (search results), the folder
+  // path is shown above the name so cross-folder hits are distinguishable.
+  function fileRow(f, showDir) {
     const status = f.ok
       ? el("span", { class: "badge ok" }, "OK")
       : el("span", { class: "badge bad" }, "INVALID");
@@ -174,40 +187,102 @@
     const w = KARMA.labels.workflowName(f.name);
     return el("tr", {},
       el("td", {}, cb),
-      el("td", {}, el("span", { class: "crumb-link", onClick: () => renderWorkflowDetail(f.name, f.path) },
-        w.app + (w.name ? " · " + w.name : ""))),
+      el("td", {},
+        showDir ? el("div", { class: "muted wf-file-dir" }, "workflows/" + (f.dir ? f.dir + "/" : "")) : null,
+        el("span", { class: "crumb-link", onClick: () => renderWorkflowDetail(f.name, f.path) },
+          w.app + (w.name ? " · " + w.name : ""))),
       el("td", {}, String(f.stage_count == null ? "—" : f.stage_count)),
       el("td", {}, f.prompt_mode ? KARMA.labels.promptMode(f.prompt_mode) : "—"),
       el("td", {}, status),
       el("td", {}, runBtn));
   }
 
-  // Render the (optionally filtered) files grouped by their folder so the
-  // directory hierarchy under workflows/ is preserved.
+  // Loose, symbol-insensitive match: every whitespace token of the query must
+  // appear somewhere in the file's display name / path / id / folder. So
+  // "rabbitmq blue" matches "RabbitMQ · Blue Green Migration 30 Stage …".
+  function fileMatches(f, tokens) {
+    if (!tokens.length) return true;
+    const w = KARMA.labels.workflowName(f.name);
+    const hay = `${w.app} ${w.name} ${f.name} ${f.id || ""} ${f.dir || ""}`.toLowerCase();
+    return tokens.every((t) => hay.includes(t));
+  }
+
+  // Immediate subfolders directly under *folder* (one path segment deeper).
+  function subfolders(folder) {
+    const prefix = folder ? folder + "/" : "";
+    const subs = new Set();
+    for (const f of allFiles) {
+      const d = f.dir || "";
+      if (!d) continue;
+      if (folder ? (d === folder ? false : d.startsWith(prefix)) : true) {
+        const rest = folder ? d.slice(prefix.length) : d;
+        if (rest) subs.add(prefix + rest.split("/")[0]);
+      }
+    }
+    return [...subs].sort();
+  }
+  const filesIn = (folder) => allFiles.filter((f) => (f.dir || "") === folder);
+  const filesUnder = (folder) => allFiles.filter((f) => {
+    const d = f.dir || "";
+    return d === folder || d.startsWith(folder ? folder + "/" : "");
+  });
+
+  // One folder row: a select-all-inside checkbox, a clickable folder icon+name
+  // that drills into it, and a count of the workflows it contains.
+  function folderRow(folder) {
+    const under = filesUnder(folder).filter((f) => f.ok);
+    const allSel = under.length && under.every((f) => selected.has(f.path));
+    const cb = el("input", {
+      type: "checkbox", title: "Select all workflows in this folder",
+      checked: allSel ? "checked" : null,
+      onChange: (e) => {
+        under.forEach((f) => { if (e.target.checked) selected.add(f.path); else selected.delete(f.path); });
+        renderFiles();
+      },
+    });
+    const name = folder.split("/").pop();
+    const open = () => { wfFolder = folder; renderFiles(); };
+    return el("tr", { class: "wf-folder-row" },
+      el("td", {}, cb),
+      el("td", {}, el("span", { class: "crumb-link wf-folder-link", onClick: open },
+        el("span", { class: "wf-folder-icon" }, "📁"), name + "/")),
+      el("td", {}, ""), el("td", {}, ""),
+      el("td", { class: "muted" }, `${filesUnder(folder).length} workflows`),
+      el("td", {}, el("button", { class: "btn secondary", onClick: open }, "Open")));
+  }
+
+  // Render the list. With a search term, show a flat loose-matched result across
+  // every folder. Otherwise browse the current folder: subfolders (drill in) +
+  // the workflow files directly in it, with a breadcrumb to step back.
   function renderFiles() {
     const body = document.getElementById("wf-files-body");
     if (!body) return;
     clear(body);
-    const q = wfFilter;
-    const match = (f) => !q
-      || (f.name || "").toLowerCase().includes(q)
-      || (f.id || "").toLowerCase().includes(q)
-      || (f.dir || "").toLowerCase().includes(q);
-    const files = allFiles.filter(match);
-    if (!files.length) {
-      body.appendChild(el("tr", {}, el("td", { colspan: "6", class: "muted" },
-        allFiles.length ? "No workflows match your search." : "No workflow files found.")));
+    if (!allFiles.length) {
+      body.appendChild(el("tr", {}, el("td", { colspan: "6", class: "muted" }, "No workflow files found.")));
       return;
     }
-    // Group by folder; "" (top level) first, then subfolders alphabetically.
-    const groups = {};
-    for (const f of files) (groups[f.dir || ""] = groups[f.dir || ""] || []).push(f);
-    const dirs = Object.keys(groups).sort((a, b) => (a === "" ? -1 : b === "" ? 1 : a.localeCompare(b)));
-    for (const dir of dirs) {
-      body.appendChild(el("tr", { class: "wf-group-row" },
-        el("td", { colspan: "6", class: "wf-group-label" }, dir === "" ? "workflows/" : "workflows/" + dir + "/")));
-      for (const f of groups[dir]) body.appendChild(fileRow(f));
+    const tokens = wfFilter.split(/\s+/).filter(Boolean);
+    if (tokens.length) {
+      const hits = allFiles.filter((f) => fileMatches(f, tokens));
+      if (!hits.length) {
+        body.appendChild(el("tr", {}, el("td", { colspan: "6", class: "muted" }, "No workflows match your search.")));
+        return;
+      }
+      for (const f of hits) body.appendChild(fileRow(f, true));
+      return;
     }
+    // Breadcrumb / step-back when inside a subfolder.
+    if (wfFolder) {
+      const parent = wfFolder.includes("/") ? wfFolder.slice(0, wfFolder.lastIndexOf("/")) : "";
+      body.appendChild(el("tr", { class: "wf-crumb-row" },
+        el("td", { colspan: "6" },
+          el("span", { class: "crumb-link", onClick: () => { wfFolder = parent; renderFiles(); } },
+            "← " + (parent ? "workflows/" + parent + "/" : "workflows/")),
+          el("span", { class: "muted", style: "margin-left:8px" }, "workflows/" + wfFolder + "/"))));
+    }
+    for (const sub of subfolders(wfFolder)) body.appendChild(folderRow(sub));
+    for (const f of filesIn(wfFolder)) body.appendChild(fileRow(f));
   }
 
   // Check/uncheck every (enabled) row and sync the `selected` set.
@@ -426,7 +501,7 @@
       ? "Optional. Inject an adversarial scenario (a deliberate fault) at a stage " +
         "to test how the agent diagnoses and recovers, and optionally lift it at a " +
         "later stage."
-      : "No adversarial scenarios found under resources/*/adversarial/.";
+      : "No adversarial scenarios found under adversaries/.";
 
     const yaml = el("textarea", { rows: "3", id: "wf-yaml", placeholder: "workflow YAML" });
     const valBtn = el("button", { class: "btn secondary", onClick: () => validateYaml(yaml.value, msg) }, "Validate");
@@ -470,7 +545,7 @@
 
     panel.appendChild(el("div", { class: "toolbar" }, addBtn));
 
-    panel.appendChild(el("h3", {}, "Adversarial Scenario Injection"));
+    panel.appendChild(el("h3", { id: "wf-adversary" }, "Adversarial Scenario Injection"));
     panel.appendChild(el("p", { class: "field-help" }, advHint));
     panel.appendChild(advList);
     panel.appendChild(el("div", { class: "toolbar" }, addAdvBtn));
@@ -536,14 +611,17 @@
       const grid = el("div", { class: "param-grid" });
       grid.style.gridTemplateColumns = `repeat(${Math.min(keys.length, 4)}, minmax(0, 1fr))`;
       for (const k of keys) {
-        const def = sparams[k] && sparams[k].default != null ? String(sparams[k].default) : "";
+        const pdef = sparams[k] || {};
+        const def = pdef && pdef.default != null ? String(pdef.default) : "";
+        const desc = pdef && typeof pdef === "object" ? (pdef.description || "") : "";
         if (!(k in adv.overrides)) adv.overrides[k] = def;
         grid.appendChild(el("div", {},
           el("label", {}, KARMA.labels.case(k)),
           el("input", {
             value: adv.overrides[k], placeholder: def,
             onInput: (e) => { adv.overrides[k] = e.target.value; },
-          })));
+          }),
+          desc ? el("div", { class: "field-help", style: "margin:4px 0 0" }, desc) : null));
       }
       row.appendChild(el("div", { class: "stage-params" }, el("label", {}, "Parameters"), grid));
     }

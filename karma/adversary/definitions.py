@@ -5,11 +5,14 @@ An adversary scenario introduces an intentional fault into the cluster
 during a workflow run to evaluate how well the agent diagnoses and
 recovers from unexpected environmental conditions.
 
-Scenarios live at::
+Scenarios live in a top-level ``adversaries/`` directory (sibling of
+``resources/``), grouped by service::
 
-    resources/{service}/adversarial/{scenario}/scenario.yaml
+    adversaries/{service}/{scenario}/scenario.yaml
 
-The service is derived from ``inject_at_stage`` via the stage service map,
+The legacy ``resources/{service}/adversarial/{scenario}/`` location is still
+accepted as a fallback. The service is derived from ``inject_at_stage`` via the
+stage service map,
 enforcing that a scenario references resources from within the same test
 suite that owns the inject stage.
 
@@ -27,7 +30,11 @@ import yaml
 from pydantic import BaseModel, ValidationError
 
 _SCENARIO_FILE_NAME = "scenario.yaml"
-_ADVERSARIAL_DIR_NAME = "adversarial"
+# Scenarios live in a top-level ``adversaries/`` directory (sibling of
+# ``resources/``), grouped by service: ``adversaries/{service}/{scenario}/``.
+# The legacy in-resources location is still accepted as a fallback.
+_ADVERSARIES_DIR_NAME = "adversaries"
+_ADVERSARIAL_DIR_NAME = "adversarial"  # legacy: resources/{service}/adversarial/
 _VALID_ON_PROBE_FAIL = {"error", "skip"}
 
 
@@ -307,12 +314,18 @@ def resolve_adversary_scenario(
             f"not found in stage service map"
         )
 
-    scenario_path = (
-        resources_dir / service / _ADVERSARIAL_DIR_NAME / scenario_name / _SCENARIO_FILE_NAME
-    )
-    if not scenario_path.exists():
+    # Prefer the top-level adversaries/ tree (sibling of resources/); fall back
+    # to the legacy in-resources location for back-compat.
+    adversaries_dir = resources_dir.parent / _ADVERSARIES_DIR_NAME
+    candidates = [
+        adversaries_dir / service / scenario_name / _SCENARIO_FILE_NAME,
+        resources_dir / service / _ADVERSARIAL_DIR_NAME / scenario_name / _SCENARIO_FILE_NAME,
+    ]
+    scenario_path = next((p for p in candidates if p.exists()), None)
+    if scenario_path is None:
         raise RuntimeError(
-            f"adversary scenario '{scenario_name}': file not found at {scenario_path}"
+            f"adversary scenario '{scenario_name}': file not found "
+            f"(looked in {candidates[0]} and the legacy {candidates[1]})"
         )
     try:
         raw_data = yaml.safe_load(scenario_path.read_text()) or {}
