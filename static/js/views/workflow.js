@@ -18,6 +18,7 @@
   const { el, clear, api } = KARMA;
 
   let root;
+  let pendingWorkflow = null;   // set by KARMA.showWorkflow to deep-link a detail
   let services = [];
   let agents = [];      // available agent names, for the run-config selectors
   let runAgent = "";    // agent applied to workflow runs ("" = no agent)
@@ -46,8 +47,13 @@
       try { agents = await api.get("/api/agents"); } catch (_e) { agents = []; }
     }
     try { scenarios = await api.get("/api/adversary/scenarios") || []; } catch (_e) { scenarios = []; }
-    render();
+    if (pendingWorkflow) { const pw = pendingWorkflow; pendingWorkflow = null; renderWorkflowDetail(pw.name, pw.path); }
+    else render();
   }
+
+  // Cross-view deep link: open a specific saved workflow's detail (used by the
+  // back stack so returning from a Cases sub-page lands on the exact workflow).
+  KARMA.showWorkflow = function (name, path) { pendingWorkflow = { name, path }; KARMA.activate("workflow"); };
 
   function render() {
     clear(root);
@@ -210,6 +216,7 @@
   // builder to override params and save a renamed copy).
   async function renderWorkflowDetail(name, path) {
     clear(root);
+    KARMA.currentLocation = () => KARMA.showWorkflow(name, path);
     const wn = KARMA.labels.workflowName(name);
     const display = wn.app + (wn.name ? " · " + wn.name : "");
     KARMA.setBreadcrumb({ back: render, crumbs: [{ label: "Workflows", onClick: render }, { label: display }] });

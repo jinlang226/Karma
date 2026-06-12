@@ -19,6 +19,18 @@
   let root;
   let sub = "runs";        // "runs" | "batches"
   let refreshTimer = null;
+  let pendingRun = null;   // set by KARMA.showRun to deep-link a run detail
+
+  // Cross-view deep link: open a specific run's detail (used by the back stack
+  // so returning from a Cases sub-page lands on the exact run, not the list).
+  KARMA.showRun = function (runId) { pendingRun = runId; KARMA.activate("results"); };
+
+  // Sort key: the YYYYMMDD_HHMMSS stamp in the run_id, as a comparable string.
+  // Runs without a stamp sort last.
+  function runSortKey(r) {
+    const m = String((r && r.run_id) || "").match(/(\d{8})_(\d{6})/);
+    return m ? m[1] + m[2] : "";
+  }
 
   const TERMINAL = ["complete", "failed", "error", "passed", "cancelled", "interrupted"];
   function isTerminal(s) { return TERMINAL.includes(s); }
@@ -41,7 +53,12 @@
     return el("span", { class: "badge " + st.cls }, st.text);
   }
 
-  function mount(container) { root = container; sub = "runs"; render(); }
+  function mount(container) {
+    root = container;
+    sub = "runs";
+    if (pendingRun) { const id = pendingRun; pendingRun = null; renderDetail(id); }
+    else render();
+  }
 
   function stopTimers() { if (refreshTimer) { clearTimeout(refreshTimer); refreshTimer = null; } }
 
@@ -54,6 +71,10 @@
   function render() {
     stopTimers();
     clear(root);
+    // The list is a root page: reset any cross-view back history and record it
+    // as the current location so a later jump returns here.
+    KARMA.clearHistory();
+    KARMA.currentLocation = () => KARMA.activate("results");
     KARMA.setBreadcrumb(null);
     root.appendChild(el("h2", {}, "Results"));
     root.appendChild(el("p", { class: "field-help" },
@@ -76,6 +97,15 @@
       const p = el("div", { class: "panel" }); p.appendChild(errBox(e));
       clear(host); host.appendChild(p); return;
     }
+    // Sort newest-first by the run_id timestamp client-side, so the order is
+    // correct regardless of backend ordering (older server builds name-sort).
+    runs = (runs || []).slice().sort((a, b) => {
+      const ka = runSortKey(a), kb = runSortKey(b);
+      if (ka === kb) return 0;
+      if (!ka) return 1;
+      if (!kb) return -1;
+      return kb < ka ? -1 : 1;
+    });
     const panel = el("div", { class: "panel" });
     const tbl = el("table", {}, el("thead", {}, el("tr", {},
       el("th", {}, "Run"), el("th", {}, "Status"), el("th", {}, "Stages"),
@@ -112,6 +142,9 @@
   async function renderDetail(runId) {
     stopTimers();
     clear(root);
+    // Record this run detail as the current location so a jump to a Cases
+    // sub-page (via a stage click) can return here with the back arrow.
+    KARMA.currentLocation = () => KARMA.showRun(runId);
     const np = KARMA.labels.runName(runId);
     const title = np.app + (np.name ? " · " + np.name : "");
     KARMA.setBreadcrumb({ back: render, crumbs: [{ label: "Results", onClick: render }, { label: title }] });

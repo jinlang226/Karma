@@ -29,7 +29,7 @@
         el("button", {
           class: "tab" + (view.id === activeId ? " active" : ""),
           "aria-current": view.id === activeId ? "page" : null,
-          onClick: () => activate(view.id),
+          onClick: () => { KARMA.clearHistory(); activate(view.id); },
         }, view.label)
       );
     }
@@ -63,18 +63,39 @@
 
   KARMA.activate = activate;
 
+  // --- Cross-view navigation history --------------------------------------
+  // A stack of "restore thunks", one per page left behind during a cross-view
+  // jump (e.g. Results detail -> a Cases sub-page). The back arrow pops it so
+  // it returns to the LAST viewed page, not just the current view's parent.
+  // Each returnable page sets KARMA.currentLocation to a thunk that re-renders
+  // itself; navigateTo() captures that before sending you elsewhere.
+  const navStack = [];
+  KARMA.currentLocation = null;
+  KARMA.navigateTo = function (navFn) {
+    if (KARMA.currentLocation) navStack.push(KARMA.currentLocation);
+    navFn();
+  };
+  KARMA.navBack = function () {
+    const fn = navStack.pop();
+    if (fn) { fn(); return true; }
+    return false;
+  };
+  KARMA.clearHistory = function () { navStack.length = 0; };
+
   // Breadcrumb beside the brand. spec = null (clear) or
   // { back: fn|null, crumbs: [{label, onClick|null}] }. Crumbs are the
   // clickable ancestors of the current page; the current page's own name
-  // stays in the page heading.
+  // stays in the page heading. The back arrow prefers the cross-view history
+  // stack (last viewed page) and falls back to the view's own parent.
   KARMA.setBreadcrumb = function (spec) {
     const host = document.getElementById("breadcrumb");
     if (!host) return;
     clear(host);
     if (!spec) return;
-    if (spec.back) {
+    if (spec.back || navStack.length) {
       host.appendChild(el("button", {
-        class: "crumb-back", title: "Back", "aria-label": "Back", onClick: spec.back,
+        class: "crumb-back", title: "Back", "aria-label": "Back",
+        onClick: () => { if (!KARMA.navBack() && spec.back) spec.back(); },
       }, "←"));
     }
     (spec.crumbs || []).forEach((c, i) => {
@@ -204,7 +225,7 @@
       } else if (cover.length > 1) {
         row.style.background = `linear-gradient(135deg, ${cover.map((a) => a.color + "2b").join(", ")})`;
       }
-      if (onStageClick && s.service && s.case_name) row.addEventListener("click", () => onStageClick(s));
+      if (onStageClick && s.service && s.case_name) row.addEventListener("click", () => KARMA.navigateTo(() => onStageClick(s)));
       // Header: stage id + inject/lift marks INSIDE the box.
       const head = el("div", { class: "builder-row-head" }, el("span", {}, KARMA.humanize(s.id)));
       injections.filter((a) => a.from === i).forEach((a) => head.appendChild(
@@ -226,7 +247,7 @@
       const legend = el("div", { class: "adv-legend" });
       injections.forEach((a) => legend.appendChild(el("span", {
         class: "adv-legend-item clickable",
-        onClick: () => KARMA.showScenario(a.scenario),
+        onClick: () => KARMA.navigateTo(() => KARMA.showScenario(a.scenario)),
       },
         el("span", { class: "adv-swatch", style: `background:${a.color}` }),
         `${KARMA.labels.scenario(a.scenario)} (${a.inject} → ${a.lift})`)));
@@ -256,7 +277,7 @@
   function boot() {
     renderNav();
     const brand = document.querySelector("#topbar .brand");
-    if (brand) brand.addEventListener("click", () => activate("home"));
+    if (brand) brand.addEventListener("click", () => { KARMA.clearHistory(); activate("home"); });
     const fromHash = (location.hash || "").replace(/^#/, "");
     const initial =
       KARMA.views.find((v) => v.id === fromHash) ? fromHash :
