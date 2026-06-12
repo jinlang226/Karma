@@ -63,6 +63,17 @@
 
   KARMA.activate = activate;
 
+  // Replay an enter animation on a container -- used so inner navigations
+  // (detail pages, folder drill-in, back-to-list) fade in like a tab switch,
+  // not just the top-level view swap. With no *anim* it restarts the element's
+  // own CSS animation (e.g. #view's fadeInUp); pass one for ad-hoc elements.
+  KARMA.replayEnter = function (container, anim) {
+    if (!container) return;
+    container.style.animation = "none";
+    void container.offsetWidth;   // force reflow so the animation can replay
+    container.style.animation = anim || "";
+  };
+
   // --- Cross-view navigation history --------------------------------------
   // A stack of "restore thunks", one per page left behind during a cross-view
   // jump (e.g. Results detail -> a Cases sub-page). The back arrow pops it so
