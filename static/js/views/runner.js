@@ -121,15 +121,36 @@
     root.appendChild(el("h2", {}, KARMA.labels.scenario(sc.scenario)));
     root.appendChild(el("p", { class: "field-help" },
       "Adversary injection scenario" + (sc.service ? " for " + KARMA.labels.service(sc.service) : "") +
-      ". Injected before a stage and lifted after; parameterize it in a workflow's adversary block."));
+      ". Injected before a stage and lifted after. Set parameter values below, then send " +
+      "it to the Workflow builder to inject it into a run."));
     const panel = el("div", { class: "panel" });
     panel.appendChild(el("h3", {}, "Parameters"));
     const params = sc.params || {};
-    if (!Object.keys(params).length) panel.appendChild(el("p", { class: "muted" }, "No parameters."));
-    for (const [k, v] of Object.entries(params)) {
-      panel.appendChild(el("div", { class: "kv" }, el("span", { class: "k" }, KARMA.labels.case(k)),
-        el("span", {}, "default: " + (v && v.default != null ? String(v.default) : "—"))));
+    // Editable inputs prefilled with defaults; collected into `overrides`.
+    const overrides = {};
+    const keys = Object.keys(params);
+    if (!keys.length) {
+      panel.appendChild(el("p", { class: "muted" }, "No parameters."));
+    } else {
+      const grid = el("div", { class: "param-grid" });
+      grid.style.gridTemplateColumns = `repeat(${Math.min(keys.length, 4)}, minmax(0, 1fr))`;
+      for (const k of keys) {
+        const def = params[k] && params[k].default != null ? String(params[k].default) : "";
+        overrides[k] = def;
+        grid.appendChild(el("div", {},
+          el("label", {}, KARMA.labels.case(k)),
+          el("input", {
+            value: def, placeholder: def,
+            onInput: (e) => { overrides[k] = e.target.value; },
+          })));
+      }
+      panel.appendChild(grid);
     }
+    panel.appendChild(el("div", { class: "toolbar" },
+      el("button", {
+        class: "btn",
+        onClick: () => KARMA.useScenarioInBuilder(sc.scenario, overrides),
+      }, "Use in a workflow →")));
     root.appendChild(panel);
     if (sc.prompt_hints && Object.keys(sc.prompt_hints).length) {
       const hp = el("div", { class: "panel" });

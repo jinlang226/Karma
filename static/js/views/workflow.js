@@ -19,6 +19,7 @@
 
   let root;
   let pendingWorkflow = null;   // set by KARMA.showWorkflow to deep-link a detail
+  let pendingAdvScenario = null;   // set by KARMA.useScenarioInBuilder ({scenario, overrides})
   let services = [];
   let agents = [];      // available agent names, for the run-config selectors
   let runAgent = "";    // agent applied to workflow runs ("" = no agent)
@@ -47,13 +48,26 @@
       try { agents = await api.get("/api/agents"); } catch (_e) { agents = []; }
     }
     try { scenarios = await api.get("/api/adversary/scenarios") || []; } catch (_e) { scenarios = []; }
-    if (pendingWorkflow) { const pw = pendingWorkflow; pendingWorkflow = null; renderWorkflowDetail(pw.name, pw.path); }
-    else render();
+    if (pendingWorkflow) { const pw = pendingWorkflow; pendingWorkflow = null; renderWorkflowDetail(pw.name, pw.path); return; }
+    if (pendingAdvScenario) {
+      const ps = pendingAdvScenario; pendingAdvScenario = null;
+      // Seed the builder with this adversary injection (params carried over).
+      advRows = [{ scenario: ps.scenario, injectIndex: 0, liftIndex: -1, overrides: ps.overrides || {} }];
+      KARMA.toast("Adversary added to the builder — add a stage, then set its inject/lift points.", "info");
+    }
+    render();
   }
 
   // Cross-view deep link: open a specific saved workflow's detail (used by the
   // back stack so returning from a Cases sub-page lands on the exact workflow).
   KARMA.showWorkflow = function (name, path) { pendingWorkflow = { name, path }; KARMA.activate("workflow"); };
+
+  // Cross-view: open the builder pre-seeded with an adversary injection for the
+  // given scenario + entered param overrides (from the Cases scenario page).
+  KARMA.useScenarioInBuilder = function (scenario, overrides) {
+    pendingAdvScenario = { scenario, overrides: overrides || {} };
+    KARMA.activate("workflow");
+  };
 
   function render() {
     clear(root);
@@ -415,7 +429,9 @@
     // resolves it under that stage's service), so filter scenarios by it.
     const injectService = (stages[adv.injectIndex] || {}).service;
     const choices = scenarios.filter((s) => !injectService || s.service === injectService);
-    const scenSel = el("select", { onChange: (e) => { adv.scenario = e.target.value; } },
+    const scenSel = el("select", {
+      onChange: (e) => { adv.scenario = e.target.value; adv.overrides = {}; rerender(); },
+    },
       el("option", { value: "" }, "(scenario)"),
       ...choices.map((s) => el("option", {
         value: s.scenario, selected: s.scenario === adv.scenario ? "selected" : null,
@@ -430,12 +446,33 @@
       class: "btn secondary", title: "Remove injection", "aria-label": "Remove injection",
       onClick: () => { advRows.splice(index, 1); rerender(); },
     }, "✕");
-    return el("div", { class: "builder-row" },
+    const row = el("div", { class: "builder-row" },
       el("div", { class: "builder-row-head" }, el("span", {}, `Injection ${index + 1}`), rm),
       el("div", { class: "row" },
         el("div", {}, el("label", {}, "Inject at"), injectSel),
         el("div", {}, el("label", {}, "Scenario"), scenSel),
         el("div", {}, el("label", {}, "Lift at"), liftSel)));
+    // Editable parameters for the chosen scenario (prefilled with defaults).
+    const sdef = scenarios.find((s) => s.scenario === adv.scenario);
+    const sparams = (sdef && sdef.params) || {};
+    const keys = Object.keys(sparams);
+    if (keys.length) {
+      adv.overrides = adv.overrides || {};
+      const grid = el("div", { class: "param-grid" });
+      grid.style.gridTemplateColumns = `repeat(${Math.min(keys.length, 4)}, minmax(0, 1fr))`;
+      for (const k of keys) {
+        const def = sparams[k] && sparams[k].default != null ? String(sparams[k].default) : "";
+        if (!(k in adv.overrides)) adv.overrides[k] = def;
+        grid.appendChild(el("div", {},
+          el("label", {}, KARMA.labels.case(k)),
+          el("input", {
+            value: adv.overrides[k], placeholder: def,
+            onInput: (e) => { adv.overrides[k] = e.target.value; },
+          })));
+      }
+      row.appendChild(el("div", { class: "stage-params" }, el("label", {}, "Parameters"), grid));
+    }
+    return row;
   }
 
   function stageRow(stage, index, rerender) {
@@ -537,6 +574,18 @@
         lines.push(`      inject_at_stage: stage_${a.injectIndex + 1}`);
         if (a.liftIndex >= 0) {
           lines.push(`      lift_at_stage: stage_${a.liftIndex + 1}`);
+        }
+        // Emit only scenario params the user changed from the default.
+        const sdef = scenarios.find((s) => s.scenario === a.scenario) || {};
+        const sparams = sdef.params || {};
+        const ov = a.overrides || {};
+        const changed = Object.keys(ov).filter((k) => {
+          const def = sparams[k] && sparams[k].default != null ? String(sparams[k].default) : "";
+          return ov[k] !== "" && String(ov[k]) !== def;
+        });
+        if (changed.length) {
+          lines.push(`      param_overrides:`);
+          for (const k of changed) lines.push(`        ${k}: ${ov[k]}`);
         }
       }
     }
