@@ -12,16 +12,18 @@
   const { el, clear } = KARMA;
 
   const STEPS = [
-    ["Define", "A case or multi-stage workflow specifies the prompt, the cluster setup, and the success check."],
-    ["Run", "An agent attempts the task locally or in Docker, or you perform it by hand as a manual run."],
-    ["Verify", "An oracle checks the resulting cluster state, and metrics capture how the agent behaved."],
-    ["Judge", "An LLM judge scores the run against a rubric; batches aggregate scores across runs."],
+    ["Define", "Each task is a case (one test.yaml) or a workflow of several cases. It declares the prompt the agent is given, the preconditions that build the starting cluster state, and the oracle that defines success."],
+    ["Set up", "KARMA creates fresh, ephemeral namespaces and runs the preconditions to deploy the scenario — optionally injecting an adversarial fault. The agent receives a scoped kubeconfig and the rendered prompt."],
+    ["Run", "The agent works the task — as a local process or inside a Docker container — issuing kubectl/API calls until it signals completion or hits the time limit. Or a person does it by hand as a manual run."],
+    ["Verify", "The agent is stopped and its evidence (logs and kubectl activity) is collected. The oracle checks whether the cluster reached its intended state and returns pass or fail; metric plugins quantify behaviour such as blast radius and residual drift."],
+    ["Judge", "An LLM judge scores the run 0–100 against a rubric, reading the prompt, the agent log, and the oracle/regression results. A batch averages scores across many runs."],
   ];
 
+  // [view id, label shown, description]. Ids/labels match the actual tabs.
   const TABS = [
-    ["runner", "Run", "Browse services and cases, then run one with an agent (streamed live) or set it up and solve it by hand as a manual run."],
-    ["workflow", "Workflow", "Run workflow files or compose a multi-stage workflow — with optional adversary injections — and run it inline."],
-    ["judge", "Judge", "List runs and batches with their scores and trigger the LLM judge, with progress streamed live."],
+    ["runner", "Cases", "Browse services and cases, then run one with an agent (streamed live) or set it up and solve it by hand as a manual run."],
+    ["workflow", "Workflow", "Compose a multi-stage workflow — with optional adversary injections — and run it, or run a saved workflow file."],
+    ["results", "Results", "Every run, live and historical: per-stage status, failure logs, the LLM judge score, and cross-run judge batches."],
   ];
 
   const CONCEPTS = [
