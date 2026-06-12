@@ -245,6 +245,30 @@
       });
     }
 
+    // Regression sweep: each previously-passing stage's oracle, re-run at the end
+    // of a multi-stage workflow to catch stages that later stages broke.
+    const sweep = d.regression_sweep;
+    if (sweep && Object.keys(sweep).length) {
+      const rp = el("div", { class: "panel" });
+      rp.appendChild(el("h3", {}, "Regression sweep"));
+      const regressed = Object.values(sweep).filter((v) => v && v.verdict !== "pass").length;
+      rp.appendChild(el("p", { class: "field-help" },
+        "Every previously-passing stage's oracle, re-evaluated after the whole workflow ran — " +
+        (regressed ? regressed + " stage(s) regressed." : "no regressions: all still pass.")));
+      const list = el("div", { class: "stage-scroll" });
+      for (const [sid, v] of Object.entries(sweep)) {
+        const st = KARMA.labels.status((v && v.verdict) || "unknown");
+        const row = el("div", { class: "builder-row" });
+        row.appendChild(el("div", { class: "builder-row-head" },
+          el("span", {}, KARMA.humanize(sid)),
+          el("span", { class: "badge " + (st.cls || "") }, st.text)));
+        if (v && v.output) row.appendChild(el("pre", { class: "log" }, String(v.output)));
+        list.appendChild(row);
+      }
+      rp.appendChild(list);
+      root.appendChild(rp);
+    }
+
     // Supplementary info, below the Stages / Live block.
     if (cfg.params && Object.keys(cfg.params).length) {
       const p = el("div", { class: "panel" });
