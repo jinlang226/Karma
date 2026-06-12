@@ -23,12 +23,20 @@
     return el("div", { class: "error-box" }, m);
   }
 
+  let pendingCase = null;   // set by KARMA.showCase before activating this tab
   async function mount(container) {
     root = container;
     if (!agents.length) {
       try { agents = await api.get("/api/agents"); } catch (_e) { agents = []; }
     }
-    renderHome();
+    // A pending case (clicked from a stage box) renders instead of the home
+    // grid -- avoids the async renderHome appending under it afterward.
+    if (pendingCase) {
+      const pc = pendingCase; pendingCase = null;
+      renderCase(pc.service, pc.case);
+    } else {
+      renderHome();
+    }
   }
 
   function serviceCard(svc) {
@@ -350,8 +358,8 @@
   // Cross-view: jump to a case's detail (used by clickable stage boxes in the
   // workflow/run detail). Activate the Cases tab, then render the case.
   KARMA.showCase = function (service, caseName) {
+    pendingCase = { service: service, case: caseName };
     KARMA.activate("runner");
-    setTimeout(() => { try { renderCase(service, caseName); } catch (e) {} }, 0);
   };
 
   KARMA.registerView({ id: "runner", label: "Cases", mount });

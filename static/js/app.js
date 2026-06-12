@@ -137,7 +137,7 @@
       ? KARMA.labels.status(stage.status) : { text: stage.status, cls: "bad" };
     const wrap = el("div", { class: "stage-detail " + (st.cls || "bad") });
     wrap.appendChild(el("div", { class: "stage-detail-head" },
-      el("strong", {}, sid),
+      el("strong", {}, KARMA.humanize(sid)),
       el("span", { class: "badge " + (st.cls || "bad") }, st.text || stage.status || "?"),
       stage.oracle_verdict ? el("span", { class: "muted" }, "oracle: " + stage.oracle_verdict) : null));
     if (stage.error) wrap.appendChild(el("div", { class: "stage-error" }, stage.error));
@@ -206,7 +206,7 @@
       }
       if (onStageClick && s.service && s.case_name) row.addEventListener("click", () => onStageClick(s));
       // Header: stage id + inject/lift marks INSIDE the box.
-      const head = el("div", { class: "builder-row-head" }, el("span", {}, s.id));
+      const head = el("div", { class: "builder-row-head" }, el("span", {}, KARMA.humanize(s.id)));
       injections.filter((a) => a.from === i).forEach((a) => head.appendChild(
         el("span", { class: "adv-badge", style: `color:${a.color};border-color:${a.color}` }, "⚠ " + KARMA.labels.scenario(a.scenario))));
       injections.filter((a) => a.to === i).forEach((a) => head.appendChild(
