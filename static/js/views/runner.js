@@ -165,8 +165,9 @@
       }
       panel.appendChild(grid);
     }
-    // Action sits at the bottom of the Parameters block, separated from the inputs.
-    panel.appendChild(el("div", { class: "toolbar param-action-bottom" },
+    // Action at the bottom-left of the Parameters block (same style as a case's
+    // "Run with agent" action -- plain toolbar, no separating rule).
+    panel.appendChild(el("div", { class: "toolbar run-actions" },
       el("button", {
         class: "btn",
         onClick: () => KARMA.useScenarioInBuilder(sc.scenario, overrides),

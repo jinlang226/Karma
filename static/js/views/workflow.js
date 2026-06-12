@@ -142,7 +142,7 @@
       type: "checkbox", title: "Select all",
       onChange: (e) => toggleAll(e.target.checked),
     });
-    const tbl = el("table", {}, el("thead", {}, el("tr", {},
+    const tbl = el("table", { class: "wf-files-table" }, el("thead", {}, el("tr", {},
       el("th", {}, selectAll), el("th", {}, "Name"), el("th", {}, "Stages"),
       el("th", {}, "Prompt mode"), el("th", {}, "Status"), el("th", {}, ""))));
     const body = el("tbody", { id: "wf-files-body" });
@@ -272,14 +272,24 @@
       for (const f of hits) body.appendChild(fileRow(f, true));
       return;
     }
-    // Breadcrumb / step-back when inside a subfolder.
+    // Breadcrumb when inside a subfolder: "← workflows/suite" where "workflows"
+    // and any intermediate segment are clickable; the current folder is plain.
     if (wfFolder) {
       const parent = wfFolder.includes("/") ? wfFolder.slice(0, wfFolder.lastIndexOf("/")) : "";
-      body.appendChild(el("tr", { class: "wf-crumb-row" },
-        el("td", { colspan: "6" },
-          el("span", { class: "crumb-link", onClick: () => { wfFolder = parent; renderFiles(); } },
-            "← " + (parent ? "workflows/" + parent + "/" : "workflows/")),
-          el("span", { class: "muted", style: "margin-left:8px" }, "workflows/" + wfFolder + "/"))));
+      const go = (folder) => () => { wfFolder = folder; renderFiles(); };
+      const cell = el("td", { colspan: "6" },
+        el("span", { class: "crumb-link", title: "Up one folder", onClick: go(parent) }, "← "),
+        el("span", { class: "crumb-link", onClick: go("") }, "workflows"));
+      let acc = "";
+      const segs = wfFolder.split("/");
+      segs.forEach((seg, i) => {
+        acc = acc ? acc + "/" + seg : seg;
+        cell.appendChild(document.createTextNode("/"));
+        cell.appendChild(i === segs.length - 1
+          ? el("span", { class: "wf-crumb-current" }, seg)
+          : el("span", { class: "crumb-link", onClick: go(acc) }, seg));
+      });
+      body.appendChild(el("tr", { class: "wf-crumb-row" }, cell));
     }
     for (const sub of subfolders(wfFolder)) body.appendChild(folderRow(sub));
     for (const f of filesIn(wfFolder)) body.appendChild(fileRow(f));
