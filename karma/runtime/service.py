@@ -163,7 +163,12 @@ def run_workflow(
             agent_meta["image_tag"] = image_override
         if opts.get("build_image") and sandbox_mode == "docker" and agent_meta.get("folder"):
             from ..sandbox import build_agent_image
-            build_agent_image(agent_meta, agent_meta.get("image_tag") or "karma-agent:latest", run_dir)
+            # image_tag/run_dir are keyword-only; capture the built tag so the
+            # launch step runs the image we just built (per-agent to avoid clashes).
+            tag = agent_meta.get("image_tag") or f"karma-agent-{agent_name}:latest"
+            agent_meta["image_tag"] = build_agent_image(
+                agent_meta, image_tag=tag, run_dir=run_dir
+            )
         prompt_mode = str(workflow.get("prompt_mode") or "progressive")
 
         result = run_workflow_loop(
