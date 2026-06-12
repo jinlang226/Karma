@@ -28,6 +28,28 @@ _active_jobs: dict[str, dict[str, Any]] = {}
 _cancel_requested: set[str] = set()
 _jobs_lock = threading.Lock()
 
+# Host credential files to bind-mount into the container per agent for docker
+# runs. Env-based creds (CLAUDE_CODE_OAUTH_TOKEN / ANTHROPIC_API_KEY /
+# OPENAI_API_KEY) are forwarded automatically by launch_agent; file-based logins
+# like codex's ~/.codex/auth.json must be mounted, the same way the CLI's
+# --agent-auth-path/--agent-auth-dest does. Without this a docker codex run
+# authenticates as nobody and every OpenAI call 401s.
+_DOCKER_AUTH_FILES = {
+    "codex": (Path.home() / ".codex" / "auth.json", "/root/.codex/auth.json"),
+}
+
+
+def _docker_sandbox_options(agent_name: str | None, sandbox_mode: str) -> dict[str, Any] | None:
+    """Build sandbox_options that mount an agent's host credential file for a
+    docker run, so the in-container agent can authenticate. Returns ``None``
+    when nothing needs mounting (local runs, or no known/extant auth file)."""
+    if sandbox_mode != "docker" or not agent_name:
+        return None
+    src_dest = _DOCKER_AUTH_FILES.get(agent_name)
+    if src_dest and src_dest[0].exists():
+        return {"extra_mounts": [(src_dest[0], src_dest[1])]}
+    return None
+
 
 # ---------------------------------------------------------------------------
 # Internal helpers
@@ -238,6 +260,8 @@ def submit_job(
                 resources_dir=resources_dir,
                 agent_name=payload.get("agent"),
                 sandbox_mode=str(payload.get("sandbox") or "local"),
+                sandbox_options=_docker_sandbox_options(
+                    payload.get("agent"), str(payload.get("sandbox") or "local")),
                 on_stage_complete=_stage_cb,
                 on_progress=_progress_cb,
                 should_cancel=lambda: run_id in _cancel_requested,
