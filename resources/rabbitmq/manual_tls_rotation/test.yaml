@@ -123,8 +123,15 @@ preconditionUnits:
       - command: "python3 resources/rabbitmq/manual_tls_rotation/setup_precondition_check.py --namespace ${BENCH_NAMESPACE} --baseline-max-leaf-validity-days {{params.baseline_max_leaf_validity_days}} --tls-material-only"
         timeout_sec: 60
     apply:
-      - command: "python3 resources/rabbitmq/manual_tls_rotation/setup_precondition_check.py --namespace ${BENCH_NAMESPACE} --baseline-max-leaf-validity-days {{params.baseline_max_leaf_validity_days}} --tls-material-only --apply"
+      - command: "kubectl -n ${BENCH_NAMESPACE} exec -i openssl-toolbox -- sh -s {{params.cluster_prefix}} ${BENCH_NAMESPACE} < resources/rabbitmq/manual_tls_rotation/resource/gen-tls-material.sh"
         timeout_sec: 120
+        sleep: 1
+      - command: "/bin/sh -c 'rm -rf /tmp/rmq-tls-certs; kubectl -n ${BENCH_NAMESPACE} cp openssl-toolbox:/tmp/certs /tmp/rmq-tls-certs'"
+        sleep: 1
+      - command: "/bin/sh -c 'kubectl -n ${BENCH_NAMESPACE} create secret generic {{params.cluster_prefix}}-tls --from-file=ca.crt=/tmp/rmq-tls-certs/ca.crt --from-file=tls.crt=/tmp/rmq-tls-certs/tls.crt --from-file=tls.key=/tmp/rmq-tls-certs/tls.key --dry-run=client -o yaml | kubectl -n ${BENCH_NAMESPACE} apply -f -'"
+        sleep: 1
+      - command: "/bin/sh -c 'ca_fp=$(openssl x509 -noout -fingerprint -sha256 -in /tmp/rmq-tls-certs/ca.crt | sed \"s/.*=//\"); leaf_fp=$(openssl x509 -noout -fingerprint -sha256 -in /tmp/rmq-tls-certs/tls.crt | sed \"s/.*=//\"); kubectl -n ${BENCH_NAMESPACE} create configmap {{params.cluster_prefix}}-tls-old --from-literal=ca_fingerprint_sha256=\"$ca_fp\" --from-literal=leaf_fingerprint_sha256=\"$leaf_fp\" --dry-run=client -o yaml | kubectl -n ${BENCH_NAMESPACE} apply -f -'"
+        sleep: 1
     verify:
       - command: "python3 resources/rabbitmq/manual_tls_rotation/setup_precondition_check.py --namespace ${BENCH_NAMESPACE} --baseline-max-leaf-validity-days {{params.baseline_max_leaf_validity_days}} --tls-material-only"
         timeout_sec: 60
