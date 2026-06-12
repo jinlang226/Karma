@@ -1,0 +1,58 @@
+# rabbitmq/adversarial/clear_ha_policy
+#
+# Clears the ha-all mirroring policy on the /app vhost mid-task, simulating a
+# config drift that silently removes queue mirroring. The agent's policy-sync
+# task must re-establish the policy rather than assume it is still present.
+#
+# These rabbitmq cases run in a role namespace (BENCH_NAMESPACE is the default
+# kube context), so the commands omit -n and exec into <cluster_prefix>-0,
+# matching the demo scenario's reliance on the active-context namespace.
+#
+# Deploy: clear the ha-all policy on the vhost.
+# Lift:   no-op (the agent is expected to restore it; verify the cluster is up).
+
+params:
+  cluster_prefix:
+    default: rabbitmq
+  vhost:
+    default: /app
+  policy_name:
+    default: ha-all
+
+deploy:
+  # The cluster pod must already exist (the case precondition stands it up).
+  on_probe_fail: error
+  probe:
+    - command: "kubectl exec {{params.cluster_prefix}}-0 -- rabbitmqctl cluster_status"
+      timeout_sec: 30
+  apply:
+    - command: "kubectl exec {{params.cluster_prefix}}-0 -- rabbitmqctl clear_policy -p {{params.vhost}} {{params.policy_name}}"
+      timeout_sec: 30
+  verify:
+    - command: >-
+        /bin/sh -c "! kubectl exec {{params.cluster_prefix}}-0 -- rabbitmqctl list_policies -p {{params.vhost}}
+        | grep -qw {{params.policy_name}}"
+      timeout_sec: 30
+
+lift:
+  # Nothing to undo -- restoring the policy is the agent's job. Probe always
+  # 'fails' so the (empty) apply is skipped; this just records cluster health.
+  on_probe_fail: skip
+  probe:
+    - command: "/bin/sh -c false"
+      timeout_sec: 5
+  apply:
+    - command: "kubectl exec {{params.cluster_prefix}}-0 -- rabbitmqctl cluster_status"
+      timeout_sec: 30
+  verify:
+    - command: "kubectl exec {{params.cluster_prefix}}-0 -- rabbitmqctl cluster_status"
+      timeout_sec: 30
+
+prompt_hints:
+  deploy: |
+    Note: queue mirroring policies on this cluster may have been altered by an
+    external change during this task. Verify the required policy is present on
+    the vhost before concluding the cluster is correctly configured.
+  active: |
+    Reminder: a policy that should be in place may have been cleared earlier.
+    Re-check the vhost's policies before finishing.
