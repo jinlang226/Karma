@@ -58,6 +58,8 @@
 
   async function renderHome() {
     clear(root);
+    KARMA.clearHistory();
+    KARMA.currentLocation = () => KARMA.activate("runner");
     KARMA.setBreadcrumb(null);
     root.appendChild(el("h2", {}, "Run a Case"));
     try {
@@ -114,6 +116,7 @@
       } catch (_e) { sc = { scenario: sc, params: {} }; }
     }
     clear(root);
+    KARMA.currentLocation = () => KARMA.showScenario(sc.scenario);
     KARMA.setBreadcrumb({ back: renderHome, crumbs: [{ label: "Cases", onClick: renderHome }, { label: KARMA.labels.scenario(sc.scenario) }] });
     root.appendChild(el("h2", {}, KARMA.labels.scenario(sc.scenario)));
     root.appendChild(el("p", { class: "field-help" },
@@ -183,6 +186,7 @@
 
   async function renderCase(service, caseName) {
     clear(root);
+    KARMA.currentLocation = () => KARMA.showCase(service, caseName);
     KARMA.setBreadcrumb({
       back: () => renderService(service),
       crumbs: [
