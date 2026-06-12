@@ -249,34 +249,59 @@
 
     root.appendChild(el("div", { class: "toolbar" },
       el("button", { class: "btn", onClick: () => runWorkflowFile(path) }, "Run"),
-      el("button", { class: "btn secondary", onClick: () => customizeInBuilder(name, wf) }, "Customize / duplicate")));
+      el("button", { class: "btn secondary", onClick: () => customizeInBuilder(name, wf, path) }, "Customize / duplicate")));
 
     root.appendChild(KARMA.workflowStagesPanel(wf, "Stages", (s) => KARMA.showCase(s.service, s.case_name)));
     root.appendChild(jobsPanel());   // so Run output shows on this page too
   }
 
   // Load a saved workflow into the builder so the user can override params and
-  // save it under a new name (a customized copy).
-  function customizeInBuilder(name, wf) {
+  // save it under a new name (a customized copy). Renders a dedicated builder
+  // page (not the full Workflows list) so the user edits and runs in one place.
+  function customizeInBuilder(name, wf, path) {
     stages = (wf.stages || []).map((s) => ({
       service: s.service, case: s.case_name,
       overrides: { ...(s.param_overrides || {}) }, _defaults: {},
     }));
-    // Load the workflow's existing adversary injections (map stage ids -> idx).
+    // Load the workflow's existing adversary injections (map stage ids -> idx),
+    // carrying their param overrides.
     const sidx = {};
     (wf.stages || []).forEach((s, i) => { sidx[s.id] = i; });
     advRows = (wf.adversary || []).map((a) => ({
       scenario: a.scenario,
       injectIndex: sidx[a.inject_at_stage] != null ? sidx[a.inject_at_stage] : 0,
       liftIndex: sidx[a.lift_at_stage] != null ? sidx[a.lift_at_stage] : 0,
+      overrides: { ...(a.param_overrides || {}) },
     }));
     builderId = name.replace(/\.ya?ml$/i, "") + "-copy";
-    render();
+    renderCustomize(name, path);
+    KARMA.toast("Loaded into the builder — edit, then Run or Save as a copy.", "info");
+  }
+
+  // Dedicated customize page: heading + run config + builder + run output only.
+  // No "Saved Workflows" list (that belongs on the Workflows landing page).
+  function renderCustomize(name, path) {
+    clear(root);
+    const wn = KARMA.labels.workflowName(name);
+    const display = wn.app + (wn.name ? " · " + wn.name : "");
+    KARMA.currentLocation = () => renderCustomize(name, path);
+    KARMA.setBreadcrumb({ back: render, crumbs: [
+      { label: "Workflows", onClick: render },
+      { label: display, onClick: () => renderWorkflowDetail(name, path) },
+      { label: "Customize" },
+    ] });
+    root.appendChild(el("h2", {}, "Customize workflow"));
+    root.appendChild(el("p", { class: "field-help" },
+      "Editing a copy of " + display + ". Adjust stages, parameters, and adversary " +
+      "injections below, then Generate YAML and Run inline to run it with the agent " +
+      "selected above, or Save to workflows to keep it as a new file."));
+    root.appendChild(runConfigPanel());
+    root.appendChild(builderPanel());
+    root.appendChild(jobsPanel());
     setTimeout(() => {
       const b = document.getElementById("wf-builder");
       if (b) b.scrollIntoView({ behavior: "smooth", block: "start" });
     }, 0);
-    KARMA.toast("Loaded into builder — edit params and Save to workflows as a copy", "info");
   }
 
   async function runWorkflowFile(path) {
@@ -360,7 +385,12 @@
 
     const yaml = el("textarea", { rows: "3", id: "wf-yaml", placeholder: "workflow YAML" });
     const valBtn = el("button", { class: "btn secondary", onClick: () => validateYaml(yaml.value, msg) }, "Validate");
-    const runBtn = el("button", { class: "btn", onClick: () => runInlineYaml(yaml.value, msg) }, "Run inline");
+    // Regenerate from the current builder state so edits are always reflected --
+    // the user can Run inline directly without clicking Generate YAML first.
+    const runBtn = el("button", { class: "btn", onClick: () => {
+      const text = buildYamlOrWarn();
+      if (text) { showYaml(text); runInlineYaml(text, msg); }
+    } }, "Run inline");
     const msg = el("div", { class: "muted" });
     // The output (editable YAML + validate/run) is hidden until the user
     // generates it, so the page is not dominated by an empty box up front.
