@@ -246,26 +246,42 @@
     }
 
     // Regression sweep: each previously-passing stage's oracle, re-run at the end
-    // of a multi-stage workflow to catch stages that later stages broke.
+    // of a multi-stage workflow to catch stages that later stages broke. The
+    // judge adjudicates each failure as a real regression or a false positive
+    // (a later stage legitimately changed the same state).
     const sweep = d.regression_sweep;
     if (sweep && Object.keys(sweep).length) {
+      const adj = {};
+      (d.judge_breakdown && d.judge_breakdown.regressions || []).forEach((r) => { adj[r.stage_id] = r; });
       const rp = el("div", { class: "panel" });
       rp.appendChild(el("h3", {}, "Regression sweep"));
       const regressed = Object.values(sweep).filter((v) => v && v.verdict !== "pass").length;
       rp.appendChild(el("p", { class: "field-help" },
-        "Every previously-passing stage's oracle, re-evaluated after the whole workflow ran — " +
-        (regressed ? regressed + " stage(s) regressed." : "no regressions: all still pass.")));
+        "Every previously-passing stage's oracle, re-evaluated after the whole workflow ran. " +
+        (regressed
+          ? regressed + " re-check(s) failed — the judge reviews each to separate real regressions from false positives (a later stage legitimately changing the same state)."
+          : "No regressions: every stage still passes.")));
       const list = el("div", { class: "stage-scroll" });
       for (const [sid, v] of Object.entries(sweep)) {
+        const failed = v && v.verdict !== "pass";
         const st = KARMA.labels.status((v && v.verdict) || "unknown");
-        const row = el("div", { class: "builder-row" });
-        row.appendChild(el("div", { class: "builder-row-head" },
+        const head = el("div", { class: "builder-row-head" },
           el("span", {}, KARMA.humanize(sid)),
-          el("span", { class: "badge " + (st.cls || "") }, st.text)));
+          el("span", { class: "badge " + (st.cls || "") }, st.text));
+        const a = adj[sid];
+        if (failed && a) {
+          head.appendChild(el("span", { class: "badge " + (a.legitimate ? "bad" : "ok") },
+            a.legitimate ? "judge: real regression" : "judge: false positive"));
+        }
+        const row = el("div", { class: "builder-row" }, head);
+        if (a && a.reasoning) row.appendChild(el("div", { class: "kv" }, el("span", { class: "muted" }, a.reasoning)));
         if (v && v.output) row.appendChild(el("pre", { class: "log" }, String(v.output)));
         list.appendChild(row);
       }
       rp.appendChild(list);
+      if (d.judge_breakdown && d.judge_breakdown.summary) {
+        rp.appendChild(el("p", { class: "field-help" }, "Score: " + d.judge_breakdown.summary));
+      }
       root.appendChild(rp);
     }
 

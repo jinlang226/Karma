@@ -614,9 +614,14 @@ def _cmd_judge(args: argparse.Namespace) -> None:
             from ...judge.batch import judge_batch_dir
             result = judge_batch_dir(run_dir, dry_run=args.dry_run, **judge_kwargs)
         elif args.stage:
+            # Per-stage rubric judge (inspection of a single stage).
             result = run_judge(run_dir, args.stage, dry_run=args.dry_run, **judge_kwargs)
         else:
-            result = run_judge_batch(run_dir, dry_run=args.dry_run, **judge_kwargs)
+            # Default: run-level score -- objective stage-pass fraction, with the
+            # LLM only adjudicating regression-sweep failures (false positives).
+            from ...judge.run_score import score_run
+            score_kwargs = {k: v for k, v in judge_kwargs.items() if k != "include_outcome"}
+            result = score_run(run_dir, dry_run=args.dry_run, **score_kwargs)
     except Exception as exc:
         if args.fail_open:
             print(f"judge error (continuing, --fail-open): {exc}", file=sys.stderr)
