@@ -1,0 +1,62 @@
+# mongodb/adversarial/scale_down_replica
+#
+# Scales the MongoDB replica-set StatefulSet down to a single member while the
+# agent is working, simulating an operator/automation fighting the agent. The
+# agent's task (scale the replica set to its target size) must detect the
+# regressed member count and restore it rather than trusting the live state.
+#
+# Targets the literal `mongodb` namespace (these cases hardcode -n mongodb), so
+# the commands set the namespace explicitly rather than relying on a role ns.
+#
+# Deploy: scale statefulset to wrong_replicas.
+# Lift:   if the agent has not already grown it back, restore to restore_replicas.
+
+params:
+  namespace:
+    default: mongodb
+  statefulset_name:
+    default: mongodb-replica
+  wrong_replicas:
+    default: "1"
+  restore_replicas:
+    default: "3"
+
+deploy:
+  # The StatefulSet must already exist (the case precondition deploys it).
+  on_probe_fail: error
+  probe:
+    - command: "kubectl -n {{params.namespace}} get statefulset {{params.statefulset_name}}"
+      timeout_sec: 10
+  apply:
+    - command: "kubectl -n {{params.namespace}} scale statefulset {{params.statefulset_name}} --replicas={{params.wrong_replicas}}"
+      timeout_sec: 20
+  verify:
+    - command: >-
+        /bin/sh -c "test \"$(kubectl -n {{params.namespace}} get statefulset {{params.statefulset_name}}
+        -o jsonpath={.spec.replicas})\" = '{{params.wrong_replicas}}'"
+      timeout_sec: 10
+
+lift:
+  # Skip cleanly if the agent has already scaled the set back above the
+  # adversarial size; otherwise restore a healthy member count.
+  on_probe_fail: skip
+  probe:
+    - command: >-
+        /bin/sh -c "test \"$(kubectl -n {{params.namespace}} get statefulset {{params.statefulset_name}}
+        -o jsonpath={.spec.replicas})\" = '{{params.wrong_replicas}}'"
+      timeout_sec: 10
+  apply:
+    - command: "kubectl -n {{params.namespace}} scale statefulset {{params.statefulset_name}} --replicas={{params.restore_replicas}}"
+      timeout_sec: 20
+  verify:
+    - command: "kubectl -n {{params.namespace}} get statefulset {{params.statefulset_name}}"
+      timeout_sec: 10
+
+prompt_hints:
+  deploy: |
+    Note: the replica set's member count may be actively changed by an external
+    process during this task. Verify the current StatefulSet size against the
+    target before assuming the cluster is healthy.
+  active: |
+    Reminder: an earlier external change may have shrunk the replica set. Confirm
+    the member count matches the requested target before finishing.
