@@ -266,47 +266,29 @@
       const oneStage = { stages: [{ id: "stage_1", service: cfg.service, case_name: cfg.case_name, param_overrides: cfg.params || {} }] };
       root.appendChild(KARMA.workflowStagesPanel(oneStage, "Stage", onStage));
     } else {
-      // Older run without a stored spec: try its saved file, else a minimal list.
+      // Older run without a stored spec: try its saved file, else synthesize a
+      // stage list (from the known stage count) through the SAME panel component
+      // so it renders identically to every other run's stage block.
       const wfRef = cfg.workflow_path
         ? String(cfg.workflow_path).split("/").pop()
         : (cfg.workflow_id && !cfg.workflow_id.includes("/") ? cfg.workflow_id + ".yaml" : null);
       const slot = el("div", {});
       root.appendChild(slot);
+      const total = cfg.stage_total || (d.stages || []).length || 0;
+      const synth = () => {
+        if (!total) return;
+        const stages = Array.from({ length: total }, (_, i) => ({ id: "stage_" + (i + 1) }));
+        slot.appendChild(KARMA.workflowStagesPanel({ stages, adversary: [] }, total > 1 ? "Stages" : "Stage", onStage));
+      };
       if (wfRef) {
         let handled = false;
         api.get(`/api/workflows/${wfRef}`)
           .then((wf) => { handled = true; slot.appendChild(KARMA.workflowStagesPanel(wf, "Stages", onStage)); })
-          .catch(() => { if (!handled) slot.appendChild(fallbackStages(cfg, d)); });
+          .catch(() => { if (!handled) synth(); });
       } else {
-        slot.appendChild(fallbackStages(cfg, d));
+        synth();
       }
     }
-  }
-
-  // A minimal stage panel for runs with no stored spec and no fetchable file:
-  // list stage_1..stage_N (from the known total) with each stage's outcome.
-  function fallbackStages(cfg, d) {
-    const byId = {};
-    (d.stages || []).forEach((s) => { if (s.stage_id) byId[s.stage_id] = s; });
-    const total = cfg.stage_total || (d.stages || []).length || 0;
-    if (!total) return el("div");
-    const panel = el("div", { class: "panel" });
-    panel.appendChild(el("h3", {}, total > 1 ? "Stages" : "Stage"));
-    panel.appendChild(el("p", { class: "field-help" },
-      "Stage definitions weren't stored for this run; showing each stage and its outcome."));
-    const list = el("div", { class: "stage-scroll" });
-    for (let i = 1; i <= total; i++) {
-      const sid = "stage_" + i;
-      const s = byId[sid];
-      const st = s ? KARMA.labels.status(s.status) : { text: "not reached", cls: "" };
-      list.appendChild(el("div", { class: "builder-row" },
-        el("div", { class: "builder-row-head" },
-          el("span", {}, KARMA.humanize(sid)),
-          el("span", { class: "badge " + (st.cls || "") }, st.text),
-          s && s.oracle_verdict ? el("span", { class: "muted" }, "oracle: " + s.oracle_verdict) : null)));
-    }
-    panel.appendChild(list);
-    return panel;
   }
 
   // --- Judge (job + stream) -- reused from the old Judge view ----------------
