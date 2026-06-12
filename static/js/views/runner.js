@@ -56,7 +56,9 @@
         shown ? "  ·  " + shown + more : ""));
   }
 
-  async function renderHome() {
+  // scrollTo: optional section id ("applications" | "adversary" | "examples")
+  // to scroll into view after the grids render (used by breadcrumb crumbs).
+  async function renderHome(scrollTo) {
     clear(root);
     KARMA.clearHistory();
     KARMA.currentLocation = () => KARMA.activate("runner");
@@ -72,7 +74,7 @@
       const examples = data.services.filter((s) => KARMA.labels.isExampleService(s.name));
 
       if (apps.length) {
-        root.appendChild(el("h3", {}, "Applications"));
+        root.appendChild(el("h3", { id: "cases-sec-applications" }, "Applications"));
         const grid = el("div", { class: "service-grid" });
         apps.forEach((s) => grid.appendChild(serviceCard(s, "Applications")));
         root.appendChild(grid);
@@ -81,7 +83,7 @@
       try {
         const scenarios = await api.get("/api/adversary/scenarios");
         if (scenarios && scenarios.length) {
-          root.appendChild(el("h3", {}, "Adversary scenarios"));
+          root.appendChild(el("h3", { id: "cases-sec-adversary" }, "Adversary scenarios"));
           const grid = el("div", { class: "service-grid" });
           scenarios.forEach((sc) => grid.appendChild(scenarioCard(sc)));
           root.appendChild(grid);
@@ -89,12 +91,22 @@
       } catch (_e) { /* scenarios are optional */ }
 
       if (examples.length) {
-        root.appendChild(el("h3", {}, "Examples"));
+        root.appendChild(el("h3", { id: "cases-sec-examples" }, "Examples"));
         const grid = el("div", { class: "service-grid" });
         examples.forEach((s) => grid.appendChild(serviceCard(s, "Examples")));
         root.appendChild(grid);
       }
+      if (scrollTo) {
+        const sec = document.getElementById("cases-sec-" + scrollTo);
+        if (sec) sec.scrollIntoView({ behavior: "smooth", block: "start" });
+      }
     } catch (e) { root.appendChild(errBox(e)); }
+  }
+  // Map a breadcrumb category label to its home-section scroll id.
+  function sectionId(category) {
+    const c = String(category || "").toLowerCase();
+    return c.indexOf("example") >= 0 ? "examples"
+      : c.indexOf("advers") >= 0 ? "adversary" : "applications";
   }
 
   function scenarioCard(sc) {
@@ -117,7 +129,11 @@
     }
     clear(root);
     KARMA.currentLocation = () => KARMA.showScenario(sc.scenario);
-    KARMA.setBreadcrumb({ back: renderHome, crumbs: [{ label: "Cases", onClick: renderHome }, { label: KARMA.labels.scenario(sc.scenario) }] });
+    KARMA.setBreadcrumb({ back: renderHome, crumbs: [
+      { label: "Cases", onClick: () => renderHome() },
+      { label: "Adversary scenarios", onClick: () => renderHome("adversary") },
+      { label: KARMA.labels.scenario(sc.scenario) },
+    ] });
     root.appendChild(el("h2", {}, KARMA.labels.scenario(sc.scenario)));
     root.appendChild(el("p", { class: "field-help" },
       "Adversary injection scenario" + (sc.service ? " for " + KARMA.labels.service(sc.service) : "") +
@@ -167,9 +183,10 @@
   async function renderService(service, category) {
     clear(root);
     KARMA.currentLocation = () => renderService(service, category);
+    const cat = category || "Applications";
     KARMA.setBreadcrumb({ back: renderHome, crumbs: [
-      { label: "Cases", onClick: renderHome },
-      { label: category || "Applications", onClick: renderHome },
+      { label: "Cases", onClick: () => renderHome() },
+      { label: cat, onClick: () => renderHome(sectionId(cat)) },
       { label: KARMA.labels.service(service) },
     ] });
     root.appendChild(el("h2", {}, KARMA.labels.service(service)));
