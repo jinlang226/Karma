@@ -56,9 +56,10 @@ def curl_json(path, errors):
         "curl",
         "-s",
         "-S",
+        "-k",
         "--max-time",
         "10",
-        f"http://{SERVICE}:9200{path}",
+        f"https://{SERVICE}:9200{path}",
     ]
     result = run(cmd)
     if result.returncode != 0:

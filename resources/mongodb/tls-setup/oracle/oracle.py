@@ -40,7 +40,7 @@ def check_plain_blocked():
 def tls_base_cmd(eval_str):
     return [
         "kubectl", "-n", NAMESPACE, "exec", POD, "--", "mongosh", "--quiet", TLS_URI,
-        "--tls", "--tlsCAFile", "/etc/mongo-ca/ca.crt", "--eval", eval_str,
+        "--tls", "--tlsCAFile", "/etc/tls/ca.crt", "--eval", eval_str,
     ]
 
 
