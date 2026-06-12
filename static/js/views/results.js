@@ -191,6 +191,7 @@
     try { d = await api.get(`/api/run/${runId}`); }
     catch (e) { loading.remove(); root.appendChild(errBox(e)); return; }
     loading.remove();
+    try {
     const cfg = d.config || {};
 
     // Test score (mean judge score) top-right beside the heading, larger than it.
@@ -298,22 +299,25 @@
       for (const [sid, v] of Object.entries(sweep)) {
         const failed = v && v.verdict !== "pass";
         const st = KARMA.labels.status((v && v.verdict) || "unknown");
-        const head = el("div", { class: "builder-row-head" },
-          el("span", {}, KARMA.humanize(sid)),
-          el("span", { class: "badge " + (st.cls || "") }, st.text));
         const a = adj[sid];
+        // Verdicts grouped at the right: the judge's adjudication (left) next to
+        // the oracle re-check (right), so the pass/fail badge is always in the
+        // same place whether or not there is a judge badge.
+        const verdicts = el("div", { class: "sweep-verdicts" });
         if (failed && a) {
-          head.appendChild(el("span", { class: "badge " + (a.legitimate ? "bad" : "ok") },
+          verdicts.appendChild(el("span", { class: "badge " + (a.legitimate ? "bad" : "ok") },
             a.legitimate ? "judge: real regression" : "judge: false positive"));
         }
-        const row = el("div", { class: "builder-row" }, head);
-        if (a && a.reasoning) row.appendChild(el("div", { class: "kv" }, el("span", { class: "muted" }, a.reasoning)));
+        verdicts.appendChild(el("span", { class: "badge " + (st.cls || "") }, st.text));
+        const row = el("div", { class: "builder-row" },
+          el("div", { class: "builder-row-head" }, el("span", {}, KARMA.humanize(sid)), verdicts));
+        if (a && a.reasoning) row.appendChild(el("div", { class: "sweep-reason muted" }, a.reasoning));
         if (v && v.output) row.appendChild(el("pre", { class: "log" }, String(v.output)));
         list.appendChild(row);
       }
       rp.appendChild(list);
       if (d.judge_breakdown && d.judge_breakdown.summary) {
-        rp.appendChild(el("p", { class: "field-help" }, "Score: " + d.judge_breakdown.summary));
+        rp.appendChild(el("p", { class: "field-help sweep-summary" }, "Score: " + d.judge_breakdown.summary));
       }
       root.appendChild(rp);
     }
@@ -361,6 +365,10 @@
       } else {
         synth();
       }
+    }
+    } catch (err) {
+      // Never leave a blank page: surface the render error instead.
+      root.appendChild(errBox(err));
     }
   }
 
