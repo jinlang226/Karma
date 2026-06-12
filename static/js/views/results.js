@@ -20,6 +20,7 @@
   let sub = "runs";        // "runs" | "batches"
   let refreshTimer = null;
   let pendingRun = null;   // set by KARMA.showRun to deep-link a run detail
+  const lastJudgeLog = {}; // runId -> last judge log text, kept across reloads
 
   // Cross-view deep link: open a specific run's detail (used by the back stack
   // so returning from a Cases sub-page lands on the exact run, not the list).
@@ -209,8 +210,10 @@
     if (d.duration_sec) badges.appendChild(el("span", { class: "muted" }, Math.round(d.duration_sec) + "s"));
     root.appendChild(badges);
 
-    // Judge (terminal) or Cancel (running), with an inline judge log.
+    // Judge (terminal) or Cancel (running), with an inline judge log. The log is
+    // kept across the post-judge reload (and revisits) via lastJudgeLog.
     const judgeLog = el("pre", { class: "log", style: "display:none" });
+    if (lastJudgeLog[runId]) { judgeLog.textContent = lastJudgeLog[runId]; judgeLog.style.display = ""; }
     const actions = el("div", { class: "toolbar" });
     if (isTerminal(d.status)) {
       actions.appendChild(el("button", { class: "btn", onClick: () => startJudge("run", runId, false, judgeLog) }, "Judge"));
@@ -374,7 +377,8 @@
         onEvent: (ev) => {
           if (ev.type === "judge_progress") {
             const where = ev.stage_id ? `${ev.run_id}/${ev.stage_id}` : ev.run_id;
-            log.textContent += `  ${where}: verdict=${ev.verdict ?? "-"} score=${ev.score ?? "-"}\n`;
+            const extra = ev.message ? "  " + ev.message : "";
+            log.textContent += `  ${where}: verdict=${ev.verdict ?? "-"} score=${ev.score ?? "-"}${extra}\n`;
           } else if (ev.type === "judge_complete") {
             log.textContent += `judge ${ev.status}\n`;
             KARMA.toast("Judge " + (ev.status || "complete"), ev.status === "error" ? "error" : "success");
@@ -383,11 +387,19 @@
               setTimeout(() => { if (sub === "runs") renderDetail(targetPath); }, 600);
             }
           }
+          if (targetType === "run") lastJudgeLog[targetPath] = log.textContent;
           log.scrollTop = log.scrollHeight;
         },
-        onDone: () => { log.textContent += "— judge stream ended —\n"; },
+        onDone: () => {
+          log.textContent += "— judge stream ended —\n";
+          if (targetType === "run") lastJudgeLog[targetPath] = log.textContent;
+        },
       });
-    } catch (e) { log.textContent += "Error: " + e.message + "\n"; KARMA.toastError(e); }
+    } catch (e) {
+      log.textContent += "Error: " + e.message + "\n";
+      if (targetType === "run") lastJudgeLog[targetPath] = log.textContent;
+      KARMA.toastError(e);
+    }
   }
 
   // --- Batches (cross-run judge) -- reused from the old Judge view -----------
