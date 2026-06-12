@@ -292,9 +292,10 @@
           : el("span", { class: "crumb-link", onClick: go(acc) }, seg));
       });
       body.appendChild(el("tr", { class: "wf-crumb-row" }, cell));
-      // Stick the breadcrumb directly beneath the sticky header row.
+      // Stick the breadcrumb flush beneath the sticky header. The -1 overlaps the
+      // collapsed header/body border seam so no sub-pixel gap shows between them.
       const thead = body.parentElement && body.parentElement.querySelector("thead");
-      if (thead) cell.style.top = thead.offsetHeight + "px";
+      if (thead) cell.style.top = Math.max(0, thead.offsetHeight - 1) + "px";
     }
     for (const sub of subfolders(wfFolder)) body.appendChild(folderRow(sub));
     for (const f of filesIn(wfFolder)) body.appendChild(fileRow(f));
