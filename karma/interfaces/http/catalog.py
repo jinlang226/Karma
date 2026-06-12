@@ -338,43 +338,56 @@ def get_workflow_detail(
 ) -> dict[str, Any]:
     """Return the full normalized workflow for a saved file (its stages with
     service/case/param_overrides), for the detail + customize view. Path-safe:
-    *name* is a basename confined to workflows_dir (or its ui/ subdir).
+    *name* is a relative path (e.g. ``suite/foo.yaml``) or bare basename
+    confined to workflows_dir (block traversal outside the tree).
 
     Raises
     ------
     RuntimeError
         When the name is unsafe or no matching file exists.
     """
-    if not _SAFE_ID.match(name) or ".." in name or "/" in name:
+    if ".." in name or name.startswith("/") or name.startswith("\\"):
         raise RuntimeError("invalid workflow name")
-    for base in (workflows_dir, workflows_dir / _UI_SUBDIR):
-        path = base / name
-        if path.is_file():
-            return normalize_workflow(load_workflow_file(path), resources_dir=resources_dir)
+    base = workflows_dir.resolve()
+    # Accept a full relative path (e.g. "suite/foo.yaml", "ui/foo.yaml") or a
+    # bare basename (searched at the top level and under ui/ for back-compat).
+    candidates = [workflows_dir / name]
+    if "/" not in name:
+        candidates.append(workflows_dir / _UI_SUBDIR / name)
+    for cand in candidates:
+        target = cand.resolve()
+        if (target == base or base in target.parents) and target.is_file():
+            return normalize_workflow(load_workflow_file(target), resources_dir=resources_dir)
     raise RuntimeError(f"workflow not found: {name}")
 
 
 def list_workflow_files(
     workflows_dir: Path, resources_dir: Path
 ) -> list[dict[str, Any]]:
-    """Return one entry per ``*.yaml`` under *workflows_dir* (and ``ui/``).
+    """Return one entry per ``*.yaml`` anywhere under *workflows_dir*.
 
-    Each workflow is loaded and normalized so the UI can show its id,
-    stage count, and prompt mode, plus an ``ok`` flag and validation
-    errors for files that fail to parse. Files saved from the builder live
-    in the ``ui/`` subfolder and are listed with their ``ui/<name>.yaml``
-    relative name.
+    Recurses the whole tree (top level, ``ui/``, ``suite/``, and any other
+    subfolder) so every workflow file is listed, not just the top level. Each
+    entry carries its ``name`` (path relative to workflows_dir, e.g.
+    ``suite/foo.yaml``) and ``dir`` (the relative subfolder, ``""`` at the top
+    level) so the UI can preserve the directory hierarchy. Each workflow is
+    loaded and normalized so the UI can show its id, stage count, and prompt
+    mode, plus an ``ok`` flag and validation errors for files that fail to parse.
     """
     result: list[dict[str, Any]] = []
     if not workflows_dir.exists():
         return result
-    paths = sorted(workflows_dir.glob("*.yaml")) + sorted((workflows_dir / _UI_SUBDIR).glob("*.yaml"))
+    paths = sorted(p for p in workflows_dir.rglob("*.yaml") if p.is_file())
     for wf in paths:
         try:
             rel = str(wf.relative_to(workflows_dir))
+            subdir = str(wf.parent.relative_to(workflows_dir))
         except ValueError:
-            rel = wf.name
-        entry: dict[str, Any] = {"path": str(wf), "name": rel, "ok": True, "errors": []}
+            rel, subdir = wf.name, ""
+        if subdir == ".":
+            subdir = ""
+        entry: dict[str, Any] = {"path": str(wf), "name": rel, "dir": subdir,
+                                 "ok": True, "errors": []}
         try:
             raw = load_workflow_file(wf)
             norm = normalize_workflow(raw, resources_dir=resources_dir)

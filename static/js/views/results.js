@@ -217,7 +217,13 @@
     const persisted = lastJudgeLog[runId] || d.judge_log;
     if (persisted) { judgeLog.textContent = persisted; judgeLog.style.display = ""; }
     const actions = el("div", { class: "toolbar" });
-    if (isTerminal(d.status)) {
+    // A run with no recorded outcome (unknown/absent status) cannot be judged --
+    // surface that instead of offering a Judge button or a (false) live stream.
+    const unknownStatus = !d.status || String(d.status).toLowerCase() === "unknown";
+    if (unknownStatus) {
+      actions.appendChild(el("div", { class: "error-box" },
+        "This run has an unknown status — there is no recorded outcome to judge."));
+    } else if (isTerminal(d.status)) {
       actions.appendChild(el("button", { class: "btn", onClick: () => startJudge("run", runId, false, judgeLog) }, "Judge"));
       actions.appendChild(el("button", { class: "btn secondary", onClick: () => startJudge("run", runId, true, judgeLog) }, "Dry run"));
     } else {
@@ -255,8 +261,9 @@
     renderStages();
 
     // Reconnect to the live stream while running -- the hub replays buffered
-    // history, so this resumes even after navigating away and back.
-    if (!isTerminal(d.status)) {
+    // history, so this resumes even after navigating away and back. An
+    // unknown-status run is not actually running, so skip the stream for it.
+    if (!isTerminal(d.status) && !unknownStatus) {
       const live = el("pre", { class: "log" }, "Streaming…\n");
       stagesPanel.appendChild(el("h3", {}, "Live"));
       stagesPanel.appendChild(live);
