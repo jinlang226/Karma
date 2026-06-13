@@ -58,7 +58,10 @@
 
   // scrollTo: optional section id ("applications" | "adversary" | "examples")
   // to scroll into view after the grids render (used by breadcrumb crumbs).
+  let homeSeq = 0;   // guards against two overlapping renderHome() calls each
+                     // appending their own sections (the "two Applications" bug)
   async function renderHome(scrollTo) {
+    const seq = ++homeSeq;
     clear(root);
     KARMA.replayEnter(root);
     KARMA.clearHistory();
@@ -67,6 +70,7 @@
     root.appendChild(el("h2", {}, "Run a Case"));
     try {
       const data = await api.get("/api/services");
+      if (seq !== homeSeq) return;   // a newer render started during the await
       if (!data.services.length) {
         root.appendChild(el("p", { class: "muted" }, "No services found under resources/."));
         return;
@@ -80,17 +84,21 @@
         apps.forEach((s) => grid.appendChild(serviceCard(s, "Applications")));
         root.appendChild(grid);
       }
-      // Adversary injection scenarios, between Applications and Examples.
+      // Adversary injection scenarios, between Applications and Examples. Rendered
+      // as a compact scrollable list (not cards) -- there are many now.
       try {
         const scenarios = await api.get("/api/adversary/scenarios");
+        if (seq !== homeSeq) return;
         if (scenarios && scenarios.length) {
           root.appendChild(el("h3", { id: "cases-sec-adversary" },
             "Adversary scenarios", el("span", { class: "muted sec-count" }, ` (${scenarios.length})`)));
-          const grid = el("div", { class: "service-grid" });
-          scenarios.forEach((sc) => grid.appendChild(scenarioCard(sc)));
-          // Many scenarios now exist — keep them in a bounded scroll area so they
-          // don't push Applications/Examples far down the page.
-          root.appendChild(el("div", { class: "scenario-scroll" }, grid));
+          const tbl = el("table", { class: "list-table adv-list-table" },
+            el("thead", {}, el("tr", {},
+              el("th", {}, "Scenario"), el("th", {}, "Service"), el("th", {}, "Parameters"))));
+          const tb = el("tbody", {});
+          scenarios.forEach((sc) => tb.appendChild(scenarioRow(sc)));
+          tbl.appendChild(tb);
+          root.appendChild(el("div", { class: "list-scroll" }, tbl));
         }
       } catch (_e) { /* scenarios are optional */ }
 
@@ -106,20 +114,20 @@
       }
     } catch (e) { root.appendChild(errBox(e)); }
   }
+
+  // One adversary scenario as a list row (replaces the old card).
+  function scenarioRow(sc) {
+    const np = Object.keys(sc.params || {}).length;
+    return el("tr", { class: "clickable", onClick: () => renderScenario(sc) },
+      el("td", {}, el("span", { class: "crumb-link" }, KARMA.labels.scenario(sc.scenario))),
+      el("td", {}, KARMA.labels.service(sc.service)),
+      el("td", {}, `${np} param${np === 1 ? "" : "s"}`));
+  }
   // Map a breadcrumb category label to its home-section scroll id.
   function sectionId(category) {
     const c = String(category || "").toLowerCase();
     return c.indexOf("example") >= 0 ? "examples"
       : c.indexOf("advers") >= 0 ? "adversary" : "applications";
-  }
-
-  function scenarioCard(sc) {
-    const np = Object.keys(sc.params || {}).length;
-    return el("div", { class: "card service-card", onClick: () => renderScenario(sc) },
-      el("div", { class: "title" }, KARMA.labels.scenario(sc.scenario)),
-      el("div", { class: "service-desc" }, "Adversary · " + KARMA.labels.service(sc.service)),
-      el("div", { class: "service-cases" },
-        el("span", { class: "count" }, `${np} param${np === 1 ? "" : "s"}`)));
   }
 
   async function renderScenario(sc) {
