@@ -127,8 +127,94 @@ class KubectlProxyServer:
         proxy_self = self
 
         class _Handler(BaseHTTPRequestHandler):
+            def _handle_upgrade(self, start_ts: float) -> None:
+                """Tunnel a connection-upgrade request (kubectl exec / attach /
+                port-forward) raw to the API server. These switch protocols
+                (SPDY or WebSocket) via HTTP 101, which urllib cannot negotiate,
+                so we open a TLS socket to the upstream, replay the request line
+                + headers (presenting the agent's auth), and shuttle bytes both
+                ways until either side closes."""
+                import socket as _socket
+                import ssl as _ssl
+                from urllib.parse import urlparse
+                up = urlparse(upstream)
+                host = up.hostname
+                port = up.port or (443 if up.scheme == "https" else 80)
+                status = 101
+                usock = None
+                try:
+                    lines = [f"{self.command} {self.path} HTTP/1.1", f"Host: {host}:{port}"]
+                    for hk, hv in self.headers.items():
+                        if hk.lower() == "host":
+                            continue
+                        lines.append(f"{hk}: {hv}")
+                    if token:
+                        lines.append(f"Authorization: Bearer {token}")
+                    raw = ("\r\n".join(lines) + "\r\n\r\n").encode()
+
+                    sock = _socket.create_connection((host, port), timeout=30)
+                    if up.scheme == "https":
+                        ctx = _ssl.create_default_context()
+                        ctx.check_hostname = False
+                        ctx.verify_mode = _ssl.CERT_NONE
+                        if client_cert and client_key:
+                            ctx.load_cert_chain(certfile=client_cert, keyfile=client_key)
+                        usock = ctx.wrap_socket(sock, server_hostname=host)
+                    else:
+                        usock = sock
+                    usock.sendall(raw)
+
+                    client = self.connection
+
+                    def _pump(src, dst):
+                        try:
+                            while True:
+                                data = src.recv(65536)
+                                if not data:
+                                    break
+                                dst.sendall(data)
+                        except Exception:
+                            pass
+                        finally:
+                            for s in (src, dst):
+                                try:
+                                    s.shutdown(_socket.SHUT_RDWR)
+                                except Exception:
+                                    pass
+
+                    t_up = threading.Thread(target=_pump, args=(client, usock), daemon=True)
+                    t_down = threading.Thread(target=_pump, args=(usock, client), daemon=True)
+                    t_up.start(); t_down.start()
+                    t_up.join(); t_down.join()
+                except Exception as exc:
+                    status = 502
+                    try:
+                        self.send_response(502)
+                        self.end_headers()
+                        self.wfile.write(str(exc).encode())
+                    except Exception:
+                        pass
+                finally:
+                    if usock is not None:
+                        try:
+                            usock.close()
+                        except Exception:
+                            pass
+                    self.close_connection = True
+                proxy_self._log_call({
+                    "timestamp": start_ts, "verb": self.command.lower(),
+                    "path": self.path, "status": status,
+                    "duration_ms": int((time.time() - start_ts) * 1000),
+                    "streamed": True, "upgraded": True,
+                })
+
             def do_command(self) -> None:
                 start_ts = time.time()
+                # kubectl exec/attach/port-forward upgrade the connection (SPDY or
+                # WebSocket); tunnel those raw since urllib can't switch protocols.
+                if self.headers.get("Upgrade"):
+                    self._handle_upgrade(start_ts)
+                    return
                 target_url = upstream + self.path
                 content_length = int(self.headers.get("Content-Length") or 0)
                 body = self.rfile.read(content_length) if content_length > 0 else None
