@@ -99,8 +99,11 @@ def _judge_all_streaming(
     """
     from ...judge.run_score import score_run
 
+    # Discover run dirs recursively so runs filed under a grouping folder (e.g.
+    # runs/examples/<run>) are judged too -- a top-level iterdir would only see
+    # the grouping folder and score nothing.
     run_dirs = (
-        sorted((d for d in runs_dir.iterdir() if d.is_dir()), key=lambda p: p.name)
+        sorted(catalog._find_run_dirs(runs_dir), key=lambda p: p.name)
         if runs_dir.exists() else []
     )
     total = len(run_dirs)
