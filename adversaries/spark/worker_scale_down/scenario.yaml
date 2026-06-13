@@ -1,0 +1,64 @@
+# spark/adversarial/worker_scale_down
+#
+# Scales the spark-worker Deployment down to a single replica while the agent is
+# working on a streaming or ETL task. A lone worker cannot keep up with the
+# workload: queue lag climbs, stage latency spikes, and jobs time out. The agent
+# must detect the under-provisioned worker count and scale it back up to the
+# healthy target before completing the task.
+#
+# The namespace param covers whichever Spark namespace the injected stage runs in
+# (spark-streaming, spark-etl, spark-runtime, etc.).
+#
+# Deploy: scale spark-worker to wrong_replicas (1).
+# Lift:   if the agent has not already scaled back up, restore to restore_replicas.
+
+params:
+  namespace:
+    default: spark-streaming
+    description: Namespace where the spark-worker Deployment lives.
+  deployment_name:
+    default: spark-worker
+    description: Spark worker Deployment the adversary scales down.
+  wrong_replicas:
+    default: "1"
+    description: Worker replica count injected by the adversary.
+  restore_replicas:
+    default: "5"
+    description: Healthy worker replica count restored on lift if the agent did not fix it.
+
+deploy:
+  on_probe_fail: error
+  probe:
+    - command: "kubectl -n {{params.namespace}} get deployment {{params.deployment_name}}"
+      timeout_sec: 10
+  apply:
+    - command: "kubectl -n {{params.namespace}} scale deployment {{params.deployment_name}} --replicas={{params.wrong_replicas}}"
+      timeout_sec: 20
+  verify:
+    - command: >-
+        /bin/sh -c "test \"$(kubectl -n {{params.namespace}} get deployment {{params.deployment_name}}
+        -o jsonpath={.spec.replicas})\" = '{{params.wrong_replicas}}'"
+      timeout_sec: 10
+
+lift:
+  on_probe_fail: skip
+  probe:
+    - command: >-
+        /bin/sh -c "test \"$(kubectl -n {{params.namespace}} get deployment {{params.deployment_name}}
+        -o jsonpath={.spec.replicas})\" = '{{params.wrong_replicas}}'"
+      timeout_sec: 10
+  apply:
+    - command: "kubectl -n {{params.namespace}} scale deployment {{params.deployment_name}} --replicas={{params.restore_replicas}}"
+      timeout_sec: 20
+  verify:
+    - command: "kubectl -n {{params.namespace}} get deployment {{params.deployment_name}}"
+      timeout_sec: 10
+
+prompt_hints:
+  deploy: |
+    Note: an external process may be changing the worker replica count during this task.
+    If lag or latency climbs unexpectedly, verify the live worker count before
+    assuming the cluster is correctly provisioned.
+  active: |
+    Reminder: the worker replica count may have been reduced by an external actor
+    earlier in this workflow. Re-check before concluding the cluster is scaled correctly.

@@ -1,0 +1,73 @@
+# spark/adversarial/history_server_pvc_break
+#
+# Patches the spark-history-server Deployment in the spark-history namespace so
+# that its PVC volume reference points to the non-existent claim
+# "spark-history-pvc-broken", causing the pod to stall in Pending state (volume
+# mount failure). This simulates an operator accidentally rolling out a bad
+# Deployment patch or a GitOps drift that references the wrong PVC name. The
+# agent must identify the bad claimName in the Deployment spec and fix it to
+# "spark-history-pvc" so the History Server can mount its log volume and start.
+#
+# Targets the literal `spark-history` namespace used by spark_multi_tenant.
+#
+# Deploy: patch the Deployment's PVC claimName to a non-existent value.
+# Lift:   if the agent has not already fixed the Deployment, restore the correct claimName.
+
+params:
+  namespace:
+    default: spark-history
+    description: Namespace where the Spark History Server Deployment lives.
+  deployment_name:
+    default: spark-history-server
+    description: History Server Deployment the adversary patches.
+  bad_pvc:
+    default: spark-history-pvc-broken
+    description: Non-existent PVC name injected by the adversary.
+  good_pvc:
+    default: spark-history-pvc
+    description: Correct PVC name restored on lift if the agent did not fix it.
+
+deploy:
+  on_probe_fail: error
+  probe:
+    - command: "kubectl -n {{params.namespace}} get deployment {{params.deployment_name}}"
+      timeout_sec: 10
+  apply:
+    - command: >-
+        kubectl -n {{params.namespace}} patch deployment {{params.deployment_name}}
+        --type=json
+        -p='[{"op":"replace","path":"/spec/template/spec/volumes/0/persistentVolumeClaim/claimName","value":"{{params.bad_pvc}}"}]'
+      timeout_sec: 30
+  verify:
+    - command: >-
+        /bin/sh -c "test \"$(kubectl -n {{params.namespace}} get deployment {{params.deployment_name}}
+        -o jsonpath='{.spec.template.spec.volumes[0].persistentVolumeClaim.claimName}')\"
+        = '{{params.bad_pvc}}'"
+      timeout_sec: 10
+
+lift:
+  on_probe_fail: skip
+  probe:
+    - command: >-
+        /bin/sh -c "test \"$(kubectl -n {{params.namespace}} get deployment {{params.deployment_name}}
+        -o jsonpath='{.spec.template.spec.volumes[0].persistentVolumeClaim.claimName}')\"
+        = '{{params.bad_pvc}}'"
+      timeout_sec: 10
+  apply:
+    - command: >-
+        kubectl -n {{params.namespace}} patch deployment {{params.deployment_name}}
+        --type=json
+        -p='[{"op":"replace","path":"/spec/template/spec/volumes/0/persistentVolumeClaim/claimName","value":"{{params.good_pvc}}"}]'
+      timeout_sec: 30
+  verify:
+    - command: "kubectl -n {{params.namespace}} get deployment {{params.deployment_name}}"
+      timeout_sec: 10
+
+prompt_hints:
+  deploy: |
+    Note: an external process may be patching Deployment specs during this task.
+    If the History Server pod is stuck in Pending, inspect the volume mounts and
+    PVC references in the live Deployment spec rather than assuming they are correct.
+  active: |
+    Reminder: the History Server Deployment may have been patched by an external actor
+    earlier in this workflow. Re-check the PVC claimName before concluding the server is healthy.

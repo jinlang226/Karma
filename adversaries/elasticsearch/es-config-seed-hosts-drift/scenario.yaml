@@ -1,0 +1,62 @@
+# adversaries/elasticsearch/es-config-seed-hosts-drift
+#
+# The es-config ConfigMap's elasticsearch.yml is patched to replace the correct
+# discovery.seed_hosts entries with invalid hostnames. This simulates configuration
+# drift caused by a bad ConfigMap update (e.g., a templating error in a GitOps pipeline).
+# When the StatefulSet pods are restarted or a new pod joins, it cannot discover peers
+# and the cluster loses membership. The agent must detect the wrong seed_hosts, restore
+# the correct entries in the ConfigMap, and trigger a rolling restart so nodes re-discover
+# each other.
+
+params:
+  namespace:
+    default: elasticsearch
+    description: Namespace the Elasticsearch cluster runs in.
+  configmap_name:
+    default: es-config
+    description: ConfigMap holding elasticsearch.yml with discovery.seed_hosts.
+  cluster_prefix:
+    default: es-cluster
+    description: StatefulSet/headless-service name prefix for the Elasticsearch cluster.
+
+deploy:
+  on_probe_fail: error
+  probe:
+    - command: "kubectl -n {{params.namespace}} get configmap {{params.configmap_name}}"
+      timeout_sec: 10
+  apply:
+    - command: >-
+        kubectl -n {{params.namespace}} patch configmap {{params.configmap_name}}
+        --type=merge
+        -p '{"data":{"elasticsearch.yml":"cluster.name: {{params.cluster_prefix}}\nnode.name: ${POD_NAME}\nnode.roles: [ master, data, ingest ]\nnetwork.host: 0.0.0.0\ndiscovery.seed_hosts:\n  - invalid-host-1\n  - invalid-host-2\n  - invalid-host-3\ncluster.initial_master_nodes:\n  - {{params.cluster_prefix}}-0\n  - {{params.cluster_prefix}}-1\n  - {{params.cluster_prefix}}-2\nnode.store.allow_mmap: false\nxpack.security.enabled: false\nxpack.security.http.ssl.enabled: false\nxpack.security.transport.ssl.enabled: false\n"}}'
+      timeout_sec: 20
+  verify:
+    - command: >-
+        /bin/sh -c "kubectl -n {{params.namespace}} get configmap {{params.configmap_name}}
+        -o jsonpath='{.data.elasticsearch\\.yml}' | grep -q 'invalid-host-1'"
+      timeout_sec: 15
+
+lift:
+  on_probe_fail: skip
+  probe:
+    - command: >-
+        /bin/sh -c "kubectl -n {{params.namespace}} get configmap {{params.configmap_name}}
+        -o jsonpath='{.data.elasticsearch\\.yml}' | grep -q 'invalid-host-1'"
+      timeout_sec: 15
+  apply:
+    - command: >-
+        kubectl -n {{params.namespace}} patch configmap {{params.configmap_name}}
+        --type=merge
+        -p '{"data":{"elasticsearch.yml":"cluster.name: {{params.cluster_prefix}}\nnode.name: ${POD_NAME}\nnode.roles: [ master, data, ingest ]\nnetwork.host: 0.0.0.0\ndiscovery.seed_hosts:\n  - {{params.cluster_prefix}}-0.{{params.cluster_prefix}}.{{params.namespace}}.svc.cluster.local\n  - {{params.cluster_prefix}}-1.{{params.cluster_prefix}}.{{params.namespace}}.svc.cluster.local\n  - {{params.cluster_prefix}}-2.{{params.cluster_prefix}}.{{params.namespace}}.svc.cluster.local\ncluster.initial_master_nodes:\n  - {{params.cluster_prefix}}-0\n  - {{params.cluster_prefix}}-1\n  - {{params.cluster_prefix}}-2\nnode.store.allow_mmap: false\nxpack.security.enabled: false\nxpack.security.http.ssl.enabled: false\nxpack.security.transport.ssl.enabled: false\n"}}'
+      timeout_sec: 20
+  verify:
+    - command: "kubectl -n {{params.namespace}} get configmap {{params.configmap_name}}"
+      timeout_sec: 10
+
+prompt_hints:
+  deploy: |
+    Note: an external process may have modified the es-config ConfigMap during this task.
+    Inspect discovery.seed_hosts in the ConfigMap before assuming node discovery is working.
+  active: |
+    Reminder: the es-config ConfigMap seed_hosts may have drifted to invalid values.
+    Re-check the ConfigMap and restart affected pods if discovery is broken.

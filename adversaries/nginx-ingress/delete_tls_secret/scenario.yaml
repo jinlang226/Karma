@@ -1,0 +1,52 @@
+# nginx-ingress/delete_tls_secret
+#
+# The TLS Secret backing the HTTPS Ingress is deleted mid-workflow — simulating
+# an accidental `kubectl delete secret` or an automated cert-manager rotation
+# that fails partway through. The Ingress resource remains but HTTPS traffic
+# starts returning TLS handshake errors. The agent must re-create the Secret
+# (or renew it) so HTTPS access is restored.
+params:
+  namespace:
+    default: demo
+    description: Namespace the TLS Secret lives in.
+  secret_name:
+    default: expired-tls-secret
+    description: Name of the TLS Secret to delete.
+
+deploy:
+  on_probe_fail: error
+  probe:
+    - command: "kubectl -n {{params.namespace}} get secret {{params.secret_name}}"
+      timeout_sec: 10
+  apply:
+    - command: "kubectl -n {{params.namespace}} delete secret {{params.secret_name}}"
+      timeout_sec: 20
+  verify:
+    - command: >-
+        /bin/sh -c "kubectl -n {{params.namespace}} get secret {{params.secret_name}}
+        2>&1 | grep -q 'not found'"
+      timeout_sec: 10
+
+lift:
+  on_probe_fail: skip
+  probe:
+    - command: >-
+        /bin/sh -c "kubectl -n {{params.namespace}} get secret {{params.secret_name}}
+        2>&1 | grep -q 'not found'"
+      timeout_sec: 10
+  apply:
+    - command: >-
+        /bin/sh -c "kubectl -n {{params.namespace}} create secret tls {{params.secret_name}}
+        --cert=/tmp/expired-tls.crt --key=/tmp/expired-tls.key"
+      timeout_sec: 20
+  verify:
+    - command: "kubectl -n {{params.namespace}} get secret {{params.secret_name}}"
+      timeout_sec: 10
+
+prompt_hints:
+  deploy: |
+    Note: a TLS Secret may have been deleted from the cluster during this task.
+    Check that the Secret referenced by your Ingress still exists before testing HTTPS.
+  active: |
+    Reminder: an earlier deletion of a TLS Secret may still be in effect.
+    Verify the Secret exists and is referenced correctly before finishing.

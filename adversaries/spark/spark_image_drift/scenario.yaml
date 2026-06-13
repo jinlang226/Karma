@@ -1,0 +1,72 @@
+# spark/adversarial/spark_image_drift
+#
+# Patches the spark-worker Deployment's container image to a non-existent tag
+# ("apache/spark:3.5.3-nonexistent") while the agent is working. New pods
+# triggered by the agent's scale-up or rollout land in ImagePullBackOff, making
+# additional workers permanently unavailable. The agent must detect the bad image
+# on the live Deployment spec and correct it back to the valid "apache/spark:3.5.3"
+# image before the scale-out can succeed.
+#
+# Applicable to any Spark namespace that runs a spark-worker Deployment. The
+# default targets spark-streaming (autoscale case), but the namespace param
+# lets it target spark-etl or spark-runtime as needed.
+#
+# Deploy: patch spark-worker image to the nonexistent tag.
+# Lift:   if the agent has not already corrected the image, restore the good tag.
+
+params:
+  namespace:
+    default: spark-streaming
+    description: Namespace where the spark-worker Deployment lives.
+  deployment_name:
+    default: spark-worker
+    description: Spark worker Deployment the adversary patches.
+  bad_image:
+    default: apache/spark:3.5.3-nonexistent
+    description: Non-existent image tag injected by the adversary.
+  good_image:
+    default: apache/spark:3.5.3
+    description: Valid image tag restored on lift if the agent did not fix it.
+
+deploy:
+  on_probe_fail: error
+  probe:
+    - command: "kubectl -n {{params.namespace}} get deployment {{params.deployment_name}}"
+      timeout_sec: 10
+  apply:
+    - command: >-
+        kubectl -n {{params.namespace}} set image
+        deployment/{{params.deployment_name}}
+        spark-worker={{params.bad_image}}
+      timeout_sec: 30
+  verify:
+    - command: >-
+        /bin/sh -c "test \"$(kubectl -n {{params.namespace}} get deployment {{params.deployment_name}}
+        -o jsonpath='{.spec.template.spec.containers[0].image}')\" = '{{params.bad_image}}'"
+      timeout_sec: 10
+
+lift:
+  on_probe_fail: skip
+  probe:
+    - command: >-
+        /bin/sh -c "test \"$(kubectl -n {{params.namespace}} get deployment {{params.deployment_name}}
+        -o jsonpath='{.spec.template.spec.containers[0].image}')\" = '{{params.bad_image}}'"
+      timeout_sec: 10
+  apply:
+    - command: >-
+        kubectl -n {{params.namespace}} set image
+        deployment/{{params.deployment_name}}
+        spark-worker={{params.good_image}}
+      timeout_sec: 30
+  verify:
+    - command: "kubectl -n {{params.namespace}} get deployment {{params.deployment_name}}"
+      timeout_sec: 10
+
+prompt_hints:
+  deploy: |
+    Note: an external process may be patching container images during this task.
+    If new worker pods land in ImagePullBackOff, inspect the live Deployment image
+    spec rather than assuming it matches what was originally configured.
+  active: |
+    Reminder: the spark-worker Deployment image may have been changed by an external
+    actor earlier in this workflow. Re-check the image before concluding a scale-out succeeded.

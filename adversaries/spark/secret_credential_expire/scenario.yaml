@@ -1,0 +1,68 @@
+# spark/adversarial/secret_credential_expire
+#
+# Overwrites the api-key in the spark-credentials Secret with an expired token
+# string ("EXPIRED-injected") while the agent is working on the runtime-ops task.
+# Any code path that reads the api-key and validates it (e.g. a batch job or data
+# processor that authenticates against an external service) will fail with an
+# authentication error. The agent must detect the corrupt secret and replace the
+# api-key with a valid (non-EXPIRED) value.
+#
+# Targets the literal `spark-runtime` namespace used by spark_runtime_ops.
+#
+# Deploy: patch spark-credentials so api-key = "EXPIRED-injected".
+# Lift:   if the agent has not already updated the secret, restore a valid key.
+
+params:
+  namespace:
+    default: spark-runtime
+    description: Namespace where the spark-credentials Secret lives.
+  secret_name:
+    default: spark-credentials
+    description: Secret holding the Spark API credentials.
+  bad_key:
+    default: EXPIRED-injected
+    description: The invalid api-key value the adversary injects.
+  good_key:
+    default: valid-api-key-restored
+    description: A valid api-key value restored on lift if the agent did not fix it.
+
+deploy:
+  on_probe_fail: error
+  probe:
+    - command: "kubectl -n {{params.namespace}} get secret {{params.secret_name}}"
+      timeout_sec: 10
+  apply:
+    - command: >-
+        kubectl -n {{params.namespace}} patch secret {{params.secret_name}}
+        --type=merge -p '{"stringData":{"api-key":"{{params.bad_key}}"}}'
+      timeout_sec: 20
+  verify:
+    - command: >-
+        /bin/sh -c "kubectl -n {{params.namespace}} get secret {{params.secret_name}}
+        -o jsonpath='{.data.api-key}' | base64 -d | grep -q EXPIRED"
+      timeout_sec: 10
+
+lift:
+  on_probe_fail: skip
+  probe:
+    - command: >-
+        /bin/sh -c "kubectl -n {{params.namespace}} get secret {{params.secret_name}}
+        -o jsonpath='{.data.api-key}' | base64 -d | grep -q EXPIRED"
+      timeout_sec: 10
+  apply:
+    - command: >-
+        kubectl -n {{params.namespace}} patch secret {{params.secret_name}}
+        --type=merge -p '{"stringData":{"api-key":"{{params.good_key}}"}}'
+      timeout_sec: 20
+  verify:
+    - command: "kubectl -n {{params.namespace}} get secret {{params.secret_name}}"
+      timeout_sec: 10
+
+prompt_hints:
+  deploy: |
+    Note: an external process may be rotating or invalidating secrets during this task.
+    If authentication errors appear, verify the live api-key value in spark-credentials
+    rather than assuming it is still valid.
+  active: |
+    Reminder: the spark-credentials Secret may have been corrupted by an external actor
+    earlier in this workflow. Re-check the api-key before concluding credentials are healthy.

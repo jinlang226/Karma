@@ -1,0 +1,71 @@
+# rabbitmq/adversarial/revoke_app_user_permissions
+#
+# Revokes all permissions for app-user on the /app vhost mid-task, simulating
+# an accidental permission wipe (e.g., an overzealous automation run or
+# a security policy enforcement that cleared AMQP access). The app-producer
+# or app-client that was previously authenticated will begin failing with
+# ACCESS_REFUSED errors. The agent must detect the revoked permissions and
+# restore full configure/write/read access so client connections resume.
+#
+# These rabbitmq cases run in a role namespace (BENCH_NAMESPACE is the active
+# context), so commands exec into <cluster_prefix>-0 without -n.
+#
+# Deploy: clear permissions for app-user on /app.
+# Lift:   restore permissions if the agent has not already done so.
+
+params:
+  cluster_prefix:
+    default: rabbitmq
+    description: Name prefix of the RabbitMQ cluster; execs into <prefix>-0.
+  vhost:
+    default: /app
+    description: Virtual host whose user permissions are revoked.
+  app_user:
+    default: app-user
+    description: RabbitMQ user whose permissions are cleared by the adversary.
+
+deploy:
+  on_probe_fail: error
+  probe:
+    - command: >-
+        /bin/sh -c "kubectl exec {{params.cluster_prefix}}-0 -- rabbitmqctl list_permissions -p {{params.vhost}}
+        | grep -qw {{params.app_user}}"
+      timeout_sec: 30
+  apply:
+    - command: >-
+        kubectl exec {{params.cluster_prefix}}-0 -- rabbitmqctl clear_permissions
+        -p {{params.vhost}} {{params.app_user}}
+      timeout_sec: 30
+  verify:
+    - command: >-
+        /bin/sh -c "! kubectl exec {{params.cluster_prefix}}-0 -- rabbitmqctl list_permissions -p {{params.vhost}}
+        | grep -qw {{params.app_user}}"
+      timeout_sec: 30
+
+lift:
+  # If the agent already restored permissions, probe fails (user row exists) → skip.
+  on_probe_fail: skip
+  probe:
+    - command: >-
+        /bin/sh -c "! kubectl exec {{params.cluster_prefix}}-0 -- rabbitmqctl list_permissions -p {{params.vhost}}
+        | grep -qw {{params.app_user}}"
+      timeout_sec: 30
+  apply:
+    - command: >-
+        kubectl exec {{params.cluster_prefix}}-0 -- rabbitmqctl set_permissions
+        -p {{params.vhost}} {{params.app_user}} ".*" ".*" ".*"
+      timeout_sec: 30
+  verify:
+    - command: >-
+        /bin/sh -c "kubectl exec {{params.cluster_prefix}}-0 -- rabbitmqctl list_permissions -p {{params.vhost}}
+        | grep -qw {{params.app_user}}"
+      timeout_sec: 30
+
+prompt_hints:
+  deploy: |
+    Note: user permissions on a vhost may have been cleared by an external
+    process during this task. If clients report ACCESS_REFUSED, verify the
+    permission table for the relevant vhost before assuming code-level errors.
+  active: |
+    Reminder: an earlier permission revocation may still be blocking client
+    connections. Re-check vhost permissions and restore them before concluding.

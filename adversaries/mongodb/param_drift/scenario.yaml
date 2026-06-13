@@ -1,0 +1,67 @@
+# mongodb/adversarial/param_drift
+#
+# Scales the mongodb-replica StatefulSet UP to an odd but wrong count (4 replicas)
+# while the agent is working on a scaling or configuration task, simulating a
+# competing automation that applies its own desired state. Four members is
+# an even number that can cause election quorum issues and is not the approved
+# target. The agent must reconcile to the correct target replica count rather
+# than accepting whatever count it finds in the cluster.
+#
+# Targets the literal `mongodb` namespace. StatefulSet `mongodb-replica` is used
+# by replica-scaling, custom-roles, mongod-config-update, and several other cases.
+#
+# Deploy: scale the StatefulSet to the drift count (default 4).
+# Lift:   scale back to the canonical healthy count (default 3) if the agent
+#         has not already reconciled to the approved target.
+
+params:
+  namespace:
+    default: mongodb
+    description: Namespace where the mongodb-replica StatefulSet runs.
+  statefulset_name:
+    default: mongodb-replica
+    description: Name of the StatefulSet the adversary scales to the drift value.
+  drift_replicas:
+    default: "4"
+    description: Wrong replica count injected by the adversary (even number causes quorum risk).
+  restore_replicas:
+    default: "3"
+    description: Healthy canonical replica count restored on lift if agent did not.
+
+deploy:
+  on_probe_fail: error
+  probe:
+    - command: "kubectl -n {{params.namespace}} get statefulset {{params.statefulset_name}}"
+      timeout_sec: 10
+  apply:
+    - command: "kubectl -n {{params.namespace}} scale statefulset {{params.statefulset_name}} --replicas={{params.drift_replicas}}"
+      timeout_sec: 20
+  verify:
+    - command: >-
+        /bin/sh -c "test \"$(kubectl -n {{params.namespace}} get statefulset {{params.statefulset_name}}
+        -o jsonpath={.spec.replicas})\" = '{{params.drift_replicas}}'"
+      timeout_sec: 10
+
+lift:
+  on_probe_fail: skip
+  probe:
+    - command: >-
+        /bin/sh -c "test \"$(kubectl -n {{params.namespace}} get statefulset {{params.statefulset_name}}
+        -o jsonpath={.spec.replicas})\" = '{{params.drift_replicas}}'"
+      timeout_sec: 10
+  apply:
+    - command: "kubectl -n {{params.namespace}} scale statefulset {{params.statefulset_name}} --replicas={{params.restore_replicas}}"
+      timeout_sec: 20
+  verify:
+    - command: "kubectl -n {{params.namespace}} get statefulset {{params.statefulset_name}}"
+      timeout_sec: 10
+
+prompt_hints:
+  deploy: |
+    Note: an automation may change the StatefulSet replica count to an unintended
+    value during this task. Always verify the live replica count against the
+    approved target rather than trusting the initial state.
+  active: |
+    Reminder: the StatefulSet replica count may have drifted from the intended
+    target due to an external process. Confirm the count matches the approved
+    value before submitting.
