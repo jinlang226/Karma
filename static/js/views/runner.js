@@ -84,10 +84,13 @@
       try {
         const scenarios = await api.get("/api/adversary/scenarios");
         if (scenarios && scenarios.length) {
-          root.appendChild(el("h3", { id: "cases-sec-adversary" }, "Adversary scenarios"));
+          root.appendChild(el("h3", { id: "cases-sec-adversary" },
+            "Adversary scenarios", el("span", { class: "muted sec-count" }, ` (${scenarios.length})`)));
           const grid = el("div", { class: "service-grid" });
           scenarios.forEach((sc) => grid.appendChild(scenarioCard(sc)));
-          root.appendChild(grid);
+          // Many scenarios now exist — keep them in a bounded scroll area so they
+          // don't push Applications/Examples far down the page.
+          root.appendChild(el("div", { class: "scenario-scroll" }, grid));
         }
       } catch (_e) { /* scenarios are optional */ }
 

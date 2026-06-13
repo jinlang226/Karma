@@ -30,6 +30,7 @@
   let allFiles = [];    // every workflow file from /api/workflows (cached for search)
   let wfFilter = "";    // current Saved-Workflows search term (lowercased)
   let wfFolder = "";    // folder currently being browsed ("" = workflows/ root)
+  let pendingFolder = ""; // folder to open on the next list render (set by back-nav)
   let scenarios = [];   // available adversary scenarios: {service, scenario, has_lift}
   let stages = [];      // builder stage rows: {service, case, overrides}
   let advRows = [];     // builder adversary rows: {scenario, injectIndex, liftIndex}
@@ -123,8 +124,35 @@
   }
 
   // --- Files panel ----------------------------------------------------------
+  // The folder (relative to workflows/) a workflow file lives in, derived from its
+  // path: "workflows/suite/foo.yaml" -> "suite", "workflows/foo.yaml" -> "".
+  function folderOfPath(path) {
+    const p = String(path || "").replace(/^workflows\//, "");
+    const i = p.lastIndexOf("/");
+    return i >= 0 ? p.slice(0, i) : "";
+  }
+  // Return to the Saved-Workflows list with a specific folder open (used by the
+  // back arrow / breadcrumb so leaving a suite/ workflow lands back in suite/).
+  function goList(folder) {
+    pendingFolder = folder || "";
+    render();
+  }
+  // Breadcrumb ancestors for a workflow in *folder*: "Workflows" (root) plus one
+  // clickable crumb per path segment, each opening the list at that folder.
+  function folderCrumbs(folder) {
+    const crumbs = [{ label: "Workflows", onClick: () => goList("") }];
+    let acc = "";
+    (folder ? folder.split("/") : []).forEach((seg) => {
+      acc = acc ? acc + "/" + seg : seg;
+      const f = acc;
+      crumbs.push({ label: seg, onClick: () => goList(f) });
+    });
+    return crumbs;
+  }
+
   function filesPanel() {
-    wfFolder = "";   // start browsing at the workflows/ root each time the list renders
+    wfFolder = pendingFolder;   // open the folder requested by back-nav (else root)
+    pendingFolder = "";
     const panel = el("div", { class: "panel" });
     panel.appendChild(el("h3", {}, "Saved Workflows"));
     panel.appendChild(el("p", { class: "field-help" },
@@ -150,7 +178,7 @@
     tbl.appendChild(body);
     panel.appendChild(el("div", { class: "toolbar" },
       el("button", { class: "btn", onClick: runSelected }, "Run selected")));
-    panel.appendChild(el("div", { class: "scroll-list" }, tbl));
+    panel.appendChild(el("div", { class: "scroll-list wf-files-scroll" }, tbl));
     // Defer until the panel is in the DOM -- loadFiles looks the tbody up by id,
     // which fails if called before this panel is appended (same pattern the
     // Jobs panel uses).
@@ -378,7 +406,8 @@
     KARMA.currentLocation = () => KARMA.showWorkflow(name, path);
     const wn = KARMA.labels.workflowName(name);
     const display = wn.app + (wn.name ? " · " + wn.name : "");
-    KARMA.setBreadcrumb({ back: render, crumbs: [{ label: "Workflows", onClick: render }, { label: display }] });
+    const folder = folderOfPath(path);
+    KARMA.setBreadcrumb({ back: () => goList(folder), crumbs: folderCrumbs(folder).concat([{ label: display }]) });
     root.appendChild(el("h2", {}, display));
     let wf;
     try { wf = await api.get(`/api/workflows/${name}`); }
@@ -431,11 +460,10 @@
     const wn = KARMA.labels.workflowName(name);
     const display = wn.app + (wn.name ? " · " + wn.name : "");
     KARMA.currentLocation = () => renderCustomize(name, path);
-    KARMA.setBreadcrumb({ back: render, crumbs: [
-      { label: "Workflows", onClick: render },
+    KARMA.setBreadcrumb({ back: () => renderWorkflowDetail(name, path), crumbs: folderCrumbs(folderOfPath(path)).concat([
       { label: display, onClick: () => renderWorkflowDetail(name, path) },
       { label: "Customize" },
-    ] });
+    ]) });
     root.appendChild(el("h2", {}, "Customize workflow"));
     root.appendChild(el("p", { class: "field-help" },
       "Editing a copy of " + display + ". Adjust stages, parameters, and adversary " +
