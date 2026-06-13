@@ -40,6 +40,50 @@ The agent is the system under test, selected with `--agent`. Registered agents
 | `codex` | **working** | `local` and `docker`; `docker` mounts `~/.codex/auth.json` (`--agent-auth-path`/`--agent-auth-dest`) or set `OPENAI_API_KEY` |
 | `cli_runner`, `react` | **scaffold only** | `entrypoint.sh` calls a `run_agent.py` that does not exist — plug in your own implementation to use them |
 
+### Agent credentials (required to actually run an agent)
+
+How an agent authenticates depends on the **sandbox**:
+
+- **`--sandbox local`** runs the agent as a host subprocess, so it reuses your
+  existing host login — no extra setup beyond being logged in:
+  - `claude_code`: log in once with `claude` (it reads `~/.claude`).
+  - `codex`: log in once with `codex` (it reads `~/.codex/auth.json`).
+
+- **`--sandbox docker`** runs the agent in a clean container that **cannot see
+  your host login**. You must supply credentials via the environment (the
+  sandbox forwards these env vars into the container) or by mounting a creds
+  file. Set whichever your agent needs **before** launching the run:
+
+  ```bash
+  # claude_code in docker — one of:
+  export CLAUDE_CODE_OAUTH_TOKEN=$(claude setup-token)   # recommended
+  export ANTHROPIC_API_KEY=sk-ant-...
+
+  # codex in docker — either mount auth.json (see --agent-auth-path below) or:
+  export OPENAI_API_KEY=sk-...
+  # (custom Codex provider keys, if you use one)
+  export CODEX_API_KEY=...   # and optionally CODEX_MODEL=...
+  ```
+
+  The full set of env vars forwarded into the container is:
+  `CLAUDE_CODE_OAUTH_TOKEN`, `ANTHROPIC_API_KEY`, `OPENAI_API_KEY`,
+  `CODEX_API_KEY`, `CODEX_MODEL`, `KARMA_CLAUDE_AGENT_MODEL`
+  (see `karma/sandbox.py`). Alternatively, mount a creds file with
+  `--agent-auth-path ~/.codex/auth.json --agent-auth-dest /root/.codex/auth.json`.
+
+> **Important for the web UI / HTTP server.** Docker runs started from the UI are
+> launched by the **`main.py` server process**, so the credential env vars must be
+> present **in that process's environment**. Export them in the shell that starts
+> the server, e.g.:
+> ```bash
+> export CLAUDE_CODE_OAUTH_TOKEN=$(claude setup-token)   # or ANTHROPIC_API_KEY=...
+> python main.py
+> ```
+> If you restart the server, re-export them first — a server started without these
+> will run docker `claude_code` agents that immediately report **"Not logged in ·
+> Please run /login"** and every stage fails before the agent does any work.
+> (`--sandbox local` is unaffected, since it uses your host login directly.)
+
 ### Run a single test case
 
 ```bash
@@ -59,7 +103,7 @@ python orchestrator.py run-case rabbitmq failover \
 | `--param KEY=VALUE` | none | Case parameter override (repeatable; JSON-decoded) |
 | `--timeout` | `900` | Agent timeout in seconds |
 | `--runs-dir` | `runs` | Root directory for run artifacts |
-| `--resources-dir` | `resources` | Override resource root |
+| `--resources-dir` | `cases` | Override the test-case root |
 | `--profile` | none | Named profile of default flags |
 | `--output` | `text` | `text` or `json` |
 
@@ -99,7 +143,7 @@ python orchestrator.py info --agents --metrics
 
 ## Web UI
 
-`main.py` serves a single-page web UI from `static/` at the server root.
+`main.py` serves a single-page web UI from `webui/` at the server root.
 Open `http://127.0.0.1:8080` after starting it. Tabs:
 
 - **Cases** — browse services and cases (and adversary scenarios), inspect a
@@ -113,7 +157,7 @@ Open `http://127.0.0.1:8080` after starting it. Tabs:
   logs, the test score (judge), the regression sweep, and cross-run judge
   batches. Judge a single run, or "Judge all" to score every unscored run.
 
-The UI is plain HTML/CSS/JS under `static/` (no build step).
+The UI is plain HTML/CSS/JS under `webui/` (no build step).
 
 ## HTTP API
 
@@ -226,7 +270,7 @@ time (see `karma/settings.py`).
 | `KARMA_ORACLE_TIMEOUT_SEC` | `120` | Seconds before an oracle check times out |
 | `KARMA_COMMAND_TIMEOUT_SEC` | `120` | Seconds per precondition/adversary apply command |
 | `KARMA_PRECONDITION_TIMEOUT_SEC` | `600` | Total precondition phase budget |
-| `KARMA_RESOURCES_DIR` | `resources` | Root resources directory |
+| `KARMA_RESOURCES_DIR` | `cases` | Root test-case directory |
 | `KARMA_RUNS_DIR` | `runs` | Root run-artifact directory |
 | `KARMA_HOST` / `KARMA_PORT` | `127.0.0.1` / `8080` | HTTP server bind address |
 | `KARMA_JUDGE_MODEL` | `gpt-4o` | Judge LLM model |
@@ -257,13 +301,13 @@ karma/
   sandbox.py     local and Docker agent launch
   protocol.py    run-directory layout and artifact paths
   settings.py    environment-variable configuration
-static/          web UI (no build step)
+webui/           web UI (no build step)
   index.html     app shell
   css/styles.css
   js/            api.js, app.js, views/{runner,workflow,judge,adversary}.js
 tests/
   unit/          fast unit tests (no cluster required)
   integration/   end-to-end tests (require live cluster)
-resources/       service case definitions and manifests
+cases/           service test-case definitions (test.yaml + resource/ + oracle/)
 workflows/       example workflow YAML files
 ```
