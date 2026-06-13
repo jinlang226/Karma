@@ -248,7 +248,7 @@ def launch_agent(
     # File-based creds (e.g. ~/.codex/auth.json) are mounted via extra_mounts /
     # --agent-auth-path instead.
     for _k in ("CLAUDE_CODE_OAUTH_TOKEN", "ANTHROPIC_API_KEY", "OPENAI_API_KEY",
-               "CODEX_MODEL", "KARMA_CLAUDE_AGENT_MODEL"):
+               "CODEX_API_KEY", "CODEX_MODEL", "KARMA_CLAUDE_AGENT_MODEL"):
         _v = os.environ.get(_k)
         if _v:
             docker_cmd += ["-e", f"{_k}={_v}"]
