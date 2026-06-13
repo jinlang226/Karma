@@ -239,9 +239,30 @@
     return el("tr", { class: "wf-folder-row" },
       el("td", { colspan: "4" },
         el("span", { class: "crumb-link wf-folder-link", onClick: open },
-          el("span", { class: "wf-folder-icon" }, "📁"), name + "/"),
+          el("span", { class: "wf-folder-icon" }, "📁"), name),
         el("span", { class: "muted wf-folder-count" }, `${runsUnder(folder).length} runs`)),
       el("td", {}, el("button", { class: "btn secondary", onClick: open }, "Open")));
+  }
+
+  // Fill (or hide) the current-folder bar above the runs list.
+  function renderRunsCrumbBar() {
+    const bar = document.getElementById("runs-crumb-bar");
+    if (!bar) return;
+    clear(bar);
+    if (!runsFolder) { bar.style.display = "none"; return; }
+    const parent = runsFolder.includes("/") ? runsFolder.slice(0, runsFolder.lastIndexOf("/")) : "";
+    const go = (folder) => () => openRunsFolder(folder);
+    bar.appendChild(el("span", { class: "crumb-link dir-up", title: "Up one folder", onClick: go(parent) }, "←"));
+    bar.appendChild(el("span", { class: "crumb-link", onClick: go("") }, "runs"));
+    let acc = "";
+    runsFolder.split("/").forEach((seg, i, segs) => {
+      acc = acc ? acc + "/" + seg : seg;
+      bar.appendChild(el("span", { class: "crumb-sep" }, "/"));
+      bar.appendChild(i === segs.length - 1
+        ? el("span", { class: "wf-crumb-current" }, seg)
+        : el("span", { class: "crumb-link", onClick: go(acc) }, seg));
+    });
+    bar.style.display = "";
   }
 
   // Render the tbody. With a search term, show a flat loose-matched result across
@@ -255,6 +276,8 @@
     }
     const tokens = runsFilter.split(/\s+/).filter(Boolean);
     if (tokens.length) {
+      const bar = document.getElementById("runs-crumb-bar");
+      if (bar) { clear(bar); bar.style.display = "none"; }
       const hits = allRuns.filter((r) => runMatches(r, tokens));
       if (!hits.length) {
         body.appendChild(el("tr", {}, el("td", { colspan: "5", class: "muted" }, "No runs match your search.")));
@@ -263,28 +286,7 @@
       for (const r of hits) body.appendChild(runRow(r, true));
       return;
     }
-    // Breadcrumb when inside a subfolder: "← runs/examples" where "runs" and any
-    // intermediate segment are clickable; the current folder segment is plain.
-    if (runsFolder) {
-      const parent = runsFolder.includes("/") ? runsFolder.slice(0, runsFolder.lastIndexOf("/")) : "";
-      const go = (folder) => () => openRunsFolder(folder);
-      const cell = el("td", { colspan: "5" },
-        el("span", { class: "crumb-link", title: "Up one folder", onClick: go(parent) }, "← "),
-        el("span", { class: "crumb-link", onClick: go("") }, "runs"));
-      let acc = "";
-      const segs = runsFolder.split("/");
-      segs.forEach((seg, i) => {
-        acc = acc ? acc + "/" + seg : seg;
-        cell.appendChild(document.createTextNode("/"));
-        cell.appendChild(i === segs.length - 1
-          ? el("span", { class: "wf-crumb-current" }, seg)
-          : el("span", { class: "crumb-link", onClick: go(acc) }, seg));
-      });
-      const row = el("tr", { class: "wf-crumb-row" }, cell);
-      body.appendChild(row);
-      const thead = body.parentElement && body.parentElement.querySelector("thead");
-      if (thead) cell.style.top = Math.max(0, Math.round(thead.getBoundingClientRect().height) - 2) + "px";
-    }
+    renderRunsCrumbBar();
     for (const sub of runSubfolders(runsFolder)) body.appendChild(runFolderRow(sub));
     for (const r of runsIn(runsFolder)) body.appendChild(runRow(r));
   }
@@ -320,6 +322,7 @@
         },
       });
       panel.appendChild(el("div", { class: "toolbar" }, search));
+      panel.appendChild(el("div", { id: "runs-crumb-bar", class: "dir-bar", style: "display:none" }));
       const tbl = el("table", {}, el("thead", {}, el("tr", {},
         el("th", {}, "Run"), el("th", {}, "Status"), el("th", {}, "Stages"),
         el("th", {}, "Agent"), el("th", {}, "Score"))));
