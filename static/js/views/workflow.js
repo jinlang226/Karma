@@ -177,22 +177,14 @@
       type: "checkbox", title: "Select all",
       onChange: (e) => toggleAll(e.target.checked),
     });
-    // Split header/body tables so the column header stays pinned, the
-    // current-folder bar sits directly beneath it, and only the body scrolls
-    // (scrollbar starts below the header). Both tables share fixed column widths.
-    const headTbl = el("table", { class: "wf-files-table list-head-table" },
-      el("thead", {}, el("tr", {},
-        el("th", {}, selectAll), el("th", {}, "Name"), el("th", {}, "Stages"),
-        el("th", {}, "Prompt mode"), el("th", {}, "Status"), el("th", {}, ""))));
+    const tbl = el("table", { class: "wf-files-table" }, el("thead", {}, el("tr", {},
+      el("th", {}, selectAll), el("th", {}, "Name"), el("th", {}, "Stages"),
+      el("th", {}, "Prompt mode"), el("th", {}, "Status"), el("th", {}, ""))));
     const body = el("tbody", { id: "wf-files-body" });
-    const bodyTbl = el("table", { class: "wf-files-table" }, body);
+    tbl.appendChild(body);
     panel.appendChild(el("div", { class: "toolbar" },
       el("button", { class: "btn", onClick: runSelected }, "Run selected")));
-    panel.appendChild(el("div", { class: "list-frame" },
-      headTbl,
-      // Current-folder bar, shown only while inside a subfolder (filled by renderFiles).
-      el("div", { id: "wf-crumb-bar", class: "dir-bar", style: "display:none" }),
-      el("div", { class: "list-body wf-files-scroll" }, bodyTbl)));
+    panel.appendChild(el("div", { class: "scroll-list wf-files-scroll" }, tbl));
     // Defer until the panel is in the DOM -- loadFiles looks the tbody up by id,
     // which fails if called before this panel is appended (same pattern the
     // Jobs panel uses).
@@ -303,45 +295,20 @@
       el("td", {}, el("button", { class: "btn secondary", onClick: open }, "Open")));
   }
 
-  // Fill (or hide) the current-folder bar above the list. Clickable ancestors
-  // step back up; the current folder segment is plain.
-  function renderCrumbBar() {
-    const bar = document.getElementById("wf-crumb-bar");
-    if (!bar) return;
-    clear(bar);
-    if (!wfFolder) { bar.style.display = "none"; return; }
-    const parent = wfFolder.includes("/") ? wfFolder.slice(0, wfFolder.lastIndexOf("/")) : "";
-    const go = (folder) => () => openFolder(folder);
-    bar.appendChild(el("span", { class: "crumb-link dir-up", title: "Up one folder", onClick: go(parent) }, "←"));
-    bar.appendChild(el("span", { class: "crumb-link", onClick: go("") }, "workflows"));
-    let acc = "";
-    wfFolder.split("/").forEach((seg, i, segs) => {
-      acc = acc ? acc + "/" + seg : seg;
-      bar.appendChild(el("span", { class: "crumb-sep" }, "/"));
-      bar.appendChild(i === segs.length - 1
-        ? el("span", { class: "wf-crumb-current" }, seg)
-        : el("span", { class: "crumb-link", onClick: go(acc) }, seg));
-    });
-    bar.style.display = "";
-  }
-
   // Render the list. With a search term, show a flat loose-matched result across
   // every folder. Otherwise browse the current folder: subfolders (drill in) +
-  // the workflow files directly in it, with a breadcrumb to step back.
+  // the workflow files directly in it, with a breadcrumb row sticking just under
+  // the header to step back.
   function renderFiles() {
     const body = document.getElementById("wf-files-body");
     if (!body) return;
     clear(body);
     if (!allFiles.length) {
-      renderCrumbBar();
       body.appendChild(el("tr", {}, el("td", { colspan: "6", class: "muted" }, "No workflow files found.")));
       return;
     }
     const tokens = wfFilter.split(/\s+/).filter(Boolean);
     if (tokens.length) {
-      // Searching is cross-folder, so hide the current-folder bar.
-      const bar = document.getElementById("wf-crumb-bar");
-      if (bar) { clear(bar); bar.style.display = "none"; }
       const hits = allFiles.filter((f) => fileMatches(f, tokens));
       if (!hits.length) {
         body.appendChild(el("tr", {}, el("td", { colspan: "6", class: "muted" }, "No workflows match your search.")));
@@ -350,7 +317,28 @@
       for (const f of hits) body.appendChild(fileRow(f, true));
       return;
     }
-    renderCrumbBar();
+    // Breadcrumb when inside a subfolder: "← workflows / suite" where "workflows"
+    // and any intermediate segment are clickable; the current folder is plain. It
+    // sticks just under the sticky header while the list scrolls.
+    if (wfFolder) {
+      const parent = wfFolder.includes("/") ? wfFolder.slice(0, wfFolder.lastIndexOf("/")) : "";
+      const go = (folder) => () => openFolder(folder);
+      const cell = el("td", { colspan: "6" },
+        el("span", { class: "crumb-link", title: "Up one folder", onClick: go(parent) }, "← "),
+        el("span", { class: "crumb-link", onClick: go("") }, "workflows"));
+      let acc = "";
+      const segs = wfFolder.split("/");
+      segs.forEach((seg, i) => {
+        acc = acc ? acc + "/" + seg : seg;
+        cell.appendChild(el("span", { class: "crumb-sep" }, "/"));
+        cell.appendChild(i === segs.length - 1
+          ? el("span", { class: "wf-crumb-current" }, seg)
+          : el("span", { class: "crumb-link", onClick: go(acc) }, seg));
+      });
+      body.appendChild(el("tr", { class: "wf-crumb-row" }, cell));
+      const thead = body.parentElement && body.parentElement.querySelector("thead");
+      if (thead) cell.style.top = Math.max(0, Math.round(thead.getBoundingClientRect().height) - 2) + "px";
+    }
     for (const sub of subfolders(wfFolder)) body.appendChild(folderRow(sub));
     for (const f of filesIn(wfFolder)) body.appendChild(fileRow(f));
   }
