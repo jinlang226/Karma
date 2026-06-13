@@ -1,0 +1,16 @@
+All three verification checks pass:
+
+1. **Cluster health: green** — all shards assigned, `active_shards_percent: 100%`
+2. **All 3 nodes present** — `es-cluster-0`, `es-cluster-1`, `es-cluster-2` all appear in `/_cat/nodes`
+3. **`app-data` readable** — returns the original `{"msg":"seed"}` document
+
+**What was wrong and what was fixed:**
+
+The precondition injected two bugs into the `es-config` ConfigMap via a heredoc that shell-evaluated `${POD_NAME}` to empty:
+- `node.name:` was blank → `es-cluster-2` crashed immediately on start with a parse error
+- `discovery.seed_hosts` used `default.svc.cluster.local` instead of the correct headless service address (short names like `es-cluster-0.es-cluster`)
+
+**Fix steps:**
+1. Restored the ConfigMap with `node.name: ${POD_NAME}` (literal, for ES to substitute) and correct short-name seed hosts
+2. Deleted the crashing `es-cluster-2` pod so the StatefulSet recreated it with the fixed config — it joined the cluster
+3. Force-allocated the stale primary shard on `es-cluster-0` via `_cluster/reroute allocate_stale_primary` to recover from the `no_valid_shard_copy` state left by the old pod's PVC deletion; the replica was then automatically assigned to `es-cluster-2`

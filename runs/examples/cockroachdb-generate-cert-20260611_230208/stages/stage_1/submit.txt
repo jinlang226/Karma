@@ -1,0 +1,22 @@
+Both checks pass. Here's a summary of what was done:
+
+**What was done:**
+
+1. **Generated certificates** using the `openssl-toolbox` pod:
+   - CA key + self-signed cert (`ca.crt`)
+   - Node cert with SANs covering all 3 pod FQDNs and services (`node.crt/key`)
+   - Client cert for the `root` user (`client.root.crt/key`)
+
+2. **Created Kubernetes secrets:**
+   - `cockroachdb-node-certs` — CA + node cert/key (mounted by each pod)
+   - `cockroachdb-client-root` — CA + root client cert/key
+
+3. **Patched the StatefulSet:**
+   - Replaced `--insecure` with `--certs-dir=/cockroach/cockroach-certs`
+   - Added `certs-secret` volume (secret mount, read-only) and `cockroach-certs` emptyDir volume
+   - Startup command copies certs from the secret into the writable emptyDir with correct `600` permissions
+   - Updated liveness/readiness probes from `HTTP` → `HTTPS`
+
+4. **Forced a simultaneous restart** of all three pods (rolling update would leave a mixed TLS/insecure cluster that loses quorum)
+
+5. **Copied client certs** into `crdb-cluster-0:/cockroach/cockroach-certs/` so the `cockroach sql --certs-dir` command can authenticate as root.

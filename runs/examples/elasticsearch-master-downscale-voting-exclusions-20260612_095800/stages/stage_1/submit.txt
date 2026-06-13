@@ -1,0 +1,20 @@
+All four checks pass:
+
+| Check | Result |
+|---|---|
+| 1. Cluster health | **green** (1 node) |
+| 2. Master-eligible nodes | **1** — `es-cluster-0` is active master (`*`) |
+| 3. Voting exclusions | **empty** |
+| 4. `auto_shrink_voting_configuration` | **true** |
+
+**What was done and why:**
+
+The root cause was that `auto_shrink_voting_configuration` had been explicitly set to `false` in persistent cluster settings. When nodes `es-cluster-1` and `es-cluster-2` were removed, the voting configuration was never shrunk, so `es-cluster-0` alone couldn't reach quorum (needed 2 of 3 votes) and no master was elected.
+
+Fix sequence:
+1. Scaled StatefulSet to 0 to safely stop ES
+2. Ran `elasticsearch-node unsafe-bootstrap` in a debug pod — this rewrote the stored voting configuration to just `{es-cluster-0}`, letting it bootstrap as sole master
+3. Updated the configmap to remove dead seed hosts (`es-cluster-1`, `es-cluster-2`) to stop DNS warnings
+4. Scaled StatefulSet back to 1 and waited for readiness
+5. Cleared residual voting exclusions via `DELETE /_cluster/voting_config_exclusions`
+6. Set `cluster.auto_shrink_voting_configuration: true` so future downscales work correctly

@@ -1,0 +1,29 @@
+All three jobs have completed. Here's the full summary:
+
+---
+
+## Results
+
+### Bugs Diagnosed and Fixed
+
+The committed YAML files had three bugs preventing correct job execution:
+
+1. **`skew-job.yaml`**: `serviceAccountName: spark-wrong` — non-existent service account would block pod scheduling. Fixed to `spark`.
+2. **All three job YAMLs**: The `spark-submit` command ran `SparkPi` (a trivial example) instead of the actual data-skew analysis scripts. Fixed to decode and run the correct Python scripts via `base64 -d`.
+
+### Performance Comparison
+
+| Strategy | Elapsed | Optimization | Benefit |
+|---|---|---|---|
+| **Baseline** | 17.19s | None | skewed shuffle join (straggler risk) |
+| **Broadcast Join** | 7.98s | Broadcast small `products` table | No shuffle, no skew — **2.15× faster** |
+| **AQE** | 8.14s | Auto-splits hot partitions at runtime | Auto skew-join handling — **2.11× faster** |
+
+### Data Skew Observed
+- `skew_ratio = 44x` (max partition: 11,579 rows vs min: 263 rows) — confirming severe skew around the hot `product_id` values 1–5
+
+### Why It Works
+- **Broadcast join**: eliminates the shuffle entirely — the small `products` table (100 rows) is broadcast to every executor, so skewed `product_id` partitions never need to send data across the network.
+- **AQE**: detects skewed partitions at runtime and automatically splits them, distributing the straggler work across multiple tasks.
+
+Both optimization strategies delivered ~2.1× speedup over the unoptimized baseline, with identical correct query results across all three runs.
