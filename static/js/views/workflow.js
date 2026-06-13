@@ -162,7 +162,7 @@
     const panel = el("div", { class: "panel", id: "wf-saved-panel" });
     panel.appendChild(el("h3", {}, "Saved Workflows"));
     panel.appendChild(el("p", { class: "field-help" },
-      "Every workflow under the workflows/ folder. Open a 📁 folder (e.g. suite/) " +
+      "Every workflow under the workflows/ folder. Open a 📁 folder (e.g. short/) " +
       "to see what's inside, or tick its box to select all workflows in it. Click a " +
       "name to view and customize it, Run to execute one, or check several and Run " +
       "selected. Search matches loosely across all folders."));
