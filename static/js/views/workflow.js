@@ -136,6 +136,12 @@
   function goList(folder) {
     pendingFolder = folder || "";
     render();
+    // Land on the Saved Workflows block (not the top of the page), so returning
+    // from a workflow drops you back at the list you came from.
+    requestAnimationFrame(() => {
+      const p = document.getElementById("wf-saved-panel");
+      if (p) p.scrollIntoView({ behavior: "smooth", block: "start" });
+    });
   }
   // Breadcrumb ancestors for a workflow in *folder*: "Workflows" (root) plus one
   // clickable crumb per path segment, each opening the list at that folder.
@@ -153,7 +159,7 @@
   function filesPanel() {
     wfFolder = pendingFolder;   // open the folder requested by back-nav (else root)
     pendingFolder = "";
-    const panel = el("div", { class: "panel" });
+    const panel = el("div", { class: "panel", id: "wf-saved-panel" });
     panel.appendChild(el("h3", {}, "Saved Workflows"));
     panel.appendChild(el("p", { class: "field-help" },
       "Every workflow under the workflows/ folder. Open a 📁 folder (e.g. suite/) " +
@@ -171,14 +177,14 @@
       type: "checkbox", title: "Select all",
       onChange: (e) => toggleAll(e.target.checked),
     });
-    const tbl = el("table", { class: "wf-files-table" }, el("thead", {}, el("tr", {},
+    const tbl = el("table", { class: "list-table wf-files-table" }, el("thead", {}, el("tr", {},
       el("th", {}, selectAll), el("th", {}, "Name"), el("th", {}, "Stages"),
       el("th", {}, "Prompt mode"), el("th", {}, "Status"), el("th", {}, ""))));
     const body = el("tbody", { id: "wf-files-body" });
     tbl.appendChild(body);
     panel.appendChild(el("div", { class: "toolbar" },
       el("button", { class: "btn", onClick: runSelected }, "Run selected")));
-    panel.appendChild(el("div", { class: "scroll-list wf-files-scroll" }, tbl));
+    panel.appendChild(el("div", { class: "list-scroll wf-files-scroll" }, tbl));
     // Defer until the panel is in the DOM -- loadFiles looks the tbody up by id,
     // which fails if called before this panel is appended (same pattern the
     // Jobs panel uses).
@@ -328,10 +334,9 @@
           : el("span", { class: "crumb-link", onClick: go(acc) }, seg));
       });
       body.appendChild(el("tr", { class: "wf-crumb-row" }, cell));
-      // Stick the breadcrumb flush beneath the sticky header. Overlap the
-      // collapsed header/body border seam by 2px so no sub-pixel gap shows.
-      const thead = body.parentElement && body.parentElement.querySelector("thead");
-      if (thead) cell.style.top = Math.max(0, Math.round(thead.getBoundingClientRect().height) - 2) + "px";
+      // The header lives outside the scrolling tbody now, so the breadcrumb sticks
+      // to the very top of the scroll region.
+      cell.style.top = "0px";
     }
     for (const sub of subfolders(wfFolder)) body.appendChild(folderRow(sub));
     for (const f of filesIn(wfFolder)) body.appendChild(fileRow(f));
