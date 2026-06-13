@@ -212,7 +212,7 @@
   // Palette for adversary injections (distinct, theme-friendly).
   const ADV_COLORS = ["#c6632d", "#2f6f6d", "#7b5ea7", "#b08900", "#a23b5e", "#3a7d44"];
 
-  KARMA.workflowStagesPanel = function (wf, title, onStageClick) {
+  KARMA.workflowStagesPanel = function (wf, title, onStageClick, hideParams) {
     const panel = el("div", { class: "panel" });
     panel.appendChild(el("h3", {}, title || "Workflow stages"));
     const stages = wf.stages || [];
@@ -248,8 +248,10 @@
       // stage spec) so the row keeps the same shape as every other stage box.
       if (s.service) row.appendChild(el("div", { class: "kv" }, el("span", { class: "k" }, "Service"), el("span", {}, KARMA.labels.service(s.service))));
       if (s.case_name) row.appendChild(el("div", { class: "kv" }, el("span", { class: "k" }, "Case"), el("span", {}, KARMA.labels.case(s.case_name))));
-      for (const [k, v] of Object.entries(s.param_overrides || {})) {
-        row.appendChild(el("div", { class: "kv" }, el("span", { class: "k" }, KARMA.labels.case(k)), el("span", {}, String(v))));
+      if (!hideParams) {
+        for (const [k, v] of Object.entries(s.param_overrides || {})) {
+          row.appendChild(el("div", { class: "kv" }, el("span", { class: "k" }, KARMA.labels.case(k)), el("span", {}, String(v))));
+        }
       }
       list.appendChild(row);
     });

@@ -38,9 +38,13 @@ def check_plain_blocked():
 
 
 def tls_base_cmd(eval_str):
+    # The task sets up mutual TLS (the prompt has the agent mount a client cert at
+    # /etc/tls/client.pem), so mongod requires the client to present it -- connect
+    # with both the CA and the client certificate or the server closes the socket.
     return [
         "kubectl", "-n", NAMESPACE, "exec", POD, "--", "mongosh", "--quiet", TLS_URI,
-        "--tls", "--tlsCAFile", "/etc/tls/ca.crt", "--eval", eval_str,
+        "--tls", "--tlsCAFile", "/etc/tls/ca.crt",
+        "--tlsCertificateKeyFile", "/etc/tls/client.pem", "--eval", eval_str,
     ]
 
 
