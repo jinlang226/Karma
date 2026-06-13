@@ -211,7 +211,11 @@
   function openRunsFolder(folder) {
     runsFolder = folder;
     const body = document.getElementById("runs-body");
-    if (body) { renderRunRows(body); KARMA.replayEnter(body, "fadeIn 0.25s ease both"); }
+    if (body) {
+      renderRunRows(body);
+      KARMA.replayEnter(document.getElementById("runs-crumb-bar"), "fadeIn 0.25s ease both");
+      KARMA.replayEnter(body, "fadeIn 0.25s ease both");
+    }
   }
 
   // One clickable run row.
@@ -310,6 +314,7 @@
     // Re-render rows in place if the table already exists (auto-refresh), so the
     // search box keeps focus; otherwise build the panel + search + table.
     let body = document.getElementById("runs-body");
+    const firstBuild = !body;
     if (!body) {
       clear(host);
       const panel = el("div", { class: "panel" });
@@ -332,6 +337,8 @@
       host.appendChild(panel);
     }
     renderRunRows(body);
+    // Fade the list in on first build only (not on the 3s auto-refresh).
+    if (firstBuild) KARMA.replayEnter(body, "fadeIn 0.3s ease both");
     // Auto-refresh while any run is still active so progress updates in place.
     if (allRuns.some((r) => !isTerminal(r.status))) {
       refreshTimer = setTimeout(() => {
