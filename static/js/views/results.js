@@ -41,6 +41,62 @@
     KARMA.toast(m, "error");
     return el("div", { class: "error-box" }, m);
   }
+
+  // Reconstruct the run's launch into a /api/run body and a /api/cli/preview
+  // payload, from the run's stored config.
+  function runSpec(cfg) {
+    if (cfg.workflow_path) {
+      return {
+        body: { workflow_path: cfg.workflow_path, agent: cfg.agent || null,
+                sandbox: cfg.sandbox || "local", max_attempts: cfg.max_attempts || 1 },
+        preview: { command: "workflow", target: { path: cfg.workflow_path },
+                   flags: { agent: cfg.agent, sandbox: cfg.sandbox } },
+      };
+    }
+    return {
+      body: { service: cfg.service, case_name: cfg.case_name, params: cfg.params || {},
+              agent: cfg.agent || null, sandbox: cfg.sandbox || "local",
+              agent_timeout_sec: cfg.agent_timeout_sec || 900 },
+      preview: { command: "case", target: { service: cfg.service, case: cfg.case_name },
+                 flags: { agent: cfg.agent, sandbox: cfg.sandbox,
+                          timeout: cfg.agent_timeout_sec, params: cfg.params || {} } },
+    };
+  }
+
+  // Panel showing the CLI command equivalent of a run + a "run again" button.
+  // Rendered for every run so the detail page is consistent regardless of how
+  // the run was started (replaces the old params-only Config block).
+  function runCommandPanel(cfg) {
+    const spec = runSpec(cfg);
+    const code = el("pre", { class: "log" }, "Building command…");
+    const copy = el("button", { class: "code-copy", title: "Copy command", onClick: () => {
+      if (navigator.clipboard) navigator.clipboard.writeText(code.textContent);
+      copy.textContent = "Copied"; setTimeout(() => { copy.textContent = "Copy"; }, 1200);
+    } }, "Copy");
+    api.post("/api/cli/preview", spec.preview)
+      .then((res) => { code.textContent = res.command_multi_line || res.command_one_line || "(unavailable)"; })
+      .catch(() => { code.textContent = "(could not build command)"; });
+
+    const runBtn = el("button", { class: "btn", onClick: async () => {
+      runBtn.disabled = "disabled"; runBtn.textContent = "Starting…";
+      try {
+        const { run_id } = await api.post("/api/run", spec.body);
+        KARMA.toast("Started " + run_id, "info");
+        renderDetail(run_id);
+      } catch (e) {
+        KARMA.toastError(e);
+        runBtn.disabled = null; runBtn.textContent = "Run this test again";
+      }
+    } }, "Run this test again");
+
+    return el("div", { class: "panel" },
+      el("h3", {}, "Run command"),
+      el("p", { class: "field-help" },
+        "The command this run is equivalent to — copy it to re-run from the terminal, "
+        + "or launch the same scheme again here."),
+      el("div", { class: "code-block" }, copy, code),
+      el("div", { class: "toolbar", style: "margin-top:12px" }, runBtn));
+  }
   function scoreCell(v) {
     if (v == null) return el("span", { class: "muted" }, "—");
     // Scores are 0-100 (0.1 precision); tolerate any legacy 0-1 values until re-judged.
@@ -335,15 +391,6 @@
       root.appendChild(rp);
     }
 
-    // Supplementary info, below the Stages / Live block.
-    if (cfg.params && Object.keys(cfg.params).length) {
-      const p = el("div", { class: "panel" });
-      p.appendChild(el("h3", {}, "Config"));
-      for (const [k, v] of Object.entries(cfg.params)) {
-        p.appendChild(el("div", { class: "kv" }, el("span", { class: "k" }, k), el("span", {}, String(v))));
-      }
-      root.appendChild(p);
-    }
     // Stage definitions + adversary, always shown (every stage, regardless of how
     // many the agent reached). Prefer the spec stored with the run (works for
     // inline workflows with no saved file); fall back to the saved workflow file,
@@ -379,6 +426,11 @@
         synth();
       }
     }
+
+    // Run command: the CLI equivalent of this run + a button to launch the same
+    // scheme again. Shown for every run regardless of how it was started, so the
+    // page is consistent (replaces the old params-only "Config" block).
+    root.appendChild(runCommandPanel(cfg));
     } catch (err) {
       // Never leave a blank page: surface the render error instead.
       root.appendChild(errBox(err));
