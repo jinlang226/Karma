@@ -16,6 +16,8 @@
 
   let root;
   let agents = [];
+  let advScenarios = [];   // all adversary scenarios (for the Cases-page list + search)
+  let advQuery = "";       // adversary-scenario search term (lowercased)
 
   function errBox(e) {
     const m = e.message || String(e);
@@ -85,25 +87,30 @@
         root.appendChild(grid);
       }
       // Adversary injection scenarios, between Applications and Examples. Rendered
-      // as a compact scrollable list (not cards) -- there are many now.
+      // as a searchable, compact scrollable list (not cards) -- there are many now.
       try {
         const scenarios = await api.get("/api/adversary/scenarios");
         if (seq !== homeSeq) return;
         if (scenarios && scenarios.length) {
-          root.appendChild(el("h3", { id: "cases-sec-adversary" },
-            "Adversary scenarios", el("span", { class: "muted sec-count" }, ` (${scenarios.length})`)));
+          advScenarios = scenarios;
+          root.appendChild(el("h3", { id: "cases-sec-adversary", class: "cases-section" }, "Adversary scenarios"));
+          const advSearch = el("input", {
+            type: "search", class: "adv-search", placeholder: "Search scenarios…",
+            value: advQuery, autocomplete: "off",
+            onInput: (e) => { advQuery = e.target.value.trim().toLowerCase(); renderAdvRows(); },
+          });
+          root.appendChild(el("div", { class: "toolbar" }, advSearch));
           const tbl = el("table", { class: "list-table adv-list-table" },
             el("thead", {}, el("tr", {},
               el("th", {}, "Scenario"), el("th", {}, "Service"), el("th", {}, "Parameters"))));
-          const tb = el("tbody", {});
-          scenarios.forEach((sc) => tb.appendChild(scenarioRow(sc)));
-          tbl.appendChild(tb);
+          tbl.appendChild(el("tbody", { id: "adv-list-body" }));
           root.appendChild(el("div", { class: "list-scroll" }, tbl));
+          renderAdvRows();
         }
       } catch (_e) { /* scenarios are optional */ }
 
       if (examples.length) {
-        root.appendChild(el("h3", { id: "cases-sec-examples" }, "Examples"));
+        root.appendChild(el("h3", { id: "cases-sec-examples", class: "cases-section" }, "Examples"));
         const grid = el("div", { class: "service-grid" });
         examples.forEach((s) => grid.appendChild(serviceCard(s, "Examples")));
         root.appendChild(grid);
@@ -122,6 +129,27 @@
       el("td", {}, el("span", { class: "crumb-link" }, KARMA.labels.scenario(sc.scenario))),
       el("td", {}, KARMA.labels.service(sc.service)),
       el("td", {}, `${np} param${np === 1 ? "" : "s"}`));
+  }
+
+  // Loose match: every query token must appear in the scenario name or service.
+  function advMatches(sc, tokens) {
+    if (!tokens.length) return true;
+    const hay = `${KARMA.labels.scenario(sc.scenario)} ${sc.scenario} ${KARMA.labels.service(sc.service)} ${sc.service}`.toLowerCase();
+    return tokens.every((t) => hay.includes(t));
+  }
+
+  // (Re)fill the adversary list body, honoring the current search term.
+  function renderAdvRows() {
+    const tb = document.getElementById("adv-list-body");
+    if (!tb) return;
+    clear(tb);
+    const tokens = advQuery.split(/\s+/).filter(Boolean);
+    const hits = advScenarios.filter((sc) => advMatches(sc, tokens));
+    if (!hits.length) {
+      tb.appendChild(el("tr", {}, el("td", { colspan: "3", class: "muted" }, "No scenarios match your search.")));
+      return;
+    }
+    hits.forEach((sc) => tb.appendChild(scenarioRow(sc)));
   }
   // Map a breadcrumb category label to its home-section scroll id.
   function sectionId(category) {
