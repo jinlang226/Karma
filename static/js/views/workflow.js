@@ -177,17 +177,23 @@
       type: "checkbox", title: "Select all",
       onChange: (e) => toggleAll(e.target.checked),
     });
-    const tbl = el("table", { class: "wf-files-table" }, el("thead", {}, el("tr", {},
-      el("th", {}, selectAll), el("th", {}, "Name"), el("th", {}, "Stages"),
-      el("th", {}, "Prompt mode"), el("th", {}, "Status"), el("th", {}, ""))));
+    // Header table (column labels = the "information bar") stays pinned; the
+    // current-folder bar sits directly beneath it; only the body table scrolls.
+    // Both tables share the fixed column widths so they line up.
+    const headTbl = el("table", { class: "wf-files-table list-head-table" },
+      el("thead", {}, el("tr", {},
+        el("th", {}, selectAll), el("th", {}, "Name"), el("th", {}, "Stages"),
+        el("th", {}, "Prompt mode"), el("th", {}, "Status"), el("th", {}, ""))));
     const body = el("tbody", { id: "wf-files-body" });
-    tbl.appendChild(body);
+    const bodyTbl = el("table", { class: "wf-files-table" }, body);
     panel.appendChild(el("div", { class: "toolbar" },
       el("button", { class: "btn", onClick: runSelected }, "Run selected")));
-    // Current-folder bar (same style as the Runs list), shown only while inside a
-    // subfolder. Filled by renderFiles.
-    panel.appendChild(el("div", { id: "wf-crumb-bar", class: "dir-bar", style: "display:none" }));
-    panel.appendChild(el("div", { class: "scroll-list wf-files-scroll" }, tbl));
+    panel.appendChild(el("div", { class: "list-frame" },
+      headTbl,
+      // Current-folder bar (same style as the Runs list), under the header,
+      // shown only while inside a subfolder. Filled by renderFiles.
+      el("div", { id: "wf-crumb-bar", class: "dir-bar", style: "display:none" }),
+      el("div", { class: "list-body wf-files-scroll" }, bodyTbl)));
     // Defer until the panel is in the DOM -- loadFiles looks the tbody up by id,
     // which fails if called before this panel is appended (same pattern the
     // Jobs panel uses).
