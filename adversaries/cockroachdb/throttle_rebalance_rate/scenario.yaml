@@ -1,0 +1,72 @@
+# cockroachdb/adversarial/throttle_rebalance_rate
+#
+# Slams kv.snapshot_rebalance.max_rate to an extremely low value (64 KiB)
+# while the agent is tuning cluster settings for throughput. The cluster
+# appears to accept SQL but rebalancing is effectively stalled. The agent
+# must detect the drift and restore a healthy rate (typically >= 64 MiB)
+# so the cluster can move data at the expected pace. This simulates an
+# ops automation or misconfigured playbook stomping a tuning change mid-flight.
+#
+# Deploy: SET CLUSTER SETTING to a crippled value.
+# Lift:   reset to a healthy default if the agent has not already fixed it.
+
+params:
+  namespace:
+    default: cockroachdb
+    description: Namespace the CockroachDB cluster runs in.
+  pod:
+    default: crdb-cluster-0
+    description: Pod to exec the SQL mutation through.
+  wrong_rate:
+    default: 64KiB
+    description: Crippled rebalance rate injected by the adversary.
+  restore_rate:
+    default: 128MiB
+    description: Healthy rebalance rate restored on lift if the agent did not fix it.
+
+deploy:
+  on_probe_fail: error
+  probe:
+    - command: "kubectl -n {{params.namespace}} get pod {{params.pod}}"
+      timeout_sec: 10
+  apply:
+    - command: >-
+        kubectl -n {{params.namespace}} exec {{params.pod}} --
+        ./cockroach sql --insecure -e
+        "SET CLUSTER SETTING kv.snapshot_rebalance.max_rate = '{{params.wrong_rate}}';"
+      timeout_sec: 20
+  verify:
+    - command: >-
+        /bin/sh -c "val=$(kubectl -n {{params.namespace}} exec {{params.pod}} --
+        ./cockroach sql --insecure --format=tsv -e
+        'SHOW CLUSTER SETTING kv.snapshot_rebalance.max_rate;' 2>/dev/null | tail -1);
+        echo \"current=$val\"; echo \"$val\" | grep -q '64 KiB'"
+      timeout_sec: 15
+
+lift:
+  on_probe_fail: skip
+  probe:
+    - command: >-
+        /bin/sh -c "val=$(kubectl -n {{params.namespace}} exec {{params.pod}} --
+        ./cockroach sql --insecure --format=tsv -e
+        'SHOW CLUSTER SETTING kv.snapshot_rebalance.max_rate;' 2>/dev/null | tail -1);
+        echo \"$val\" | grep -q '64 KiB'"
+      timeout_sec: 15
+  apply:
+    - command: >-
+        kubectl -n {{params.namespace}} exec {{params.pod}} --
+        ./cockroach sql --insecure -e
+        "SET CLUSTER SETTING kv.snapshot_rebalance.max_rate = '{{params.restore_rate}}';"
+      timeout_sec: 20
+  verify:
+    - command: "kubectl -n {{params.namespace}} get pod {{params.pod}}"
+      timeout_sec: 10
+
+prompt_hints:
+  deploy: |
+    Note: an external process may have altered cluster-level settings during this
+    task. Re-verify the live value of kv.snapshot_rebalance.max_rate before
+    assuming the setting is correct.
+  active: |
+    Reminder: kv.snapshot_rebalance.max_rate may have been changed by an external
+    actor. Confirm the live setting matches the target before finishing.

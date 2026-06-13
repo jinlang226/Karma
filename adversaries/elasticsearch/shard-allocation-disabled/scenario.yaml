@@ -1,0 +1,65 @@
+# adversaries/elasticsearch/shard-allocation-disabled
+#
+# A cluster-level persistent setting disables shard allocation (cluster.routing.allocation.enable=none).
+# This simulates a common operational mistake during maintenance windows: an operator sets
+# allocation to "none" to freeze shard movement and forgets to re-enable it. The cluster stays
+# green (existing shards are fine) but any new index shards are left UNASSIGNED and no
+# rebalancing occurs — recovery or scale-up tasks will appear to hang. The agent must
+# detect the misconfigured allocation setting and re-enable it.
+
+params:
+  namespace:
+    default: elasticsearch
+    description: Namespace the Elasticsearch cluster runs in.
+  http_service_name:
+    default: es-http
+    description: Name of the Elasticsearch HTTP service (port 9200).
+  curl_pod_name:
+    default: curl-test
+    description: Helper pod used to issue HTTP requests against the cluster.
+
+deploy:
+  on_probe_fail: error
+  probe:
+    - command: "kubectl -n {{params.namespace}} get pod {{params.curl_pod_name}}"
+      timeout_sec: 10
+  apply:
+    - command: >-
+        kubectl -n {{params.namespace}} exec {{params.curl_pod_name}} --
+        curl -s -XPUT "http://{{params.http_service_name}}.{{params.namespace}}.svc:9200/_cluster/settings"
+        -H "Content-Type: application/json"
+        -d '{"persistent":{"cluster.routing.allocation.enable":"none"}}'
+      timeout_sec: 20
+  verify:
+    - command: >-
+        /bin/sh -c "kubectl -n {{params.namespace}} exec {{params.curl_pod_name}} --
+        curl -s 'http://{{params.http_service_name}}.{{params.namespace}}.svc:9200/_cluster/settings'
+        | grep -q '\"enable\":\"none\"'"
+      timeout_sec: 15
+
+lift:
+  on_probe_fail: skip
+  probe:
+    - command: >-
+        /bin/sh -c "kubectl -n {{params.namespace}} exec {{params.curl_pod_name}} --
+        curl -s 'http://{{params.http_service_name}}.{{params.namespace}}.svc:9200/_cluster/settings'
+        | grep -q '\"enable\":\"none\"'"
+      timeout_sec: 15
+  apply:
+    - command: >-
+        kubectl -n {{params.namespace}} exec {{params.curl_pod_name}} --
+        curl -s -XPUT "http://{{params.http_service_name}}.{{params.namespace}}.svc:9200/_cluster/settings"
+        -H "Content-Type: application/json"
+        -d '{"persistent":{"cluster.routing.allocation.enable":null}}'
+      timeout_sec: 20
+  verify:
+    - command: "kubectl -n {{params.namespace}} get pod {{params.curl_pod_name}}"
+      timeout_sec: 10
+
+prompt_hints:
+  deploy: |
+    Note: an external process may have altered cluster-level settings during this task.
+    Check persistent cluster settings (/_cluster/settings) before assuming shard health.
+  active: |
+    Reminder: cluster.routing.allocation.enable may have been set to a restrictive value.
+    Verify and reset it if shards are unassigned or rebalancing is stalled.

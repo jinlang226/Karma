@@ -1,0 +1,67 @@
+# nginx-ingress/strip_rate_limit_annotation
+#
+# An external automation run (or a careless kubectl edit) removes the
+# nginx.ingress.kubernetes.io/limit-rps annotation from the rate-api Ingress,
+# silently dropping the rate limit. The agent must detect that the annotation
+# is gone and re-apply the correct value so /api traffic is once again
+# throttled to the expected QPS.
+params:
+  namespace:
+    default: demo
+    description: Namespace the Ingress lives in.
+  ingress_name:
+    default: rate-api
+    description: Ingress whose rate-limit annotation will be stripped.
+  annotation_key:
+    default: nginx.ingress.kubernetes.io/limit-rps
+    description: Annotation key that enforces the rate limit.
+  limit_rps:
+    default: "1"
+    description: The correct limit value to restore on lift.
+
+deploy:
+  on_probe_fail: error
+  probe:
+    - command: "kubectl -n {{params.namespace}} get ingress {{params.ingress_name}}"
+      timeout_sec: 10
+  apply:
+    - command: >-
+        kubectl -n {{params.namespace}} annotate ingress {{params.ingress_name}}
+        {{params.annotation_key}}-
+        --overwrite
+      timeout_sec: 20
+  verify:
+    - command: >-
+        /bin/sh -c "kubectl -n {{params.namespace}} get ingress {{params.ingress_name}}
+        -o jsonpath='{.metadata.annotations.nginx\\.ingress\\.kubernetes\\.io/limit-rps}'
+        | grep -v ."
+      timeout_sec: 10
+
+lift:
+  on_probe_fail: skip
+  probe:
+    - command: >-
+        /bin/sh -c "kubectl -n {{params.namespace}} get ingress {{params.ingress_name}}
+        -o jsonpath='{.metadata.annotations.nginx\\.ingress\\.kubernetes\\.io/limit-rps}'
+        | grep -v ."
+      timeout_sec: 10
+  apply:
+    - command: >-
+        kubectl -n {{params.namespace}} annotate ingress {{params.ingress_name}}
+        {{params.annotation_key}}={{params.limit_rps}}
+        --overwrite
+      timeout_sec: 20
+  verify:
+    - command: >-
+        /bin/sh -c "test \"$(kubectl -n {{params.namespace}} get ingress {{params.ingress_name}}
+        -o jsonpath='{.metadata.annotations.nginx\\.ingress\\.kubernetes\\.io/limit-rps}')\"
+        = '{{params.limit_rps}}'"
+      timeout_sec: 10
+
+prompt_hints:
+  deploy: |
+    Note: an external process may be modifying Ingress annotations during this task.
+    Verify the live annotation state before assuming rate limiting is configured.
+  active: |
+    Reminder: a rate-limit annotation may have been removed from an Ingress mid-task.
+    Re-check annotations before considering the task complete.

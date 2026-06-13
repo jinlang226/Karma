@@ -1,0 +1,65 @@
+# cockroachdb/adversarial/scale_down_node
+#
+# Scales the crdb-cluster StatefulSet from 3 replicas down to 1 while the
+# agent is working, simulating a mistaken scale-down or automation failure.
+# A 1-node cluster loses quorum for new ranges and cannot tolerate any further
+# node loss. The agent must detect the regressed replica count and restore the
+# StatefulSet to the original 3-node topology.
+#
+# Deploy: scale StatefulSet to wrong_replicas (default 1).
+# Lift:   if the agent has not already restored it, scale back to restore_replicas.
+
+params:
+  namespace:
+    default: cockroachdb
+    description: Namespace the CockroachDB StatefulSet runs in.
+  statefulset_name:
+    default: crdb-cluster
+    description: Name of the CockroachDB StatefulSet.
+  wrong_replicas:
+    default: "1"
+    description: Replica count injected by the adversary (fault state).
+  restore_replicas:
+    default: "3"
+    description: Healthy replica count restored on lift if the agent did not fix it.
+
+deploy:
+  on_probe_fail: error
+  probe:
+    - command: "kubectl -n {{params.namespace}} get statefulset {{params.statefulset_name}}"
+      timeout_sec: 10
+  apply:
+    - command: >-
+        kubectl -n {{params.namespace}} scale statefulset {{params.statefulset_name}}
+        --replicas={{params.wrong_replicas}}
+      timeout_sec: 20
+  verify:
+    - command: >-
+        /bin/sh -c "test \"$(kubectl -n {{params.namespace}} get statefulset {{params.statefulset_name}}
+        -o jsonpath={.spec.replicas})\" = '{{params.wrong_replicas}}'"
+      timeout_sec: 10
+
+lift:
+  on_probe_fail: skip
+  probe:
+    - command: >-
+        /bin/sh -c "test \"$(kubectl -n {{params.namespace}} get statefulset {{params.statefulset_name}}
+        -o jsonpath={.spec.replicas})\" = '{{params.wrong_replicas}}'"
+      timeout_sec: 10
+  apply:
+    - command: >-
+        kubectl -n {{params.namespace}} scale statefulset {{params.statefulset_name}}
+        --replicas={{params.restore_replicas}}
+      timeout_sec: 20
+  verify:
+    - command: "kubectl -n {{params.namespace}} get statefulset {{params.statefulset_name}}"
+      timeout_sec: 10
+
+prompt_hints:
+  deploy: |
+    Note: an external process may be changing the CockroachDB cluster topology
+    during this task. Verify the live StatefulSet replica count matches the
+    intended node count before assuming the cluster is healthy.
+  active: |
+    Reminder: an earlier external change may have shrunk the cluster. Re-check
+    the StatefulSet replica count against the target before finishing.

@@ -1,0 +1,69 @@
+# adversaries/elasticsearch/transport-networkpolicy-block
+#
+# A NetworkPolicy is applied to the elasticsearch namespace that drops all ingress on port
+# 9300 (Elasticsearch inter-node transport). This simulates a network-hardening change
+# applied in the wrong namespace, or a misconfigured security policy that breaks cluster
+# formation. Nodes can no longer gossip or form quorum; the cluster becomes unavailable
+# even though all pods appear Running. The agent must identify the blocking NetworkPolicy,
+# remove or patch it, and confirm the cluster reforms.
+
+params:
+  namespace:
+    default: elasticsearch
+    description: Namespace where the NetworkPolicy and Elasticsearch pods reside.
+  policy_name:
+    default: block-es-transport
+    description: Name of the NetworkPolicy injected to block port 9300.
+  cluster_prefix:
+    default: es-cluster
+    description: Pod label (app=<cluster_prefix>) targeted by the NetworkPolicy.
+
+deploy:
+  on_probe_fail: error
+  probe:
+    - command: "kubectl -n {{params.namespace}} get statefulset {{params.cluster_prefix}}"
+      timeout_sec: 10
+  apply:
+    - command: >-
+        kubectl -n {{params.namespace}} apply -f - <<'EOF'
+        apiVersion: networking.k8s.io/v1
+        kind: NetworkPolicy
+        metadata:
+          name: {{params.policy_name}}
+          namespace: {{params.namespace}}
+        spec:
+          podSelector:
+            matchLabels:
+              app: {{params.cluster_prefix}}
+          policyTypes:
+            - Ingress
+          ingress:
+            - ports:
+                - port: 9200
+                  protocol: TCP
+        EOF
+      timeout_sec: 20
+  verify:
+    - command: "kubectl -n {{params.namespace}} get networkpolicy {{params.policy_name}}"
+      timeout_sec: 10
+
+lift:
+  on_probe_fail: skip
+  probe:
+    - command: "kubectl -n {{params.namespace}} get networkpolicy {{params.policy_name}}"
+      timeout_sec: 10
+  apply:
+    - command: "kubectl -n {{params.namespace}} delete networkpolicy {{params.policy_name}} --ignore-not-found=true"
+      timeout_sec: 20
+  verify:
+    - command: >-
+        /bin/sh -c "kubectl -n {{params.namespace}} get networkpolicy {{params.policy_name}} 2>&1 | grep -q 'not found'"
+      timeout_sec: 10
+
+prompt_hints:
+  deploy: |
+    Note: a NetworkPolicy may have been applied to the elasticsearch namespace during this task.
+    Check for NetworkPolicy objects that restrict port 9300 (transport) if nodes cannot communicate.
+  active: |
+    Reminder: a NetworkPolicy blocking port 9300 may still be in effect. Verify inter-node
+    transport connectivity and remove any blocking policy before declaring the cluster healthy.

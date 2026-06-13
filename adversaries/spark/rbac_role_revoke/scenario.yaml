@@ -1,0 +1,59 @@
+# spark/adversarial/rbac_role_revoke
+#
+# Deletes the spark Role (spark-pi-role) from the spark-pi namespace while the
+# agent is working. Without the Role the RoleBinding becomes dangling — the
+# ServiceAccount spark-pi loses all privileges, so any subsequent spark-submit
+# that creates executor pods or ConfigMaps fails with a 403 Forbidden. The agent
+# must notice the missing RBAC object and recreate or repair it so the driver can
+# successfully launch executors and complete the job.
+#
+# Targets the literal `spark-pi` namespace used by deploy_spark_pi.
+#
+# Deploy: delete the spark-pi-role Role.
+# Lift:   if the agent has not already recreated the Role, restore it.
+
+params:
+  namespace:
+    default: spark-pi
+    description: Namespace the SparkPi job runs in.
+  role_name:
+    default: spark-pi-role
+    description: RBAC Role the adversary deletes.
+
+deploy:
+  on_probe_fail: error
+  probe:
+    - command: "kubectl -n {{params.namespace}} get role {{params.role_name}}"
+      timeout_sec: 10
+  apply:
+    - command: "kubectl -n {{params.namespace}} delete role {{params.role_name}}"
+      timeout_sec: 20
+  verify:
+    - command: >-
+        /bin/sh -c "! kubectl -n {{params.namespace}} get role {{params.role_name}} 2>/dev/null"
+      timeout_sec: 10
+
+lift:
+  on_probe_fail: skip
+  probe:
+    - command: >-
+        /bin/sh -c "! kubectl -n {{params.namespace}} get role {{params.role_name}} 2>/dev/null"
+      timeout_sec: 10
+  apply:
+    - command: >-
+        kubectl -n {{params.namespace}} create role {{params.role_name}}
+        --verb=create,get,list,watch,delete,update,patch
+        --resource=services,configmaps,persistentvolumeclaims,pods
+      timeout_sec: 30
+  verify:
+    - command: "kubectl -n {{params.namespace}} get role {{params.role_name}}"
+      timeout_sec: 10
+
+prompt_hints:
+  deploy: |
+    Note: an external process may be modifying RBAC objects during this task.
+    If the driver cannot launch executor pods, verify that the Role and RoleBinding
+    are intact before debugging the job spec itself.
+  active: |
+    Reminder: a Role deletion may have occurred earlier in this workflow.
+    Re-check RBAC permissions before concluding the driver is fully authorized.

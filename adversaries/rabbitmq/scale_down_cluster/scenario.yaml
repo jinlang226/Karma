@@ -1,0 +1,70 @@
+# rabbitmq/adversarial/scale_down_cluster
+#
+# Scales the RabbitMQ StatefulSet down to a single replica mid-task, simulating
+# an erroneous scale-in operation (e.g., an autoscaler reacting to a brief load
+# drop or an operator mistake). With only one node running, quorum queues lose
+# their majority and mirrored classic queues have no replicas, making the cluster
+# effectively unable to guarantee durability. The agent must detect the reduced
+# membership and scale the StatefulSet back to its healthy replica count so the
+# cluster regains quorum and all three nodes rejoin.
+#
+# These rabbitmq cases run in a role namespace (BENCH_NAMESPACE is the active
+# context), so commands exec directly without -n.
+#
+# Deploy: scale the StatefulSet down to 1 replica.
+# Lift:   scale back to 3 replicas if the agent has not already done so.
+
+params:
+  cluster_prefix:
+    default: rabbitmq
+    description: Name prefix of the RabbitMQ StatefulSet scaled by the adversary.
+  wrong_replicas:
+    default: "1"
+    description: Replica count the adversary shrinks the StatefulSet to.
+  restore_replicas:
+    default: "3"
+    description: Healthy replica count restored on lift if the agent did not act.
+
+deploy:
+  on_probe_fail: error
+  probe:
+    - command: "kubectl get statefulset {{params.cluster_prefix}}"
+      timeout_sec: 15
+  apply:
+    - command: >-
+        kubectl scale statefulset {{params.cluster_prefix}}
+        --replicas={{params.wrong_replicas}}
+      timeout_sec: 20
+  verify:
+    - command: >-
+        /bin/sh -c "test \"$(kubectl get statefulset {{params.cluster_prefix}}
+        -o jsonpath={.spec.replicas})\" = '{{params.wrong_replicas}}'"
+      timeout_sec: 15
+
+lift:
+  # Probe succeeds when the StatefulSet still shows wrong_replicas → restore.
+  # If the agent already scaled back up, probe fails → skip cleanly.
+  on_probe_fail: skip
+  probe:
+    - command: >-
+        /bin/sh -c "test \"$(kubectl get statefulset {{params.cluster_prefix}}
+        -o jsonpath={.spec.replicas})\" = '{{params.wrong_replicas}}'"
+      timeout_sec: 15
+  apply:
+    - command: >-
+        kubectl scale statefulset {{params.cluster_prefix}}
+        --replicas={{params.restore_replicas}}
+      timeout_sec: 20
+  verify:
+    - command: "kubectl get statefulset {{params.cluster_prefix}}"
+      timeout_sec: 15
+
+prompt_hints:
+  deploy: |
+    Note: the RabbitMQ cluster topology may have been altered by an external
+    process during this task. Verify the StatefulSet replica count and node
+    membership before assuming the cluster is at full capacity.
+  active: |
+    Reminder: an earlier scale-down may have reduced the cluster to fewer nodes
+    than expected. Re-check StatefulSet replicas and cluster membership before
+    concluding the task is complete.

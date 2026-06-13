@@ -1,0 +1,60 @@
+# adversaries/elasticsearch/snapshot-secret-wiped
+#
+# The es-secure-settings Secret (which holds S3/MinIO credentials loaded into the
+# Elasticsearch keystore) is deleted. This simulates a pipeline job that incorrectly
+# rotates secrets by deleting the old one before the new one is in place. Once the
+# Secret is gone, Elasticsearch cannot reload keystore credentials and any snapshot
+# repository operation (create snapshot, restore, list) will fail with authentication
+# errors. The agent must re-create the Secret with the correct MinIO credentials and
+# trigger a keystore reload on each Elasticsearch pod.
+
+params:
+  namespace:
+    default: elasticsearch
+    description: Namespace the Elasticsearch cluster and MinIO run in.
+  secret_name:
+    default: es-secure-settings
+    description: Secret holding the S3/MinIO keystore credentials.
+  access_key:
+    default: minioadmin
+    description: MinIO access key to restore.
+  secret_key:
+    default: minioadmin
+    description: MinIO secret key to restore.
+
+deploy:
+  on_probe_fail: error
+  probe:
+    - command: "kubectl -n {{params.namespace}} get secret {{params.secret_name}}"
+      timeout_sec: 10
+  apply:
+    - command: "kubectl -n {{params.namespace}} delete secret {{params.secret_name}}"
+      timeout_sec: 20
+  verify:
+    - command: >-
+        /bin/sh -c "kubectl -n {{params.namespace}} get secret {{params.secret_name}} 2>&1 | grep -q 'not found'"
+      timeout_sec: 15
+
+lift:
+  on_probe_fail: skip
+  probe:
+    - command: >-
+        /bin/sh -c "kubectl -n {{params.namespace}} get secret {{params.secret_name}} 2>&1 | grep -q 'not found'"
+      timeout_sec: 15
+  apply:
+    - command: >-
+        kubectl -n {{params.namespace}} create secret generic {{params.secret_name}}
+        --from-literal=s3.client.default.access_key={{params.access_key}}
+        --from-literal=s3.client.default.secret_key={{params.secret_key}}
+      timeout_sec: 20
+  verify:
+    - command: "kubectl -n {{params.namespace}} get secret {{params.secret_name}}"
+      timeout_sec: 10
+
+prompt_hints:
+  deploy: |
+    Note: an external process may have deleted Elasticsearch keystore secrets during this task.
+    Verify the es-secure-settings Secret exists before attempting snapshot repository operations.
+  active: |
+    Reminder: the es-secure-settings Secret (S3/MinIO credentials) may have been wiped.
+    Re-create it and reload the keystore on all nodes if snapshot operations are failing.

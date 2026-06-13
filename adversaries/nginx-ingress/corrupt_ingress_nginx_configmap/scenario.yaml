@@ -1,0 +1,60 @@
+# nginx-ingress/corrupt_ingress_nginx_configmap
+#
+# A misconfigured CI pipeline (or a bad GitOps sync) patches the
+# ingress-nginx-controller ConfigMap with an invalid log-format-upstream
+# value, causing nginx to reload with broken configuration and start
+# logging errors or emitting malformed access-log lines. The agent must
+# detect the bad log-format-upstream entry and remove or correct it so
+# the controller resumes healthy log output.
+params:
+  namespace:
+    default: ingress-nginx
+    description: Namespace the ingress-nginx-controller ConfigMap lives in.
+  configmap_name:
+    default: ingress-nginx-controller
+    description: ConfigMap that holds ingress-nginx global configuration.
+  bad_log_format:
+    default: "INVALID LOG FORMAT $$$$"
+    description: Corrupt log-format-upstream value injected by the fault.
+
+deploy:
+  on_probe_fail: error
+  probe:
+    - command: "kubectl -n {{params.namespace}} get configmap {{params.configmap_name}}"
+      timeout_sec: 10
+  apply:
+    - command: >-
+        kubectl -n {{params.namespace}} patch configmap {{params.configmap_name}}
+        --type merge -p
+        '{"data":{"log-format-upstream":"{{params.bad_log_format}}"}}'
+      timeout_sec: 20
+  verify:
+    - command: >-
+        /bin/sh -c "kubectl -n {{params.namespace}} get configmap {{params.configmap_name}}
+        -o jsonpath={.data.log-format-upstream} | grep -q 'INVALID'"
+      timeout_sec: 10
+
+lift:
+  on_probe_fail: skip
+  probe:
+    - command: >-
+        /bin/sh -c "kubectl -n {{params.namespace}} get configmap {{params.configmap_name}}
+        -o jsonpath={.data.log-format-upstream} | grep -q 'INVALID'"
+      timeout_sec: 10
+  apply:
+    - command: >-
+        /bin/sh -c "kubectl -n {{params.namespace}} patch configmap {{params.configmap_name}}
+        --type json -p '[{\"op\":\"remove\",\"path\":\"/data/log-format-upstream\"}]'
+        2>/dev/null || true"
+      timeout_sec: 20
+  verify:
+    - command: "kubectl -n {{params.namespace}} get configmap {{params.configmap_name}}"
+      timeout_sec: 10
+
+prompt_hints:
+  deploy: |
+    Note: the ingress-nginx-controller ConfigMap may have been patched with invalid data
+    during this task. Check for controller reload errors if nginx behavior looks wrong.
+  active: |
+    Reminder: a bad log-format-upstream value may still be in the ingress-nginx-controller
+    ConfigMap. Verify the ConfigMap contents if the controller is reloading unexpectedly.

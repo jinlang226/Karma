@@ -1,0 +1,68 @@
+# mongodb/adversarial/network_policy_block
+#
+# Applies a deny-all NetworkPolicy to the mongodb namespace while the agent is
+# working, blocking port 27017 between replica set members. This simulates a
+# misconfigured security policy pushed by a platform team. Elections stall, the
+# primary may step down, and inter-member replication stops. The agent must
+# detect that the NetworkPolicy is blocking traffic and remove or correct it to
+# restore replication.
+#
+# Targets the literal `mongodb` namespace.
+#
+# Deploy: apply a NetworkPolicy that selects all pods and allows no ingress on
+#         port 27017 from replica-set peers.
+# Lift:   delete the blocking NetworkPolicy if the agent has not already done so.
+
+params:
+  namespace:
+    default: mongodb
+    description: Namespace where the blocking NetworkPolicy is applied.
+  policy_name:
+    default: adversary-deny-mongo
+    description: Name of the injected NetworkPolicy that blocks MongoDB traffic.
+
+deploy:
+  on_probe_fail: error
+  probe:
+    - command: "kubectl -n {{params.namespace}} get namespace {{params.namespace}}"
+      timeout_sec: 10
+  apply:
+    - command: >-
+        /bin/sh -c "cat <<'EOF' | kubectl apply -f -
+        apiVersion: networking.k8s.io/v1
+        kind: NetworkPolicy
+        metadata:
+          name: {{params.policy_name}}
+          namespace: {{params.namespace}}
+        spec:
+          podSelector: {}
+          policyTypes:
+          - Ingress
+          ingress: []
+        EOF"
+      timeout_sec: 20
+  verify:
+    - command: "kubectl -n {{params.namespace}} get networkpolicy {{params.policy_name}}"
+      timeout_sec: 10
+
+lift:
+  on_probe_fail: skip
+  probe:
+    - command: "kubectl -n {{params.namespace}} get networkpolicy {{params.policy_name}} --ignore-not-found"
+      timeout_sec: 10
+  apply:
+    - command: "kubectl -n {{params.namespace}} delete networkpolicy {{params.policy_name}} --ignore-not-found"
+      timeout_sec: 20
+  verify:
+    - command: >-
+        /bin/sh -c "! kubectl -n {{params.namespace}} get networkpolicy {{params.policy_name}} 2>/dev/null"
+      timeout_sec: 10
+
+prompt_hints:
+  deploy: |
+    Note: a NetworkPolicy restricting traffic may be applied to the namespace
+    during this task. If replica set members cannot reach each other, check for
+    NetworkPolicy objects that might block port 27017.
+  active: |
+    Reminder: a deny-all NetworkPolicy may still be in effect. Verify inter-member
+    connectivity before declaring the replica set healthy.
