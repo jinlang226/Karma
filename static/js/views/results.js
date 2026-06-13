@@ -211,7 +211,7 @@
   function openRunsFolder(folder) {
     runsFolder = folder;
     const body = document.getElementById("runs-body");
-    if (body) renderRunRows(body);
+    if (body) { renderRunRows(body); KARMA.replayEnter(body, "fadeIn 0.25s ease both"); }
   }
 
   // One clickable run row.
