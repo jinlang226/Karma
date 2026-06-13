@@ -11,6 +11,27 @@ ES_IMAGE = os.environ.get(
 )
 SERVICE = os.environ.get("BENCH_PARAM_HTTP_SERVICE_NAME", "es-http")
 EXPECTED_NODES = int(os.environ.get("BENCH_PARAM_EXPECTED_NODES", "3"))
+# ES 8.x runs with security enabled, so the HTTPS API requires authenticating as
+# the elastic superuser. Read its password from the secret the precondition
+# created so the oracle's queries aren't rejected with 401.
+PASSWORD_SECRET = os.environ.get("BENCH_PARAM_ELASTIC_PASSWORD_SECRET_NAME", "elastic-password")
+PASSWORD_KEY = os.environ.get("BENCH_PARAM_ELASTIC_PASSWORD_KEY", "password")
+
+
+def _elastic_password():
+    """Fetch the elastic-user password from its secret (base64-decoded), or None."""
+    import base64
+    r = run(["kubectl", "-n", NAMESPACE, "get", "secret", PASSWORD_SECRET,
+             "-o", "jsonpath={.data." + PASSWORD_KEY + "}"])
+    if r.returncode != 0 or not r.stdout.strip():
+        return None
+    try:
+        return base64.b64decode(r.stdout.strip()).decode()
+    except Exception:
+        return None
+
+
+ELASTIC_PASSWORD = None  # set in main() once kubectl is reachable
 
 
 def run(cmd):
@@ -47,20 +68,12 @@ def pod_ready(pod):
 
 def curl_json(path, errors):
     cmd = [
-        "kubectl",
-        "-n",
-        NAMESPACE,
-        "exec",
-        "curl-test",
-        "--",
-        "curl",
-        "-s",
-        "-S",
-        "-k",
-        "--max-time",
-        "10",
-        f"https://{SERVICE}:9200{path}",
+        "kubectl", "-n", NAMESPACE, "exec", "curl-test", "--",
+        "curl", "-s", "-S", "-k",
     ]
+    if ELASTIC_PASSWORD:
+        cmd += ["-u", f"elastic:{ELASTIC_PASSWORD}"]
+    cmd += ["--max-time", "10", f"https://{SERVICE}:9200{path}"]
     result = run(cmd)
     if result.returncode != 0:
         detail = result.stderr.strip() or result.stdout.strip() or f"exit {result.returncode}"
@@ -78,7 +91,10 @@ def curl_json(path, errors):
 
 
 def main():
+    global ELASTIC_PASSWORD
     errors = []
+
+    ELASTIC_PASSWORD = _elastic_password()
 
     es_pods = get_es_pods(errors)
     if len(es_pods) != EXPECTED_NODES:
