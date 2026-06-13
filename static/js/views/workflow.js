@@ -193,7 +193,9 @@
     panel.appendChild(el("div", { class: "toolbar" },
       el("button", { class: "btn", onClick: runSelected }, "Run selected")));
     panel.appendChild(el("div", { class: "list-frame" },
-      headTbl,
+      // Header wrapped so it can reserve the same scrollbar gutter as the body --
+      // otherwise the header bar is wider than the scrolling rows.
+      el("div", { class: "list-head" }, headTbl),
       // Current-folder bar, merged under the header; shown only inside a folder.
       el("div", { id: "wf-crumb-bar", class: "dir-bar", style: "display:none" }),
       el("div", { class: "list-body wf-files-scroll" }, bodyTbl)));
