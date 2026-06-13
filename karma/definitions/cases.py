@@ -2,7 +2,7 @@
 Case loading, schema validation, parameter resolution, and config normalization.
 
 A *case* is one benchmark task defined by a ``test.yaml`` file under
-``resources/{service}/{case_name}/``. This module loads that file from
+``cases/{service}/{case_name}/``. This module loads that file from
 disk, validates its structure, resolves parameter overrides, and returns
 a normalized case descriptor consumed by ``runtime.case``.
 

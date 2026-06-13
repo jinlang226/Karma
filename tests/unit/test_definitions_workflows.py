@@ -123,18 +123,18 @@ class TestResolveRowsNamespaceRoles:
         # the roles from the case's namespace_contract (regression for the bug
         # where multi-role cases silently bound only "default").
         wf = single_case_to_workflow("demo", "configmap-update-two-ns")
-        rows = resolve_workflow_rows(wf, resources_dir=Path("resources"))
+        rows = resolve_workflow_rows(wf, resources_dir=Path("cases"))
         assert rows[0]["namespace_roles"] == ["source", "target"]
 
     def test_single_role_case_defaults(self):
         wf = single_case_to_workflow("demo", "configmap-update")
-        rows = resolve_workflow_rows(wf, resources_dir=Path("resources"))
+        rows = resolve_workflow_rows(wf, resources_dir=Path("cases"))
         assert rows[0]["namespace_roles"] == ["default"]
 
     def test_explicit_stage_namespaces_win(self):
         wf = single_case_to_workflow("demo", "configmap-update-two-ns",
                                      namespace_roles=["only"])
-        rows = resolve_workflow_rows(wf, resources_dir=Path("resources"))
+        rows = resolve_workflow_rows(wf, resources_dir=Path("cases"))
         assert rows[0]["namespace_roles"] == ["only"]
 
 

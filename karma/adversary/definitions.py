@@ -6,11 +6,11 @@ during a workflow run to evaluate how well the agent diagnoses and
 recovers from unexpected environmental conditions.
 
 Scenarios live in a top-level ``adversaries/`` directory (sibling of
-``resources/``), grouped by service::
+``cases/``), grouped by service::
 
     adversaries/{service}/{scenario}/scenario.yaml
 
-The legacy ``resources/{service}/adversarial/{scenario}/`` location is still
+The legacy ``cases/{service}/adversarial/{scenario}/`` location is still
 accepted as a fallback. The service is derived from ``inject_at_stage`` via the
 stage service map,
 enforcing that a scenario references resources from within the same test
@@ -31,10 +31,10 @@ from pydantic import BaseModel, ValidationError
 
 _SCENARIO_FILE_NAME = "scenario.yaml"
 # Scenarios live in a top-level ``adversaries/`` directory (sibling of
-# ``resources/``), grouped by service: ``adversaries/{service}/{scenario}/``.
+# ``cases/``), grouped by service: ``adversaries/{service}/{scenario}/``.
 # The legacy in-resources location is still accepted as a fallback.
 _ADVERSARIES_DIR_NAME = "adversaries"
-_ADVERSARIAL_DIR_NAME = "adversarial"  # legacy: resources/{service}/adversarial/
+_ADVERSARIAL_DIR_NAME = "adversarial"  # legacy: cases/{service}/adversarial/
 _VALID_ON_PROBE_FAIL = {"error", "skip"}
 
 
@@ -274,7 +274,7 @@ def resolve_adversary_scenario(
     The service is derived from
     ``stage_service_map[entry["inject_at_stage"]]``, then the scenario
     file is loaded from
-    ``resources/{service}/adversarial/{scenario}/scenario.yaml``.
+    ``cases/{service}/adversarial/{scenario}/scenario.yaml``.
     Parameter substitution uses the same ``{{params.foo}}`` syntax as
     ``test.yaml`` files.
 
@@ -314,7 +314,7 @@ def resolve_adversary_scenario(
             f"not found in stage service map"
         )
 
-    # Prefer the top-level adversaries/ tree (sibling of resources/); fall back
+    # Prefer the top-level adversaries/ tree (sibling of cases/); fall back
     # to the legacy in-resources location for back-compat.
     adversaries_dir = resources_dir.parent / _ADVERSARIES_DIR_NAME
     candidates = [

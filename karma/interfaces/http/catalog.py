@@ -485,7 +485,7 @@ def list_adversary_scenarios(resources_dir: Path) -> list[dict[str, Any]]:
 
     Scenarios live in the top-level ``adversaries/{service}/{scenario}/
     scenario.yaml`` tree (a sibling of *resources_dir*); the legacy
-    ``resources/{service}/adversarial/{scenario}/`` location is still scanned
+    ``cases/{service}/adversarial/{scenario}/`` location is still scanned
     as a fallback. Each entry carries the owning service, scenario name, file
     path, a cheap ``has_lift`` flag, declared prompt hints, and the param
     declarations (name/default/description) so the adversary panel and the

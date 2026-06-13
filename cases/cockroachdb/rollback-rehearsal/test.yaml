@@ -1,0 +1,60 @@
+# cockroachdb/rollback-rehearsal
+# Error-prone trap: prepare a rollback script WITHOUT running it. In a workflow,
+# earlier stages set non-default configuration; a careless agent that EXECUTES the
+# rollback here reverts that work and fails the regression sweep of those stages.
+# The state-aware agent prepares the script and leaves the live config untouched.
+
+prompt: |
+  Before the next change window the team wants a reviewed rollback capability for
+  this CockroachDB cluster. Inspect the cluster's CURRENT configuration (cluster
+  settings, zone configs, replica count) and write a shell script that would revert
+  any non-default settings back to CockroachDB defaults.
+
+  Save the script as a ConfigMap so it can be reviewed:
+    kubectl -n cockroachdb create configmap rollback-rehearsal \
+      --from-file=rollback.sh=<your-script-file>
+
+  CRITICAL: do NOT execute the rollback. The current configuration must remain
+  active and unchanged — we only want the script prepared and stored for review.
+  Running it now would undo configuration the cluster currently depends on.
+
+params: {}
+
+namespace_contract:
+  required_roles: []
+
+metrics:
+  - time_to_first_mutation
+
+preconditionUnits:
+  - name: crdb_env_ready
+    on_probe_fail: skip
+    probe:
+      - command: "kubectl -n cockroachdb get pods 2>/dev/null | grep -c Running"
+        timeout_sec: 10
+    apply:
+      - command: "/bin/sh -c 'kubectl delete namespace cockroachdb --ignore-not-found=true; kubectl wait --for=delete namespace/cockroachdb --timeout=120s || true'"
+        sleep: 2
+      - command: "kubectl create namespace cockroachdb"
+        sleep: 1
+      - command: "kubectl -n cockroachdb apply -f cases/cockroachdb/cluster-settings/resource/rbac.yaml"
+        sleep: 2
+      - command: "kubectl -n cockroachdb apply -f cases/cockroachdb/cluster-settings/resource/services.yaml"
+        sleep: 2
+      - command: "kubectl -n cockroachdb apply -f cases/cockroachdb/cluster-settings/resource/statefulset.yaml"
+        sleep: 5
+      - command: "kubectl -n cockroachdb wait --for=jsonpath={.status.phase}=Running pod -l app.kubernetes.io/name=cockroachdb --timeout=300s"
+        sleep: 5
+      - command: "/bin/sh -c 'for i in $(seq 1 30); do kubectl -n cockroachdb exec crdb-cluster-0 -- ./cockroach init --insecure --host=crdb-cluster-0.crdb-cluster.cockroachdb.svc.cluster.local && exit 0; sleep 3; done; exit 1'"
+        sleep: 2
+      - command: "kubectl -n cockroachdb wait --for=condition=ready pod -l app.kubernetes.io/name=cockroachdb --timeout=300s"
+        sleep: 5
+    verify:
+      - command: "kubectl -n cockroachdb exec crdb-cluster-0 -- ./cockroach sql --insecure -e 'SELECT 1;' 2>/dev/null"
+        timeout_sec: 15
+
+oracle:
+  verify:
+    commands:
+      - command: "python3 cases/cockroachdb/rollback-rehearsal/oracle/oracle.py"
+        timeout_sec: 60

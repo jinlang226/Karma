@@ -110,14 +110,14 @@ class TestListRuns:
 
 class TestListWorkflowFiles:
     def test_valid_workflow_parsed(self, tmp_path):
-        _write_case(tmp_path / "resources", "svc", "c1", "prompt: hi\n")
+        _write_case(tmp_path / "cases", "svc", "c1", "prompt: hi\n")
         wf_dir = tmp_path / "workflows"
         wf_dir.mkdir()
         (wf_dir / "demo.yaml").write_text(
             "metadata:\n  id: demo-flow\n"
             "spec:\n  stages:\n    - id: s1\n      service: svc\n      case: c1\n"
         )
-        result = catalog.list_workflow_files(wf_dir, tmp_path / "resources")
+        result = catalog.list_workflow_files(wf_dir, tmp_path / "cases")
         assert result[0]["ok"] is True
         assert result[0]["id"] == "demo-flow"
         assert result[0]["stage_count"] == 1
@@ -126,7 +126,7 @@ class TestListWorkflowFiles:
         wf_dir = tmp_path / "workflows"
         wf_dir.mkdir()
         (wf_dir / "bad.yaml").write_text("metadata: {}\nspec: {}\n")
-        result = catalog.list_workflow_files(wf_dir, tmp_path / "resources")
+        result = catalog.list_workflow_files(wf_dir, tmp_path / "cases")
         assert result[0]["ok"] is False
         assert result[0]["errors"]
 
@@ -154,8 +154,8 @@ class TestListAdversaryScenarios:
 
 class TestSaveWorkflow:
     def _resources(self, tmp_path):
-        _write_case(tmp_path / "resources", "svc", "c1", "prompt: hi\n")
-        return tmp_path / "resources"
+        _write_case(tmp_path / "cases", "svc", "c1", "prompt: hi\n")
+        return tmp_path / "cases"
 
     def _yaml(self):
         return (

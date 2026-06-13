@@ -50,7 +50,7 @@ karma/
                  (async judge jobs + cross-run batches), cli_preview
   runtime/manual.py  interactive operator run mode (start/submit/cleanup)
   judge/batch.py     cross-run batch evaluation (mean experiment score)
-static/          web UI served at "/" (plain HTML/CSS/JS, no build step)
+webui/          web UI served at "/" (plain HTML/CSS/JS, no build step)
   index.html · css/styles.css · js/{api,app}.js · js/views/*.js
 ```
 
@@ -70,9 +70,9 @@ static/          web UI served at "/" (plain HTML/CSS/JS, no build step)
 - `interfaces/http/server.py` stays thin: routes call into `jobs`, `catalog`,
   `judging`, `cli_preview`, `events`, or `runtime.*` and serialize the result.
   All run/judge progress streams through the single `events.hub`.
-- The web UI in `static/` talks only to the `/api/*` endpoints. Each view
+- The web UI in `webui/` talks only to the `/api/*` endpoints. Each view
   registers itself via `KARMA.registerView`; add a view by dropping a file
-  under `static/js/views/` and a `<script>` tag in `index.html`.
+  under `webui/js/views/` and a `<script>` tag in `index.html`.
 
 **Stage execution order** (see `karma/runtime/case.py`): create stage dir →
 launch kubectl proxy → bind namespace roles + create namespaces → run
@@ -128,7 +128,7 @@ Endpoints: `GET /health`, `POST /api/run`, `GET /api/run/<id>/status`,
 
 ### Key environment variables (see `karma/settings.py`)
 
-`KARMA_RESOURCES_DIR` (default `resources`), `KARMA_RUNS_DIR` (`runs`),
+`KARMA_RESOURCES_DIR` (default `cases`), `KARMA_RUNS_DIR` (`runs`),
 `KARMA_HOST`/`KARMA_PORT`, `KARMA_JUDGE_MODEL` (`gpt-4o`),
 `KARMA_JUDGE_API_KEY` (falls back to `OPENAI_API_KEY`),
 `KARMA_ORACLE_TIMEOUT_SEC` (120), `KARMA_COMMAND_TIMEOUT_SEC` (120),

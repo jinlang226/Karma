@@ -1,0 +1,99 @@
+# cockroachdb/health-check-recovery
+# Restore full cluster health after a pod fails health checks and the cluster is degraded
+
+prompt: |
+  A CockroachDB cluster is running in the cockroachdb namespace. One pod is
+  failing health checks and the cluster is degraded.
+
+  Your task:
+  Restore full cluster health so all pods are Ready and the cluster is healthy.
+
+  Agent task: Health Checking and Auto-Recovery
+  File: pkg/healthchecker/healthchecker.go
+
+  Health checking components:
+  1. Kubernetes readiness probe:
+     - Checks /health?ready=1 endpoint
+     - Pod removed from service if failing
+     - Triggers pod restart if failing for too long
+
+  2. Liveness probe:
+     - Checks /health endpoint
+     - Kills pod if failing
+     - Kubernetes restarts pod automatically
+
+  3. HealthChecker.Probe():
+     - Used during rolling updates
+     - Checks ranges_underreplicated metric
+     - Waits until metric = 0 before continuing
+     - Ensures cluster healthy after each pod restart
+
+  Health endpoints:
+  - /health: Basic liveness check
+  - /health?ready=1: Readiness check (considers cluster status)
+  - /_status/vars: Prometheus metrics including under-replicated ranges
+
+  Recovery process:
+  1. Readiness probe fails for one pod
+  2. Pod removed from Service (no new connections)
+  3. Operator waits for readiness to recover
+  4. Pod rejoins cluster and health checks pass
+
+  Verification:
+  1. Pod recovered:
+     kubectl -n cockroachdb get pods
+     (crdb-cluster-1 should show 1/1 READY)
+
+  2. All nodes in cluster:
+     kubectl -n cockroachdb exec crdb-cluster-0 -- \
+       ./cockroach node status --insecure
+     (All 3 nodes should be is_live=true)
+
+  3. Verify SQL readiness:
+     kubectl -n cockroachdb exec crdb-cluster-0 -- \
+       ./cockroach sql --insecure -e "SELECT 1;"
+     (Should succeed)
+
+namespace_contract:
+  required_roles: []
+
+metrics:
+  - time_to_first_mutation
+  - destructive_ops
+
+preconditionUnits:
+  - name: crdb_env_ready
+    on_probe_fail: skip
+    probe:
+      - command: "kubectl -n cockroachdb get pods 2>/dev/null | grep -c Running"
+        timeout_sec: 10
+    apply:
+      - command: "/bin/sh -c 'kubectl delete namespace cockroachdb --ignore-not-found=true; kubectl wait --for=delete namespace/cockroachdb --timeout=120s || true'"
+        sleep: 2
+      - command: "kubectl create namespace cockroachdb"
+        sleep: 1
+      - command: "kubectl -n cockroachdb apply -f cases/cockroachdb/health-check-recovery/resource/"
+        sleep: 5
+      - command: "/bin/sh -c 'for i in $(seq 1 30); do count=$(kubectl -n cockroachdb get pod -l app.kubernetes.io/name=cockroachdb --no-headers 2>/dev/null | wc -l | tr -d \" \"); if [ \"${count}\" -ge 1 ]; then exit 0; fi; sleep 2; done; exit 1'"
+        sleep: 1
+      - command: "kubectl -n cockroachdb wait --for=jsonpath={.status.phase}=Running pod -l app.kubernetes.io/name=cockroachdb --timeout=300s"
+        sleep: 5
+      - command: "/bin/sh -c 'for i in $(seq 1 30); do kubectl -n cockroachdb exec crdb-cluster-0 -- ./cockroach init --insecure --host=crdb-cluster-0.crdb-cluster.cockroachdb.svc.cluster.local && exit 0; sleep 3; done; exit 1'"
+        sleep: 2
+      - command: "kubectl -n cockroachdb wait --for=condition=ready pod -l app.kubernetes.io/name=cockroachdb --timeout=300s"
+        sleep: 10
+      - command: "kubectl -n cockroachdb apply -f cases/cockroachdb/health-check-recovery/fault/"
+        sleep: 5
+      - command: "kubectl -n cockroachdb delete pod crdb-cluster-1"
+        sleep: 2
+      - command: "kubectl -n cockroachdb get pods"
+        sleep: 2
+    verify:
+      - command: "kubectl -n cockroachdb get pods 2>/dev/null | grep -c Running"
+        timeout_sec: 10
+
+oracle:
+  verify:
+    commands:
+      - command: "python3 cases/cockroachdb/health-check-recovery/oracle/oracle.py"
+        timeout_sec: 60

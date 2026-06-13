@@ -8,10 +8,10 @@ from karma.interfaces.http.server import create_app
 @pytest.fixture()
 def client(tmp_path):
     # Minimal demo case so workflow preview can resolve a real stage.
-    case = tmp_path / "resources" / "demo" / "cm" / "test.yaml"
+    case = tmp_path / "cases" / "demo" / "cm" / "test.yaml"
     case.parent.mkdir(parents=True)
     case.write_text("prompt: do it\nnamespace_contract:\n  required_roles: [default]\n")
-    app = create_app(resources_dir=tmp_path / "resources", runs_dir=tmp_path / "runs")
+    app = create_app(resources_dir=tmp_path / "cases", runs_dir=tmp_path / "runs")
     app.config.update(TESTING=True)
     return app.test_client()
 

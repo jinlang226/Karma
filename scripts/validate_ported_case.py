@@ -23,7 +23,7 @@ import yaml
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from karma.definitions.cases import load_case_file, normalize_case  # noqa: E402
 
-RES = Path("resources")
+RES = Path("cases")
 
 
 def main() -> int:
@@ -42,10 +42,10 @@ def main() -> int:
     text = (case_dir / "test.yaml").read_text()
 
     # 2. referenced paths exist (explicit files + whole-dir applies)
-    for ref in sorted(set(re.findall(r"resources/[A-Za-z0-9_./-]+\.(?:yaml|py|sh)", text))):
+    for ref in sorted(set(re.findall(r"cases/[A-Za-z0-9_./-]+\.(?:yaml|py|sh)", text))):
         if not Path(ref).exists():
             problems.append(f"referenced file missing: {ref}")
-    for ref in sorted(set(re.findall(r"resources/[A-Za-z0-9_./-]+/resource/(?:\s|\"|')", text))):
+    for ref in sorted(set(re.findall(r"cases/[A-Za-z0-9_./-]+/resource/(?:\s|\"|')", text))):
         d = ref.strip("\"' \t\r\n")
         if not Path(d).is_dir() or not any(Path(d).glob("*.yaml")):
             problems.append(f"referenced resource dir empty/missing: {d}")
@@ -63,9 +63,9 @@ def main() -> int:
             continue
         if "envsubst" in line or re.search(r"\bsed\b", line):
             continue  # substituted at apply time
-        for ref in re.findall(r"resources/[A-Za-z0-9_./-]+\.(?:yaml)", line):
+        for ref in re.findall(r"cases/[A-Za-z0-9_./-]+\.(?:yaml)", line):
             plain_files.add(str(Path(ref).resolve()))
-        for ref in re.findall(r"resources/[A-Za-z0-9_./-]+/resource/?(?=[\s\"'])", line):
+        for ref in re.findall(r"cases/[A-Za-z0-9_./-]+/resource/?(?=[\s\"'])", line):
             plain_dirs.add(str(Path(ref.rstrip("/")).resolve()))
 
     def _strict(y: Path) -> bool:
