@@ -320,7 +320,6 @@ subjects:
   namespace: ingress-nginx
 ---
 apiVersion: v1
-data: null
 kind: ConfigMap
 metadata:
   labels:
@@ -331,6 +330,14 @@ metadata:
     app.kubernetes.io/version: 1.14.1
   name: ingress-nginx-controller
   namespace: ingress-nginx
+data:
+  # Allow configuration-snippet annotations so agents can reference custom zones.
+  allow-snippet-annotations: "true"
+  # Define a shared rate-limit zone at the nginx http block level.
+  # 20 r/m per replica × 3 replicas ≈ 1 r/s effective global limit.
+  http-snippet: "limit_req_zone $binary_remote_addr zone=api_zone:10m rate=20r/m;"
+  # Return HTTP 429 for rate-limited requests (instead of default 503).
+  limit-req-status-code: "429"
 ---
 apiVersion: v1
 kind: Service
@@ -462,12 +469,14 @@ spec:
           timeoutSeconds: 1
         name: controller
         ports:
+        # No hostPort: the oracle reaches the controller via its Service DNS
+        # (ingress-nginx-controller.ingress-nginx.svc), so binding host ports is
+        # unnecessary and would stop the 3 replicas this case scales to from all
+        # scheduling on a single-node cluster.
         - containerPort: 80
-          hostPort: 80
           name: http
           protocol: TCP
         - containerPort: 443
-          hostPort: 443
           name: https
           protocol: TCP
         - containerPort: 8443
