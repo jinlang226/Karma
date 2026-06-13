@@ -34,21 +34,29 @@ _jobs_lock = threading.Lock()
 # like codex's ~/.codex/auth.json must be mounted, the same way the CLI's
 # --agent-auth-path/--agent-auth-dest does. Without this a docker codex run
 # authenticates as nobody and every OpenAI call 401s.
-_DOCKER_AUTH_FILES = {
-    "codex": (Path.home() / ".codex" / "auth.json", "/root/.codex/auth.json"),
+_DOCKER_AGENT_MOUNTS = {
+    # codex authenticates from ~/.codex/auth.json and reads its model provider /
+    # base_url from ~/.codex/config.toml. Mount both so a docker run behaves like
+    # the host CLI (including a custom OpenAI-compatible provider). Each file is
+    # only mounted if it exists on the host. Env-based creds (OPENAI_API_KEY,
+    # Claude OAuth/API keys) are still forwarded automatically by launch_agent.
+    "codex": [
+        (Path.home() / ".codex" / "auth.json", "/root/.codex/auth.json"),
+        (Path.home() / ".codex" / "config.toml", "/root/.codex/config.toml"),
+    ],
 }
 
 
 def _docker_sandbox_options(agent_name: str | None, sandbox_mode: str) -> dict[str, Any] | None:
-    """Build sandbox_options that mount an agent's host credential file for a
-    docker run, so the in-container agent can authenticate. Returns ``None``
-    when nothing needs mounting (local runs, or no known/extant auth file)."""
+    """Build sandbox_options that mount an agent's host credential/config files
+    for a docker run, so the in-container agent authenticates and uses the same
+    provider config as the host. Returns ``None`` for local runs or when no
+    known file exists."""
     if sandbox_mode != "docker" or not agent_name:
         return None
-    src_dest = _DOCKER_AUTH_FILES.get(agent_name)
-    if src_dest and src_dest[0].exists():
-        return {"extra_mounts": [(src_dest[0], src_dest[1])]}
-    return None
+    mounts = [(src, dest) for src, dest in _DOCKER_AGENT_MOUNTS.get(agent_name, [])
+              if src.exists()]
+    return {"extra_mounts": mounts} if mounts else None
 
 
 # ---------------------------------------------------------------------------
