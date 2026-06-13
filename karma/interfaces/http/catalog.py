@@ -121,13 +121,50 @@ def get_case_detail(
     }
 
 
+def _find_run_dirs(runs_dir: Path, _depth: int = 0) -> list[Path]:
+    """All run directories under *runs_dir* -- at the top level, or nested under
+    a grouping folder (e.g. ``examples/<service>/``). A run dir holds a
+    config.json / run.json / workflow_state.json; other dirs are recursed into."""
+    out: list[Path] = []
+    try:
+        children = sorted(runs_dir.iterdir())
+    except Exception:
+        return out
+    for c in children:
+        if not c.is_dir():
+            continue
+        is_run = (c / "stages").is_dir() or any(
+            (c / f).exists() for f in ("config.json", "run.json", "workflow_state.json")
+        )
+        if is_run:
+            out.append(c)
+        elif _depth < 3:
+            out.extend(_find_run_dirs(c, _depth + 1))
+    return out
+
+
+def resolve_run_dir(runs_dir: Path, run_id: str) -> Path | None:
+    """Resolve a run id to its directory, top-level or nested under a grouping
+    folder (examples/<service>/). Returns None when unsafe or not found."""
+    if not run_id or ".." in run_id or "/" in run_id or "\\" in run_id:
+        return None
+    direct = runs_dir / run_id
+    if direct.is_dir():
+        return direct
+    for rd in _find_run_dirs(runs_dir):
+        if rd.name == run_id:
+            return rd
+    return None
+
+
 def list_runs(runs_dir: Path) -> list[dict[str, Any]]:
     """Return the run history, newest first.
 
     Each entry summarizes one run directory: its status (from
-    ``workflow_state.json`` or ``run.json``), stage count, and -- when any
-    stage has a ``judge.json`` -- the mean judge score so the Judge view
-    can list scored runs without re-reading every artifact.
+    ``workflow_state.json`` or ``run.json``), stage count, the relative ``dir``
+    (the grouping folder it sits under, e.g. ``examples/rabbitmq``, or ``""`` at
+    the top level), and -- when any stage has a ``judge.json`` -- the mean judge
+    score so the Judge view can list scored runs without re-reading every artifact.
     """
     runs: list[dict[str, Any]] = []
     if not runs_dir.exists():
@@ -138,9 +175,9 @@ def list_runs(runs_dir: Path) -> list[dict[str, Any]]:
         return m.group(1) if m else p.name
     # Chronological, newest first (sort by the run_id timestamp, not the name --
     # the name leads with the service so a name sort groups by service instead).
-    for run_dir in sorted(runs_dir.iterdir(), key=_run_ts, reverse=True):
-        if not run_dir.is_dir():
-            continue
+    for run_dir in sorted(_find_run_dirs(runs_dir), key=_run_ts, reverse=True):
+        rel = str(run_dir.parent.relative_to(runs_dir))
+        run_subdir = "" if rel == "." else rel
         state = _read_json(run_dir / "workflow_state.json")
         meta = _read_json(run_dir / "run.json")
         data = state or meta or {}
@@ -148,6 +185,7 @@ def list_runs(runs_dir: Path) -> list[dict[str, Any]]:
         entry: dict[str, Any] = {
             "run_id": run_dir.name,
             "path": str(run_dir),
+            "dir": run_subdir,
             "status": data.get("status", "unknown"),
             "judged": False,
         }
@@ -228,7 +266,9 @@ def get_stage_detail(runs_dir: Path, run_id: str, stage_id: str) -> dict[str, An
     if not (_SAFE_ID.match(run_id) and _SAFE_ID.match(stage_id)) \
             or ".." in run_id or ".." in stage_id:
         raise RuntimeError("invalid run or stage id")
-    run_dir = runs_dir / run_id
+    run_dir = resolve_run_dir(runs_dir, run_id)
+    if run_dir is None:
+        raise RuntimeError(f"run not found: {run_id}")
     sdir = run_dir / "stages" / stage_id
     if not sdir.is_dir():
         raise RuntimeError(f"stage not found: {run_id}/{stage_id}")
@@ -267,8 +307,8 @@ def get_run_detail(runs_dir: Path, run_id: str) -> dict[str, Any]:
     """
     if not _SAFE_ID.match(run_id) or ".." in run_id:
         raise RuntimeError("invalid run id")
-    run_dir = runs_dir / run_id
-    if not run_dir.is_dir():
+    run_dir = resolve_run_dir(runs_dir, run_id)
+    if run_dir is None:
         raise RuntimeError(f"run not found: {run_id}")
     meta = _read_json(run_dir / "run.json") or _read_json(run_dir / "workflow_state.json") or {}
     config = _read_json(run_dir / "config.json") or {}

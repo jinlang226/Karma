@@ -192,8 +192,8 @@ def start_judge_job(
         # The UI passes a bare run_id (e.g. "demo-configmap-update-..."); resolve it
         # against runs_dir so the Results-page Judge button works (it has no path).
         if not path.exists() and runs_dir is not None:
-            candidate = Path(runs_dir) / target_path
-            if candidate.exists():
+            candidate = catalog.resolve_run_dir(Path(runs_dir), str(target_path))
+            if candidate is not None:
                 path = candidate
         if not path.exists():
             raise ValueError(f"target path not found: {target_path}")

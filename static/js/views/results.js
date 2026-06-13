@@ -21,6 +21,9 @@
   let refreshTimer = null;
   let pendingRun = null;   // set by KARMA.showRun to deep-link a run detail
   const lastJudgeLog = {}; // runId -> last judge log text, kept across reloads
+  let runsFolder = "";     // current Runs folder being browsed ("" = top level)
+  let runsFilter = "";     // loose search query across all runs
+  let allRuns = [];        // last-fetched runs, used by the folder/search render
 
   // Cross-view deep link: open a specific run's detail (used by the back stack
   // so returning from a Cases sub-page lands on the exact run, not the list).
@@ -177,6 +180,115 @@
     loadRuns(host);
   }
 
+  // Loose, symbol-insensitive match: every whitespace token of the query must
+  // appear somewhere in the run's display name / id / folder, so "mongodb tls"
+  // matches "examples/mongodb · MongoDB · TLS Setup".
+  function runMatches(r, tokens) {
+    if (!tokens.length) return true;
+    const p = KARMA.labels.runName(r.run_id, r);
+    const hay = `${p.app} ${p.name || ""} ${r.run_id} ${r.dir || ""}`.toLowerCase();
+    return tokens.every((t) => hay.includes(t));
+  }
+  // Immediate subfolders one path segment below *folder*.
+  function runSubfolders(folder) {
+    const prefix = folder ? folder + "/" : "";
+    const subs = new Set();
+    for (const r of allRuns) {
+      const d = r.dir || "";
+      if (!d) continue;
+      if (folder ? d.startsWith(prefix) : true) {
+        const rest = folder ? d.slice(prefix.length) : d;
+        if (rest) subs.add(prefix + rest.split("/")[0]);
+      }
+    }
+    return [...subs].sort();
+  }
+  const runsIn = (folder) => allRuns.filter((r) => (r.dir || "") === folder);
+  const runsUnder = (folder) => allRuns.filter((r) => {
+    const d = r.dir || "";
+    return d === folder || d.startsWith(folder ? folder + "/" : "");
+  });
+  function openRunsFolder(folder) {
+    runsFolder = folder;
+    const body = document.getElementById("runs-body");
+    if (body) renderRunRows(body);
+  }
+
+  // One clickable run row.
+  function runRow(r, showFolder) {
+    const total = r.stage_total || (r.stage_count != null ? r.stage_count : ((r.passed || 0) + (r.failed || 0)));
+    const prog = total ? `${r.passed || 0}/${total}` : "—";
+    const agent = r.agent ? KARMA.labels.agent(r.agent) : el("span", { class: "muted" }, "none");
+    const p = KARMA.labels.runName(r.run_id, r);
+    const name = el("div", {},
+      el("div", { class: "run-name" }, p.app + (p.name ? " · " + p.name : "")),
+      p.ts ? el("div", { class: "muted run-ts" }, KARMA.labels.formatTs(p.ts)
+        + (showFolder && r.dir ? "  ·  " + r.dir : "")) : null);
+    return el("tr", { class: "clickable", onClick: () => renderDetail(r.run_id) },
+      el("td", {}, name),
+      el("td", {}, statusBadge(r.status)),
+      el("td", {}, prog),
+      el("td", {}, agent),
+      el("td", {}, scoreCell(r.judge_score)));
+  }
+
+  // One folder row: a clickable folder name that drills in + a run count.
+  function runFolderRow(folder) {
+    const open = () => openRunsFolder(folder);
+    const name = folder.split("/").pop();
+    return el("tr", { class: "wf-folder-row" },
+      el("td", { colspan: "4" },
+        el("span", { class: "crumb-link wf-folder-link", onClick: open },
+          el("span", { class: "wf-folder-icon" }, "📁"), name + "/"),
+        el("span", { class: "muted wf-folder-count" }, `${runsUnder(folder).length} runs`)),
+      el("td", {}, el("button", { class: "btn secondary", onClick: open }, "Open")));
+  }
+
+  // Render the tbody. With a search term, show a flat loose-matched result across
+  // every folder. Otherwise browse the current folder: subfolders (drill in) +
+  // the runs directly in it, with a breadcrumb to step back.
+  function renderRunRows(body) {
+    clear(body);
+    if (!allRuns.length) {
+      body.appendChild(el("tr", {}, el("td", { colspan: "5", class: "muted" }, "No runs yet.")));
+      return;
+    }
+    const tokens = runsFilter.split(/\s+/).filter(Boolean);
+    if (tokens.length) {
+      const hits = allRuns.filter((r) => runMatches(r, tokens));
+      if (!hits.length) {
+        body.appendChild(el("tr", {}, el("td", { colspan: "5", class: "muted" }, "No runs match your search.")));
+        return;
+      }
+      for (const r of hits) body.appendChild(runRow(r, true));
+      return;
+    }
+    // Breadcrumb when inside a subfolder: "← runs/examples" where "runs" and any
+    // intermediate segment are clickable; the current folder segment is plain.
+    if (runsFolder) {
+      const parent = runsFolder.includes("/") ? runsFolder.slice(0, runsFolder.lastIndexOf("/")) : "";
+      const go = (folder) => () => openRunsFolder(folder);
+      const cell = el("td", { colspan: "5" },
+        el("span", { class: "crumb-link", title: "Up one folder", onClick: go(parent) }, "← "),
+        el("span", { class: "crumb-link", onClick: go("") }, "runs"));
+      let acc = "";
+      const segs = runsFolder.split("/");
+      segs.forEach((seg, i) => {
+        acc = acc ? acc + "/" + seg : seg;
+        cell.appendChild(document.createTextNode("/"));
+        cell.appendChild(i === segs.length - 1
+          ? el("span", { class: "wf-crumb-current" }, seg)
+          : el("span", { class: "crumb-link", onClick: go(acc) }, seg));
+      });
+      const row = el("tr", { class: "wf-crumb-row" }, cell);
+      body.appendChild(row);
+      const thead = body.parentElement && body.parentElement.querySelector("thead");
+      if (thead) cell.style.top = Math.max(0, Math.round(thead.getBoundingClientRect().height) - 2) + "px";
+    }
+    for (const sub of runSubfolders(runsFolder)) body.appendChild(runFolderRow(sub));
+    for (const r of runsIn(runsFolder)) body.appendChild(runRow(r));
+  }
+
   async function loadRuns(host) {
     let runs;
     try { runs = await api.get("/api/runs"); }
@@ -186,39 +298,39 @@
     }
     // Sort newest-first by the run_id timestamp client-side, so the order is
     // correct regardless of backend ordering (older server builds name-sort).
-    runs = (runs || []).slice().sort((a, b) => {
+    allRuns = (runs || []).slice().sort((a, b) => {
       const ka = runSortKey(a), kb = runSortKey(b);
       if (ka === kb) return 0;
       if (!ka) return 1;
       if (!kb) return -1;
       return kb < ka ? -1 : 1;
     });
-    const panel = el("div", { class: "panel" });
-    const tbl = el("table", {}, el("thead", {}, el("tr", {},
-      el("th", {}, "Run"), el("th", {}, "Status"), el("th", {}, "Stages"),
-      el("th", {}, "Agent"), el("th", {}, "Score"))));
-    const body = el("tbody", {});
-    for (const r of runs) {
-      const total = r.stage_total || (r.stage_count != null ? r.stage_count : ((r.passed || 0) + (r.failed || 0)));
-      const prog = total ? `${r.passed || 0}/${total}` : "—";
-      const agent = r.agent ? KARMA.labels.agent(r.agent) : el("span", { class: "muted" }, "none");
-      const p = KARMA.labels.runName(r.run_id, r);
-      body.appendChild(el("tr", { class: "clickable", onClick: () => renderDetail(r.run_id) },
-        el("td", {},
-          el("div", { class: "run-name" }, p.app + (p.name ? " · " + p.name : "")),
-          p.ts ? el("div", { class: "muted run-ts" }, KARMA.labels.formatTs(p.ts)) : null),
-        el("td", {}, statusBadge(r.status)),
-        el("td", {}, prog),
-        el("td", {}, agent),
-        el("td", {}, scoreCell(r.judge_score))));
+    // Re-render rows in place if the table already exists (auto-refresh), so the
+    // search box keeps focus; otherwise build the panel + search + table.
+    let body = document.getElementById("runs-body");
+    if (!body) {
+      clear(host);
+      const panel = el("div", { class: "panel" });
+      const search = el("input", {
+        type: "search", id: "runs-search", placeholder: "Search runs…",
+        value: runsFilter, autocomplete: "off",
+        onInput: (e) => {
+          runsFilter = e.target.value.trim().toLowerCase();
+          renderRunRows(document.getElementById("runs-body"));
+        },
+      });
+      panel.appendChild(el("div", { class: "toolbar" }, search));
+      const tbl = el("table", {}, el("thead", {}, el("tr", {},
+        el("th", {}, "Run"), el("th", {}, "Status"), el("th", {}, "Stages"),
+        el("th", {}, "Agent"), el("th", {}, "Score"))));
+      body = el("tbody", { id: "runs-body" });
+      tbl.appendChild(body);
+      panel.appendChild(tbl);
+      host.appendChild(panel);
     }
-    if (!runs.length) body.appendChild(el("tr", {}, el("td", { colspan: "5", class: "muted" }, "No runs yet.")));
-    tbl.appendChild(body);
-    panel.appendChild(tbl);
-    clear(host);
-    host.appendChild(panel);
+    renderRunRows(body);
     // Auto-refresh while any run is still active so progress updates in place.
-    if (runs.some((r) => !isTerminal(r.status))) {
+    if (allRuns.some((r) => !isTerminal(r.status))) {
       refreshTimer = setTimeout(() => {
         if (sub === "runs" && document.body.contains(host)) loadRuns(host);
       }, 3000);
