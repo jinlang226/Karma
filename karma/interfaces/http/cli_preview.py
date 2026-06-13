@@ -33,7 +33,7 @@ def get_cli_options() -> dict[str, Any]:
             "sandbox": "local",
             "timeout": 900,
             "runs_dir": "runs",
-            "resources_dir": "resources",
+            "resources_dir": "cases",
             "output": "text",
             "dry_run": False,
             "model": "",

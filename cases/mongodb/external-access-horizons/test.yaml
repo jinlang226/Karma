@@ -1,0 +1,126 @@
+# mongodb/external-access-horizons
+# MongoDB external-access-horizons task
+
+params:
+  cluster_prefix:
+    default: mongo-rs
+    description: StatefulSet name of the replica set members.
+  replica_set_name:
+    default: rs0
+    description: MongoDB replica set _id used when initiating the set.
+  client_pod_name:
+    default: mongo-client
+    description: External client pod used to reach the advertised endpoints.
+  mongo_client_image:
+    default: mongo:6.0
+    description: Container image used for the mongo client pod.
+  external_host_prefix:
+    default: domain-rs
+    description: Prefix of the external split-horizon hostnames.
+  nodeport_start:
+    default: 31181
+    description: First NodePort assigned to the externally exposed members.
+
+prompt: |
+  A 3-member MongoDB replica set is running in the mongodb namespace.
+  Each member is exposed via NodePort with external hostnames:
+
+  - {{params.external_host_prefix}}-1:{{params.nodeport_start}}
+  - {{params.external_host_prefix}}-2:31182
+  - {{params.external_host_prefix}}-3:31183
+
+  A {{params.client_pod_name}} pod is available with those hostnames mapped to a node IP.
+
+  Task:
+  - Configure the replica set to advertise the external endpoints (split-horizon).
+  - Do not change the NodePort services.
+
+namespace_contract:
+  required_roles: []
+
+metrics:
+  - time_to_first_mutation
+
+preconditionUnits:
+  - name: mongo_env_ready
+    on_probe_fail: skip
+    probe:
+      - command: "kubectl -n mongodb get pod {{params.cluster_prefix}}-0 2>/dev/null | grep -c Running"
+        timeout_sec: 10
+    apply:
+      - command: |
+          /bin/sh -c '
+          kubectl delete namespace mongodb --ignore-not-found=true; kubectl wait --for=delete namespace/mongodb --timeout=120s || true
+          '
+        sleep: 2
+      - command: "kubectl create namespace mongodb"
+        sleep: 2
+      - command: "kubectl -n mongodb apply -f cases/mongodb/external-access-horizons/resource/services.yaml"
+        sleep: 2
+      - command: "kubectl -n mongodb apply -f cases/mongodb/external-access-horizons/resource/statefulset.yaml"
+        sleep: 5
+      - command: |
+          for i in $(seq 1 60); do
+            ready=$(kubectl -n mongodb get sts {{params.cluster_prefix}} -o jsonpath='{.status.readyReplicas}' 2>/dev/null)
+            if [ "${ready:-0}" -ge 3 ]; then
+              exit 0
+            fi
+            sleep 5
+          done
+          exit 1
+        sleep: 2
+      - command: |
+          kubectl -n mongodb exec mongo-rs-0 -- mongosh --quiet --eval '
+          rs.initiate({_id:"{{params.replica_set_name}}",members:[
+            {_id:0,host:"mongo-rs-0.mongo.mongodb.svc.cluster.local:27017"},
+            {_id:1,host:"mongo-rs-1.mongo.mongodb.svc.cluster.local:27017"},
+            {_id:2,host:"mongo-rs-2.mongo.mongodb.svc.cluster.local:27017"}
+          ]})'
+        sleep: 5
+      - command: |
+          for i in $(seq 1 20); do
+            kubectl -n mongodb exec mongo-rs-0 -- mongosh --quiet --eval 'db.hello().isWritablePrimary' | grep true && exit 0
+            sleep 3
+          done
+          exit 1
+        sleep: 2
+      - command: |
+          node_ip=$(kubectl get nodes -o jsonpath='{range .items[*]}{.metadata.name}{" "}{range .status.addresses[?(@.type=="InternalIP")]}{.address}{"\n"}{end}{end}' | awk '$1 !~ /control-plane|master/ {print $2; exit}')
+          if [ -z "$node_ip" ]; then
+            # Single-node cluster (only the control-plane node, e.g. default
+            # kind): fall back to its InternalIP instead of failing.
+            node_ip=$(kubectl get nodes -o jsonpath='{.items[0].status.addresses[?(@.type=="InternalIP")].address}')
+          fi
+          if [ -z "$node_ip" ]; then
+            exit 1
+          fi
+          cat <<EOF | kubectl -n mongodb apply -f -
+          apiVersion: v1
+          kind: Pod
+          metadata:
+            name: {{params.client_pod_name}}
+          spec:
+            restartPolicy: Never
+            hostAliases:
+            - ip: "$node_ip"
+              hostnames:
+              - {{params.external_host_prefix}}-1
+              - {{params.external_host_prefix}}-2
+              - {{params.external_host_prefix}}-3
+            containers:
+            - name: mongosh
+              image: {{params.mongo_client_image}}
+              command: ["sleep", "3600"]
+          EOF
+        sleep: 2
+      - command: "kubectl -n mongodb wait --for=condition=ready pod {{params.client_pod_name}} --timeout=300s"
+        sleep: 2
+    verify:
+      - command: "kubectl -n mongodb get pods 2>/dev/null | grep -c Running"
+        timeout_sec: 10
+
+oracle:
+  verify:
+    commands:
+      - command: "python3 cases/mongodb/external-access-horizons/oracle/oracle.py"
+        timeout_sec: 60

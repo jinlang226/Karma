@@ -1,0 +1,93 @@
+# mongodb/monitoring-integration
+# Enable end-to-end monitoring so Prometheus scrapes MongoDB metrics
+
+params:
+  cluster_prefix:
+    default: mongo-rs
+    description: StatefulSet name of the replica set members.
+  replica_set_name:
+    default: rs0
+    description: MongoDB replica set _id used when initiating the set.
+  curl_pod_name:
+    default: curl-test
+    description: Helper pod used to query metrics endpoints.
+  exporter_deployment_name:
+    default: mongodb-exporter
+    description: Name of the MongoDB metrics exporter to deploy.
+  prometheus_configmap_name:
+    default: prometheus-config
+    description: ConfigMap holding the Prometheus scrape configuration.
+  metrics_query:
+    default: mongodb_up
+    description: Prometheus metric that must report MongoDB is up.
+
+prompt: |
+  A 3-member MongoDB replica set is running in the mongodb namespace.
+  Prometheus is running in the monitoring namespace and currently scrapes only itself.
+  A {{params.curl_pod_name}} pod is available in the mongodb namespace.
+
+  Task:
+  - Enable end-to-end monitoring so Prometheus scrapes MongoDB metrics.
+  - You may deploy {{params.exporter_deployment_name}} (sidecar or standalone) and configure Prometheus to scrape it.
+  - Prometheus must report {{params.metrics_query}} == 1.
+
+  Notes:
+  - Prometheus reads its config from the {{params.prometheus_configmap_name}} ConfigMap in monitoring.
+  - Prometheus supports reload via /-/reload or by restarting the pod.
+  - Do not use operators or CRDs.
+
+namespace_contract:
+  required_roles: []
+
+metrics:
+  - time_to_first_mutation
+
+preconditionUnits:
+  - name: mongo_env_ready
+    on_probe_fail: skip
+    probe:
+      - command: "kubectl -n mongodb get pod {{params.cluster_prefix}}-0 2>/dev/null | grep -c Running"
+        timeout_sec: 10
+    apply:
+      - command: "/bin/sh -c 'kubectl delete namespace mongodb --ignore-not-found=true; kubectl wait --for=delete namespace/mongodb --timeout=120s || true; kubectl delete namespace monitoring --ignore-not-found=true; kubectl wait --for=delete namespace/monitoring --timeout=120s || true'"
+        sleep: 2
+      - command: "kubectl create namespace monitoring"
+        sleep: 1
+      - command: "kubectl create namespace mongodb"
+        sleep: 1
+      - command: "kubectl -n mongodb apply -f cases/mongodb/monitoring-integration/resource/services.yaml"
+        sleep: 1
+      - command: "kubectl -n mongodb apply -f cases/mongodb/monitoring-integration/resource/statefulset.yaml"
+        sleep: 3
+      - command: |
+          /bin/sh -c 'for i in $(seq 1 60); do ready=$(kubectl -n mongodb get sts {{params.cluster_prefix}} -o jsonpath='\''{.status.readyReplicas}'\'' 2>/dev/null); if [ "${ready:-0}" -ge 3 ]; then exit 0; fi; sleep 5; done; exit 1'
+        sleep: 2
+      - command: |
+          /bin/sh -c 'kubectl -n mongodb exec mongo-rs-0 -- mongosh --quiet --eval '\''rs.initiate({_id:"{{params.replica_set_name}}",members:[{_id:0,host:"mongo-rs-0.mongo.mongodb.svc.cluster.local:27017"},{_id:1,host:"mongo-rs-1.mongo.mongodb.svc.cluster.local:27017"},{_id:2,host:"mongo-rs-2.mongo.mongodb.svc.cluster.local:27017"}]})'\'''
+        sleep: 5
+      - command: |
+          /bin/sh -c 'for i in $(seq 1 20); do kubectl -n mongodb exec mongo-rs-0 -- mongosh --quiet --eval '\''db.hello().isWritablePrimary'\'' | grep true && exit 0; sleep 3; done; exit 1'
+        sleep: 2
+      - command: "kubectl -n monitoring apply -f cases/mongodb/monitoring-integration/resource/prometheus-rbac.yaml"
+        sleep: 1
+      - command: "kubectl -n monitoring apply -f cases/mongodb/monitoring-integration/resource/prometheus-config.yaml"
+        sleep: 1
+      - command: "kubectl -n monitoring apply -f cases/mongodb/monitoring-integration/resource/prometheus-deployment.yaml"
+        sleep: 2
+      - command: "kubectl -n monitoring apply -f cases/mongodb/monitoring-integration/resource/prometheus-service.yaml"
+        sleep: 1
+      - command: "kubectl -n monitoring wait --for=condition=ready pod -l app=prometheus --timeout=300s"
+        sleep: 2
+      - command: "kubectl -n mongodb apply -f cases/mongodb/monitoring-integration/resource/curl-test.yaml"
+        sleep: 1
+      - command: "kubectl -n mongodb wait --for=condition=ready pod {{params.curl_pod_name}} --timeout=300s"
+        sleep: 1
+    verify:
+      - command: "kubectl -n mongodb get pods 2>/dev/null | grep -c Running"
+        timeout_sec: 10
+
+oracle:
+  verify:
+    commands:
+      - command: "python3 cases/mongodb/monitoring-integration/oracle/oracle.py"
+        timeout_sec: 60

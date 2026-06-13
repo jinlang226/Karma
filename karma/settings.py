@@ -22,7 +22,7 @@ class Settings:
     """
 
     # Filesystem roots
-    resources_dir: Path = field(default_factory=lambda: Path("resources"))
+    resources_dir: Path = field(default_factory=lambda: Path("cases"))
     runs_dir: Path = field(default_factory=lambda: Path("runs"))
 
     # HTTP server
@@ -74,7 +74,7 @@ class Settings:
             return os.environ.get(key) or (os.environ.get(fallback) if fallback else None)
 
         return cls(
-            resources_dir=_path("KARMA_RESOURCES_DIR", "resources"),
+            resources_dir=_path("KARMA_RESOURCES_DIR", "cases"),
             runs_dir=_path("KARMA_RUNS_DIR", "runs"),
             host=_str("KARMA_HOST", "127.0.0.1"),
             port=_int("KARMA_PORT", 8080),

@@ -8,7 +8,7 @@ lives here.
 Routes::
 
     GET  /                          serve index.html
-    GET  /static/<path>             serve static files
+    GET  /webui/<path>             serve static files
     POST /api/run                   submit a case or workflow run
     GET  /api/run/<run_id>/status   poll run status
     GET  /api/run/<run_id>/stream   SSE stream of stage events
@@ -47,7 +47,7 @@ def create_app(
     """Create and return the WSGI application instance.
 
     Registers all REST and SSE routes. Static files are served from
-    *static_dir* (defaults to ``karma/static/`` relative to this package).
+    *static_dir* (defaults to ``karma/webui/`` relative to this package).
     Each POST /api/run call creates a per-request event queue that is
     kept in a closure-local dict for the matching SSE stream endpoint.
 
@@ -59,7 +59,7 @@ def create_app(
         Root runs directory used for artifact storage.
     static_dir:
         Directory from which static files are served. Defaults to
-        ``karma/static/``.
+        ``karma/webui/``.
     """
     try:
         from flask import Flask, jsonify, request, Response, send_from_directory
@@ -70,9 +70,9 @@ def create_app(
         )
 
     if static_dir is None:
-        # server.py lives at karma/interfaces/http/; the static dir is at the
-        # repository root, i.e. three levels above the karma package.
-        static_dir = Path(__file__).resolve().parents[3] / "static"
+        # server.py lives at karma/interfaces/http/; the web UI dir (webui/) is at
+        # the repository root, i.e. three levels above the karma package.
+        static_dir = Path(__file__).resolve().parents[3] / "webui"
     if workflows_dir is None:
         workflows_dir = Path("workflows")
 
@@ -85,7 +85,7 @@ def create_app(
             return idx.read_text(), 200, {"Content-Type": "text/html"}
         return "<h1>KARMA</h1>", 200
 
-    @app.route("/static/<path:filename>")
+    @app.route("/webui/<path:filename>")
     def static_files(filename):
         return send_from_directory(str(static_dir), filename)
 
@@ -519,7 +519,7 @@ def main(
     import os
 
     resolved_resources = resources_dir or Path(
-        os.environ.get("KARMA_RESOURCES_DIR", "resources")
+        os.environ.get("KARMA_RESOURCES_DIR", "cases")
     )
     resolved_runs = runs_dir or Path(os.environ.get("KARMA_RUNS_DIR", "runs"))
     resolved_workflows = Path(os.environ.get("KARMA_WORKFLOWS_DIR", "workflows"))
