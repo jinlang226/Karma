@@ -58,8 +58,14 @@ preconditionUnits:
   - name: crdb_env_ready
     on_probe_fail: skip
     probe:
-      - command: "kubectl -n cockroachdb get pods 2>/dev/null | grep -c Running"
-        timeout_sec: 10
+      # Only skip setup when the cluster is already in the expected pre-upgrade
+      # state: binaries still on v{{params.from_version}}. A bare "any cockroachdb
+      # pod is Running" probe matched a leftover already-upgraded/finalized cluster
+      # from a prior workflow stage, so apply was skipped and the oracle then had
+      # nothing to upgrade/finalize. Probing the running binary version forces a
+      # clean v{{params.from_version}} redeploy when the leftover is newer.
+      - command: "/bin/sh -c 'kubectl -n cockroachdb get pods -l app.kubernetes.io/name=cockroachdb -o jsonpath=\"{.items[*].spec.containers[0].image}\" 2>/dev/null | tr \" \" \"\\n\" | grep -q \"cockroach:v{{params.from_version}}\"'"
+        timeout_sec: 15
     apply:
       - command: "/bin/sh -c 'kubectl delete namespace cockroachdb --ignore-not-found=true; kubectl wait --for=delete namespace/cockroachdb --timeout=120s || true'"
         sleep: 2

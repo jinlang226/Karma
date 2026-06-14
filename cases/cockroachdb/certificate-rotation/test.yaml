@@ -39,7 +39,14 @@ preconditionUnits:
   - name: crdb_env_ready
     on_probe_fail: skip
     probe:
-      - command: "kubectl -n cockroachdb get pods 2>/dev/null | grep -c Running"
+      # Only skip setup when THIS case's full pre-rotation environment is already
+      # present. A bare "any cockroachdb pod is Running" probe matched a leftover
+      # cluster from a prior workflow stage (e.g. generate-cert), so apply was
+      # skipped and the oracle then failed on the missing crdb-old-cert ConfigMap
+      # (the recorded pre-rotation fingerprints) and crdb-cluster-certs secret.
+      # Require the crdb-old-cert ConfigMap (the last setup artifact the apply
+      # records) so any partial leftover forces a clean secure redeploy.
+      - command: "kubectl -n cockroachdb get configmap crdb-old-cert 2>/dev/null"
         timeout_sec: 10
     apply:
       - command: "/bin/sh -c 'kubectl delete namespace cockroachdb --ignore-not-found=true; kubectl wait --for=delete namespace/cockroachdb --timeout=120s || true'"
