@@ -13,6 +13,7 @@ import os
 import re
 import subprocess
 import sys
+import time
 
 
 NAMESPACE = os.environ.get("BENCH_NAMESPACE", "cockroachdb")
@@ -105,8 +106,18 @@ def get_setting():
 
 
 def check(errors, phase):
-    """Read the setting and record an error if it doesn't match the target."""
-    actual, err = get_setting()
+    """Read the setting and record an error if it doesn't match the target.
+
+    A freshly restarted node can report Ready to Kubernetes a moment before
+    CockroachDB itself accepts SQL clients ("server is not accepting clients",
+    SQLSTATE 57P01), so retry the read briefly before treating it as a failure.
+    """
+    actual = err = None
+    for _attempt in range(10):
+        actual, err = get_setting()
+        if not err:
+            break
+        time.sleep(3)
     if err:
         errors.append(f"Failed to read {SETTING_NAME} {phase}: {err}")
         return
@@ -116,21 +127,50 @@ def check(errors, phase):
         )
 
 
+def wait_pod_ready(deadline_sec=120):
+    """Wait for POD to exist AND become Ready, tolerating the recreation window.
+
+    The agent and this oracle both restart crdb-cluster-0 to test persistence,
+    so the pod is frequently mid-recreate (NotFound, then Pending) when called.
+    `kubectl wait` returns immediately with an error when the pod object does
+    not yet exist, so this polls until the pod reappears and reports Ready,
+    rather than failing on the first NotFound. Returns (ok, last_error).
+    """
+    start = time.monotonic()
+    last_err = "pod did not become ready"
+    while time.monotonic() - start < deadline_sec:
+        wait = run([
+            "kubectl", "-n", NAMESPACE, "wait", "--for=condition=ready",
+            f"pod/{POD}", "--timeout=30s",
+        ])
+        if wait.returncode == 0:
+            return True, None
+        last_err = (wait.stderr or wait.stdout or last_err).strip()
+        time.sleep(3)
+    return False, last_err
+
+
 def main():
     """Verify the configured setting matches the target before and after restart."""
     errors = []
+
+    # The agent may have just restarted crdb-cluster-0 to test persistence
+    # itself, leaving it briefly absent/not-ready. Wait for it to settle before
+    # the first read so a transient restart window isn't mistaken for a failure.
+    ok, err = wait_pod_ready()
+    if not ok:
+        errors.append(f"Pod not ready before persistence check: {err}")
 
     check(errors, "before restart")
 
     delete = run(["kubectl", "-n", NAMESPACE, "delete", "pod", POD])
     if delete.returncode != 0:
         errors.append(f"Failed to delete pod for persistence check: {delete.stderr.strip()}")
-    wait = run([
-        "kubectl", "-n", NAMESPACE, "wait", "--for=condition=ready",
-        f"pod/{POD}", "--timeout=120s",
-    ])
-    if wait.returncode != 0:
-        errors.append(f"Pod did not become ready after restart: {wait.stderr.strip()}")
+    # After the delete the StatefulSet recreates the pod; wait for it to exist
+    # and become Ready again, tolerating the brief NotFound recreation window.
+    ok, err = wait_pod_ready()
+    if not ok:
+        errors.append(f"Pod did not become ready after restart: {err}")
 
     check(errors, "after restart")
 
