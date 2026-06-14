@@ -318,12 +318,14 @@ def get_job_status(run_id: str) -> dict[str, Any] | None:
 
 
 def cancel_job(run_id: str) -> bool:
-    """Request cancellation of a running job and end its event stream.
+    """Request cancellation of a running job.
 
-    Marks the job cancelled in the active jobs table, publishes a
-    ``cancelled`` event, and closes the hub stream so any attached SSE
-    client terminates. The background workflow may still finish its
-    current stage; cancellation is best effort at stage boundaries.
+    Marks the job cancelled in the active jobs table and publishes a
+    ``cancelled`` event. The hub stream is deliberately NOT closed here: the
+    background workflow thread polls the cancel flag, stops at the next stage
+    boundary, and ends with a cancelled ``run_complete`` that closes the
+    stream -- so the final event still reaches attached SSE clients.
+    Cancellation is best effort at stage boundaries.
 
     Returns
     -------
