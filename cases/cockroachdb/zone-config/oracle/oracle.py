@@ -1,17 +1,25 @@
 #!/usr/bin/env python3
+# Verify zone config on tenant_b tables (and that tenant_a is untouched).
+# Expected values come from the case params (BENCH_PARAM_*), so workflow
+# param_overrides such as gc_ttl_seconds are honored instead of hardcoded.
+import os
 import subprocess
 import sys
 
 
 DB = "defaultdb"
-TENANT_A = "tenant_a"
-TENANT_B = "tenant_b"
+TENANT_A = os.environ.get("BENCH_PARAM_PROTECTED_SCHEMA", "tenant_a")
+TENANT_B = os.environ.get("BENCH_PARAM_TARGET_SCHEMA", "tenant_b")
+NUM_REPLICAS = os.environ.get("BENCH_PARAM_NUM_REPLICAS", "3")
+GC_TTL_SECONDS = os.environ.get("BENCH_PARAM_GC_TTL_SECONDS", "14400")
+RANGE_MIN_BYTES = os.environ.get("BENCH_PARAM_RANGE_MIN_BYTES", "134217728")
+RANGE_MAX_BYTES = os.environ.get("BENCH_PARAM_RANGE_MAX_BYTES", "536870912")
 EXPECTED = [
-    "num_replicas: 3",
+    f"num_replicas: {NUM_REPLICAS}",
     "gc:",
-    "ttlseconds: 14400",
-    "range_min_bytes: 134217728",
-    "range_max_bytes: 536870912",
+    f"ttlseconds: {GC_TTL_SECONDS}",
+    f"range_min_bytes: {RANGE_MIN_BYTES}",
+    f"range_max_bytes: {RANGE_MAX_BYTES}",
 ]
 
 
