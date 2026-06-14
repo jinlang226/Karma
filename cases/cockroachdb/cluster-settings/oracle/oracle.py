@@ -16,14 +16,35 @@ import sys
 import time
 
 
-NAMESPACE = os.environ.get("BENCH_NAMESPACE", "cockroachdb")
+# The precondition always stands the cluster up in the literal "cockroachdb"
+# namespace (every apply/exec hardcodes `-n cockroachdb`), so the oracle must
+# look there too. Trusting BENCH_NAMESPACE here pointed the oracle at the
+# role-bound ephemeral namespace where crdb-cluster-0 does not exist, making
+# every check fail with "pods crdb-cluster-0 not found". The sibling cockroachdb
+# oracles (deploy/initialize/health-check-recovery/version-check) all hardcode
+# "cockroachdb" for the same reason.
+NAMESPACE = "cockroachdb"
 POD = "crdb-cluster-0"
 SETTING_NAME = os.environ.get("BENCH_PARAM_SETTING_NAME", "kv.snapshot_rebalance.max_rate")
 SETTING_VALUE = os.environ.get("BENCH_PARAM_SETTING_VALUE", "128MiB")
 
 
-def run(cmd):
-    return subprocess.run(cmd, text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+def run(cmd, timeout=30):
+    """Run a kubectl command, bounding it so a stalled exec/wait cannot hang.
+
+    A `kubectl exec ./cockroach sql` opened right after a pod delete can stall on
+    a half-open API-server connection and never return; with no per-call timeout
+    that blocks the whole oracle until the outer cap. Killing a stalled call and
+    letting the caller's retry loop reissue it (a fresh connection succeeds)
+    keeps the oracle well within its time budget.
+    """
+    try:
+        return subprocess.run(
+            cmd, text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+            timeout=timeout,
+        )
+    except subprocess.TimeoutExpired:
+        return subprocess.CompletedProcess(cmd, 124, "", f"timed out after {timeout}s")
 
 
 _BYTE_UNITS = {
@@ -92,11 +113,11 @@ def values_match(expected, actual):
 def get_setting():
     """Read the live value of the configured cluster setting (last tsv line)."""
     cmd = [
-        "kubectl", "-n", NAMESPACE, "exec", POD, "--",
+        "kubectl", "-n", NAMESPACE, "--request-timeout=20s", "exec", POD, "--",
         "./cockroach", "sql", "--insecure", "--format=tsv",
         "-e", f"SHOW CLUSTER SETTING {SETTING_NAME};",
     ]
-    result = run(cmd)
+    result = run(cmd, timeout=25)
     if result.returncode != 0:
         return None, result.stderr.strip() or "SHOW CLUSTER SETTING failed"
     lines = [line.strip() for line in result.stdout.splitlines() if line.strip()]
@@ -113,9 +134,13 @@ def check(errors, phase):
     SQLSTATE 57P01), so retry the read briefly before treating it as a failure.
     """
     actual = err = None
-    for _attempt in range(10):
+    # Bound by wall-clock, not attempt count: each get_setting is itself capped
+    # (see run()), so a stalled exec is killed and reissued on a fresh
+    # connection rather than blocking the oracle indefinitely.
+    deadline = time.monotonic() + 45
+    while True:
         actual, err = get_setting()
-        if not err:
+        if not err or time.monotonic() >= deadline:
             break
         time.sleep(3)
     if err:
@@ -127,7 +152,7 @@ def check(errors, phase):
         )
 
 
-def wait_pod_ready(deadline_sec=120):
+def wait_pod_ready(deadline_sec=90):
     """Wait for POD to exist AND become Ready, tolerating the recreation window.
 
     The agent and this oracle both restart crdb-cluster-0 to test persistence,
@@ -140,9 +165,9 @@ def wait_pod_ready(deadline_sec=120):
     last_err = "pod did not become ready"
     while time.monotonic() - start < deadline_sec:
         wait = run([
-            "kubectl", "-n", NAMESPACE, "wait", "--for=condition=ready",
-            f"pod/{POD}", "--timeout=30s",
-        ])
+            "kubectl", "-n", NAMESPACE, "--request-timeout=30s", "wait",
+            "--for=condition=ready", f"pod/{POD}", "--timeout=30s",
+        ], timeout=35)
         if wait.returncode == 0:
             return True, None
         last_err = (wait.stderr or wait.stdout or last_err).strip()
@@ -163,7 +188,7 @@ def main():
 
     check(errors, "before restart")
 
-    delete = run(["kubectl", "-n", NAMESPACE, "delete", "pod", POD])
+    delete = run(["kubectl", "-n", NAMESPACE, "--request-timeout=30s", "delete", "pod", POD], timeout=40)
     if delete.returncode != 0:
         errors.append(f"Failed to delete pod for persistence check: {delete.stderr.strip()}")
     # After the delete the StatefulSet recreates the pod; wait for it to exist
