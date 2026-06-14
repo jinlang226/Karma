@@ -53,7 +53,15 @@ preconditionUnits:
   - name: crdb_env_ready
     on_probe_fail: skip
     probe:
-      - command: "kubectl -n cockroachdb exec crdb-cluster-0 -- ./cockroach sql --insecure -e 'SELECT 1;' 2>/dev/null"
+      # Only skip setup when the cluster is already in the expected pre-upgrade
+      # state: logical version still {{params.from_version}} while the binary is
+      # being moved to {{params.to_version}}. A bare `SELECT 1` matched ANY
+      # running cluster, so a leftover finalized {{params.to_version}} cluster
+      # from a prior workflow stage skipped this setup and the oracle then saw
+      # version {{params.to_version}} instead of {{params.from_version}}. Probing
+      # the cluster version forces a clean redeploy when the leftover cluster is
+      # already finalized.
+      - command: "/bin/sh -c 'kubectl -n cockroachdb exec crdb-cluster-0 -- ./cockroach sql --insecure --format=tsv -e \"SHOW CLUSTER SETTING version;\" 2>/dev/null | grep -q {{params.from_version}}'"
         timeout_sec: 15
     apply:
       - command: "/bin/sh -c 'kubectl delete namespace cockroachdb --ignore-not-found=true; kubectl wait --for=delete namespace/cockroachdb --timeout=120s || true'"
