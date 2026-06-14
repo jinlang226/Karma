@@ -25,7 +25,7 @@ def main() -> int:
     """Check the config-audit ConfigMap exists with non-empty findings."""
     proc = run([
         "kubectl", "-n", NAMESPACE, "get", "configmap", CONFIGMAP,
-        "-o", f"jsonpath={{.data.{KEY}}}",
+        "-o", "jsonpath={.data." + KEY.replace(".", "\\.") + "}",
     ])
     if proc.returncode != 0:
         print(f"readonly-audit verification failed: ConfigMap "
