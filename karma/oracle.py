@@ -112,7 +112,21 @@ def run_oracle(
         on success).
     """
     from .settings import settings as _settings
-    effective_timeout = timeout_sec if timeout_sec is not None else _settings.oracle_timeout_sec
+    if timeout_sec is not None:
+        effective_timeout = timeout_sec
+    else:
+        # Honor per-command timeout_sec declared in the oracle config: the outer
+        # wall-clock deadline must be at least the sum of the declared per-command
+        # budgets across before/verify/after, otherwise a command's own
+        # timeout_sec is silently clamped by the default oracle_timeout_sec (e.g.
+        # a 300s pod-restart-persistence check capped at 120s). Defaults to
+        # oracle_timeout_sec when no command declares a longer timeout.
+        declared = 0
+        for _key in ("before_commands", "verify_commands", "after_commands"):
+            for _entry in oracle_config.get(_key) or []:
+                if _entry.get("command"):
+                    declared += int(_entry.get("timeout_sec") or 0) + int(_entry.get("sleep") or 0)
+        effective_timeout = max(_settings.oracle_timeout_sec, declared)
 
     result: dict[str, Any] = {
         "verdict": "error",
