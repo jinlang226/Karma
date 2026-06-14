@@ -68,6 +68,14 @@ def _run_units(
 ) -> dict[str, Any]:
     """Run probe/apply/verify for each unit, respecting on_probe_fail.
 
+    Probe semantics are the INVERSE of precondition units: here a probe that
+    *passes* means the target condition is reachable, so apply runs (planting
+    the fault for deploy, removing it for lift). A probe that *fails* triggers
+    ``on_probe_fail``: ``skip`` (the lift default) treats it as a no-op success
+    -- e.g. the agent already resolved the condition -- while ``error`` (the
+    deploy default) means the cluster is not in the expected state for injection
+    and the unit fails.
+
     Returns a dict with ``ok``, *result_id_key* (list of IDs that ran), and
     ``output`` (concatenated log lines).
     """
@@ -94,39 +102,47 @@ def _run_units(
                 probe_ok = False
                 break
 
-        if probe_ok:
-            # Fault already active; skip apply
+        if not probe_ok:
+            if on_fail == "skip":
+                # Lift default: probe failure means the condition is already
+                # resolved (e.g. the agent fixed it) -> no-op success.
+                continue
+            # Deploy default (on_probe_fail="error"): the cluster is not in the
+            # expected state for injection -- a test design bug -- so fail.
+            overall_ok = False
+            continue
+
+        # Probe passed -> the target condition is reachable, so apply it
+        # (plant the fault for deploy, remove it for lift), then verify.
+        apply_ok = True
+        for cmd_entry in unit.get("apply_commands") or []:
+            cmd = cmd_entry["command"]
+            to = cmd_entry.get("timeout_sec") or 120
+            ok, out = _exec_command(cmd, env_vars=env, timeout=to, log_path=log_path)
+            all_output.append(out)
+            if cmd_entry.get("sleep"):
+                time.sleep(cmd_entry["sleep"])
+            if not ok:
+                apply_ok = False
+                break
+        if not apply_ok:
+            overall_ok = False
+            continue
+
+        # Verify
+        verify_ok = True
+        for cmd_entry in unit.get("verify_commands") or []:
+            cmd = cmd_entry["command"]
+            to = cmd_entry.get("timeout_sec") or 30
+            ok, out = _exec_command(cmd, env_vars=env, timeout=to, log_path=log_path)
+            all_output.append(out)
+            if not ok:
+                verify_ok = False
+                break
+        if verify_ok:
             success_ids.append(unit_id)
-            continue
-        if not probe_ok and on_fail == "skip":
-            # Not active and we should skip — nothing to do
-            continue
-        if not probe_ok and on_fail == "error":
-            # Run apply to plant/remove the fault
-            for cmd_entry in unit.get("apply_commands") or []:
-                cmd = cmd_entry["command"]
-                to = cmd_entry.get("timeout_sec") or 120
-                ok, out = _exec_command(cmd, env_vars=env, timeout=to, log_path=log_path)
-                all_output.append(out)
-                if cmd_entry.get("sleep"):
-                    time.sleep(cmd_entry["sleep"])
-                if not ok:
-                    overall_ok = False
-                    break
-            # Verify
-            verify_ok = True
-            for cmd_entry in unit.get("verify_commands") or []:
-                cmd = cmd_entry["command"]
-                to = cmd_entry.get("timeout_sec") or 30
-                ok, out = _exec_command(cmd, env_vars=env, timeout=to, log_path=log_path)
-                all_output.append(out)
-                if not ok:
-                    verify_ok = False
-                    break
-            if verify_ok:
-                success_ids.append(unit_id)
-            else:
-                overall_ok = False
+        else:
+            overall_ok = False
 
     return {
         "ok": overall_ok,
