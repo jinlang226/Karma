@@ -18,7 +18,6 @@ The public interface is :func:`launch_agent`, which returns an
 from __future__ import annotations
 
 import os
-import signal
 import subprocess
 import time
 from pathlib import Path
@@ -67,10 +66,7 @@ class AgentProcess:
         given and the agent does not finish in time. The caller is
         responsible for calling :meth:`terminate` after catching the error.
         """
-        try:
-            self._exit_code = self._proc.wait(timeout=timeout_sec)
-        except subprocess.TimeoutExpired:
-            raise
+        self._exit_code = self._proc.wait(timeout=timeout_sec)
         return self._exit_code
 
     def terminate(self) -> None:
@@ -239,7 +235,7 @@ def launch_agent(
         return AgentProcess(proc, sandbox_mode="local", run_dir=run_dir)
 
     # docker mode
-    image_tag = agent_meta.get("image_tag") or f"karma-agent:latest"
+    image_tag = agent_meta.get("image_tag") or "karma-agent:latest"
     docker_cmd = ["docker", "run", "-d", "--rm"]
     for k, v in env_vars.items():
         docker_cmd += ["-e", f"{k}={v}"]

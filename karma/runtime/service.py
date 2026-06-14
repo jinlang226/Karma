@@ -26,7 +26,6 @@ from ..environments.registry import get_environment
 from ..agents.registry import resolve_agent
 from ..protocol import generate_run_id, run_config_path
 from .workflow import run_workflow_loop
-from .case import run_stage
 
 
 # ---------------------------------------------------------------------------
@@ -105,8 +104,6 @@ def run_workflow(
         Keys: ``run_id``, ``status`` (``"complete"``, ``"failed"``, or
         ``"error"``), ``stages`` (list[dict]), ``summary`` (dict).
     """
-    from ..definitions.workflows import resolve_workflow_rows
-
     effective_run_id = run_id or generate_run_id(str(workflow.get("id") or "workflow"))
     run_dir = runs_dir / effective_run_id
     run_dir.mkdir(parents=True, exist_ok=True)
