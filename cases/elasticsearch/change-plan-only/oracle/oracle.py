@@ -25,7 +25,7 @@ def main() -> int:
     """Check the change-plan ConfigMap exists with a non-empty plan."""
     proc = run([
         "kubectl", "-n", NAMESPACE, "get", "configmap", CONFIGMAP,
-        "-o", f"jsonpath={{.data.{KEY}}}",
+        "-o", "jsonpath={.data." + KEY.replace(".", "\\.") + "}",
     ])
     if proc.returncode != 0:
         print(f"change-plan-only verification failed: ConfigMap "
