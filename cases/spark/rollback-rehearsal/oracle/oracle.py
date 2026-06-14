@@ -25,7 +25,7 @@ def main() -> int:
     """Check the rollback-rehearsal ConfigMap exists with a non-empty script."""
     proc = run([
         "kubectl", "-n", NAMESPACE, "get", "configmap", CONFIGMAP,
-        "-o", f"jsonpath={{.data.{KEY}}}",
+        "-o", "jsonpath={.data." + KEY.replace(".", "\\.") + "}",
     ])
     if proc.returncode != 0:
         print(f"rollback-rehearsal verification failed: ConfigMap "
