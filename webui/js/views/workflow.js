@@ -181,9 +181,9 @@
     // header table (column "information bar") + the dir bar stay fixed; only the
     // body table scrolls. An identical <colgroup> on both keeps columns aligned.
     const cols = () => el("colgroup", {},
-      el("col", { style: "width:6%" }), el("col", { style: "width:42%" }),
-      el("col", { style: "width:9%" }), el("col", { style: "width:17%" }),
-      el("col", { style: "width:14%" }), el("col", { style: "width:12%" }));
+      el("col", { style: "width:6%" }), el("col", { style: "width:47%" }),
+      el("col", { style: "width:8%" }), el("col", { style: "width:15%" }),
+      el("col", { style: "width:12%" }), el("col", { style: "width:12%" }));
     const headTbl = el("table", { class: "wf-files-table" }, cols(),
       el("thead", {}, el("tr", {},
         el("th", {}, selectAll), el("th", {}, "Name"), el("th", {}, "Stages"),
