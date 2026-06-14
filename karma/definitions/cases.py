@@ -21,6 +21,7 @@ objects.
 
 from __future__ import annotations
 
+import re
 from copy import deepcopy
 from pathlib import Path
 from typing import Any, Literal
@@ -414,11 +415,11 @@ def _coerce_param_value(name: str, spec: dict[str, Any], value: Any) -> Any:
     pattern = spec.get("pattern")
     if pattern is not None:
         try:
-            if not _re.match(str(pattern), str(value)):
+            if not re.match(str(pattern), str(value)):
                 raise ValueError(
                     f"param {name}: value {value!r} does not match pattern {pattern!r}"
                 )
-        except _re.error as exc:
+        except re.error as exc:
             raise ValueError(f"param {name}: invalid regex {pattern!r}: {exc}") from exc
 
     return value
@@ -475,10 +476,8 @@ def resolve_case_params(
     return resolved, warnings
 
 
-import re as _re
-
-_PARAM_TOKEN_RE = _re.compile(r"\{\{params\.([a-zA-Z0-9_]+)\}\}")
-_FULL_PARAM_TOKEN_RE = _re.compile(r"^\s*\{\{params\.([a-zA-Z0-9_]+)\}\}\s*$")
+_PARAM_TOKEN_RE = re.compile(r"\{\{params\.([a-zA-Z0-9_]+)\}\}")
+_FULL_PARAM_TOKEN_RE = re.compile(r"^\s*\{\{params\.([a-zA-Z0-9_]+)\}\}\s*$")
 
 
 def _substitute_param_tokens(value: Any, params: dict[str, Any]) -> Any:
@@ -495,7 +494,7 @@ def _substitute_param_tokens(value: Any, params: dict[str, Any]) -> Any:
         if full and full.group(1) in params:
             return params[full.group(1)]
 
-        def _repl(m: _re.Match) -> str:
+        def _repl(m: re.Match) -> str:
             key = m.group(1)
             return str(params[key]) if key in params else m.group(0)
 
