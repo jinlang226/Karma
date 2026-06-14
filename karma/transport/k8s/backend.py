@@ -11,6 +11,7 @@ container bundle.
 
 from __future__ import annotations
 
+import base64
 import json
 import os
 import socket
@@ -198,18 +199,14 @@ def _get_upstream_auth(env: dict[str, str] | None) -> dict[str, str]:
     ``token``. Empty when no usable auth is found (e.g. an auth-less local
     cluster), in which case the proxy forwards unauthenticated as before.
     """
-    import base64
-    import json as _json
-    import subprocess as sp
-
     auth: dict[str, str] = {}
     try:
-        r = sp.run(
+        r = subprocess.run(
             ["kubectl", "config", "view", "--raw", "--minify", "-o", "json"],
             capture_output=True, text=True, timeout=5,
             env={**os.environ, **(env or {})},
         )
-        cfg = _json.loads(r.stdout or "{}")
+        cfg = json.loads(r.stdout or "{}")
         users = cfg.get("users") or []
         user = (users[0].get("user") if users else {}) or {}
         ccd, ckd = user.get("client-certificate-data"), user.get("client-key-data")
@@ -230,9 +227,8 @@ def _get_upstream_auth(env: dict[str, str] | None) -> dict[str, str]:
 
 def _get_upstream_url(env: dict[str, str] | None) -> str:
     """Return the Kubernetes API server URL from KUBECONFIG or a default."""
-    import subprocess as sp
     try:
-        result = sp.run(
+        result = subprocess.run(
             ["kubectl", "config", "view", "--minify", "-o", "jsonpath={.clusters[0].cluster.server}"],
             capture_output=True, text=True, timeout=5, env={**os.environ, **(env or {})}
         )
