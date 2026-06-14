@@ -628,9 +628,14 @@ def run_stage(
         # outcome is determined solely by the oracle verdict.
         # In docker mode the kubeconfig is bind-mounted at /root/.kube/config
         # (see write_agent_bundle/launch_agent), so KUBECONFIG must point there,
-        # not at the host path the container cannot see.
+        # not at the host path the container cannot see. In local mode the agent
+        # runs with cwd set to the stage dir, so KUBECONFIG must be ABSOLUTE --
+        # a relative bundle path (e.g. from a relative --runs-dir) would not
+        # resolve from the agent's cwd, leaving kubectl with an empty config
+        # ("current-context is not set") and the agent silently bypassing the proxy.
         kubeconfig_env = (
-            "/root/.kube/config" if sandbox_mode == "docker" else str(agent_kubeconfig)
+            "/root/.kube/config" if sandbox_mode == "docker"
+            else str(Path(agent_kubeconfig).resolve())
         )
         agent_env_vars = {**env_vars_adv, "KUBECONFIG": kubeconfig_env}
         # A per-run launch command (--agent-cmd) is itself an agent to launch,
