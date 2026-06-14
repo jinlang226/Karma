@@ -15,6 +15,11 @@ explicitly:
     Base URL for OpenAI-compatible endpoints.
 ``KARMA_JUDGE_MODEL``
     Default model name override.
+``KARMA_JUDGE_BACKEND``
+    Force the backend (``openai`` or ``claude_cli``); auto-detected otherwise.
+
+These are read at call time (not via the ``settings`` singleton) because the
+backend and credentials are resolved per call and tests override them at runtime.
 """
 
 from __future__ import annotations

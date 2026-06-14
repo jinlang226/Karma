@@ -457,7 +457,6 @@ def save_workflow(
     ValueError
         When the YAML is unparseable or fails workflow validation.
     """
-    import re
     import yaml as _yaml
 
     try:
