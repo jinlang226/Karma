@@ -123,17 +123,16 @@ def translate_ui_request(
         return normalize_workflow(raw, resources_dir=resources_dir)
 
     if "workflow_path" in payload:
-        from pathlib import Path as _Path
-        candidate = _Path(str(payload["workflow_path"]))
+        candidate = Path(str(payload["workflow_path"]))
         load_path = candidate
         # When a workflows_dir is supplied (the HTTP boundary), confine the path
         # to that tree -- reject absolute paths and ".." traversal so the
         # endpoint can't be driven to read arbitrary files. Direct callers
         # (omit workflows_dir) are unrestricted.
         if workflows_dir is not None:
-            root = _Path(workflows_dir).resolve()
+            root = Path(workflows_dir).resolve()
             load_path = (candidate.resolve() if candidate.is_absolute()
-                         else (_Path.cwd() / candidate).resolve())
+                         else (Path.cwd() / candidate).resolve())
             if load_path != root and root not in load_path.parents:
                 raise ValueError("workflow_path must be under the workflows/ directory")
         try:
