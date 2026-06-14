@@ -192,13 +192,20 @@ def _resolve_stage_param_overrides(
 
 
 def _namespace_aliases_for_stage(stage: dict[str, Any]) -> list[str]:
-    """Return the namespace alias list for *stage*, defaulting to ``["default"]``."""
-    aliases = [
+    """Return the namespace aliases the stage *explicitly* declares.
+
+    Returns ``[]`` when the stage does not list any namespaces. The default
+    is NOT applied here: ``resolve_workflow_rows`` resolves an empty list
+    against the case's ``namespace_contract.required_roles`` (honouring an
+    explicit ``[]`` for literal-namespace cases like spark) and only then
+    falls back to ``["default"]``. Stamping ``["default"]`` here would mask
+    that contract and bind a stray ``karma-*`` namespace.
+    """
+    return [
         str(a).strip()
         for a in (stage.get("namespaces") or [])
         if str(a).strip()
     ]
-    return aliases if aliases else [_DEFAULT_NAMESPACE_ALIAS]
 
 
 # ---------------------------------------------------------------------------

@@ -48,8 +48,11 @@ class TestParseStageParamRef:
 
 
 class TestNamespaceAliasesForStage:
-    def test_defaults_to_default(self):
-        assert _namespace_aliases_for_stage({}) == ["default"]
+    def test_returns_empty_when_none_declared(self):
+        # No default is applied here; resolve_workflow_rows defers to the
+        # case's namespace_contract.required_roles (which may be an explicit
+        # [] for literal-namespace cases) before falling back to ["default"].
+        assert _namespace_aliases_for_stage({}) == []
 
     def test_returns_declared_aliases(self):
         stage = {"namespaces": ["primary", "secondary"]}
