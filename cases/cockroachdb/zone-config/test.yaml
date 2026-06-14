@@ -62,8 +62,14 @@ preconditionUnits:
   - name: crdb_env_ready
     on_probe_fail: skip
     probe:
-      - command: "kubectl -n cockroachdb get pods 2>/dev/null | grep -c Running"
-        timeout_sec: 10
+      # Only skip setup when THIS case's seeded tenant schemas already exist on
+      # an INSECURE cluster. A bare "any cockroachdb pod is Running" probe matched
+      # a leftover cluster from a prior workflow stage that lacks the seeded
+      # tenant_a/tenant_b tables (or was left in secure mode), so apply was
+      # skipped and the oracle then failed on the missing target tables. Requiring
+      # the seeded target schema via an --insecure query forces a clean redeploy.
+      - command: "/bin/sh -c 'kubectl -n cockroachdb exec crdb-cluster-0 -- ./cockroach sql --insecure --database=defaultdb -e \"SELECT count(*) FROM {{params.target_schema}}.table_c;\" 2>/dev/null'"
+        timeout_sec: 15
     apply:
       - command: "/bin/sh -c 'kubectl delete namespace cockroachdb --ignore-not-found=true; kubectl wait --for=delete namespace/cockroachdb --timeout=120s || true'"
         sleep: 2
