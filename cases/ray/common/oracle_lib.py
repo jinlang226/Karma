@@ -162,9 +162,14 @@ def ray_node_count_from_head(namespace: str, head_deployment: str, timeout_sec: 
     pod_name = str(pod_items[0].get("metadata", {}).get("name") or "").strip()
     if not pod_name:
         raise RuntimeError(f"deployment/{head_deployment} pod is missing metadata.name")
+    # Pin the driver's node IP to the head pod's own IP (exported as MY_POD_IP by
+    # the head manifest). Without this, ray.init(address='auto') auto-detects an
+    # address that may not match any registered raylet on single-host clusters
+    # (kind), failing with "none of these match this node's IP".
     script = (
-        "import ray; "
-        "ray.init(address='auto', ignore_reinit_error=True); "
+        "import os, ray; "
+        "ray.init(address='auto', ignore_reinit_error=True, "
+        "_node_ip_address=os.environ.get('MY_POD_IP') or None); "
         "print(sum(1 for node in ray.nodes() if node.get('Alive')))"
     )
     # Keep this helper to a single bounded probe window. The caller should own
