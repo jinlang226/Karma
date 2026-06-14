@@ -47,6 +47,34 @@ def run(cmd, timeout=30):
         return subprocess.CompletedProcess(cmd, 124, "", f"timed out after {timeout}s")
 
 
+_CONN_FLAG = None
+
+
+def conn_flag():
+    """Return the right cockroach SQL connection flag for the live cluster.
+
+    Standalone, this case stands up an INSECURE cluster (`--insecure`). But in a
+    workflow this stage can inherit a SECURE cluster left running by a prior
+    stage (e.g. certificate-rotation), whose precondition probe sees pods already
+    Running and skips its own insecure redeploy. A hardcoded `--insecure` then
+    fails with "node is running secure mode, SSL connection required". Detect the
+    mode once by checking for the mounted certs dir and connect accordingly so
+    the same oracle works in both contexts. Cached after the first probe.
+    """
+    global _CONN_FLAG
+    if _CONN_FLAG is not None:
+        return _CONN_FLAG
+    probe = run([
+        "kubectl", "-n", NAMESPACE, "--request-timeout=15s", "exec", POD, "--",
+        "ls", "/cockroach/cockroach-certs/ca.crt",
+    ], timeout=20)
+    if probe.returncode == 0:
+        _CONN_FLAG = "--certs-dir=/cockroach/cockroach-certs"
+    else:
+        _CONN_FLAG = "--insecure"
+    return _CONN_FLAG
+
+
 _BYTE_UNITS = {
     "b": 1, "kb": 1000, "kib": 1024, "mb": 1000 ** 2, "mib": 1024 ** 2,
     "gb": 1000 ** 3, "gib": 1024 ** 3, "tb": 1000 ** 4, "tib": 1024 ** 4,
@@ -114,7 +142,7 @@ def get_setting():
     """Read the live value of the configured cluster setting (last tsv line)."""
     cmd = [
         "kubectl", "-n", NAMESPACE, "--request-timeout=20s", "exec", POD, "--",
-        "./cockroach", "sql", "--insecure", "--format=tsv",
+        "./cockroach", "sql", conn_flag(), "--format=tsv",
         "-e", f"SHOW CLUSTER SETTING {SETTING_NAME};",
     ]
     result = run(cmd, timeout=25)
