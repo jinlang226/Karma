@@ -28,7 +28,14 @@ preconditionUnits:
   - name: crdb_env_ready
     on_probe_fail: skip
     probe:
-      - command: "kubectl -n cockroachdb get pods 2>/dev/null | grep -c Running"
+      # Only skip setup when THIS case's full environment is already present.
+      # A bare "any cockroachdb pod is Running" probe matched a leftover cluster
+      # from a prior workflow stage (e.g. zone-config) that lacks the monitoring
+      # stack, so apply was skipped and the oracle then failed on the missing
+      # curl-test pod / Prometheus. Require the curl-test helper pod to be Ready
+      # (it is the last thing apply creates) so a partial leftover forces a clean
+      # redeploy of the monitoring namespace + curl-test.
+      - command: "kubectl -n cockroachdb get pod curl-test -o jsonpath='{.status.conditions[?(@.type==\"Ready\")].status}' 2>/dev/null | grep -q True"
         timeout_sec: 10
     apply:
       - command: "/bin/sh -c 'kubectl delete namespace cockroachdb --ignore-not-found=true; kubectl wait --for=delete namespace/cockroachdb --timeout=120s || true; kubectl delete namespace monitoring --ignore-not-found=true; kubectl wait --for=delete namespace/monitoring --timeout=120s || true'"
