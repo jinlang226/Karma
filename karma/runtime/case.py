@@ -132,7 +132,6 @@ def _run_operation_units(
     """
     import os
     import subprocess
-    from ..settings import settings as _settings
 
     log_path.parent.mkdir(parents=True, exist_ok=True)
     env = {**os.environ, **role_bindings, **(env_vars or {})}
@@ -144,7 +143,7 @@ def _run_operation_units(
     deadline = (time.monotonic() + phase_timeout_sec) if phase_timeout_sec else None
     timed_out = False
 
-    def _exec(cmd_entry: dict[str, Any], default_to: int, phase: str, unit_id: str):
+    def _exec(cmd_entry: dict[str, Any], phase: str, unit_id: str):
         """Run one command, capping its timeout to the remaining phase budget.
 
         Returns the subprocess return code, or ``None`` if the command did
@@ -210,7 +209,7 @@ def _run_operation_units(
         # Probe
         probe_ok = True
         for cmd_entry in unit.get("probe_commands") or []:
-            rc = _exec(cmd_entry, 30, "probe", unit_id)
+            rc = _exec(cmd_entry, "probe", unit_id)
             if rc != 0:
                 probe_ok = False
                 break
@@ -237,7 +236,7 @@ def _run_operation_units(
         # Apply
         apply_ok = True
         for cmd_entry in unit.get("apply_commands") or []:
-            rc = _exec(cmd_entry, _settings.command_timeout_sec, "apply", unit_id)
+            rc = _exec(cmd_entry, "apply", unit_id)
             if rc != 0:
                 apply_ok = False
                 break
@@ -259,7 +258,7 @@ def _run_operation_units(
                 time.sleep(interval)
             verify_ok = True
             for cmd_entry in unit.get("verify_commands") or []:
-                rc = _exec(cmd_entry, 30, "verify", unit_id)
+                rc = _exec(cmd_entry, "verify", unit_id)
                 if rc != 0:
                     verify_ok = False
                     break
