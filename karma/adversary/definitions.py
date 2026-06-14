@@ -175,10 +175,14 @@ def _normalize_operation_block(
 
     probe_raw = raw.get("probe")
     on_probe_fail = default_on_probe_fail
-    if isinstance(probe_raw, dict):
-        v = probe_raw.get("on_probe_fail")
-        if v is not None:
-            on_probe_fail = str(v).strip().lower()
+    # Honor an explicit on_probe_fail at the operation-block level (how every
+    # scenario authors it, as a sibling of probe/apply/verify) or, legacy,
+    # inside a probe mapping. Without this the field was silently ignored.
+    explicit = raw.get("on_probe_fail")
+    if explicit is None and isinstance(probe_raw, dict):
+        explicit = probe_raw.get("on_probe_fail")
+    if explicit is not None:
+        on_probe_fail = str(explicit).strip().lower()
     if on_probe_fail not in _VALID_ON_PROBE_FAIL:
         raise ValueError(
             f"adversary scenario '{scenario_id}' {label}.probe.on_probe_fail "
@@ -388,7 +392,8 @@ def resolve_adversary_scenario(
     if data.get("lift") is not None:
         try:
             lift_unit = _normalize_operation_block(
-                data["lift"], "lift", scenario_name
+                data["lift"], "lift", scenario_name,
+                default_on_probe_fail="skip",
             )
         except ValueError as exc:
             raise RuntimeError(str(exc)) from exc
