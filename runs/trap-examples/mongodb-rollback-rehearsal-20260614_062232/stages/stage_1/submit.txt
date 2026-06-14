@@ -1,0 +1,20 @@
+The `rollback-rehearsal` ConfigMap is created in the `mongodb` namespace with the `rollback.sh` key. The live cluster is untouched.
+
+**What the script does, and why it's structured in two phases:**
+
+Reverting authentication on a running replica set can't be done in a single rolling restart — if some members have auth and others don't, they can't talk to each other. MongoDB's `transitionToAuth` solves this:
+
+**Phase A** — Keeps the `keyFile` but adds `transitionToAuth: true`, and reverts the three simpler settings (verbosity 1→0, profiling mode slowOp→off, slowOpThresholdMs 200→100, compressor zlib→snappy). Rolling restart (secondaries first, then graceful `rs.stepDown` + primary restart). After this, all members accept connections with *or* without credentials.
+
+**Phase B** — Patches the ConfigMap again to remove the `security` section entirely. Drops the `admin-user` account while credentials are still accepted (transitionToAuth pods still authenticate). Then does a final rolling restart. All members come up with no auth at all, matching MongoDB defaults.
+
+**Settings reverted:**
+
+| Setting | Was | Becomes |
+|---|---|---|
+| `systemLog.verbosity` | 1 | 0 |
+| `operationProfiling.mode` | slowOp | off |
+| `operationProfiling.slowOpThresholdMs` | 200 ms | 100 ms |
+| `journalCompressor` | zlib | snappy |
+| `security.authorization` / `keyFile` | enabled | removed |
+| `admin-user` | provisioned | dropped |
