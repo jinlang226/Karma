@@ -35,7 +35,6 @@ from pathlib import Path
 from typing import Any
 
 from ..transport.k8s.backend import launch_proxy, write_agent_bundle
-from ..environments.registry import get_environment
 from ..sandbox import launch_agent, cleanup_agent
 from ..oracle import run_oracle
 from ..evidence import collect_evidence
