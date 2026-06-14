@@ -109,6 +109,9 @@ class KubectlProxyServer:
         self._token = token
         self._server: HTTPServer | None = None
         self._stop_event = threading.Event()
+        # ThreadingHTTPServer handles each request on its own thread, so the
+        # call-log append must be serialized to avoid interleaved JSONL lines.
+        self._log_lock = threading.Lock()
 
     def start(self) -> None:
         """Start the proxy and block until :meth:`shutdown` is called.
@@ -350,7 +353,7 @@ class KubectlProxyServer:
             Dict with keys ``timestamp``, ``verb``, ``path``, ``status``,
             and ``duration_ms``.
         """
-        with self._log_path.open("a") as fh:
+        with self._log_lock, self._log_path.open("a") as fh:
             fh.write(json.dumps(entry) + "\n")
 
     def shutdown(self) -> None:
