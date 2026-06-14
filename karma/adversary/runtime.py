@@ -19,7 +19,9 @@ context.
 from __future__ import annotations
 
 import json
+import os
 import subprocess
+import time
 from pathlib import Path
 from typing import Any
 
@@ -35,9 +37,6 @@ def _exec_command(
 
     Returns ``(success, combined_output)``.
     """
-    import os
-    import time
-
     env = {**os.environ, **(env_vars or {})}
     try:
         proc = subprocess.run(
@@ -72,8 +71,6 @@ def _run_units(
     Returns a dict with ``ok``, *result_id_key* (list of IDs that ran), and
     ``output`` (concatenated log lines).
     """
-    import time
-
     log_path.parent.mkdir(parents=True, exist_ok=True)
     all_output: list[str] = []
     success_ids: list[str] = []
