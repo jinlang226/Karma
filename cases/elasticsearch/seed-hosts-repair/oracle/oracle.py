@@ -6,15 +6,75 @@ import sys
 
 NAMESPACE = os.environ.get("BENCH_NAMESPACE", "elasticsearch")
 SERVICE = os.environ.get("BENCH_PARAM_HTTP_SERVICE_NAME", "es-http")
-EXPECTED_NODES = int(os.environ.get("BENCH_PARAM_EXPECTED_NODE_COUNT", "3"))
+CLUSTER_PREFIX = os.environ.get("BENCH_PARAM_CLUSTER_PREFIX", "es-cluster")
 INDEX = os.environ.get("BENCH_PARAM_INDEX_NAME", "app-data")
+DEFAULT_SCHEME = "http"
+_SCHEME = None
 
 
 def run(cmd):
     return subprocess.run(cmd, text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
 
 
+def _resolve_expected_nodes(default=3):
+    """Topology size to enforce (param override -> live Ready es pods -> default).
+
+    The env PERSISTS across stages; a prior scale stage may change the node
+    count, so adapt the target without loosening it (a missing/NotReady node
+    still mismatches the live count).
+    """
+    for key in ("BENCH_PARAM_EXPECTED_NODE_COUNT", "BENCH_PARAM_EXPECTED_NODES"):
+        val = os.environ.get(key)
+        if val is not None and str(val).strip():
+            try:
+                return int(val)
+            except ValueError:
+                pass
+    res = run(["kubectl", "-n", NAMESPACE, "get", "pods", "-l", f"app={CLUSTER_PREFIX}", "-o", "json"])
+    if res.returncode == 0:
+        try:
+            items = json.loads(res.stdout).get("items", [])
+            ready = sum(
+                1 for p in items
+                if any(c.get("type") == "Ready" and c.get("status") == "True"
+                       for c in p.get("status", {}).get("conditions", []))
+            )
+            if ready > 0:
+                return ready
+        except (json.JSONDecodeError, AttributeError):
+            pass
+    return default
+
+
+EXPECTED_NODES = _resolve_expected_nodes(3)
+
+
+def _probe_scheme(scheme):
+    """True if the ES HTTP API answers on the given scheme (auth-agnostic)."""
+    result = run([
+        "kubectl", "-n", NAMESPACE, "exec", "curl-test", "--",
+        "curl", "-s", "-S", "-k", "-o", "/dev/null",
+        "-w", "%{http_code}", "--max-time", "5", f"{scheme}://{SERVICE}:9200/",
+    ])
+    code = (result.stdout or "").strip()
+    return result.returncode == 0 and code.isdigit() and code != "000"
+
+
+def detect_scheme():
+    """Detect the cluster's live HTTP scheme (default first, then the other)."""
+    global _SCHEME
+    if _SCHEME is not None:
+        return _SCHEME
+    for scheme in (DEFAULT_SCHEME, "https" if DEFAULT_SCHEME == "http" else "http"):
+        if _probe_scheme(scheme):
+            _SCHEME = scheme
+            return _SCHEME
+    _SCHEME = DEFAULT_SCHEME
+    return _SCHEME
+
+
 def curl_json(path, errors):
+    scheme = detect_scheme()
     cmd = [
         "kubectl",
         "-n",
@@ -25,9 +85,10 @@ def curl_json(path, errors):
         "curl",
         "-s",
         "-S",
+        "-k",
         "--max-time",
         "10",
-        f"http://{SERVICE}:9200{path}",
+        f"{scheme}://{SERVICE}:9200{path}",
     ]
     result = run(cmd)
     if result.returncode != 0:

@@ -139,6 +139,53 @@ preconditionUnits:
       - command: "kubectl -n elasticsearch get secret {{params.next_password_secret_name}} >/dev/null 2>&1 && echo present"
         timeout_sec: 10
 
+  # Additive fixture unit (Rule 4): the oracle reads the elastic-password-prev
+  # configmap to recover the pre-rotation ("old") password and assert it stops
+  # working after the agent rotates. The destructive env apply creates it from
+  # resource/passwords.yaml, but in a workflow that apply is skipped on an
+  # already-running cluster, so the configmap is missing -> oracle errors with
+  # "Unable to read elastic-password-prev: configmaps not found". Ensure it
+  # idempotently WITHOUT touching the cluster: seed its value from the CURRENT
+  # live elastic-password secret (so "old" == whatever the inherited cluster's
+  # password is, e.g. elasticpass from deploy-core-cluster), falling back to the
+  # standalone default elasticpass-old when no current secret exists yet. The
+  # probe gates only this configmap; standalone (where the env apply already
+  # created it) the probe passes and this unit is skipped.
+  - name: es_prev_password_configmap_fixture
+    on_probe_fail: skip
+    probe:
+      - command: "kubectl -n elasticsearch get configmap elastic-password-prev >/dev/null 2>&1 && echo present"
+        timeout_sec: 10
+    apply:
+      - command: |
+          /bin/sh -c '
+          CUR=$(kubectl -n elasticsearch get secret {{params.current_password_secret_name}} -o jsonpath="{.data.password}" 2>/dev/null | base64 -d 2>/dev/null)
+          [ -n "$CUR" ] || CUR=elasticpass-old
+          kubectl -n elasticsearch create configmap elastic-password-prev --from-literal=password="$CUR" --dry-run=client -o yaml | kubectl apply -f -
+          '
+        sleep: 1
+    verify:
+      - command: "kubectl -n elasticsearch get configmap elastic-password-prev >/dev/null 2>&1 && echo present"
+        timeout_sec: 10
+
+  # Additive fixture unit (Rule 4): the oracle requires the auth-checker
+  # deployment to be Ready after rotation. The destructive env apply creates it
+  # from resource/auth-checker.yaml, but a workflow skips that apply on an
+  # already-running cluster, so the deployment is missing. Ensure it idempotently
+  # WITHOUT touching the cluster by applying the same manifest. The probe gates
+  # only this deployment; standalone the probe passes and this unit is skipped.
+  - name: es_auth_checker_deployment_fixture
+    on_probe_fail: skip
+    probe:
+      - command: "kubectl -n elasticsearch get deployment {{params.auth_checker_deployment_name}} >/dev/null 2>&1 && echo present"
+        timeout_sec: 10
+    apply:
+      - command: "kubectl -n elasticsearch apply -f cases/elasticsearch/rotate-elastic-password/resource/auth-checker.yaml"
+        sleep: 1
+    verify:
+      - command: "kubectl -n elasticsearch get deployment {{params.auth_checker_deployment_name}} >/dev/null 2>&1 && echo present"
+        timeout_sec: 10
+
 oracle:
   verify:
     commands:

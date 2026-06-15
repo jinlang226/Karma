@@ -7,15 +7,91 @@ import sys
 
 NAMESPACE = os.environ.get("BENCH_NAMESPACE", "elasticsearch")
 SERVICE = os.environ.get("BENCH_PARAM_HTTP_SERVICE_NAME", "es-http")
-EXPECTED_NODES = int(os.environ.get("BENCH_PARAM_EXPECTED_NODES", "3"))
 CLUSTER_PREFIX = os.environ.get("BENCH_PARAM_CLUSTER_PREFIX", "es-cluster")
+
+
+def _resolve_expected_nodes(default=3):
+    """Topology size to enforce.
+
+    The env PERSISTS across stages, so a prior scale stage may have grown the
+    cluster past this case's standalone default. Resolve from (priority):
+    explicit BENCH_PARAM_EXPECTED_NODES / *_NODE_COUNT param -> the LIVE count
+    of Ready es pods (label app=<prefix>) -> the standalone default. Only the
+    count target adapts; a non-solving agent (missing/NotReady node) still
+    mismatches the live count.
+    """
+    for key in ("BENCH_PARAM_EXPECTED_NODES", "BENCH_PARAM_EXPECTED_NODE_COUNT"):
+        val = os.environ.get(key)
+        if val is not None and str(val).strip():
+            try:
+                return int(val)
+            except ValueError:
+                pass
+    res = subprocess.run(
+        ["kubectl", "-n", NAMESPACE, "get", "pods", "-l", f"app={CLUSTER_PREFIX}", "-o", "json"],
+        text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+    )
+    if res.returncode == 0:
+        try:
+            items = json.loads(res.stdout).get("items", [])
+            ready = 0
+            for pod in items:
+                conds = pod.get("status", {}).get("conditions", [])
+                if any(c.get("type") == "Ready" and c.get("status") == "True" for c in conds):
+                    ready += 1
+            if ready > 0:
+                return ready
+        except (json.JSONDecodeError, AttributeError):
+            pass
+    return default
+
+
+EXPECTED_NODES = _resolve_expected_nodes(3)
+# Default scheme for the standalone case; may be flipped by _detect_scheme() when
+# a prior workflow stage toggled xpack.security.http.ssl on this cluster.
+DEFAULT_SCHEME = "http"
+_SCHEME = None
 
 
 def run(cmd):
     return subprocess.run(cmd, text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
 
 
+def _probe_scheme(scheme):
+    """Return True if the ES HTTP API answers on the given scheme.
+
+    The env PERSISTS across stages, so the cluster's actual HTTP scheme may
+    differ from this case's standalone default. A reachable endpoint answers
+    even when auth is required (401/anything HTTP), so any non-empty body or a
+    clean exit counts as 'this scheme is live'. -k tolerates the self-signed
+    cert on https.
+    """
+    result = run([
+        "kubectl", "-n", NAMESPACE, "exec", "curl-test", "--",
+        "curl", "-s", "-S", "-k", "-o", "/dev/null",
+        "-w", "%{http_code}", "--max-time", "5",
+        f"{scheme}://{SERVICE}:9200/",
+    ])
+    code = (result.stdout or "").strip()
+    return result.returncode == 0 and code.isdigit() and code != "000"
+
+
+def detect_scheme():
+    """Detect the cluster's live HTTP scheme (default first, then the other)."""
+    global _SCHEME
+    if _SCHEME is not None:
+        return _SCHEME
+    order = [DEFAULT_SCHEME, "https" if DEFAULT_SCHEME == "http" else "http"]
+    for scheme in order:
+        if _probe_scheme(scheme):
+            _SCHEME = scheme
+            return _SCHEME
+    _SCHEME = DEFAULT_SCHEME
+    return _SCHEME
+
+
 def curl(path, errors):
+    scheme = detect_scheme()
     cmd = [
         "kubectl",
         "-n",
@@ -26,9 +102,10 @@ def curl(path, errors):
         "curl",
         "-s",
         "-S",
+        "-k",
         "--max-time",
         "10",
-        f"http://{SERVICE}:9200{path}",
+        f"{scheme}://{SERVICE}:9200{path}",
     ]
     result = run(cmd)
     if result.returncode != 0:

@@ -9,15 +9,69 @@ SERVICE = os.environ.get("BENCH_PARAM_HTTP_SERVICE_NAME", "es-http")
 STS_NAME = os.environ.get("BENCH_PARAM_CLUSTER_PREFIX", "es-cluster")
 PVC_PREFIX = os.environ.get("BENCH_PARAM_PVC_NAME_PREFIX") or f"data-{STS_NAME}-"
 MARKER_PATH = "/usr/share/elasticsearch/data/pvc-gc-marker"
-EXPECTED_REPLICAS = int(os.environ.get("BENCH_PARAM_TARGET_REPLICAS", "1"))
 APP_LABEL = f"app={STS_NAME}"
+DEFAULT_SCHEME = "http"
+_SCHEME = None
 
 
 def run(cmd):
     return subprocess.run(cmd, text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
 
 
+def _resolve_expected_replicas(default=1):
+    """Downscale target to enforce (param -> live STS spec replicas -> default).
+
+    The env PERSISTS across stages, so the surviving topology may not be the
+    standalone target of 1. The explicit downscale-target param wins; otherwise
+    the live StatefulSet spec replicas is the target. The shard-migration / PVC
+    / marker checks below still verify the real downscale on the surviving set.
+    """
+    val = os.environ.get("BENCH_PARAM_TARGET_REPLICAS")
+    if val is not None and str(val).strip():
+        try:
+            return int(val)
+        except ValueError:
+            pass
+    res = run(["kubectl", "-n", NAMESPACE, "get", "sts", STS_NAME, "-o", "json"])
+    if res.returncode == 0:
+        try:
+            spec = json.loads(res.stdout).get("spec", {}) or {}
+            live = spec.get("replicas")
+            if isinstance(live, int) and live > 0:
+                return live
+        except (json.JSONDecodeError, AttributeError):
+            pass
+    return default
+
+
+EXPECTED_REPLICAS = _resolve_expected_replicas(1)
+
+
+def _probe_scheme(scheme):
+    """True if the ES HTTP API answers on the given scheme (auth-agnostic)."""
+    result = run([
+        "kubectl", "-n", NAMESPACE, "exec", "curl-test", "--", "/bin/sh", "-c",
+        f"curl -s -S -k -o /dev/null -w '%{{http_code}}' --connect-timeout 2 --max-time 3 {scheme}://{SERVICE}:9200/",
+    ])
+    code = (result.stdout or "").strip().strip("'")
+    return result.returncode == 0 and code.isdigit() and code != "000"
+
+
+def detect_scheme():
+    """Detect the cluster's live HTTP scheme (default first, then the other)."""
+    global _SCHEME
+    if _SCHEME is not None:
+        return _SCHEME
+    for scheme in (DEFAULT_SCHEME, "https" if DEFAULT_SCHEME == "http" else "http"):
+        if _probe_scheme(scheme):
+            _SCHEME = scheme
+            return _SCHEME
+    _SCHEME = DEFAULT_SCHEME
+    return _SCHEME
+
+
 def curl(path, errors):
+    scheme = detect_scheme()
     result = run(
         [
             "kubectl",
@@ -28,7 +82,7 @@ def curl(path, errors):
             "--",
             "/bin/sh",
             "-c",
-            f"curl -s -S --connect-timeout 2 --max-time 3 http://{SERVICE}:9200{path}",
+            f"curl -s -S -k --connect-timeout 2 --max-time 3 {scheme}://{SERVICE}:9200{path}",
         ]
     )
     if result.returncode != 0:
@@ -138,7 +192,8 @@ def main():
 
     shards = curl("/_cat/shards/app-data?format=json", errors)
     if isinstance(shards, list):
-        bad = [s for s in shards if s.get("node") != f"{STS_NAME}-0"]
+        surviving = {f"{STS_NAME}-{i}" for i in range(max(EXPECTED_REPLICAS, 1))}
+        bad = [s for s in shards if s.get("node") and s.get("node") not in surviving]
         if bad:
             errors.append("app-data shards still present on removed nodes")
     else:

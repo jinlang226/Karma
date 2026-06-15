@@ -8,13 +8,44 @@ ES_NS = "elasticsearch"
 MON_SERVICE = "monitoring-es-http"
 MON_CURL = "monitoring-curl-test"
 ES_APP_LABEL = "es-cluster"
+DEFAULT_SCHEME = "http"
+_SCHEME = {}
 
 
 def run(cmd):
     return subprocess.run(cmd, text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
 
 
+def _probe_scheme(service, scheme):
+    """True if the monitoring ES HTTP API answers on the given scheme.
+
+    The env PERSISTS across stages, so the monitoring cluster's live scheme may
+    differ from the default; a 401 still proves the scheme is reachable.
+    """
+    result = run([
+        "kubectl", "-n", MON_NS, "exec", MON_CURL, "--",
+        "curl", "-s", "-S", "-k", "-o", "/dev/null",
+        "-w", "%{http_code}", "--max-time", "5",
+        f"{scheme}://{service}.{MON_NS}.svc:9200/",
+    ])
+    code = (result.stdout or "").strip()
+    return result.returncode == 0 and code.isdigit() and code != "000"
+
+
+def detect_scheme(service):
+    """Detect a service's live HTTP scheme (http default first, then https)."""
+    if service in _SCHEME:
+        return _SCHEME[service]
+    for scheme in (DEFAULT_SCHEME, "https" if DEFAULT_SCHEME == "http" else "http"):
+        if _probe_scheme(service, scheme):
+            _SCHEME[service] = scheme
+            return scheme
+    _SCHEME[service] = DEFAULT_SCHEME
+    return DEFAULT_SCHEME
+
+
 def curl_json(service, path, errors):
+    scheme = detect_scheme(service)
     result = run(
         [
             "kubectl",
@@ -26,9 +57,10 @@ def curl_json(service, path, errors):
             "curl",
             "-s",
             "-S",
+            "-k",
             "--max-time",
             "10",
-            f"http://{service}.{MON_NS}.svc:9200{path}",
+            f"{scheme}://{service}.{MON_NS}.svc:9200{path}",
         ]
     )
     if result.returncode != 0:

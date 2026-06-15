@@ -18,13 +18,48 @@ OPS_PASS = os.environ.get("BENCH_PARAM_OPS_PASSWORD", "opspass")
 REPORT_USER = os.environ.get("BENCH_PARAM_REPORT_USER", "report-user")
 REPORT_PASS = os.environ.get("BENCH_PARAM_REPORT_PASSWORD", "reportpass")
 INDEX = os.environ.get("BENCH_PARAM_SEED_INDEX_NAME", "app-data")
+# Standalone this case runs ES with HTTP TLS on, so https is the default; a
+# prior stage could have disabled it, so _detect_scheme() flips to http. Auth
+# (-u user:pass) is always kept, so wrong credentials still fail.
+DEFAULT_SCHEME = "https"
+_SCHEME = None
 
 
 def run(cmd):
     return subprocess.run(cmd, text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
 
 
+def _probe_scheme(scheme):
+    """True if the ES HTTP API answers on the given scheme (auth-agnostic).
+
+    A 401 still proves the scheme is live, so this only picks http vs https and
+    never bypasses the per-user auth the real checks perform.
+    """
+    result = run([
+        "kubectl", "-n", NAMESPACE, "exec", "curl-test", "--",
+        "curl", "-s", "-S", "-k", "-o", "/dev/null",
+        "-w", "%{http_code}", "--max-time", "10",
+        f"{scheme}://{SERVICE}.{NAMESPACE}.svc:9200/",
+    ])
+    code = (result.stdout or "").strip()
+    return result.returncode == 0 and code.isdigit() and code != "000"
+
+
+def detect_scheme():
+    """Detect the cluster's live HTTP scheme (default first, then the other)."""
+    global _SCHEME
+    if _SCHEME is not None:
+        return _SCHEME
+    for scheme in (DEFAULT_SCHEME, "https" if DEFAULT_SCHEME == "http" else "http"):
+        if _probe_scheme(scheme):
+            _SCHEME = scheme
+            return _SCHEME
+    _SCHEME = DEFAULT_SCHEME
+    return _SCHEME
+
+
 def curl_json(path, user, password, errors):
+    scheme = detect_scheme()
     cmd = [
         "kubectl",
         "-n",
@@ -40,7 +75,7 @@ def curl_json(path, user, password, errors):
         "-k",
         "-u",
         f"{user}:{password}",
-        f"https://{SERVICE}.{NAMESPACE}.svc:9200{path}",
+        f"{scheme}://{SERVICE}.{NAMESPACE}.svc:9200{path}",
     ]
     result = run(cmd)
     if result.returncode != 0:
