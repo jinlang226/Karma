@@ -31,7 +31,7 @@ from .events import hub
 from . import catalog
 from . import judging
 from . import cli_preview
-from ...definitions.workflows import normalize_workflow
+from ...definitions.workflows import parse_and_normalize_workflow
 from ...runtime import manual
 from ...agents.registry import list_agents
 from ...metrics import list_metrics
@@ -409,15 +409,9 @@ def create_app(
     @app.route("/api/workflow/import", methods=["POST"])
     def api_workflow_import():
         payload = request.get_json(force=True, silent=True) or {}
-        import yaml as _yaml
         try:
-            raw = _yaml.safe_load(payload.get("yaml_text") or "") or {}
-        except Exception as exc:
-            return jsonify({"ok": False, "errors": [f"YAML parse error: {exc}"]})
-        if not isinstance(raw, dict):
-            return jsonify({"ok": False, "errors": ["workflow must be a YAML object"]})
-        try:
-            workflow = normalize_workflow(raw, resources_dir=Path(resources_dir))
+            workflow = parse_and_normalize_workflow(
+                payload.get("yaml_text") or "", Path(resources_dir))
         except ValueError as exc:
             return jsonify({"ok": False, "errors": [str(exc)]})
         return jsonify({"ok": True, "workflow": workflow})
@@ -426,36 +420,13 @@ def create_app(
     def api_workflow_preview():
         # Fully resolve a workflow (normalize + load cases + adversary) and
         # summarize the stages that would run, without executing anything.
-        from ...definitions.workflows import resolve_workflow_rows
         payload = request.get_json(force=True, silent=True) or {}
-        import yaml as _yaml
         try:
-            raw = _yaml.safe_load(payload.get("yaml_text") or "") or {}
-        except Exception as exc:
-            return jsonify({"ok": False, "errors": [f"YAML parse error: {exc}"]})
-        if not isinstance(raw, dict):
-            return jsonify({"ok": False, "errors": ["workflow must be a YAML object"]})
-        try:
-            workflow = normalize_workflow(raw, resources_dir=Path(resources_dir))
-            rows = resolve_workflow_rows(workflow, resources_dir=Path(resources_dir))
+            preview = catalog.preview_workflow(
+                payload.get("yaml_text") or "", Path(resources_dir))
         except (ValueError, RuntimeError) as exc:
             return jsonify({"ok": False, "errors": [str(exc)]})
-        return jsonify({
-            "ok": True,
-            "workflow_id": workflow.get("id"),
-            "prompt_mode": workflow.get("prompt_mode"),
-            "stage_count": len(rows),
-            "stages": [
-                {
-                    "stage_id": r.get("stage_id"),
-                    "service": r.get("service"),
-                    "case_name": r.get("case_name"),
-                    "namespace_roles": r.get("namespace_roles"),
-                    "has_adversary": bool(r.get("adversary_deploy")),
-                }
-                for r in rows
-            ],
-        })
+        return jsonify({"ok": True, **preview})
 
     @app.route("/api/adversary/scenarios")
     def api_adversary_scenarios():

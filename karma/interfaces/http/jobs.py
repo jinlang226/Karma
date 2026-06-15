@@ -18,6 +18,7 @@ from ...definitions.workflows import (
     single_case_to_workflow,
     normalize_workflow,
     load_workflow_file,
+    parse_and_normalize_workflow,
 )
 from ...runtime.service import run_workflow, get_run_status
 from ...protocol import generate_run_id, run_config_path
@@ -115,12 +116,7 @@ def translate_ui_request(
         unparseable.
     """
     if "workflow_yaml" in payload:
-        import yaml
-        try:
-            raw = yaml.safe_load(payload["workflow_yaml"]) or {}
-        except Exception as exc:
-            raise ValueError(f"failed to parse workflow YAML: {exc}") from exc
-        return normalize_workflow(raw, resources_dir=resources_dir)
+        return parse_and_normalize_workflow(payload["workflow_yaml"], resources_dir)
 
     if "workflow_path" in payload:
         candidate = Path(str(payload["workflow_path"]))

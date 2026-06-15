@@ -34,7 +34,10 @@ _LOG_TAIL_BYTES = 16384
 _PROMPT_TAIL_BYTES = 4096
 
 from ...definitions.cases import load_case_file, normalize_case
-from ...definitions.workflows import load_workflow_file, normalize_workflow
+from ...definitions.workflows import (
+    load_workflow_file, normalize_workflow, resolve_workflow_rows,
+    parse_and_normalize_workflow,
+)
 
 
 def _read_json(path: Path) -> dict[str, Any] | None:
@@ -449,6 +452,31 @@ def list_workflow_files(
     return result
 
 
+def preview_workflow(yaml_text: str, resources_dir: Path) -> dict[str, Any]:
+    """Normalize and fully resolve workflow YAML into a stage summary.
+
+    Resolves cases + adversary scenarios (no execution). Raises ``ValueError``
+    on parse/normalize errors or ``RuntimeError`` on resolution errors.
+    """
+    workflow = parse_and_normalize_workflow(yaml_text, resources_dir)
+    rows = resolve_workflow_rows(workflow, resources_dir=resources_dir)
+    return {
+        "workflow_id": workflow.get("id"),
+        "prompt_mode": workflow.get("prompt_mode"),
+        "stage_count": len(rows),
+        "stages": [
+            {
+                "stage_id": r.get("stage_id"),
+                "service": r.get("service"),
+                "case_name": r.get("case_name"),
+                "namespace_roles": r.get("namespace_roles"),
+                "has_adversary": bool(r.get("adversary_deploy")),
+            }
+            for r in rows
+        ],
+    }
+
+
 def save_workflow(
     workflows_dir: Path, resources_dir: Path, yaml_text: str, name: str | None
 ) -> dict[str, Any]:
@@ -464,15 +492,7 @@ def save_workflow(
     ValueError
         When the YAML is unparseable or fails workflow validation.
     """
-    import yaml as _yaml
-
-    try:
-        raw = _yaml.safe_load(yaml_text) or {}
-    except Exception as exc:
-        raise ValueError(f"failed to parse YAML: {exc}") from exc
-    if not isinstance(raw, dict):
-        raise ValueError("workflow must be a YAML object")
-    norm = normalize_workflow(raw, resources_dir=resources_dir)
+    norm = parse_and_normalize_workflow(yaml_text, resources_dir)
 
     base = str(name or norm.get("id") or "workflow").strip()
     safe = re.sub(r"[^A-Za-z0-9._-]+", "-", base).strip("-")
