@@ -62,6 +62,105 @@ def _run_commands(
     return True, "".join(output_parts)
 
 
+# Signatures of a transient kubectl/apiserver connectivity failure — a brief
+# proxy or apiserver blip (common when several stages run concurrently) rather
+# than a real assessment of cluster state. A FAIL carrying one of these is
+# re-run instead of being recorded as the verdict.
+_TRANSIENT_SIGNATURES = (
+    "Unable to connect to the server",
+    "TLS handshake timeout",
+    "i/o timeout",
+    "connection refused",
+    "dial tcp",
+    "Client.Timeout exceeded",
+    "unexpected EOF",
+    "the server is currently unable to handle the request",
+    "etcdserver: request timed out",
+)
+
+
+def _is_transient_failure(result: dict[str, Any]) -> bool:
+    """True if a FAIL verdict looks caused by a transient API/proxy blip.
+
+    Such failures (kubectl momentarily cannot reach the apiserver, so the
+    oracle cannot list pods or read secrets) do not reflect cluster state, so
+    the caller re-runs the evaluation rather than trusting the verdict.
+    """
+    blob = " ".join(
+        str(result.get(key) or "")
+        for key in ("output", "before_output", "after_output", "script_output")
+    )
+    return any(sig in blob for sig in _TRANSIENT_SIGNATURES)
+
+
+def _evaluate_oracle(
+    oracle_config: dict[str, Any],
+    *,
+    env: dict[str, str],
+    effective_timeout: int,
+) -> dict[str, Any]:
+    """Run before/verify/script/after commands once and return a verdict dict.
+
+    Pure evaluation with no disk writes; ``run_oracle`` wraps this in a
+    transient-failure retry loop and persists the final result.
+    """
+    result: dict[str, Any] = {
+        "verdict": "error",
+        "output": "",
+        "before_output": "",
+        "after_output": "",
+        "script_output": None,
+        "error": None,
+    }
+    try:
+        after_failure_mode = oracle_config.get("after_failure_mode") or "warn"
+
+        before_ok, before_out = _run_commands(
+            oracle_config.get("before_commands") or [],
+            env=env, timeout_sec=effective_timeout,
+        )
+        result["before_output"] = before_out
+
+        verify_ok, verify_out = _run_commands(
+            oracle_config.get("verify_commands") or [],
+            env=env, timeout_sec=effective_timeout,
+        )
+        result["output"] = verify_out
+
+        script_output: str | None = None
+        script_path = oracle_config.get("script_path")
+        if script_path:
+            try:
+                proc = subprocess.run(
+                    ["python3", script_path],
+                    capture_output=True, text=True, env=env, timeout=effective_timeout,
+                )
+                script_output = proc.stdout + proc.stderr
+                if proc.returncode != 0:
+                    verify_ok = False
+            except Exception as exc:
+                script_output = f"[script error: {exc}]"
+                verify_ok = False
+        result["script_output"] = script_output
+
+        after_ok, after_out = _run_commands(
+            oracle_config.get("after_commands") or [],
+            env=env, timeout_sec=effective_timeout,
+        )
+        result["after_output"] = after_out
+
+        if not verify_ok:
+            result["verdict"] = "fail"
+        elif not after_ok and after_failure_mode == "fail":
+            result["verdict"] = "fail"
+        else:
+            result["verdict"] = "pass"
+    except Exception as exc:
+        result["verdict"] = "error"
+        result["error"] = str(exc)
+    return result
+
+
 def run_oracle(
     oracle_config: dict[str, Any],
     *,
@@ -128,62 +227,20 @@ def run_oracle(
                     declared += int(_entry.get("timeout_sec") or 0) + int(_entry.get("sleep") or 0)
         effective_timeout = max(_settings.oracle_timeout_sec, declared)
 
-    result: dict[str, Any] = {
-        "verdict": "error",
-        "output": "",
-        "before_output": "",
-        "after_output": "",
-        "script_output": None,
-        "error": None,
-    }
-    try:
-        env = {**os.environ, **role_bindings, **(env_vars or {})}
-        after_failure_mode = oracle_config.get("after_failure_mode") or "warn"
+    env = {**os.environ, **role_bindings, **(env_vars or {})}
 
-        before_ok, before_out = _run_commands(
-            oracle_config.get("before_commands") or [],
-            env=env, timeout_sec=effective_timeout,
+    # A transient apiserver/proxy blip must not be recorded as a real FAIL: when
+    # a fail carries a connectivity signature, re-run the whole evaluation a few
+    # times (short backoff) before trusting it. A genuine fail (real assertion
+    # mismatch) has no such signature and is returned on the first pass.
+    result: dict[str, Any] = {"verdict": "error", "output": "", "error": None}
+    for _attempt in range(3):
+        result = _evaluate_oracle(
+            oracle_config, env=env, effective_timeout=effective_timeout,
         )
-        result["before_output"] = before_out
-
-        verify_ok, verify_out = _run_commands(
-            oracle_config.get("verify_commands") or [],
-            env=env, timeout_sec=effective_timeout,
-        )
-        result["output"] = verify_out
-
-        script_output: str | None = None
-        script_path = oracle_config.get("script_path")
-        if script_path:
-            try:
-                proc = subprocess.run(
-                    ["python3", script_path],
-                    capture_output=True, text=True, env=env, timeout=effective_timeout,
-                )
-                script_output = proc.stdout + proc.stderr
-                if proc.returncode != 0:
-                    verify_ok = False
-            except Exception as exc:
-                script_output = f"[script error: {exc}]"
-                verify_ok = False
-        result["script_output"] = script_output
-
-        after_ok, after_out = _run_commands(
-            oracle_config.get("after_commands") or [],
-            env=env, timeout_sec=effective_timeout,
-        )
-        result["after_output"] = after_out
-
-        if not verify_ok:
-            result["verdict"] = "fail"
-        elif not after_ok and after_failure_mode == "fail":
-            result["verdict"] = "fail"
-        else:
-            result["verdict"] = "pass"
-
-    except Exception as exc:
-        result["verdict"] = "error"
-        result["error"] = str(exc)
+        if result["verdict"] != "fail" or not _is_transient_failure(result):
+            break
+        time.sleep(min(5 * (_attempt + 1), 15))
 
     protocol.ensure_stage_dir(run_dir, stage_id)
     oracle_path = protocol.stage_oracle_path(run_dir, stage_id)
