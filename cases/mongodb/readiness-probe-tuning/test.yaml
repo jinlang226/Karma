@@ -56,14 +56,13 @@ preconditionUnits:
   - name: mongo_env_ready
     on_probe_fail: skip
     probe:
+      # Non-destructive skip-if-running probe: if a MongoDB cluster is already
+      # present (e.g. inherited from a prior workflow stage), SKIP the apply so
+      # accumulated state is preserved. The apply only runs on an empty
+      # namespace. The case's health-check fixtures (the health-user-password
+      # secret + the health-user) are ensured ADDITIVELY by a separate unit
+      # below, never by wiping/redeploying the namespace.
       - command: "kubectl -n mongodb get pod {{params.cluster_prefix}}-0 2>/dev/null | grep -c Running"
-        timeout_sec: 10
-      # Also require THIS case's health-check user secret. Without it the
-      # readiness-probe-tuning environment is not actually set up -- e.g. when a
-      # prior mongodb stage in a workflow left a running mongodb-replica-0 that
-      # lacks health-user-password -- so the apply (which cleanly deletes and
-      # recreates the namespace) must run instead of being skipped.
-      - command: "kubectl -n mongodb get secret health-user-password >/dev/null 2>&1"
         timeout_sec: 10
     apply:
       - command: "/bin/sh -c 'kubectl delete namespace mongodb --ignore-not-found=true; kubectl wait --for=delete namespace/mongodb --timeout=120s || true'"
@@ -105,6 +104,52 @@ preconditionUnits:
         sleep: 2
     verify:
       - command: "kubectl -n mongodb get pods 2>/dev/null | grep -c Running"
+        timeout_sec: 10
+
+  # ADDITIVE fixture-ensure unit. The oracle reads the health-user-password
+  # secret and authenticates the health-user MongoDB user; the main unit's apply
+  # creates both, but in a workflow that apply is skipped (a cluster is already
+  # present). This unit ensures JUST those two fixtures idempotently WITHOUT
+  # touching the namespace/cluster, so an inherited cluster keeps all prior
+  # state. Standalone it is a no-op (the main apply already created them, so the
+  # probe passes and this apply is skipped).
+  - name: health_user_fixture
+    on_probe_fail: skip
+    probe:
+      # Skip the ensure only when BOTH the secret and the health-user already
+      # exist; otherwise fall through to the additive apply.
+      - command: |
+          /bin/sh -c '
+          kubectl -n mongodb get secret health-user-password >/dev/null 2>&1 || exit 1
+          kubectl -n mongodb get pod {{params.cluster_prefix}}-0 >/dev/null 2>&1 || exit 1
+          admin_pw=$(kubectl -n mongodb get secret admin-user-password -o jsonpath="{.data.password}" 2>/dev/null | base64 -d 2>/dev/null)
+          [ -n "$admin_pw" ] || exit 1
+          kubectl -n mongodb exec {{params.cluster_prefix}}-0 -- mongosh --quiet "mongodb://{{params.admin_username}}:${admin_pw}@localhost:27017/admin" --eval "db.getUser(\"{{params.health_username}}\") ? quit(0) : quit(1)" >/dev/null 2>&1
+          '
+        timeout_sec: 30
+    apply:
+      # Ensure the secret (idempotent: create only if missing).
+      - command: |
+          /bin/sh -c '
+          kubectl -n mongodb get secret health-user-password >/dev/null 2>&1 || \
+            kubectl -n mongodb create secret generic health-user-password --from-literal=password=healthpass123
+          '
+        sleep: 1
+      # Ensure the health-user MongoDB user (idempotent: create only if absent),
+      # using the live admin credentials so a prior admin-password rotation is
+      # respected. Never drops or alters existing users/data.
+      - command: |
+          /bin/sh -c '
+          admin_pw=$(kubectl -n mongodb get secret admin-user-password -o jsonpath="{.data.password}" 2>/dev/null | base64 -d 2>/dev/null)
+          [ -n "$admin_pw" ] || { echo "admin-user-password secret unavailable; cannot ensure health-user"; exit 0; }
+          kubectl -n mongodb exec {{params.cluster_prefix}}-0 -- mongosh --quiet "mongodb://{{params.admin_username}}:${admin_pw}@localhost:27017/admin" --eval "
+            if (!db.getUser(\"{{params.health_username}}\")) {
+              db.getSiblingDB(\"admin\").createUser({user:\"{{params.health_username}}\",pwd:\"healthpass123\",roles:[{role:\"clusterMonitor\",db:\"admin\"}]});
+            }" >/dev/null 2>&1 || true
+          '
+        sleep: 2
+    verify:
+      - command: "kubectl -n mongodb get secret health-user-password >/dev/null 2>&1 && echo ok"
         timeout_sec: 10
 
 oracle:
