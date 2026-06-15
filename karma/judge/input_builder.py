@@ -19,6 +19,10 @@ from typing import Any
 from .. import protocol
 from ..evidence import compute_trace_facts
 
+# Max agent-log bytes embedded in the judge input; longer logs keep the tail
+# (where the final answer and outcome are) and drop the head.
+_AGENT_LOG_CAP = 24000
+
 
 def build_judge_input(
     run_dir: Path,
@@ -87,7 +91,8 @@ def build_judge_input(
     if agent_log_path.exists():
         try:
             txt = agent_log_path.read_text()
-            agent_log = txt if len(txt) <= 24000 else "...[truncated head]...\n" + txt[-24000:]
+            agent_log = (txt if len(txt) <= _AGENT_LOG_CAP
+                         else "...[truncated head]...\n" + txt[-_AGENT_LOG_CAP:])
         except Exception:
             pass
 

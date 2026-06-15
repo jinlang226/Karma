@@ -18,6 +18,9 @@ from typing import Any
 
 from ...agents.registry import list_agents
 
+# Tokens kept on the first preview line: "python orchestrator.py <subcommand>".
+_CMD_HEAD_TOKENS = 3
+
 
 def get_cli_options() -> dict[str, Any]:
     """Return the choices and defaults the command builder renders from."""
@@ -54,10 +57,10 @@ def _tokens_to_multi_line(tokens: list[str]) -> str:
     long command stays readable when copied into a terminal.
     """
     quoted = [shlex.quote(t) for t in tokens]
-    if len(quoted) <= 3:
+    if len(quoted) <= _CMD_HEAD_TOKENS:
         return " ".join(quoted)
     # Keep "python orchestrator.py <subcommand> <positionals...>" on line one.
-    head_len = 3
+    head_len = _CMD_HEAD_TOKENS
     while head_len < len(quoted) and not quoted[head_len].startswith("--"):
         head_len += 1
     lines = [" ".join(quoted[:head_len])]
