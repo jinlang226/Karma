@@ -62,11 +62,14 @@ preconditionUnits:
       - command: "kubectl -n cockroachdb get pods -l app.kubernetes.io/name=cockroachdb --no-headers 2>/dev/null | grep -c ''"
         timeout_sec: 10
     apply:
-      # Non-destructive: create the namespace and deploy the (deliberately
-      # mis-configured, uninitialized) cluster. The env PERSISTS across workflow
-      # stages, so this apply must NEVER delete an inherited namespace — the
-      # skip-if-running probe above already gates it to run only on an empty
-      # namespace.
+      # This whole apply is GATED by the skip-if-running probe above, so it runs
+      # ONLY when no cockroachdb cluster is present (empty/absent namespace). It
+      # therefore never wipes inherited workflow state. Clear any stale/terminating
+      # namespace first, then deploy the (deliberately mis-configured, uninitialized)
+      # cluster — without the wait-for-delete, `create namespace` races a namespace
+      # left Terminating by a prior teardown ("AlreadyExists: object is being deleted").
+      - command: "/bin/sh -c 'kubectl delete namespace cockroachdb --ignore-not-found=true; kubectl wait --for=delete namespace/cockroachdb --timeout=120s || true'"
+        sleep: 2
       - command: "kubectl create namespace cockroachdb"
         sleep: 1
       - command: "kubectl -n cockroachdb apply -f cases/cockroachdb/initialize/resource/rbac.yaml"
