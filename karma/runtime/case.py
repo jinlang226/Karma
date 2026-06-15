@@ -86,19 +86,43 @@ def _default_timeout_for_command(command: str, phase: str) -> int:
     return base
 
 
-def _is_sa_not_ready(text: str) -> bool:
-    """True if a kubectl apply failed only because a freshly-created namespace's
-    default ServiceAccount has not been provisioned yet.
+def _is_transient_apply_error(text: str) -> bool:
+    """True if a precondition apply failed on a transient not-ready-yet condition
+    that clears on its own, rather than a genuine error.
 
-    Creating a namespace and immediately applying a pod into it races the
-    ServiceAccount controller; kubectl reports ``error looking up service
-    account <ns>/default: serviceaccount "default" not found``. The race clears
-    within a few seconds (more likely under cluster load), so the caller retries
-    rather than failing the precondition.
+    Covers two common races on a fresh / loaded cluster:
+    * the namespace's default ServiceAccount not provisioned yet (pod apply
+      ``error looking up service account <ns>/default: serviceaccount "default"
+      not found``);
+    * a peer/service not yet accepting connections (e.g. a Mongo replica that is
+      still starting when ``rs.initiate`` runs -> ``Connection refused``), or the
+      apiserver briefly unreachable.
+
+    These resolve within seconds, so the caller retries the (idempotent) apply
+    command. Genuine errors (bad manifest, forbidden field) do not match, so they
+    still fail on the first attempt.
     """
     t = text.lower()
-    return ("error looking up service account" in t
-            or 'serviceaccount "default" not found' in t)
+    return (
+        "error looking up service account" in t
+        or 'serviceaccount "default" not found' in t
+        or "connection refused" in t
+        or "could not connect to server" in t
+        or "no route to host" in t
+        or "i/o timeout" in t
+        or "the server is currently unable to handle the request" in t
+        or "unable to connect to the server" in t
+    )
+
+
+# A precondition's verify confirms the apply established the target state, which
+# usually converges asynchronously (pods reaching Running/Ready). By default
+# verify is therefore retried for ~60s before the unit is judged failed, so a
+# slow startup on a fresh/busy cluster is tolerated. A case may override with
+# verify_retries / verify_interval_sec. A verify that already holds passes on the
+# first attempt, so this costs nothing for preconditions that are ready.
+_DEFAULT_VERIFY_RETRIES = 12
+_DEFAULT_VERIFY_INTERVAL_SEC = 5.0
 
 
 def _run_operation_units(
@@ -252,15 +276,16 @@ def _run_operation_units(
         apply_ok = True
         for cmd_entry in unit.get("apply_commands") or []:
             rc = _exec(cmd_entry, "apply", unit_id)
-            # A freshly-created namespace's default ServiceAccount is provisioned
-            # asynchronously; a pod apply that races it fails with "serviceaccount
-            # default not found". That transient clears in seconds, so retry the
-            # command (kubectl apply/create here is idempotent) a few times.
-            _sa_tries = 0
-            while (rc not in (0, None) and not timed_out and _sa_tries < 5
-                   and _is_sa_not_ready(all_output[-1] if all_output else "")):
-                time.sleep(3)
-                _sa_tries += 1
+            # Retry an apply that failed on a transient not-ready-yet condition
+            # (default SA not provisioned, a peer not yet accepting connections,
+            # apiserver briefly unreachable). These clear within seconds on a
+            # fresh/loaded cluster; the apply command is idempotent so retrying is
+            # safe, and only the transient signatures trigger it.
+            _t_tries = 0
+            while (rc not in (0, None) and not timed_out and _t_tries < 8
+                   and _is_transient_apply_error(all_output[-1] if all_output else "")):
+                time.sleep(6)
+                _t_tries += 1
                 rc = _exec(cmd_entry, "apply", unit_id)
             if rc != 0:
                 apply_ok = False
@@ -275,8 +300,9 @@ def _run_operation_units(
             continue
 
         # Verify
-        retries = unit.get("verify_retries") or 1
-        interval = unit.get("verify_interval_sec") or 0.0
+        retries = unit.get("verify_retries") or _DEFAULT_VERIFY_RETRIES
+        _iv = unit.get("verify_interval_sec")
+        interval = _DEFAULT_VERIFY_INTERVAL_SEC if _iv is None else _iv
         verify_ok = False
         for _attempt in range(retries):
             if _attempt > 0:
@@ -340,8 +366,9 @@ def _precondition_auto_budget_seconds(units: list[dict[str, Any]]) -> int:
             unit.get("apply_commands"), _settings.command_timeout_sec
         )
         verify_once = _command_list_budget_seconds(unit.get("verify_commands"), 30)
-        retries = max(1, int(unit.get("verify_retries") or 1))
-        interval = max(0, int(float(unit.get("verify_interval_sec") or 0)))
+        retries = max(1, int(unit.get("verify_retries") or _DEFAULT_VERIFY_RETRIES))
+        _iv = unit.get("verify_interval_sec")
+        interval = max(0, int(float(_DEFAULT_VERIFY_INTERVAL_SEC if _iv is None else _iv)))
         total += probe + apply_ + verify_once * retries + interval * max(0, retries - 1)
     return total + 60  # slack, matching the old auto budget
 
