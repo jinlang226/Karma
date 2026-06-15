@@ -62,15 +62,17 @@ preconditionUnits:
   - name: crdb_env_ready
     on_probe_fail: skip
     probe:
-      # Only skip setup when THIS case's seeded 5-node environment is already
-      # present. A bare "any cockroachdb pod is Running" probe matched a leftover
-      # 3-node cluster from a prior workflow stage (which lacks nodes 3/4 and the
-      # seeded bench.decom_data table), so apply was skipped and the oracle then
-      # failed on the missing decommission targets / data. Require both the 5th
-      # pod (crdb-cluster-4) and the seeded table via an --insecure query so a
-      # smaller leftover cluster forces a clean 5-node redeploy.
-      - command: "/bin/sh -c 'kubectl -n cockroachdb get pod crdb-cluster-4 >/dev/null 2>&1 && kubectl -n cockroachdb exec crdb-cluster-0 -- ./cockroach sql --insecure -e \"SELECT count(*) FROM {{params.seed_table_name}};\" 2>/dev/null'"
-        timeout_sec: 15
+      # Non-destructive skip-if-running probe. The env PERSISTS across workflow
+      # stages: when a cockroachdb cluster is already present (inherited from a
+      # prior stage), skip the destructive apply so accumulated state is
+      # preserved. The apply (which deletes+recreates the namespace) runs ONLY on
+      # an empty namespace. NOTE: this case needs a seeded 5-node cluster; if it
+      # is chained after a stage that leaves a 3-node (or unseeded) cluster it
+      # cannot decommission down to 3 — that is a workflow-ordering concern to be
+      # curated separately, NOT something to fix by redeploying and wiping the
+      # inherited state.
+      - command: "kubectl -n cockroachdb get pods 2>/dev/null | grep -c Running"
+        timeout_sec: 10
     apply:
       - command: "/bin/sh -c 'kubectl delete namespace cockroachdb --ignore-not-found=true; kubectl wait --for=delete namespace/cockroachdb --timeout=120s || true'"
         sleep: 2

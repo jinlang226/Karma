@@ -1,8 +1,18 @@
 #!/usr/bin/env python3
+# Verify Prometheus has an active target scraping CockroachDB metrics and the
+# metrics endpoint is reachable. The metrics path (BENCH_PARAM_METRICS_PATH) and
+# port (BENCH_PARAM_METRICS_PORT) come from the case params, so a workflow that
+# overrides them is honored instead of a hardcoded value. Standalone (default
+# params) this behaves identically.
 import json
+import os
 import subprocess
 import sys
 from urllib.parse import urlparse
+
+
+METRICS_PATH = os.environ.get("BENCH_PARAM_METRICS_PATH", "/_status/vars")
+METRICS_PORT = os.environ.get("BENCH_PARAM_METRICS_PORT", "8080")
 
 
 def run(cmd):
@@ -77,16 +87,18 @@ def main():
                 continue
             scrape_url = target.get("scrapeUrl", "")
             parsed = urlparse(scrape_url)
-            if parsed.path != "/_status/vars":
+            if parsed.path != METRICS_PATH:
                 continue
-            if parsed.port not in (8080, "8080"):
+            if str(parsed.port) != str(METRICS_PORT):
                 continue
             if parsed.hostname in pod_ips:
                 target_ok = True
                 break
 
         if not target_ok:
-            errors.append("No active Prometheus target scraping /_status/vars on port 8080")
+            errors.append(
+                f"No active Prometheus target scraping {METRICS_PATH} on port {METRICS_PORT}"
+            )
 
     cmd = [
         "kubectl",
@@ -97,7 +109,7 @@ def main():
         "--",
         "curl",
         "-fsS",
-        "http://crdb-cluster-public:8080/_status/vars",
+        f"http://crdb-cluster-public:{METRICS_PORT}{METRICS_PATH}",
     ]
     result = run(cmd)
     if result.returncode != 0:

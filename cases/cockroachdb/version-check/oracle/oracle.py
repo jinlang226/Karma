@@ -1,6 +1,22 @@
 #!/usr/bin/env python3
+# Verify the agent recorded the active feature version in the configured
+# ConfigMap and that the cluster is in the expected upgraded-but-pinned state.
+# The ConfigMap name/key (BENCH_PARAM_REPORT_CONFIGMAP_NAME / _REPORT_KEY), the
+# pre-upgrade logical version (BENCH_PARAM_FROM_VERSION) and the binary/image
+# version (BENCH_PARAM_TO_VERSION) all come from the case params, so a workflow
+# that overrides them is honored. Standalone (default params) this behaves
+# identically to the old hardcoded check.
+import os
 import subprocess
 import sys
+
+
+REPORT_CM = os.environ.get("BENCH_PARAM_REPORT_CONFIGMAP_NAME", "crdb-version-report")
+REPORT_KEY = os.environ.get("BENCH_PARAM_REPORT_KEY", "db_version")
+FROM_VERSION = os.environ.get("BENCH_PARAM_FROM_VERSION", "23.2")
+TO_VERSION = os.environ.get("BENCH_PARAM_TO_VERSION", "24.1.0")
+# Logical major.minor of the binary (e.g. "24.1" for "24.1.0").
+TO_MAJOR_MINOR = ".".join(TO_VERSION.split(".")[:2])
 
 
 def run(cmd):
@@ -25,19 +41,19 @@ def main():
         "cockroachdb",
         "get",
         "configmap",
-        "crdb-version-report",
+        REPORT_CM,
         "-o",
-        "jsonpath={.data.db_version}",
+        "jsonpath={.data." + REPORT_KEY.replace(".", "\\.") + "}",
     ]
     cm_result = run(cm_cmd)
     if cm_result.returncode != 0:
-        errors.append("Missing ConfigMap crdb-version-report")
+        errors.append(f"Missing ConfigMap {REPORT_CM}")
         errors.append(f"Error: {cm_result.stderr.strip()}")
         cm_version = ""
     else:
         cm_version = cm_result.stdout.strip()
         if not cm_version:
-            errors.append("ConfigMap db_version is empty")
+            errors.append(f"ConfigMap {REPORT_KEY} is empty")
 
     cluster_cmd = [
         "kubectl",
@@ -60,7 +76,7 @@ def main():
         errors.append(f"Error: {cluster_result.stderr.strip()}")
     else:
         cluster_version = tsv_last_value(cluster_result.stdout)
-        if "23.2" not in cluster_version:
+        if FROM_VERSION not in cluster_version:
             errors.append(f"Cluster version mismatch: {cluster_version or 'empty'}")
 
     preserve_cmd = [
@@ -105,8 +121,8 @@ def main():
         errors.append("Failed to read binary version")
         errors.append(f"Error: {binary_result.stderr.strip()}")
     else:
-        if "v24.1" not in binary_result.stdout and "24.1" not in binary_result.stdout:
-            errors.append("Binary version does not look like v24.1")
+        if f"v{TO_MAJOR_MINOR}" not in binary_result.stdout and TO_MAJOR_MINOR not in binary_result.stdout:
+            errors.append(f"Binary version does not look like v{TO_MAJOR_MINOR}")
 
     images_cmd = [
         "kubectl",
@@ -127,7 +143,7 @@ def main():
         images = [image.strip() for image in images_result.stdout.split() if image.strip()]
         if not images:
             errors.append("No pod images reported")
-        elif any("cockroachdb/cockroach:v24.1.0" not in image for image in images):
+        elif any(f"cockroachdb/cockroach:v{TO_VERSION}" not in image for image in images):
             errors.append(f"Unexpected pod images: {' '.join(images)}")
 
     if cm_version and cluster_version and cm_version != cluster_version:

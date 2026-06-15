@@ -1,8 +1,16 @@
 #!/usr/bin/env python3
+# Verify the cluster was initialized and all nodes joined. The expected node /
+# pod count comes from the case param (BENCH_PARAM_REPLICA_COUNT), so a workflow
+# that overrides replica_count is honored instead of a hardcoded 3. Standalone
+# (default param) this behaves identically.
 import argparse
 import json
+import os
 import subprocess
 import sys
+
+
+REPLICA_COUNT = int(os.environ.get("BENCH_PARAM_REPLICA_COUNT", "3"))
 
 
 def run(cmd, timeout=None):
@@ -61,8 +69,8 @@ def main(timeout_seconds):
         lines = result.stdout.strip().split('\n')
         # Skip header lines and count data rows
         data_lines = [l for l in lines if l.strip() and not l.startswith('id') and not l.startswith('--')]
-        if len(data_lines) < 3:
-            errors.append(f"Expected 3 nodes, but found {len(data_lines)}")
+        if len(data_lines) < REPLICA_COUNT:
+            errors.append(f"Expected {REPLICA_COUNT} nodes, but found {len(data_lines)}")
     
     # Test SQL connectivity
     cmd = [
@@ -97,8 +105,8 @@ def main(timeout_seconds):
                 if not ready:
                     errors.append(f"Pod {name} is not Ready")
             
-            if len(pods) != 3:
-                errors.append(f"Expected 3 pods, found {len(pods)}")
+            if len(pods) != REPLICA_COUNT:
+                errors.append(f"Expected {REPLICA_COUNT} pods, found {len(pods)}")
                 
         except (json.JSONDecodeError, KeyError) as e:
             errors.append(f"Failed to parse pod status: {e}")

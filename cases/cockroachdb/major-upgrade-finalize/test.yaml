@@ -58,14 +58,17 @@ preconditionUnits:
   - name: crdb_env_ready
     on_probe_fail: skip
     probe:
-      # Only skip setup when the cluster is already in the expected pre-upgrade
-      # state: binaries still on v{{params.from_version}}. A bare "any cockroachdb
-      # pod is Running" probe matched a leftover already-upgraded/finalized cluster
-      # from a prior workflow stage, so apply was skipped and the oracle then had
-      # nothing to upgrade/finalize. Probing the running binary version forces a
-      # clean v{{params.from_version}} redeploy when the leftover is newer.
-      - command: "/bin/sh -c 'kubectl -n cockroachdb get pods -l app.kubernetes.io/name=cockroachdb -o jsonpath=\"{.items[*].spec.containers[0].image}\" 2>/dev/null | tr \" \" \"\\n\" | grep -q \"cockroach:v{{params.from_version}}\"'"
-        timeout_sec: 15
+      # Non-destructive skip-if-running probe. The env PERSISTS across workflow
+      # stages: when a cockroachdb cluster is already present (inherited from a
+      # prior stage), skip the destructive apply so accumulated state is
+      # preserved. The apply (which deletes+recreates the namespace) runs ONLY on
+      # an empty namespace. NOTE: this case needs a pre-upgrade
+      # v{{params.from_version}} base; if it is chained after a stage that already
+      # upgraded/finalized the cluster it has nothing to upgrade — that is a
+      # workflow-ordering concern to be curated separately, NOT something to fix
+      # by redeploying and wiping the inherited state.
+      - command: "kubectl -n cockroachdb get pods 2>/dev/null | grep -c Running"
+        timeout_sec: 10
     apply:
       - command: "/bin/sh -c 'kubectl delete namespace cockroachdb --ignore-not-found=true; kubectl wait --for=delete namespace/cockroachdb --timeout=120s || true'"
         sleep: 2

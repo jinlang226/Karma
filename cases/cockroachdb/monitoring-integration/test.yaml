@@ -28,14 +28,15 @@ preconditionUnits:
   - name: crdb_env_ready
     on_probe_fail: skip
     probe:
-      # Only skip setup when THIS case's full environment is already present.
-      # A bare "any cockroachdb pod is Running" probe matched a leftover cluster
-      # from a prior workflow stage (e.g. zone-config) that lacks the monitoring
-      # stack, so apply was skipped and the oracle then failed on the missing
-      # curl-test pod / Prometheus. Require the curl-test helper pod to be Ready
-      # (it is the last thing apply creates) so a partial leftover forces a clean
-      # redeploy of the monitoring namespace + curl-test.
-      - command: "kubectl -n cockroachdb get pod curl-test -o jsonpath='{.status.conditions[?(@.type==\"Ready\")].status}' 2>/dev/null | grep -q True"
+      # Non-destructive skip-if-running probe. The env PERSISTS across workflow
+      # stages: when a cockroachdb cluster is already present (inherited from a
+      # prior stage), skip this destructive apply so accumulated state is
+      # preserved. The apply (which deletes+recreates the cockroachdb AND
+      # monitoring namespaces) runs ONLY on an empty namespace. The monitoring
+      # stack + curl-test helper this case's oracle needs are ensured ADDITIVELY
+      # by the crdb_monitoring_stack unit below, so an inherited cluster does not
+      # have to be wiped to get them.
+      - command: "kubectl -n cockroachdb get pods 2>/dev/null | grep -c Running"
         timeout_sec: 10
     apply:
       - command: "/bin/sh -c 'kubectl delete namespace cockroachdb --ignore-not-found=true; kubectl wait --for=delete namespace/cockroachdb --timeout=120s || true; kubectl delete namespace monitoring --ignore-not-found=true; kubectl wait --for=delete namespace/monitoring --timeout=120s || true'"
@@ -74,6 +75,46 @@ preconditionUnits:
         sleep: 2
     verify:
       - command: "kubectl -n cockroachdb exec crdb-cluster-0 -- ./cockroach sql --insecure -e 'SELECT 1;' 2>/dev/null"
+        timeout_sec: 15
+
+  # Additive fixture-ensure unit (Rule 4): the oracle execs into the curl-test
+  # helper pod and queries Prometheus in the monitoring namespace. Standalone,
+  # crdb_env_ready's apply creates them. In a workflow crdb_env_ready's
+  # destructive apply is skipped (cluster inherited), so this unit ensures JUST
+  # the monitoring stack + curl-test helper + the crdb monitoring RBAC/services
+  # idempotently and ADDITIVELY — it never deletes the cockroachdb namespace or
+  # the inherited cluster. Its probe gates only on the curl-test pod being Ready;
+  # if it is already there the whole ensure is skipped.
+  - name: crdb_monitoring_stack
+    on_probe_fail: skip
+    probe:
+      - command: "kubectl -n cockroachdb get pod curl-test -o jsonpath='{.status.conditions[?(@.type==\"Ready\")].status}' 2>/dev/null | grep -q True"
+        timeout_sec: 10
+    apply:
+      - command: "/bin/sh -c 'kubectl create namespace monitoring --dry-run=client -o yaml | kubectl apply -f -'"
+        sleep: 1
+      - command: "kubectl apply -f cases/cockroachdb/monitoring-integration/resource/monitoring-crds.yaml"
+        sleep: 2
+      - command: "kubectl -n monitoring apply -f cases/cockroachdb/monitoring-integration/resource/prometheus-operator.yaml"
+        sleep: 3
+      - command: "kubectl -n monitoring apply -f cases/cockroachdb/monitoring-integration/resource/prometheus-rbac.yaml"
+        sleep: 2
+      - command: "kubectl -n monitoring apply -f cases/cockroachdb/monitoring-integration/resource/prometheus.yaml"
+        sleep: 2
+      - command: "kubectl -n monitoring wait --for=condition=ready pod -l app=prometheus-operator --timeout=300s"
+        sleep: 2
+      - command: "/bin/sh -c 'for i in $(seq 1 60); do count=$(kubectl -n monitoring get pod -l prometheus=crdb --no-headers 2>/dev/null | wc -l | tr -d \" \"); if [ \"${count}\" -ge 1 ]; then kubectl -n monitoring wait --for=condition=ready pod -l prometheus=crdb --timeout=300s && exit 0; fi; sleep 2; done; exit 1'"
+        sleep: 2
+      - command: "kubectl -n cockroachdb apply -f cases/cockroachdb/monitoring-integration/resource/rbac.yaml"
+        sleep: 2
+      - command: "kubectl -n cockroachdb apply -f cases/cockroachdb/monitoring-integration/resource/services.yaml"
+        sleep: 2
+      - command: "kubectl -n cockroachdb apply -f cases/cockroachdb/monitoring-integration/resource/curl-test.yaml"
+        sleep: 2
+      - command: "kubectl -n cockroachdb wait --for=condition=ready pod/curl-test --timeout=120s"
+        sleep: 2
+    verify:
+      - command: "kubectl -n cockroachdb get pod curl-test -o jsonpath='{.status.conditions[?(@.type==\"Ready\")].status}' 2>/dev/null | grep -q True"
         timeout_sec: 15
 
 oracle:

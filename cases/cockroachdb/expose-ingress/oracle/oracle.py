@@ -1,12 +1,17 @@
 #!/usr/bin/env python3
+# Verify the DB Console + SQL are reachable through ingress-nginx. The UI host
+# (BENCH_PARAM_UI_HOST) and SQL port (BENCH_PARAM_SQL_PORT) come from the case
+# params, so a workflow that overrides them is honored instead of a hardcoded
+# value. Standalone (default params) this behaves identically.
+import os
 import subprocess
 import sys
 
 
-UI_HOST = "crdb-ui.example.com"
+UI_HOST = os.environ.get("BENCH_PARAM_UI_HOST", "crdb-ui.example.com")
 INGRESS_HTTP_URL = "http://ingress-nginx-controller.ingress-nginx.svc/"
 SQL_HOST = "ingress-nginx-controller.ingress-nginx.svc"
-SQL_PORT = "26257"
+SQL_PORT = os.environ.get("BENCH_PARAM_SQL_PORT", "26257")
 
 
 def run(cmd):
