@@ -26,6 +26,13 @@ from typing import Any
 _CLUSTER_TTL_SEC = 5.0
 _cluster_cache: dict[str, Any] = {"ts": 0.0, "value": None}
 
+# How deep to recurse when discovering run directories (runs are nested at most
+# a couple of levels, e.g. runs/examples/<service>/<run>).
+_MAX_RUN_SCAN_DEPTH = 3
+# Byte caps for tailing artifact files into run/stage detail responses.
+_LOG_TAIL_BYTES = 16384
+_PROMPT_TAIL_BYTES = 4096
+
 from ...definitions.cases import load_case_file, normalize_case
 from ...definitions.workflows import load_workflow_file, normalize_workflow
 
@@ -138,7 +145,7 @@ def _find_run_dirs(runs_dir: Path, _depth: int = 0) -> list[Path]:
         )
         if is_run:
             out.append(c)
-        elif _depth < 3:
+        elif _depth < _MAX_RUN_SCAN_DEPTH:
             out.extend(_find_run_dirs(c, _depth + 1))
     return out
 
@@ -242,7 +249,7 @@ def list_runs(runs_dir: Path) -> list[dict[str, Any]]:
 _SAFE_ID = re.compile(r"^[A-Za-z0-9._-]+$")
 
 
-def _tail(path: Path, max_bytes: int = 16384) -> str | None:
+def _tail(path: Path, max_bytes: int = _LOG_TAIL_BYTES) -> str | None:
     """Return up to the last *max_bytes* of a text file, or None if absent."""
     try:
         data = path.read_text(errors="replace")
@@ -291,7 +298,7 @@ def get_stage_detail(runs_dir: Path, run_id: str, stage_id: str) -> dict[str, An
         "precondition_log": _tail(sdir / "precondition.log"),
         "oracle": _read_json(sdir / "oracle.json"),
         "agent_log": _tail(sdir / "agent.log"),
-        "prompt": _tail(sdir / "prompt.txt", max_bytes=4096),
+        "prompt": _tail(sdir / "prompt.txt", max_bytes=_PROMPT_TAIL_BYTES),
     }
 
 

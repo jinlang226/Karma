@@ -29,6 +29,10 @@ from . import catalog
 _judge_jobs: dict[str, dict[str, Any]] = {}
 _lock = threading.Lock()
 
+# Score (0-100, = % of stages passed) at/above which the streamed progress
+# verdict reads "pass". Display-only; the stored score is the source of truth.
+_PASS_VERDICT_THRESHOLD = 50
+
 
 def _register(job_id: str, meta: dict[str, Any]) -> None:
     with _lock:
@@ -69,7 +73,7 @@ def _judge_run_streaming(
     hub.publish(job_id, {
         "type": "judge_progress", "job_id": job_id, "run_id": run_dir.name,
         "score": result.get("score"),
-        "verdict": "pass" if (result.get("score") or 0) >= 50 else "fail",
+        "verdict": "pass" if (result.get("score") or 0) >= _PASS_VERDICT_THRESHOLD else "fail",
         "message": result.get("summary"),
     })
     return {"target_type": "run", "run_id": run_dir.name, "result": result}
