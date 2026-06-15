@@ -283,7 +283,6 @@ def check_auth():
         return fail("MongoDB deploy auth check failed:", errors)
 
     admin_uri = f"mongodb://{ADMIN_USER}:{admin_pw}@localhost:27017/admin"
-    app_uri = f"mongodb://{APP_USER}:{app_pw}@localhost:27017/{APP_DATABASE}?authSource={APP_DATABASE}"
     primary_pod = find_primary(admin_uri, errors)
 
     unauth = run(
@@ -317,14 +316,26 @@ def check_auth():
         if ADMIN_USER not in names:
             errors.append(f"Admin auth user {ADMIN_USER} not present in connection status")
 
-    app_status = load_json(
-        primary_pod,
-        app_uri,
-        "JSON.stringify(db.runCommand({connectionStatus:1}))",
-        "app connectionStatus",
-        errors,
-    )
-    if isinstance(app_status, dict):
+    # The app user is validly defined in EITHER its own db (authSource=appdb) or
+    # in admin (authSource=admin) with a role on appdb -- both grant appdb access.
+    # Accept whichever the agent chose; only fail if neither authenticates.
+    app_status = None
+    for _auth_db in (APP_DATABASE, "admin"):
+        uri = f"mongodb://{APP_USER}:{app_pw}@localhost:27017/{APP_DATABASE}?authSource={_auth_db}"
+        st = load_json(
+            primary_pod, uri,
+            "JSON.stringify(db.runCommand({connectionStatus:1}))",
+            "app connectionStatus", [],
+        )
+        if isinstance(st, dict):
+            app_status = st
+            break
+    if app_status is None:
+        errors.append(
+            "app connectionStatus failed: app user could not authenticate "
+            "(tried authSource=appdb and authSource=admin)"
+        )
+    else:
         auth_users = app_status.get("authInfo", {}).get("authenticatedUsers", [])
         names = [u.get("user") for u in auth_users]
         if APP_USER not in names:
