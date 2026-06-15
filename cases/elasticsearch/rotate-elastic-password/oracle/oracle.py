@@ -23,10 +23,44 @@ CONFIG_OLD = "elastic-password-prev"
 AUTH_DEPLOY = os.environ.get(
     "BENCH_PARAM_AUTH_CHECKER_DEPLOYMENT_NAME", "auth-checker"
 )
+# The cluster's actual HTTP scheme may differ from this case's default when a
+# prior workflow stage toggled xpack.security.http.ssl (the "curl (52) Empty
+# reply on body" failure on an https cluster queried over http). Detect it.
+DEFAULT_SCHEME = "http"
+_SCHEME = None
 
 
 def run(cmd):
     return subprocess.run(cmd, text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+
+
+def _probe_scheme(scheme):
+    """True if the ES HTTP API answers on the given scheme (auth-agnostic).
+
+    A 401 (wrong/no creds) still proves the scheme is live, so any HTTP status
+    code counts -- this only picks http vs https, never bypasses auth.
+    """
+    result = run([
+        "kubectl", "-n", NAMESPACE, "exec", CURL_POD, "--",
+        "curl", "-s", "-S", "-k", "-o", "/dev/null",
+        "-w", "%{http_code}", "--max-time", "10",
+        f"{scheme}://{SERVICE}.{NAMESPACE}.svc:9200/",
+    ])
+    code = (result.stdout or "").strip()
+    return result.returncode == 0 and code.isdigit() and code != "000"
+
+
+def detect_scheme():
+    """Detect the cluster's live HTTP scheme (default first, then the other)."""
+    global _SCHEME
+    if _SCHEME is not None:
+        return _SCHEME
+    for scheme in (DEFAULT_SCHEME, "https" if DEFAULT_SCHEME == "http" else "http"):
+        if _probe_scheme(scheme):
+            _SCHEME = scheme
+            return _SCHEME
+    _SCHEME = DEFAULT_SCHEME
+    return _SCHEME
 
 
 def get_secret_value(name, key="password"):
@@ -69,6 +103,7 @@ def get_config_value(name, key="password"):
 
 
 def curl_auth_with_code(password, path):
+    scheme = detect_scheme()
     result = run(
         [
             "kubectl",
@@ -80,13 +115,14 @@ def curl_auth_with_code(password, path):
             "curl",
             "-s",
             "-S",
+            "-k",
             "--max-time",
             "10",
             "-u",
             f"elastic:{password}",
             "-w",
             "\\n%{http_code}",
-            f"http://{SERVICE}.{NAMESPACE}.svc:9200{path}",
+            f"{scheme}://{SERVICE}.{NAMESPACE}.svc:9200{path}",
         ]
     )
     if result.returncode != 0:

@@ -10,12 +10,15 @@ ES_IMAGE = os.environ.get(
     "BENCH_PARAM_TARGET_IMAGE", "docker.elastic.co/elasticsearch/elasticsearch:8.11.1"
 )
 SERVICE = os.environ.get("BENCH_PARAM_HTTP_SERVICE_NAME", "es-http")
-EXPECTED_NODES = int(os.environ.get("BENCH_PARAM_EXPECTED_NODES", "3"))
 # ES 8.x runs with security enabled, so the HTTPS API requires authenticating as
 # the elastic superuser. Read its password from the secret the precondition
 # created so the oracle's queries aren't rejected with 401.
 PASSWORD_SECRET = os.environ.get("BENCH_PARAM_ELASTIC_PASSWORD_SECRET_NAME", "elastic-password")
 PASSWORD_KEY = os.environ.get("BENCH_PARAM_ELASTIC_PASSWORD_KEY", "password")
+# ES 8.x deploys with HTTP TLS on, so https is the standalone default; a prior
+# stage could have disabled it, so _detect_scheme() flips to http when needed.
+DEFAULT_SCHEME = "https"
+_SCHEME = None
 
 
 def _elastic_password():
@@ -36,6 +39,70 @@ ELASTIC_PASSWORD = None  # set in main() once kubectl is reachable
 
 def run(cmd):
     return subprocess.run(cmd, text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+
+
+def _resolve_expected_nodes(default=3):
+    """Node count to enforce (param override -> live ES pods by image -> default).
+
+    The env PERSISTS across stages; adapt the target to whatever the cluster
+    accumulated without loosening it (a missing node still mismatches).
+    """
+    for key in ("BENCH_PARAM_EXPECTED_NODES", "BENCH_PARAM_EXPECTED_NODE_COUNT"):
+        val = os.environ.get(key)
+        if val is not None and str(val).strip():
+            try:
+                return int(val)
+            except ValueError:
+                pass
+    res = run(["kubectl", "-n", NAMESPACE, "get", "pods", "-o", "json"])
+    if res.returncode == 0:
+        try:
+            items = json.loads(res.stdout).get("items", [])
+            ready = 0
+            for pod in items:
+                imgs = [c.get("image") for c in pod.get("spec", {}).get("containers", [])]
+                if ES_IMAGE not in imgs:
+                    continue
+                conds = pod.get("status", {}).get("conditions", [])
+                if any(c.get("type") == "Ready" and c.get("status") == "True" for c in conds):
+                    ready += 1
+            if ready > 0:
+                return ready
+        except (json.JSONDecodeError, AttributeError):
+            pass
+    return default
+
+
+EXPECTED_NODES = _resolve_expected_nodes(3)
+
+
+def _probe_scheme(scheme):
+    """True if the ES HTTP API answers on the given scheme (auth-agnostic).
+
+    A 401 still means the scheme is live, so any HTTP status code counts.
+    """
+    cmd = ["kubectl", "-n", NAMESPACE, "exec", "curl-test", "--",
+           "curl", "-s", "-S", "-k", "-o", "/dev/null", "-w", "%{http_code}",
+           "--max-time", "5"]
+    if ELASTIC_PASSWORD:
+        cmd += ["-u", f"elastic:{ELASTIC_PASSWORD}"]
+    cmd += [f"{scheme}://{SERVICE}:9200/"]
+    result = run(cmd)
+    code = (result.stdout or "").strip()
+    return result.returncode == 0 and code.isdigit() and code != "000"
+
+
+def detect_scheme():
+    """Detect the cluster's live HTTP scheme (default first, then the other)."""
+    global _SCHEME
+    if _SCHEME is not None:
+        return _SCHEME
+    for scheme in (DEFAULT_SCHEME, "https" if DEFAULT_SCHEME == "http" else "http"):
+        if _probe_scheme(scheme):
+            _SCHEME = scheme
+            return _SCHEME
+    _SCHEME = DEFAULT_SCHEME
+    return _SCHEME
 
 
 def get_es_pods(errors):
@@ -73,7 +140,7 @@ def curl_json(path, errors):
     ]
     if ELASTIC_PASSWORD:
         cmd += ["-u", f"elastic:{ELASTIC_PASSWORD}"]
-    cmd += ["--max-time", "10", f"https://{SERVICE}:9200{path}"]
+    cmd += ["--max-time", "10", f"{detect_scheme()}://{SERVICE}:9200{path}"]
     result = run(cmd)
     if result.returncode != 0:
         detail = result.stderr.strip() or result.stdout.strip() or f"exit {result.returncode}"

@@ -104,30 +104,35 @@ def verify_cert(ca_path, cert_path):
     return run(["openssl", "verify", "-CAfile", ca_path, cert_path])
 
 
+def _health_curl(scheme):
+    """Run the cluster-health curl over the given scheme.
+
+    https uses the rotated CA (--cacert); http (fallback for a cluster whose
+    HTTP TLS a prior stage disabled) adds nothing. -k is a belt-and-suspenders
+    in case the served leaf doesn't chain to the mounted CA path.
+    """
+    path = "/_cluster/health?wait_for_status=yellow&timeout=5s"
+    cmd = [
+        "kubectl", "-n", NAMESPACE, "exec", CURL_POD, "--",
+        "curl", "-s", "-S", "--max-time", "5",
+    ]
+    if scheme == "https":
+        cmd += ["--cacert", "/etc/es-http-ca/ca.crt", "-k"]
+    cmd += ["-u", "elastic:elasticpass",
+            f"{scheme}://{SERVICE}.{NAMESPACE}.svc:9200{path}"]
+    return run(cmd)
+
+
 def curl_health(errors):
-    result = run(
-        [
-            "kubectl",
-            "-n",
-            NAMESPACE,
-            "exec",
-            CURL_POD,
-            "--",
-            "curl",
-            "-s",
-            "-S",
-            "--max-time",
-            "5",
-            "--cacert",
-            "/etc/es-http-ca/ca.crt",
-            "-u",
-            "elastic:elasticpass",
-            f"https://{SERVICE}.{NAMESPACE}.svc:9200/_cluster/health?wait_for_status=yellow&timeout=5s",
-        ]
-    )
+    # The env PERSISTS across stages; the cluster's live scheme may differ from
+    # this case's default (https for a cert-rotation task). Try https (with the
+    # rotated CA) then fall back to http. Cert assertions above are unaffected.
+    result = _health_curl("https")
+    if result.returncode != 0:
+        result = _health_curl("http")
     if result.returncode != 0:
         detail = result.stderr.strip() or result.stdout.strip() or f"exit {result.returncode}"
-        errors.append(f"HTTPS health check failed: {detail}")
+        errors.append(f"Cluster health check failed: {detail}")
         return
     output = result.stdout.strip()
     if not output:

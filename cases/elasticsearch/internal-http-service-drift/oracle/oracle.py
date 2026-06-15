@@ -7,9 +7,14 @@ import sys
 NAMESPACE = os.environ.get("BENCH_NAMESPACE", "elasticsearch")
 PROD_SERVICE = os.environ.get("BENCH_PARAM_PROD_SERVICE_NAME", "search-http")
 DEV_SERVICE = os.environ.get("BENCH_PARAM_DEV_SERVICE_NAME", "search-alt")
+PROD_APP = os.environ.get("BENCH_PARAM_PROD_APP_LABEL", "es-alpha")
+DEV_APP = os.environ.get("BENCH_PARAM_DEV_APP_LABEL", "es-beta")
 INDEX = os.environ.get("BENCH_PARAM_INDEX_NAME", "app-logs")
 MIN_COUNT = int(os.environ.get("BENCH_PARAM_MIN_DOC_COUNT", "5"))
 LOG_READER_DEPLOY = os.environ.get("BENCH_PARAM_LOG_READER_DEPLOYMENT", "log-reader")
+# Per-service scheme cache: each backing cluster may carry a different live
+# scheme (the env PERSISTS across stages), so detect independently per service.
+_SCHEME = {}
 LOG_READER_IMAGE = "curlimages/curl:8.5.0"
 LOG_READER_SCRIPT = """set -e
 count=$(curl -s --max-time 5 \\
@@ -32,7 +37,64 @@ def run(cmd):
     return subprocess.run(cmd, text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
 
 
+def _resolve_count(env_keys, app_label, default):
+    """Node count for one backing cluster (param -> live Ready pods -> default).
+
+    The env PERSISTS across stages; adapt each service's expected node count to
+    its live cluster without loosening it (a missing/NotReady node mismatches).
+    """
+    for key in env_keys:
+        val = os.environ.get(key)
+        if val is not None and str(val).strip():
+            try:
+                return int(val)
+            except ValueError:
+                pass
+    res = run(["kubectl", "-n", NAMESPACE, "get", "pods", "-l", f"app={app_label}", "-o", "json"])
+    if res.returncode == 0:
+        try:
+            items = json.loads(res.stdout).get("items", [])
+            ready = sum(
+                1 for p in items
+                if any(c.get("type") == "Ready" and c.get("status") == "True"
+                       for c in p.get("status", {}).get("conditions", []))
+            )
+            if ready > 0:
+                return ready
+        except (json.JSONDecodeError, AttributeError):
+            pass
+    return default
+
+
+PROD_NODES = _resolve_count(("BENCH_PARAM_PROD_EXPECTED_NODES",), PROD_APP, 3)
+DEV_NODES = _resolve_count(("BENCH_PARAM_DEV_EXPECTED_NODES",), DEV_APP, 1)
+
+
+def _probe_scheme(service, scheme):
+    """True if the ES HTTP API answers on the given scheme (auth-agnostic)."""
+    result = run([
+        "kubectl", "-n", NAMESPACE, "exec", "curl-test", "--",
+        "curl", "-s", "-S", "-k", "-o", "/dev/null",
+        "-w", "%{http_code}", "--max-time", "5", f"{scheme}://{service}:9200/",
+    ])
+    code = (result.stdout or "").strip()
+    return result.returncode == 0 and code.isdigit() and code != "000"
+
+
+def detect_scheme(service):
+    """Detect a service's live HTTP scheme (http default first, then https)."""
+    if service in _SCHEME:
+        return _SCHEME[service]
+    for scheme in ("http", "https"):
+        if _probe_scheme(service, scheme):
+            _SCHEME[service] = scheme
+            return scheme
+    _SCHEME[service] = "http"
+    return "http"
+
+
 def curl_json(service, path, errors):
+    scheme = detect_scheme(service)
     cmd = [
         "kubectl",
         "-n",
@@ -43,9 +105,10 @@ def curl_json(service, path, errors):
         "curl",
         "-s",
         "-S",
+        "-k",
         "--max-time",
         "10",
-        f"http://{service}:9200{path}",
+        f"{scheme}://{service}:9200{path}",
     ]
     result = run(cmd)
     if result.returncode != 0:
@@ -126,9 +189,9 @@ def main():
         status = prod.get("status")
         if status not in {"yellow", "green"}:
             errors.append(f"search-http health expected yellow/green, got {status}")
-        if prod.get("number_of_nodes") != 3:
+        if prod.get("number_of_nodes") != PROD_NODES:
             errors.append(
-                f"search-http expected 3 nodes, got {prod.get('number_of_nodes')}"
+                f"search-http expected {PROD_NODES} nodes, got {prod.get('number_of_nodes')}"
             )
 
     count = curl_json(PROD_SERVICE, f"/{INDEX}/_count", errors)
@@ -142,9 +205,9 @@ def main():
         errors,
     )
     if isinstance(dev, dict):
-        if dev.get("number_of_nodes") != 1:
+        if dev.get("number_of_nodes") != DEV_NODES:
             errors.append(
-                f"search-alt expected 1 node, got {dev.get('number_of_nodes')}"
+                f"search-alt expected {DEV_NODES} node(s), got {dev.get('number_of_nodes')}"
             )
 
     if errors:

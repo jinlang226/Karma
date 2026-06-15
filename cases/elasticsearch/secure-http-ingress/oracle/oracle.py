@@ -70,14 +70,24 @@ def curl_http_code(args):
 def main():
     errors = []
 
-    # The backend Elasticsearch serves plain HTTP on 9200 (the precondition sets
-    # xpack.security.http.ssl.enabled: false) -- the task is to terminate TLS at
-    # the ingress, not on the ES service itself. Use http here as an "ES is up"
-    # sanity gate.
+    # The backend Elasticsearch serves plain HTTP on 9200 standalone (the
+    # precondition sets xpack.security.http.ssl.enabled: false) -- the task is to
+    # terminate TLS at the ingress, not on the ES service itself. Use this as an
+    # "ES is up" sanity gate. Because the env PERSISTS across stages, a prior
+    # stage may have enabled HTTP TLS on the backend, so detect the live scheme
+    # (http first, then https) rather than assuming plain http.
+    es_scheme = "http"
+    for _scheme in ("http", "https"):
+        _rc, _code = curl_http_code(
+            ["-k", f"{_scheme}://{ES_SERVICE}.{NAMESPACE}.svc:9200/"]
+        )
+        if _rc == 0 and _code.isdigit() and _code != "000":
+            es_scheme = _scheme
+            break
     es_health = curl_json(
-        [f"http://{ES_SERVICE}.{NAMESPACE}.svc:9200/_cluster/health"],
+        ["-k", f"{es_scheme}://{ES_SERVICE}.{NAMESPACE}.svc:9200/_cluster/health"],
         errors,
-        "Elasticsearch HTTP",
+        "Elasticsearch backend",
     )
     if isinstance(es_health, dict):
         if es_health.get("status") not in {"yellow", "green"}:

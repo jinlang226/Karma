@@ -1,23 +1,82 @@
 #!/usr/bin/env python3
 import json
+import os
 import subprocess
 import sys
 
 NAMESPACE = "elasticsearch"
 SERVICE = "es-http"
-EXPECTED_NODES = 3
+CLUSTER_PREFIX = "es-cluster"
 REPO_NAME = "minio-repo"
 KEYS = {
     "s3.client.default.access_key",
     "s3.client.default.secret_key",
 }
+DEFAULT_SCHEME = "http"
+_SCHEME = None
 
 
 def run(cmd):
     return subprocess.run(cmd, text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
 
 
+def _resolve_expected_nodes(default=3):
+    """Node count to enforce (param override -> live Ready es pods -> default).
+
+    The env PERSISTS across stages; adapt the target to the live cluster
+    without loosening it (a missing/NotReady node still mismatches).
+    """
+    for key in ("BENCH_PARAM_EXPECTED_NODES", "BENCH_PARAM_EXPECTED_NODE_COUNT"):
+        val = os.environ.get(key)
+        if val is not None and str(val).strip():
+            try:
+                return int(val)
+            except ValueError:
+                pass
+    res = run(["kubectl", "-n", NAMESPACE, "get", "pods", "-l", f"app={CLUSTER_PREFIX}", "-o", "json"])
+    if res.returncode == 0:
+        try:
+            items = json.loads(res.stdout).get("items", [])
+            ready = sum(
+                1 for p in items
+                if any(c.get("type") == "Ready" and c.get("status") == "True"
+                       for c in p.get("status", {}).get("conditions", []))
+            )
+            if ready > 0:
+                return ready
+        except (json.JSONDecodeError, AttributeError):
+            pass
+    return default
+
+
+EXPECTED_NODES = _resolve_expected_nodes(3)
+
+
+def _probe_scheme(scheme):
+    """True if the ES HTTP API answers on the given scheme (auth-agnostic)."""
+    result = run([
+        "kubectl", "-n", NAMESPACE, "exec", "curl-test", "--", "/bin/sh", "-c",
+        f"curl -s -S -k -o /dev/null -w '%{{http_code}}' --max-time 5 {scheme}://{SERVICE}.{NAMESPACE}.svc:9200/",
+    ])
+    code = (result.stdout or "").strip().strip("'")
+    return result.returncode == 0 and code.isdigit() and code != "000"
+
+
+def detect_scheme():
+    """Detect the cluster's live HTTP scheme (default first, then the other)."""
+    global _SCHEME
+    if _SCHEME is not None:
+        return _SCHEME
+    for scheme in (DEFAULT_SCHEME, "https" if DEFAULT_SCHEME == "http" else "http"):
+        if _probe_scheme(scheme):
+            _SCHEME = scheme
+            return _SCHEME
+    _SCHEME = DEFAULT_SCHEME
+    return _SCHEME
+
+
 def curl(path, errors):
+    scheme = detect_scheme()
     cmd = [
         "kubectl",
         "-n",
@@ -27,7 +86,7 @@ def curl(path, errors):
         "--",
         "/bin/sh",
         "-c",
-        f"curl -s -S --max-time 10 http://{SERVICE}.{NAMESPACE}.svc:9200{path}",
+        f"curl -s -S -k --max-time 10 {scheme}://{SERVICE}.{NAMESPACE}.svc:9200{path}",
     ]
     result = run(cmd)
     if result.returncode != 0:

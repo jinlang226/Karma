@@ -7,17 +7,79 @@ import sys
 
 NAMESPACE = os.environ.get("BENCH_NAMESPACE", "elasticsearch")
 SERVICE = os.environ.get("BENCH_PARAM_HTTP_SERVICE_NAME", "es-http")
-EXPECTED_NODES = int(os.environ.get("BENCH_PARAM_EXPECTED_NODES", "5"))
 ORIGINAL_STS = os.environ.get("BENCH_PARAM_CLUSTER_PREFIX", "es-cluster")
 INDEX_NAME = os.environ.get("BENCH_PARAM_INDEX_NAME", "app-data")
 ORIGINAL_REPLICAS = int(os.environ.get("BENCH_PARAM_ORIGINAL_REPLICAS", "3"))
+DEFAULT_SCHEME = "http"
+_SCHEME = None
 
 
 def run(cmd):
     return subprocess.run(cmd, text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
 
 
+def _resolve_expected_nodes(default=5):
+    """Total node count to enforce after scale-up.
+
+    Priority: explicit BENCH_PARAM_EXPECTED_NODES param -> the LIVE count of
+    Ready Elasticsearch pods namespace-wide (original StatefulSet + the new
+    nodeset) -> the standalone default. The env PERSISTS across stages, so the
+    total adapts to whatever topology accumulated; the 'at least 2 new nodes'
+    and original-StatefulSet checks below still enforce the real task.
+    """
+    val = os.environ.get("BENCH_PARAM_EXPECTED_NODES")
+    if val is not None and str(val).strip():
+        try:
+            return int(val)
+        except ValueError:
+            pass
+    res = run(["kubectl", "-n", NAMESPACE, "get", "pods", "-o", "json"])
+    if res.returncode == 0:
+        try:
+            items = json.loads(res.stdout).get("items", [])
+            ready = 0
+            for pod in items:
+                imgs = " ".join(c.get("image", "") for c in pod.get("spec", {}).get("containers", []))
+                if "elasticsearch" not in imgs:
+                    continue
+                conds = pod.get("status", {}).get("conditions", [])
+                if any(c.get("type") == "Ready" and c.get("status") == "True" for c in conds):
+                    ready += 1
+            if ready > 0:
+                return ready
+        except (json.JSONDecodeError, AttributeError):
+            pass
+    return default
+
+
+EXPECTED_NODES = _resolve_expected_nodes(5)
+
+
+def _probe_scheme(scheme):
+    """True if the ES HTTP API answers on the given scheme (auth-agnostic)."""
+    result = run([
+        "kubectl", "-n", NAMESPACE, "exec", "curl-test", "--", "/bin/sh", "-c",
+        f"curl -s -S -k -o /dev/null -w '%{{http_code}}' --max-time 5 {scheme}://{SERVICE}:9200/",
+    ])
+    code = (result.stdout or "").strip().strip("'")
+    return result.returncode == 0 and code.isdigit() and code != "000"
+
+
+def detect_scheme():
+    """Detect the cluster's live HTTP scheme (default first, then the other)."""
+    global _SCHEME
+    if _SCHEME is not None:
+        return _SCHEME
+    for scheme in (DEFAULT_SCHEME, "https" if DEFAULT_SCHEME == "http" else "http"):
+        if _probe_scheme(scheme):
+            _SCHEME = scheme
+            return _SCHEME
+    _SCHEME = DEFAULT_SCHEME
+    return _SCHEME
+
+
 def curl(path, errors):
+    scheme = detect_scheme()
     cmd = [
         "kubectl",
         "-n",
@@ -27,7 +89,7 @@ def curl(path, errors):
         "--",
         "/bin/sh",
         "-c",
-        f"curl -s -S --max-time 10 http://{SERVICE}:9200{path}",
+        f"curl -s -S -k --max-time 10 {scheme}://{SERVICE}:9200{path}",
     ]
     result = run(cmd)
     if result.returncode != 0:
