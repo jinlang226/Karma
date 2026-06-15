@@ -86,6 +86,21 @@ def _default_timeout_for_command(command: str, phase: str) -> int:
     return base
 
 
+def _is_sa_not_ready(text: str) -> bool:
+    """True if a kubectl apply failed only because a freshly-created namespace's
+    default ServiceAccount has not been provisioned yet.
+
+    Creating a namespace and immediately applying a pod into it races the
+    ServiceAccount controller; kubectl reports ``error looking up service
+    account <ns>/default: serviceaccount "default" not found``. The race clears
+    within a few seconds (more likely under cluster load), so the caller retries
+    rather than failing the precondition.
+    """
+    t = text.lower()
+    return ("error looking up service account" in t
+            or 'serviceaccount "default" not found' in t)
+
+
 def _run_operation_units(
     units: list[dict[str, Any]],
     *,
@@ -237,6 +252,16 @@ def _run_operation_units(
         apply_ok = True
         for cmd_entry in unit.get("apply_commands") or []:
             rc = _exec(cmd_entry, "apply", unit_id)
+            # A freshly-created namespace's default ServiceAccount is provisioned
+            # asynchronously; a pod apply that races it fails with "serviceaccount
+            # default not found". That transient clears in seconds, so retry the
+            # command (kubectl apply/create here is idempotent) a few times.
+            _sa_tries = 0
+            while (rc not in (0, None) and not timed_out and _sa_tries < 5
+                   and _is_sa_not_ready(all_output[-1] if all_output else "")):
+                time.sleep(3)
+                _sa_tries += 1
+                rc = _exec(cmd_entry, "apply", unit_id)
             if rc != 0:
                 apply_ok = False
                 break
