@@ -68,6 +68,30 @@ preconditionUnits:
       - command: "kubectl -n mongodb get pods 2>/dev/null | grep -c Running"
         timeout_sec: 10
 
+  # Additive fixture unit (composition safety): when this case runs chained on an
+  # inherited cluster, the destructive `apply` above is skipped, so the admin
+  # secret / admin user / seed data it normally provisions would be missing. This
+  # unit ensures JUST those fixtures idempotently WITHOUT touching the namespace or
+  # cluster. Its probe gates on the admin secret, so standalone (where `apply`
+  # already created it) this unit skips and behaviour is identical.
+  - name: mongo_admin_fixture
+    on_probe_fail: skip
+    probe:
+      - command: "kubectl -n mongodb get secret admin-user-password >/dev/null 2>&1 && echo present | grep -c present"
+        timeout_sec: 10
+    apply:
+      - command: "kubectl -n mongodb apply -f cases/mongodb/replica-scaling/resource/secrets.yaml"
+        sleep: 1
+      - command: |
+          /bin/sh -c 'kubectl -n mongodb exec mongodb-replica-0 -- mongosh --quiet --eval '\''db.getSiblingDB("admin").createUser({user:"{{params.admin_username}}",pwd:"admin123password",roles:[{role:"clusterAdmin",db:"admin"},{role:"userAdminAnyDatabase",db:"admin"},{role:"readWriteAnyDatabase",db:"admin"}]})'\'' || true'
+        sleep: 2
+      - command: |
+          /bin/sh -c 'kubectl -n mongodb exec mongodb-replica-0 -- mongosh --quiet "mongodb://{{params.admin_username}}:admin123password@localhost:27017/admin" --eval '\''db.getSiblingDB("{{params.app_database}}").{{params.app_collection}}.insertMany([{id:1},{id:2},{id:3}],{writeConcern:{w:1}})'\'' || true'
+        sleep: 2
+    verify:
+      - command: "kubectl -n mongodb get secret admin-user-password -o name"
+        timeout_sec: 10
+
 oracle:
   verify:
     commands:

@@ -27,6 +27,47 @@ def run(cmd):
     return subprocess.run(cmd, text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
 
 
+_TLS_FLAGS_CACHE = None
+
+
+def _mongo_tls_flags(probe_pod=None):
+    """mongosh transport flags that adapt to the cluster's LIVE TLS mode.
+
+    The environment PERSISTS across workflow stages, so an earlier stage
+    (mongodb/tls-setup or mongodb/certificate-rotation) may have turned TLS on,
+    after which a plain mongosh connection is refused. Detect TLS by probing the
+    running mongo pod for a CA cert mounted at the paths the TLS stages use; if
+    present, connect with --tls --tlsCAFile (and a client cert for mutual TLS
+    when one is mounted), else connect plain. Standalone (no CA mounted) this
+    returns [] -> identical plain behaviour. It only adds transport flags; every
+    real check still runs and still fails when its condition is unmet.
+    """
+    global _TLS_FLAGS_CACHE
+    if _TLS_FLAGS_CACHE is not None:
+        return list(_TLS_FLAGS_CACHE)
+    flags = []
+    pod = probe_pod or f"{CLUSTER_PREFIX}-0"
+    ca_path = None
+    for cand in (
+        "/etc/tls/ca.crt",
+        "/etc/mongo-ca/ca.crt",
+        "/etc/mongodb/tls/ca.crt",
+        "/etc/ssl/mongodb/ca.crt",
+    ):
+        probe = run(["kubectl", "-n", NAMESPACE, "exec", pod, "--", "/bin/sh", "-c", "test -f " + cand])
+        if probe.returncode == 0:
+            ca_path = cand
+            break
+    if ca_path:
+        flags = ["--tls", "--tlsCAFile", ca_path]
+        for client_pem in ("/etc/tls/client.pem", "/etc/mongo-ca/client.pem"):
+            cprobe = run(["kubectl", "-n", NAMESPACE, "exec", pod, "--", "/bin/sh", "-c", "test -f " + client_pem])
+            if cprobe.returncode == 0:
+                flags += ["--tlsCertificateKeyFile", client_pem]
+                break
+    _TLS_FLAGS_CACHE = flags
+    return list(flags)
+
 def fail(prefix, errors):
     if errors:
         print(prefix, file=sys.stderr)
@@ -52,7 +93,7 @@ def get_secret(secret_name, errors):
 
 def run_mongo(uri, eval_str):
     return run([
-        "kubectl", "-n", NAMESPACE, "exec", POD, "--", "mongosh", "--quiet", uri, "--eval", eval_str
+        "kubectl", "-n", NAMESPACE, "exec", POD, "--", "mongosh", "--quiet", *_mongo_tls_flags(), uri, "--eval", eval_str
     ])
 
 
