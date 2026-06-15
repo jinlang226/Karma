@@ -219,6 +219,42 @@ def ray_node_count_from_head(namespace: str, head_deployment: str, timeout_sec: 
     raise RuntimeError(last_error or "ray node probe timed out")
 
 
+def resolve_expected_workers(
+    namespace: str,
+    worker_deployment: str,
+    *,
+    default: int = 2,
+    param_env: tuple[str, ...] = ("BENCH_PARAM_EXPECTED_WORKERS", "BENCH_PARAM_WORKER_REPLICAS"),
+) -> int:
+    """Resolve the worker count this oracle should expect.
+
+    Priority (Transform 2): explicit param override (BENCH_PARAM_EXPECTED_WORKERS
+    / BENCH_PARAM_WORKER_REPLICAS) -> the LIVE worker count inherited from the
+    cluster (the worker Deployment's spec.replicas) -> the old hardcoded default.
+
+    Stages that do NOT themselves change the worker count (e.g. an image upgrade
+    or a pod-recovery rehearsal) must adapt to whatever topology they inherit:
+    if a prior workflow stage scaled the cluster to N workers, the oracle should
+    still require all N to be live rather than a baked-in 2. The check itself is
+    unchanged — fewer-than-expected ready workers / dropped nodes still fail.
+    """
+    for env_name in param_env:
+        raw = os.environ.get(env_name)
+        if raw is None or not str(raw).strip():
+            continue
+        try:
+            return int(str(raw).strip())
+        except ValueError:
+            continue
+    try:
+        live = deployment_spec_replicas(namespace, worker_deployment)
+    except Exception:  # noqa: BLE001
+        live = 0
+    if live >= 1:
+        return live
+    return default
+
+
 def curl_dashboard_status(namespace: str, curl_pod: str, head_service: str, port: int) -> str:
     cluster_ip = service_cluster_ip(namespace, head_service)
     proc = run(
