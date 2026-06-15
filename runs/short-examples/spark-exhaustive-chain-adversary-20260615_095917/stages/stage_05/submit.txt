@@ -1,0 +1,35 @@
+---
+
+## Diagnosis & Fix Summary
+
+### Root Cause
+
+**Data skew on `user_id=999`** causes Stage 3 OOM:
+
+| Metric | Value |
+|--------|-------|
+| Total records | 100,000 |
+| Distinct user_ids | 1,000 |
+| Hot key (`user_id=999`) records | 50,000 (50% of all data) |
+| Skew ratio | **500x** (threshold is 10x) |
+
+When Stage 3 runs `GROUP BY user_id`, the entire 50% of the dataset lands on a single executor partition (the one holding `user_id=999`). With only 256MB executor memory, that partition overflows → `OutOfMemoryError`.
+
+### Fix Applied (Option B+C combined)
+
+The `etl-job.yaml` was patched with two changes:
+
+1. **Increased executor memory** from `256m` → `1g`
+   ```
+   --conf spark.executor.memory=1g
+   ```
+
+2. **Enabled AQE with skew join handling** — Spark automatically splits the oversized `user_id=999` partition into sub-partitions:
+   ```
+   --conf spark.sql.adaptive.enabled=true
+   --conf spark.sql.adaptive.skewJoin.enabled=true
+   ```
+
+### Result
+
+The ETL job completed successfully (`1/1`, 50s duration) and printed `spark_etl_pipeline_verified`. All three stages ran without OOM errors.

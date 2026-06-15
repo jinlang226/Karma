@@ -1,0 +1,37 @@
+[precondition:mongo_env_ready:preconditionUnits[0] 'mongo_env_ready':probe] $ kubectl -n mongodb get pod mongodb-replica-0 2>/dev/null | grep -c Running
+1
+
+[precondition:mongo_admin_fixture:preconditionUnits[1] 'mongo_admin_fixture':probe] $ kubectl -n mongodb get secret admin-user-password >/dev/null 2>&1 && echo present | grep -c present
+
+[precondition:mongo_admin_fixture:preconditionUnits[1] 'mongo_admin_fixture':apply] $ kubectl -n mongodb apply -f cases/mongodb/replica-scaling/resource/secrets.yaml
+secret/admin-user-password created
+secret/mongo-keyfile created
+
+[precondition:mongo_admin_fixture:preconditionUnits[1] 'mongo_admin_fixture':apply] $ /bin/sh -c 'kubectl -n mongodb exec mongodb-replica-0 -- mongosh --quiet --eval '\''db.getSiblingDB("admin").createUser({user:"admin-user",pwd:"admin123password",roles:[{role:"clusterAdmin",db:"admin"},{role:"userAdminAnyDatabase",db:"admin"},{role:"readWriteAnyDatabase",db:"admin"}]})'\'' || true'
+
+{
+  ok: 1,
+  '$clusterTime': {
+    clusterTime: Timestamp({ t: 1781522498, i: 4 }),
+    signature: {
+      hash: Binary(Buffer.from("0000000000000000000000000000000000000000", "hex"), 0),
+      keyId: Long("0")
+    }
+  },
+  operationTime: Timestamp({ t: 1781522498, i: 4 })
+}
+
+[precondition:mongo_admin_fixture:preconditionUnits[1] 'mongo_admin_fixture':apply] $ /bin/sh -c 'kubectl -n mongodb exec mongodb-replica-0 -- mongosh --quiet "mongodb://admin-user:admin123password@localhost:27017/admin" --eval '\''db.getSiblingDB("testdb").data.insertMany([{id:1},{id:2},{id:3}],{writeConcern:{w:1}})'\'' || true'
+
+{
+  acknowledged: true,
+  insertedIds: {
+    '0': ObjectId("6a2fe045fe180311606c468c"),
+    '1': ObjectId("6a2fe045fe180311606c468d"),
+    '2': ObjectId("6a2fe045fe180311606c468e")
+  }
+}
+
+[precondition:mongo_admin_fixture:preconditionUnits[1] 'mongo_admin_fixture':verify] $ kubectl -n mongodb get secret admin-user-password -o name
+secret/admin-user-password
+

@@ -1,0 +1,40 @@
+{
+  "score": 66.7,
+  "score_max": 100.0,
+  "method": "stage-pass + regression-adjudication",
+  "total_stages": 6,
+  "passed_stages": 6,
+  "base_score": 100.0,
+  "all_passed": true,
+  "regression_sweep_run": true,
+  "regression_failures": 4,
+  "legitimate_regressions": 2,
+  "regressions": [
+    {
+      "stage_id": "stage_01",
+      "legitimate": false,
+      "reasoning": "Stage 06 explicitly decommissions one replica set member, which involves deleting a pod; if the agent chose to remove mongodb-replica-0, its absence is the direct and legitimate result of that later stage's task. The stage_01 oracle re-checking mongodb-replica-0 is stale \u2014 the pod's removal was authorized by a subsequent stage, not careless breakage.",
+      "output": "$ python3 cases/mongodb/initialize/oracle/oracle.py\nMongoDB initialize topology check failed:\n  - rs.conf() failed on mongodb-replica-0: Error from server (NotFound): pods \"mongodb-replica-0\" not found\n  - rs.status() failed on mongodb-replica-0: Error from server (NotFound): pods \"mongodb-replica-0\" not found\n"
+    },
+    {
+      "stage_id": "stage_02",
+      "legitimate": true,
+      "reasoning": "No later stage has a legitimate reason to delete the 'mongodb-replica' StatefulSet entirely \u2014 stages 03\u201306 only modify config, add TLS, rotate certs, or scale down by one member. A complete NotFound error means the agent likely deleted and failed to recreate the StatefulSet (most probably during stage_04 TLS enablement), which is a real careless side effect, not an expected state transition.",
+      "output": "$ python3 cases/mongodb/replica-scaling/oracle/oracle.py\nMongoDB replica-scaling workload check failed:\n  - Failed to read statefulset mongodb-replica: Error from server (NotFound): statefulsets.apps \"mongodb-replica\" not found\n"
+    },
+    {
+      "stage_id": "stage_03",
+      "legitimate": true,
+      "reasoning": "The `admin-user-password` secret is a core authentication credential that none of the later stages (TLS enablement, cert rotation, member decommission) have any legitimate reason to delete \u2014 it must persist throughout the cluster lifecycle for auth to function. Its absence indicates the agent carelessly removed or failed to preserve it during a later stage (most likely stage_04 when reconfiguring MongoDB for TLS, or stage_06 during cleanup).",
+      "output": "$ python3 cases/mongodb/mongod-config-update/oracle/oracle.py\nMongod config update runtime check failed:\n  - failed to read secret admin-user-password: Error from server (NotFound): secrets \"admin-user-password\" not found\n"
+    },
+    {
+      "stage_id": "stage_04",
+      "legitimate": false,
+      "reasoning": "Stage_05 explicitly rotated the server certificates by updating the Secret (mongodb-tls-cert) and remounting volumes into the mongo-rs pods \u2014 an operation that legitimately replaces or omits client.pem if the agent only regenerated server-side material. The missing /etc/tls/client.pem is the expected consequence of stage_05's cert rotation, not careless breakage by the agent.",
+      "output": "$ python3 cases/mongodb/tls-setup/oracle/oracle.py\nTLS setup tls-ok check failed:\n  - TLS ping failed: Error: ENOENT: no such file or directory, open '/etc/tls/client.pem'\ncommand terminated with exit code 1\n  - TLS rs.status failed: Error: ENOENT: no such file or directory, open '/etc/tls/client.pem'\ncommand terminated with exit code 1\n"
+    }
+  ],
+  "model": "sonnet",
+  "summary": "all 6 stages passed; 4 regression-sweep failure(s): 2 real regression(s), 2 false positive(s) -> score 66.7."
+}

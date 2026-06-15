@@ -1,0 +1,15 @@
+Everything is working. Here's what was done:
+
+**Problem:** The Elasticsearch cluster was set up (by prior workflow stages) using only the native realm with no file realm configured. The `report-user` existed in a separate `user-provided-file-realm` secret that was never merged, and the file realm wasn't even mounted or enabled.
+
+**Fix (4 steps):**
+
+1. **Generated credentials** for both `ops-user` (superuser) and `report-user` (read role) using `elasticsearch-users` inside an existing ES pod, producing bcrypt-hashed `users` and `users_roles` files.
+
+2. **Created `es-file-realm-aggregate` secret** merging both users, with a `roles.yml` defining the custom `read` role (granting `read` + `view_index_metadata` on `*`) — needed because `read` is not a built-in ES role.
+
+3. **Updated the ConfigMap** to add `xpack.security.authc.realms.file.file1.order: 0` (file realm first) and patched the StatefulSet to mount the secret at the expected `users`, `users_roles`, and `roles.yml` paths.
+
+4. **Rolling restart** to apply the config changes. After restart, created and seeded the `app-data` index (missing from prior stages).
+
+**Result:** Cluster is green (3 nodes), `ops-user` and `report-user` both authenticate via the file realm, `report-user` can read `app-data`, and the existing `elastic` native-realm user is unaffected.

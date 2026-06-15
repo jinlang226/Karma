@@ -1,0 +1,9 @@
+All three pods are `1/1 Running` and the replica set is stable: **1 PRIMARY** (`mongodb-replica-1`) and **2 SECONDARY** (`mongodb-replica-0`, `mongodb-replica-2`).
+
+Here's what was wrong and what was fixed:
+
+**Root cause — two layered probe failures on `mongodb-replica-1`:**
+
+1. **Wrong password in override** — the `health-overrides` ConfigMap contained `mongodb-replica-1: legacyHealthPass123`, but the actual `health-user` password (from the `health-user-password` secret) is `healthpass123`. The health-check script's per-pod override logic read the stale key and caused 12 readiness + 6 liveness auth failures. The key was already cleared from the ConfigMap by the time I patched it (the volume showed an empty data dir after the sync at 16:04).
+
+2. **Probe timeout too short** — the health script (which shells out to `mongosh`) takes ~2s normally but occasionally exceeds the 5s `timeoutSeconds`, producing `command timed out` failures. Increased both `readinessProbe.timeoutSeconds` and `livenessProbe.timeoutSeconds` from **5s → 10s** via a StatefulSet patch + rolling update.
