@@ -115,16 +115,6 @@ def _is_transient_apply_error(text: str) -> bool:
     )
 
 
-# A precondition's verify confirms the apply established the target state, which
-# usually converges asynchronously (pods reaching Running/Ready). By default
-# verify is therefore retried for ~60s before the unit is judged failed, so a
-# slow startup on a fresh/busy cluster is tolerated. A case may override with
-# verify_retries / verify_interval_sec. A verify that already holds passes on the
-# first attempt, so this costs nothing for preconditions that are ready.
-_DEFAULT_VERIFY_RETRIES = 12
-_DEFAULT_VERIFY_INTERVAL_SEC = 5.0
-
-
 def _run_operation_units(
     units: list[dict[str, Any]],
     *,
@@ -300,9 +290,8 @@ def _run_operation_units(
             continue
 
         # Verify
-        retries = unit.get("verify_retries") or _DEFAULT_VERIFY_RETRIES
-        _iv = unit.get("verify_interval_sec")
-        interval = _DEFAULT_VERIFY_INTERVAL_SEC if _iv is None else _iv
+        retries = unit.get("verify_retries") or 1
+        interval = unit.get("verify_interval_sec") or 0.0
         verify_ok = False
         for _attempt in range(retries):
             if _attempt > 0:
@@ -366,10 +355,12 @@ def _precondition_auto_budget_seconds(units: list[dict[str, Any]]) -> int:
             unit.get("apply_commands"), _settings.command_timeout_sec
         )
         verify_once = _command_list_budget_seconds(unit.get("verify_commands"), 30)
-        retries = max(1, int(unit.get("verify_retries") or _DEFAULT_VERIFY_RETRIES))
-        _iv = unit.get("verify_interval_sec")
-        interval = max(0, int(float(_DEFAULT_VERIFY_INTERVAL_SEC if _iv is None else _iv)))
-        total += probe + apply_ + verify_once * retries + interval * max(0, retries - 1)
+        retries = max(1, int(unit.get("verify_retries") or 1))
+        interval = max(0, int(float(unit.get("verify_interval_sec") or 0)))
+        # verify is mostly waiting (interval) between quick checks, not running the
+        # full command timeout on every attempt, so budget it as one command run
+        # plus the inter-retry gaps rather than (command timeout * retries).
+        total += probe + apply_ + verify_once + interval * retries
     return total + 60  # slack, matching the old auto budget
 
 
