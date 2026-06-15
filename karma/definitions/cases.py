@@ -263,11 +263,19 @@ def _normalize_operation_block(
             f"{', '.join(sorted(_VALID_ON_PROBE_FAIL))}"
         )
 
+    # Verify confirms the apply established the target state, which usually
+    # converges asynchronously (pods reaching Ready, a controller publishing
+    # readyReplicas). Default verify to RETRY (~120s) so it waits for that
+    # convergence instead of a single point-in-time check that loses the race on
+    # a fresh/busy cluster. The common list-form verify lands here with vd={} and
+    # gets these defaults; a structured verify block can still override them. A
+    # verify that already holds passes on the first attempt, so this is free when
+    # the state is ready and only adds waiting when it is not.
     vd = raw.get("verify") if isinstance(raw.get("verify"), dict) else {}
-    retries = _coerce_int(vd.get("retries") if isinstance(vd, dict) else None, default=1)
+    retries = _coerce_int(vd.get("retries") if isinstance(vd, dict) else None, default=24)
     interval_sec = _coerce_float(
         (vd.get("interval_sec") or vd.get("intervalSec")) if isinstance(vd, dict) else None,
-        default=0.0,
+        default=5.0,
     )
 
     return {

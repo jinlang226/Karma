@@ -176,8 +176,9 @@ class TestPreconditionAutoBudget:
                 "verify_interval_sec": 2,
             }
         ]
-        # probe 5 + apply 50 + verify 10*3 + interval 2*(3-1) = 89, + 60 slack
-        assert _precondition_auto_budget_seconds(units) == 149
+        # verify is budgeted as one run + the inter-retry waits (not command*retries):
+        # probe 5 + apply 50 + verify_once 10 + interval 2*3 = 71, + 60 slack
+        assert _precondition_auto_budget_seconds(units) == 131
 
     def test_empty_units_budget_is_slack_only(self):
         from karma.runtime.case import _precondition_auto_budget_seconds
