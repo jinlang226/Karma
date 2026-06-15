@@ -132,11 +132,11 @@ def main():
                 if len(nodes) < expected_nodes:
                     errors.append(f"Cluster does not report {expected_nodes} running nodes")
                 names = {n.get("name") for n in nodes if isinstance(n, dict)}
-                expected_nodes = [
+                expected_node_names = [
                     f"rabbit@{pod}.{CLUSTER_PREFIX}-headless.{NAMESPACE}.svc.cluster.local"
                     for pod in ready_pods
                 ]
-                for node in expected_nodes:
+                for node in expected_node_names:
                     if node not in names:
                         errors.append(f"Cluster missing running node: {node}")
         except (subprocess.CalledProcessError, KeyError) as exc:
