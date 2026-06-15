@@ -153,7 +153,10 @@ def main():
     # ensure live TLS uses new leaf
     try:
         live_fp = run([
-            "kubectl", "-n", NAMESPACE, "exec", "oracle-client", "--",
+            # Run s_client from the broker pod, not the curl-only oracle-client
+            # (curlimages/curl ships no openssl). The rabbitmq image has openssl,
+            # and the pod can reach its own TLS service on 5671.
+            "kubectl", "-n", NAMESPACE, "exec", f"{CLUSTER_PREFIX}-0", "--",
             "/bin/sh", "-c",
             f"echo | openssl s_client -connect {CLUSTER_PREFIX}.{NAMESPACE}.svc.cluster.local:5671 -servername {CLUSTER_PREFIX} 2>/dev/null | openssl x509 -noout -fingerprint -sha256"
         ]).strip().split("=")[-1]
