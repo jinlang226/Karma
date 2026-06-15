@@ -17,6 +17,7 @@ from common.oracle_lib import (  # noqa: E402
     deployment_image,
     deployment_ready_replicas,
     ray_node_count_from_head,
+    resolve_expected_workers,
 )
 
 NAMESPACE = "ray"
@@ -26,7 +27,11 @@ WORKER = "ray-worker"
 # Read it from the env (default = the standalone value) so the oracle verifies
 # whatever version this stage upgraded to, not a baked-in tag.
 EXPECTED_IMAGE = os.environ.get("BENCH_PARAM_TO_IMAGE", "rayproject/ray:2.9.0") or "rayproject/ray:2.9.0"
-EXPECTED_WORKERS = 2
+# Live/param-aware worker count: an upgrade does NOT change the worker count, so
+# adapt to whatever topology this stage inherits (param override -> live worker
+# spec -> the standalone default 2). A cluster previously scaled to N workers
+# must still report all N ready/live after the upgrade.
+EXPECTED_WORKERS = resolve_expected_workers(NAMESPACE, WORKER, default=2)
 
 CONNECTIVITY_TOTAL_TIMEOUT_SEC = 60
 CONNECTIVITY_ATTEMPT_TIMEOUT_SEC = 12

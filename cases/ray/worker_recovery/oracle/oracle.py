@@ -15,12 +15,17 @@ sys.path.append(str(Path(__file__).resolve().parents[2]))
 from common.oracle_lib import (  # noqa: E402
     deployment_ready_replicas,
     ray_node_count_from_head,
+    resolve_expected_workers,
 )
 
 NAMESPACE = "ray"
 HEAD = "ray-head"
 WORKER = "ray-worker"
-EXPECTED_WORKERS = 2
+# Live/param-aware worker count: recovery restores the cluster to whatever worker
+# topology it inherits, it does not redefine it. Resolve param override -> live
+# worker spec -> the standalone default 2 so a cluster scaled to N workers must
+# recover all N (a dropped/unready worker still fails the check).
+EXPECTED_WORKERS = resolve_expected_workers(NAMESPACE, WORKER, default=2)
 
 CONNECTIVITY_TOTAL_TIMEOUT_SEC = 60
 CONNECTIVITY_ATTEMPT_TIMEOUT_SEC = 12
