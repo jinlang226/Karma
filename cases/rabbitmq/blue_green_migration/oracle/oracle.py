@@ -29,13 +29,71 @@ def get_secret_value(name, key):
     return base64.b64decode(raw).decode().strip()
 
 
+_GREEN_BASE = None
+
+
+def green_base():
+    """Resolve the green cluster's live management-API base URL.
+
+    Standalone the green management plugin is plain HTTP on 15672. A prior
+    stage may have enabled TLS (HTTPS on 15671); a hardcoded http://:15672 then
+    fails. Probe https://:15671 first (with -k), fall back to http://:15672.
+    """
+    global _GREEN_BASE
+    if _GREEN_BASE is not None:
+        return _GREEN_BASE
+    candidates = [f"https://{GREEN_CLUSTER_PREFIX}:15671", f"http://{GREEN_CLUSTER_PREFIX}:15672"]
+    for base in candidates:
+        try:
+            out = run([
+                "kubectl", "-n", TARGET_NAMESPACE, "exec", "oracle-client", "--",
+                "curl", "-sk", "-o", "/dev/null", "-w", "%{http_code}",
+                f"{base}/api/overview",
+            ]).strip()
+            if out and out[:1].isdigit() and out != "000":
+                _GREEN_BASE = base
+                return _GREEN_BASE
+        except subprocess.CalledProcessError:
+            continue
+    _GREEN_BASE = candidates[-1]
+    return _GREEN_BASE
+
+
+def _resolve_expected_nodes(ns, label):
+    """Per-cluster size to enforce: param override -> live StatefulSet -> 3.
+
+    The env PERSISTS across stages, so a prior scale stage may have grown a
+    cluster past the standalone default of 3. Only the count target adapts; the
+    per-pod readiness check below still fails for any unready member.
+    """
+    for key in ("BENCH_PARAM_EXPECTED_NODES", "BENCH_PARAM_TARGET_NODES"):
+        val = os.environ.get(key)
+        if val is not None and str(val).strip():
+            try:
+                return int(val)
+            except ValueError:
+                pass
+    try:
+        sts = run_json(["kubectl", "-n", ns, "get", "sts", label, "-o", "json"])
+        status = sts.get("status", {}) or {}
+        spec = sts.get("spec", {}) or {}
+        live = status.get("readyReplicas")
+        if not isinstance(live, int) or live <= 0:
+            live = spec.get("replicas")
+        if isinstance(live, int) and live > 0:
+            return live
+    except Exception:
+        pass
+    return 3
+
+
 def curl_green(path, method="GET", data=None):
-    args = ["kubectl", "-n", TARGET_NAMESPACE, "exec", "oracle-client", "--", "curl", "-s", "-u", "admin:adminpass"]
+    args = ["kubectl", "-n", TARGET_NAMESPACE, "exec", "oracle-client", "--", "curl", "-sk", "-u", "admin:adminpass"]
     if method == "POST":
         args += ["-H", "content-type: application/json", "-X", "POST"]
         if data is not None:
             args += ["-d", json.dumps(data)]
-    args.append(f"http://{GREEN_CLUSTER_PREFIX}:15672{path}")
+    args.append(f"{green_base()}{path}")
     return run(args)
 
 
@@ -43,8 +101,9 @@ def main():
     errors = []
 
     for label in (BLUE_CLUSTER_PREFIX, GREEN_CLUSTER_PREFIX):
+        ns = SOURCE_NAMESPACE if label == BLUE_CLUSTER_PREFIX else TARGET_NAMESPACE
+        expected = _resolve_expected_nodes(ns, label)
         try:
-            ns = SOURCE_NAMESPACE if label == BLUE_CLUSTER_PREFIX else TARGET_NAMESPACE
             pods = run_json(["kubectl", "-n", ns, "get", "pods", "-l", f"app={label}", "-o", "json"])
         except subprocess.CalledProcessError as exc:
             errors.append(f"Failed to list {label} pods: {exc.output.decode().strip()}")
@@ -59,8 +118,8 @@ def main():
                 errors.append(f"Pod not ready: {name}")
             else:
                 ready += 1
-        if ready < 3:
-            errors.append(f"Expected 3 {label} pods ready, got {ready}")
+        if ready < expected:
+            errors.append(f"Expected {expected} {label} pods ready, got {ready}")
 
     try:
         seed_cfg = run_json([

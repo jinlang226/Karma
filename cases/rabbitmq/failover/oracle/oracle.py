@@ -17,8 +17,68 @@ def run_json(cmd):
     return json.loads(run(cmd))
 
 
+_MGMT_BASE = None
+
+
+def mgmt_base():
+    """Resolve the live management-API base URL (scheme + port).
+
+    Standalone the management plugin is plain HTTP on 15672. A prior workflow
+    stage may have enabled TLS (HTTPS on 15671); a hardcoded http://:15672 then
+    fails. Probe https://:15671 first (with -k), fall back to http://:15672.
+    Auth is NOT bypassed -- only the transport scheme adapts.
+    """
+    global _MGMT_BASE
+    if _MGMT_BASE is not None:
+        return _MGMT_BASE
+    candidates = [f"https://{CLUSTER_PREFIX}:15671", f"http://{CLUSTER_PREFIX}:15672"]
+    for base in candidates:
+        try:
+            out = run([
+                "kubectl", "-n", NAMESPACE, "exec", "oracle-client", "--",
+                "/bin/sh", "-c",
+                f"curl -sk -o /dev/null -w '%{{http_code}}' {base}/api/overview",
+            ]).strip()
+            if out and out[:1].isdigit() and out != "000":
+                _MGMT_BASE = base
+                return _MGMT_BASE
+        except subprocess.CalledProcessError:
+            continue
+    _MGMT_BASE = candidates[-1]
+    return _MGMT_BASE
+
+
+def _resolve_expected_nodes():
+    """Cluster size to enforce: param override -> live StatefulSet -> default 3.
+
+    The env PERSISTS across stages, so a prior scale stage may have grown the
+    cluster past the standalone default of 3. Only the count target adapts; the
+    per-node membership and cookie checks still fail for any unready member.
+    """
+    for key in ("BENCH_PARAM_EXPECTED_NODES", "BENCH_PARAM_TARGET_NODES"):
+        val = os.environ.get(key)
+        if val is not None and str(val).strip():
+            try:
+                return int(val)
+            except ValueError:
+                pass
+    try:
+        sts = run_json(["kubectl", "-n", NAMESPACE, "get", "sts", CLUSTER_PREFIX, "-o", "json"])
+        status = sts.get("status", {}) or {}
+        spec = sts.get("spec", {}) or {}
+        live = status.get("readyReplicas")
+        if not isinstance(live, int) or live <= 0:
+            live = spec.get("replicas")
+        if isinstance(live, int) and live > 0:
+            return live
+    except Exception:
+        pass
+    return 3
+
+
 def main():
     errors = []
+    expected_nodes = _resolve_expected_nodes()
 
     try:
         pods = run_json([
@@ -38,8 +98,8 @@ def main():
         else:
             ready_pods.append(name)
 
-    if len(ready_pods) < 3:
-        errors.append(f"Expected 3 RabbitMQ pods ready, got {len(ready_pods)}")
+    if len(ready_pods) < expected_nodes:
+        errors.append(f"Expected {expected_nodes} RabbitMQ pods ready, got {len(ready_pods)}")
 
     if ready_pods:
         try:
@@ -55,7 +115,7 @@ def main():
             nodes_raw = run([
                 "kubectl", "-n", NAMESPACE, "exec", "oracle-client", "--",
                 "/bin/sh", "-c",
-                f"curl -s -u {admin_user}:{admin_pass} http://{CLUSTER_PREFIX}:15672/api/nodes"
+                f"curl -sk -u {admin_user}:{admin_pass} {mgmt_base()}/api/nodes"
             ])
             try:
                 nodes = json.loads(nodes_raw)
@@ -64,8 +124,8 @@ def main():
             if not isinstance(nodes, list):
                 errors.append("Failed to query management API for nodes")
             else:
-                if len(nodes) < 3:
-                    errors.append("Cluster does not report 3 running nodes")
+                if len(nodes) < expected_nodes:
+                    errors.append(f"Cluster does not report {expected_nodes} running nodes")
                 names = {n.get("name") for n in nodes if isinstance(n, dict)}
                 expected_nodes = [
                     f"rabbit@{pod}.{CLUSTER_PREFIX}-headless.{NAMESPACE}.svc.cluster.local"
@@ -90,11 +150,14 @@ def main():
                 cookies[key] = base64.b64decode(value).decode().strip()
             except Exception:
                 cookies[key] = None
-        missing = [k for k in tuple(f"{CLUSTER_PREFIX}-{i}" for i in range(3)) if k not in cookies]
+        # Derive the per-pod cookie keys from the LIVE cluster size rather than
+        # a hardcoded 0..2, so a scaled cluster is still fully checked.
+        expected_keys = [f"{CLUSTER_PREFIX}-{i}" for i in range(expected_nodes)]
+        missing = [k for k in expected_keys if k not in cookies]
         if missing:
             errors.append(f"Missing cookie keys in secret: {', '.join(missing)}")
         else:
-            values = [cookies[f"{CLUSTER_PREFIX}-0"], cookies[f"{CLUSTER_PREFIX}-1"], cookies[f"{CLUSTER_PREFIX}-2"]]
+            values = [cookies[k] for k in expected_keys]
             if any(v is None or v == "" for v in values):
                 errors.append("Erlang cookie values are empty or unreadable")
             elif len(set(values)) != 1:

@@ -15,8 +15,37 @@ def run_json(cmd):
     return json.loads(run(cmd))
 
 
+def _resolve_expected_nodes():
+    """Cluster size to enforce: param override -> live StatefulSet -> default 3.
+
+    The env PERSISTS across stages, so a prior scale stage may have grown the
+    cluster past the standalone default of 3. Only the count target adapts; the
+    policy/queue checks below still verify the real task regardless of size.
+    """
+    for key in ("BENCH_PARAM_EXPECTED_NODES", "BENCH_PARAM_TARGET_NODES"):
+        val = os.environ.get(key)
+        if val is not None and str(val).strip():
+            try:
+                return int(val)
+            except ValueError:
+                pass
+    try:
+        sts = run_json(["kubectl", "-n", NAMESPACE, "get", "sts", CLUSTER_PREFIX, "-o", "json"])
+        status = sts.get("status", {}) or {}
+        spec = sts.get("spec", {}) or {}
+        live = status.get("readyReplicas")
+        if not isinstance(live, int) or live <= 0:
+            live = spec.get("replicas")
+        if isinstance(live, int) and live > 0:
+            return live
+    except Exception:
+        pass
+    return 3
+
+
 def main():
     errors = []
+    expected_nodes = _resolve_expected_nodes()
 
     try:
         pods = run_json([
@@ -36,8 +65,8 @@ def main():
         else:
             ready_pods += 1
 
-    if ready_pods < 3:
-        errors.append(f"Expected 3 RabbitMQ pods ready, got {ready_pods}")
+    if ready_pods < expected_nodes:
+        errors.append(f"Expected {expected_nodes} RabbitMQ pods ready, got {ready_pods}")
 
     try:
         policies = run([

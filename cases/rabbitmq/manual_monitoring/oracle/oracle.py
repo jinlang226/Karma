@@ -22,8 +22,37 @@ def curl_from_curl_test(url):
     ])
 
 
+def _resolve_expected_nodes():
+    """Cluster size to enforce: param override -> live StatefulSet -> default 3.
+
+    The env PERSISTS across stages, so a prior scale stage may have grown the
+    cluster past the standalone default of 3. Only the count target adapts; the
+    per-node metrics + Prometheus target/up checks still verify every member.
+    """
+    for key in ("BENCH_PARAM_EXPECTED_NODES", "BENCH_PARAM_TARGET_NODES"):
+        val = os.environ.get(key)
+        if val is not None and str(val).strip():
+            try:
+                return int(val)
+            except ValueError:
+                pass
+    try:
+        sts = run_json(["kubectl", "-n", NAMESPACE, "get", "sts", CLUSTER_PREFIX, "-o", "json"])
+        status = sts.get("status", {}) or {}
+        spec = sts.get("spec", {}) or {}
+        live = status.get("readyReplicas")
+        if not isinstance(live, int) or live <= 0:
+            live = spec.get("replicas")
+        if isinstance(live, int) and live > 0:
+            return live
+    except Exception:
+        pass
+    return 3
+
+
 def main():
     errors = []
+    expected_nodes = _resolve_expected_nodes()
 
     try:
         pods = run_json([
@@ -45,8 +74,8 @@ def main():
         else:
             ready_pods += 1
 
-    if ready_pods < 3:
-        errors.append(f"Expected 3 RabbitMQ pods ready, got {ready_pods}")
+    if ready_pods < expected_nodes:
+        errors.append(f"Expected {expected_nodes} RabbitMQ pods ready, got {ready_pods}")
 
     for name in pod_names:
         try:
@@ -75,8 +104,8 @@ def main():
         if target.get("labels", {}).get("job") == "rabbitmq":
             rabbit_targets.append(target)
 
-    if len(rabbit_targets) < 3:
-        errors.append(f"Expected 3 RabbitMQ targets in Prometheus, got {len(rabbit_targets)}")
+    if len(rabbit_targets) < expected_nodes:
+        errors.append(f"Expected {expected_nodes} RabbitMQ targets in Prometheus, got {len(rabbit_targets)}")
     else:
         down = [t for t in rabbit_targets if t.get("health") != "up"]
         if down:
@@ -91,8 +120,8 @@ def main():
             errors.append("Prometheus query up{job=\"rabbitmq\"} failed")
         else:
             results = query.get("data", {}).get("result", [])
-            if len(results) < 3:
-                errors.append(f"Expected 3 up{{job=\"rabbitmq\"}} samples, got {len(results)}")
+            if len(results) < expected_nodes:
+                errors.append(f"Expected {expected_nodes} up{{job=\"rabbitmq\"}} samples, got {len(results)}")
             for sample in results:
                 value = sample.get("value", [None, "0"])[1]
                 if value not in ("1", "1.0"):

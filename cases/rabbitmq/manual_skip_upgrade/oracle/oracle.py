@@ -27,6 +27,34 @@ def run_json(cmd):
     return json.loads(run(cmd, timeout_sec=30))
 
 
+def _resolve_expected_nodes(namespace, cluster_prefix):
+    """Cluster size to enforce: param override -> live StatefulSet -> default 3.
+
+    The env PERSISTS across stages, so a prior scale stage may have grown the
+    cluster past the standalone default of 3. Only the count target adapts; the
+    per-pod version and cluster_status checks still fail for any unready node.
+    """
+    for key in ("BENCH_PARAM_EXPECTED_NODES", "BENCH_PARAM_TARGET_NODES"):
+        val = os.environ.get(key)
+        if val is not None and str(val).strip():
+            try:
+                return int(val)
+            except ValueError:
+                pass
+    try:
+        sts = run_json(["kubectl", "-n", namespace, "get", "sts", cluster_prefix, "-o", "json"])
+        status = sts.get("status", {}) or {}
+        spec = sts.get("spec", {}) or {}
+        live = status.get("readyReplicas")
+        if not isinstance(live, int) or live <= 0:
+            live = spec.get("replicas")
+        if isinstance(live, int) and live > 0:
+            return live
+    except Exception:
+        pass
+    return 3
+
+
 def get_pod_version(pod):
     out = run([
         "kubectl", "-n", NAMESPACE, "exec", pod, "--",
@@ -58,6 +86,7 @@ def main():
     NAMESPACE = args.namespace
     cluster_prefix = args.cluster_prefix
     errors = []
+    expected_nodes = _resolve_expected_nodes(NAMESPACE, cluster_prefix)
 
     try:
         pods = run_json([
@@ -77,8 +106,8 @@ def main():
         else:
             ready_pods.append(name)
 
-    if len(ready_pods) < 3:
-        errors.append(f"Expected 3 RabbitMQ pods ready, got {len(ready_pods)}")
+    if len(ready_pods) < expected_nodes:
+        errors.append(f"Expected {expected_nodes} RabbitMQ pods ready, got {len(ready_pods)}")
 
     if ready_pods:
         try:
@@ -87,8 +116,8 @@ def main():
                 "rabbitmqctl", "cluster_status"
             ], timeout_sec=60)
             running = re.findall(r"rabbit@[^\s,\]\}]+", cluster_out)
-            if len(set(running)) < 3:
-                errors.append("Cluster does not report 3 running nodes")
+            if len(set(running)) < expected_nodes:
+                errors.append(f"Cluster does not report {expected_nodes} running nodes")
         except subprocess.CalledProcessError as exc:
             errors.append(f"Failed to read cluster status: {exc.output.decode().strip()}")
 

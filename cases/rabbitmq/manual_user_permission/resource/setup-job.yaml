@@ -70,13 +70,32 @@ spec:
               curl -s -u "$auth" -H "content-type: application/json" \
                 -XPUT "$base/users/${OPS_USER}" \
                 -d "{\"password\":\"${OPS_PASS}\",\"tags\":\"management\"}" >/dev/null
-              # wrong permissions (intended)
+              # Re-establish the intended BROKEN scenario idempotently. These
+              # PUT/DELETE calls converge any inherited state (fresh OR already
+              # fixed by a prior stage) back to the broken baseline without
+              # deleting users, vhosts, queues, or redeploying anything.
+              #
+              # 1. app-user on /app: configure is intentionally broken ("") so
+              #    app-client cannot declare its queue. PUT overwrites whatever
+              #    a prior stage set (e.g. a fixed configure=".*").
               curl -s -u "$auth" -H "content-type: application/json" \
                 -XPUT "$base/permissions/%2Fapp/${APP_USER}" \
                 -d '{"configure":"","write":".*","read":".*"}' >/dev/null
+              # 2. ops-user mis-grant on the WRONG vhost /app (full perms).
               curl -s -u "$auth" -H "content-type: application/json" \
                 -XPUT "$base/permissions/%2Fapp/${OPS_USER}" \
                 -d '{"configure":".*","write":".*","read":".*"}' >/dev/null
+              # 3. ops-user must have NO access on its real vhost /ops, so
+              #    ops-client crashes. DELETE is a no-op on a fresh cluster
+              #    (ops-user never had /ops perms) and revokes the grant a prior
+              #    stage may have added. RabbitMQ returns 204 on success and 404
+              #    when the permission is already absent -- both are fine.
+              curl -s -u "$auth" -XDELETE \
+                "$base/permissions/%2Fops/${OPS_USER}" >/dev/null
+              # 4. app-user must also have NO access on /ops (cross-vhost deny
+              #    that the oracle asserts). Idempotent revoke, ignore 404.
+              curl -s -u "$auth" -XDELETE \
+                "$base/permissions/%2Fops/${APP_USER}" >/dev/null
               # seed queues + messages
               curl -s -u "$auth" -H "content-type: application/json" \
                 -XPUT "$base/queues/%2Fapp/app-queue" \

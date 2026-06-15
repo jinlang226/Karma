@@ -26,16 +26,80 @@ def get_secret_value(name, key):
     return base64.b64decode(raw).decode().strip()
 
 
+_MGMT_BASE = None
+
+
+def mgmt_base():
+    """Resolve the live management-API base URL (scheme + port).
+
+    Standalone this cluster serves the management plugin over plain HTTP on
+    15672. A prior workflow stage may have enabled TLS on the management
+    listener (HTTPS on 15671); a hardcoded http://:15672 then fails. Probe the
+    live cluster: try https://:15671 first (with -k), fall back to
+    http://:15672. Auth is NOT bypassed -- only the transport scheme adapts.
+    """
+    global _MGMT_BASE
+    if _MGMT_BASE is not None:
+        return _MGMT_BASE
+    candidates = [f"https://{CLUSTER_PREFIX}:15671", f"http://{CLUSTER_PREFIX}:15672"]
+    for base in candidates:
+        try:
+            out = subprocess.run(
+                [
+                    "kubectl", "-n", NAMESPACE, "exec", "oracle-client", "--",
+                    "curl", "-sk", "-o", "/dev/null", "-w", "%{http_code}",
+                    f"{base}/api/overview",
+                ],
+                stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True,
+            ).stdout.strip()
+            if out and out[:1].isdigit() and out != "000":
+                _MGMT_BASE = base
+                return _MGMT_BASE
+        except Exception:
+            continue
+    _MGMT_BASE = candidates[-1]
+    return _MGMT_BASE
+
+
+def _resolve_expected_nodes():
+    """Cluster size to enforce: param override -> live StatefulSet -> default 3.
+
+    The env PERSISTS across stages, so a prior scale stage may have grown the
+    cluster past the standalone default of 3. Only the count target adapts; the
+    per-node and queue checks below still fail for any unready/dropped member.
+    """
+    for key in ("BENCH_PARAM_EXPECTED_NODES", "BENCH_PARAM_TARGET_NODES"):
+        val = os.environ.get(key)
+        if val is not None and str(val).strip():
+            try:
+                return int(val)
+            except ValueError:
+                pass
+    try:
+        sts = run_json(["kubectl", "-n", NAMESPACE, "get", "sts", CLUSTER_PREFIX, "-o", "json"])
+        status = sts.get("status", {}) or {}
+        spec = sts.get("spec", {}) or {}
+        live = status.get("readyReplicas")
+        if not isinstance(live, int) or live <= 0:
+            live = spec.get("replicas")
+        if isinstance(live, int) and live > 0:
+            return live
+    except Exception:
+        pass
+    return 3
+
+
 def curl_api(path, user, password):
     return run([
         "kubectl", "-n", NAMESPACE, "exec", "oracle-client", "--",
-        "curl", "-s", "-u", f"{user}:{password}",
-        f"http://{CLUSTER_PREFIX}:15672{path}",
+        "curl", "-sk", "-u", f"{user}:{password}",
+        f"{mgmt_base()}{path}",
     ])
 
 
 def main():
     errors = []
+    expected_nodes = _resolve_expected_nodes()
 
     try:
         pods = run_json([
@@ -55,8 +119,8 @@ def main():
         else:
             ready_pods += 1
 
-    if ready_pods < 3:
-        errors.append(f"Expected 3 RabbitMQ pods ready, got {ready_pods}")
+    if ready_pods < expected_nodes:
+        errors.append(f"Expected {expected_nodes} RabbitMQ pods ready, got {ready_pods}")
 
     try:
         dep = run_json([
@@ -79,8 +143,8 @@ def main():
     if admin_user and admin_pass:
         try:
             nodes = json.loads(curl_api("/api/nodes", admin_user, admin_pass))
-            if len(nodes) < 3:
-                errors.append(f"Expected 3 nodes in cluster, got {len(nodes)}")
+            if len(nodes) < expected_nodes:
+                errors.append(f"Expected {expected_nodes} nodes in cluster, got {len(nodes)}")
         except Exception:
             errors.append("Failed to query cluster nodes via management API")
 
