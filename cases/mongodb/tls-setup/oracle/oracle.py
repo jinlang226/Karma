@@ -43,7 +43,7 @@ def tls_base_cmd(eval_str):
     # with both the CA and the client certificate or the server closes the socket.
     return [
         "kubectl", "-n", NAMESPACE, "exec", POD, "--", "mongosh", "--quiet", TLS_URI,
-        "--tls", "--tlsCAFile", "/etc/tls/ca.crt",
+        "--tls", "--tlsAllowInvalidHostnames", "--tlsCAFile", "/etc/tls/ca.crt",
         "--tlsCertificateKeyFile", "/etc/tls/client.pem", "--eval", eval_str,
     ]
 

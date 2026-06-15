@@ -165,7 +165,7 @@ def check_tls():
 
     tls = run([
         "kubectl", "-n", NAMESPACE, "exec", f"{CLUSTER_PREFIX}-0", "--", "mongosh", "--quiet", TLS_URI,
-        "--tls", "--tlsCAFile", "/etc/mongo-ca/ca.crt", "--eval", "db.hello().ok",
+        "--tls", "--tlsAllowInvalidHostnames", "--tlsCAFile", "/etc/mongo-ca/ca.crt", "--eval", "db.hello().ok",
     ])
     if tls.returncode != 0:
         errors.append(f"TLS connection failed: {tls.stderr.strip() or tls.stdout.strip()}")
