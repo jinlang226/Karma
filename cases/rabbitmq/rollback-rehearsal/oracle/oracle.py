@@ -19,7 +19,9 @@ KEY = "rollback.sh"
 
 
 def run(cmd):
-    return subprocess.run(cmd, text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+    # Bound the kubectl call so a hung API server fails fast instead of blocking
+    # until the outer oracle timeout.
+    return subprocess.run(cmd, text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=60)
 
 
 def main() -> int:

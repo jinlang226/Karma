@@ -12,7 +12,12 @@ GREEN_CLUSTER_PREFIX = os.environ.get("BENCH_PARAM_GREEN_CLUSTER_PREFIX", "rabbi
 
 
 def run(cmd):
-    return subprocess.check_output(cmd, stderr=subprocess.STDOUT).decode()
+    # Bound every kubectl/exec call so a hung pod or unresponsive broker fails
+    # the check fast instead of blocking until the outer oracle timeout.
+    return subprocess.run(
+        cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+        check=True, timeout=60,
+    ).stdout.decode()
 
 
 def run_json(cmd):
@@ -42,12 +47,13 @@ def green_base():
     global _GREEN_BASE
     if _GREEN_BASE is not None:
         return _GREEN_BASE
-    candidates = [f"https://{GREEN_CLUSTER_PREFIX}:15671", f"http://{GREEN_CLUSTER_PREFIX}:15672"]
+    candidates = [f"http://{GREEN_CLUSTER_PREFIX}:15672", f"https://{GREEN_CLUSTER_PREFIX}:15671"]
     for base in candidates:
         try:
             out = run([
                 "kubectl", "-n", TARGET_NAMESPACE, "exec", "oracle-client", "--",
-                "curl", "-sk", "-o", "/dev/null", "-w", "%{http_code}",
+                "curl", "-sk", "--connect-timeout", "5", "--max-time", "15",
+                "-o", "/dev/null", "-w", "%{http_code}",
                 f"{base}/api/overview",
             ]).strip()
             if out and out[:1].isdigit() and out != "000":
@@ -88,7 +94,7 @@ def _resolve_expected_nodes(ns, label):
 
 
 def curl_green(path, method="GET", data=None):
-    args = ["kubectl", "-n", TARGET_NAMESPACE, "exec", "oracle-client", "--", "curl", "-sk", "-u", "admin:adminpass"]
+    args = ["kubectl", "-n", TARGET_NAMESPACE, "exec", "oracle-client", "--", "curl", "-sk", "--connect-timeout", "5", "--max-time", "25", "-u", "admin:adminpass"]
     if method == "POST":
         args += ["-H", "content-type: application/json", "-X", "POST"]
         if data is not None:

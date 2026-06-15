@@ -3,13 +3,19 @@ import json
 import subprocess
 import sys
 import os
+import time
 
 NAMESPACE = os.environ.get("BENCH_NAMESPACE", "rabbitmq")
 CLUSTER_PREFIX = os.environ.get("BENCH_PARAM_CLUSTER_PREFIX", "rabbitmq")
 
 
 def run(cmd):
-    return subprocess.check_output(cmd, stderr=subprocess.STDOUT).decode()
+    # Bound every kubectl/exec call so a hung pod or unresponsive broker fails
+    # the check fast instead of blocking until the outer oracle timeout.
+    return subprocess.run(
+        cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+        check=True, timeout=60,
+    ).stdout.decode()
 
 
 def run_json(cmd):
@@ -41,22 +47,39 @@ def mgmt_base():
     global _MGMT_BASE
     if _MGMT_BASE is not None:
         return _MGMT_BASE
-    candidates = [f"https://{CLUSTER_PREFIX}:15671", f"http://{CLUSTER_PREFIX}:15672"]
-    for base in candidates:
-        try:
-            out = subprocess.run(
-                [
-                    "kubectl", "-n", NAMESPACE, "exec", "oracle-client", "--",
-                    "curl", "-sk", "-o", "/dev/null", "-w", "%{http_code}",
-                    f"{base}/api/overview",
-                ],
-                stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True,
-            ).stdout.strip()
-            if out and out[:1].isdigit() and out != "000":
-                _MGMT_BASE = base
-                return _MGMT_BASE
-        except Exception:
-            continue
+    # Prefer the plain mgmt port (the RabbitMQ default). Only fall back to the
+    # TLS port when http is unavailable -- this both matches a non-TLS cluster
+    # (stage runs before any mgmt-TLS stage) and a later TLS-only one, and avoids
+    # a slow TLS listener that answers the probe but then drags every query past
+    # its deadline (curl exit 28). Auth is unchanged; only the transport adapts.
+    candidates = [f"http://{CLUSTER_PREFIX}:15672", f"https://{CLUSTER_PREFIX}:15671"]
+    # The agent typically restarts the broker to apply config; the management
+    # plugin can still be coming up when the oracle runs. Poll the candidates
+    # until one answers (any HTTP code, incl. 401) rather than giving up on the
+    # first probe and falling back to a base that is not serving yet -- which
+    # would fail every API query below. Bounded so a truly-down API still fails.
+    deadline = time.time() + 60
+    while True:
+        for base in candidates:
+            try:
+                out = subprocess.run(
+                    [
+                        "kubectl", "-n", NAMESPACE, "exec", "oracle-client", "--",
+                        "curl", "-sk", "--connect-timeout", "5", "--max-time", "15",
+                        "-o", "/dev/null", "-w", "%{http_code}",
+                        f"{base}/api/overview",
+                    ],
+                    stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True,
+                    timeout=25,
+                ).stdout.strip()
+                if out and out[:1].isdigit() and out != "000":
+                    _MGMT_BASE = base
+                    return _MGMT_BASE
+            except Exception:
+                continue
+        if time.time() >= deadline:
+            break
+        time.sleep(3)
     _MGMT_BASE = candidates[-1]
     return _MGMT_BASE
 
@@ -92,7 +115,8 @@ def _resolve_expected_nodes():
 def curl_api(path, user, password):
     return run([
         "kubectl", "-n", NAMESPACE, "exec", "oracle-client", "--",
-        "curl", "-sk", "-u", f"{user}:{password}",
+        "curl", "-sk", "--connect-timeout", "5", "--max-time", "25",
+        "-u", f"{user}:{password}",
         f"{mgmt_base()}{path}",
     ])
 
@@ -142,11 +166,15 @@ def main():
 
     if admin_user and admin_pass:
         try:
-            nodes = json.loads(curl_api("/api/nodes", admin_user, admin_pass))
+            raw_nodes = curl_api("/api/nodes", admin_user, admin_pass)
+            nodes = json.loads(raw_nodes)
             if len(nodes) < expected_nodes:
                 errors.append(f"Expected {expected_nodes} nodes in cluster, got {len(nodes)}")
-        except Exception:
-            errors.append("Failed to query cluster nodes via management API")
+        except Exception as exc:
+            errors.append(
+                f"Failed to query cluster nodes via management API "
+                f"(base={mgmt_base()}): {exc}: {locals().get('raw_nodes', '')[:120]!r}"
+            )
 
         try:
             policies = json.loads(curl_api("/api/policies/%2Fapp", admin_user, admin_pass))

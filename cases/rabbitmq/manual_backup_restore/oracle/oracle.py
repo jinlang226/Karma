@@ -9,7 +9,12 @@ CLUSTER_PREFIX = os.environ.get("BENCH_PARAM_CLUSTER_PREFIX", "rabbitmq")
 
 
 def run(cmd):
-    return subprocess.check_output(cmd, stderr=subprocess.STDOUT).decode()
+    # Bound every kubectl/exec call so a hung pod or unresponsive broker fails
+    # the check fast instead of blocking until the outer oracle timeout.
+    return subprocess.run(
+        cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+        check=True, timeout=60,
+    ).stdout.decode()
 
 
 def run_json(cmd):

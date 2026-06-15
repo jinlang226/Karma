@@ -10,7 +10,12 @@ CLUSTER_PREFIX = os.environ.get("BENCH_PARAM_CLUSTER_PREFIX", "rabbitmq")
 
 
 def run(cmd):
-    return subprocess.check_output(cmd, stderr=subprocess.STDOUT).decode()
+    # Bound every kubectl/exec call so a hung pod or unresponsive broker fails
+    # the check fast instead of blocking until the outer oracle timeout.
+    return subprocess.run(
+        cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+        check=True, timeout=60,
+    ).stdout.decode()
 
 
 def run_json(cmd):
@@ -31,13 +36,13 @@ def mgmt_base():
     global _MGMT_BASE
     if _MGMT_BASE is not None:
         return _MGMT_BASE
-    candidates = [f"https://{CLUSTER_PREFIX}:15671", f"http://{CLUSTER_PREFIX}:15672"]
+    candidates = [f"http://{CLUSTER_PREFIX}:15672", f"https://{CLUSTER_PREFIX}:15671"]
     for base in candidates:
         try:
             out = run([
                 "kubectl", "-n", NAMESPACE, "exec", "oracle-client", "--",
                 "/bin/sh", "-c",
-                f"curl -sk -o /dev/null -w '%{{http_code}}' {base}/api/overview",
+                f"curl -sk --connect-timeout 5 --max-time 15 -o /dev/null -w '%{{http_code}}' {base}/api/overview",
             ]).strip()
             if out and out[:1].isdigit() and out != "000":
                 _MGMT_BASE = base
@@ -115,7 +120,7 @@ def main():
             nodes_raw = run([
                 "kubectl", "-n", NAMESPACE, "exec", "oracle-client", "--",
                 "/bin/sh", "-c",
-                f"curl -sk -u {admin_user}:{admin_pass} {mgmt_base()}/api/nodes"
+                f"curl -sk --connect-timeout 5 --max-time 25 -u {admin_user}:{admin_pass} {mgmt_base()}/api/nodes"
             ])
             try:
                 nodes = json.loads(nodes_raw)
