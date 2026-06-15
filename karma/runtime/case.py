@@ -648,6 +648,13 @@ def run_stage(
             submitted = False
             stage_status_before_oracle = "running"
         else:
+            # Clear any stale submit.txt left by a PRIOR attempt of this same
+            # stage. On a retry the stage_id (and thus the submit path) is reused;
+            # without this, _wait_for_submit instantly matches the previous
+            # attempt's leftover file, "submits" in 0s, and terminates the new
+            # agent before it does any work (empty agent.log, oracle runs against
+            # the half/rewiped state). Removing it forces a real second attempt.
+            protocol.stage_submit_path(run_dir, stage_id).unlink(missing_ok=True)
             if on_progress:
                 on_progress("▶ agent: launching")
             _agent_start = time.monotonic()
