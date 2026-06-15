@@ -12,10 +12,36 @@ INDEX_NAME = os.environ.get("BENCH_PARAM_INDEX_NAME", "app-data")
 ORIGINAL_REPLICAS = int(os.environ.get("BENCH_PARAM_ORIGINAL_REPLICAS", "3"))
 DEFAULT_SCHEME = "http"
 _SCHEME = None
+_CREDS = None
 
 
 def run(cmd):
     return subprocess.run(cmd, text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+
+
+def _detect_creds():
+    """Return '-u elastic:<password>' flag string if auth is needed, else ''."""
+    global _CREDS
+    if _CREDS is not None:
+        return _CREDS
+    # check explicit env override first
+    pw = os.environ.get("BENCH_PARAM_ELASTIC_PASSWORD", "")
+    if not pw:
+        # try reading from the live secret used by the cluster
+        for secret_name in ("elastic-password", "elastic-credentials"):
+            res = run([
+                "kubectl", "-n", NAMESPACE, "get", "secret", secret_name,
+                "-o", "jsonpath={.data.password}",
+            ])
+            if res.returncode == 0 and res.stdout.strip():
+                import base64
+                try:
+                    pw = base64.b64decode(res.stdout.strip()).decode()
+                    break
+                except Exception:
+                    pass
+    _CREDS = f"-u elastic:{pw}" if pw else ""
+    return _CREDS
 
 
 def _resolve_expected_nodes(default=5):
@@ -57,9 +83,10 @@ EXPECTED_NODES = _resolve_expected_nodes(5)
 
 def _probe_scheme(scheme):
     """True if the ES HTTP API answers on the given scheme (auth-agnostic)."""
+    creds = _detect_creds()
     result = run([
         "kubectl", "-n", NAMESPACE, "exec", "curl-test", "--", "/bin/sh", "-c",
-        f"curl -s -S -k -o /dev/null -w '%{{http_code}}' --max-time 5 {scheme}://{SERVICE}:9200/",
+        f"curl -s -S -k {creds} -o /dev/null -w '%{{http_code}}' --max-time 5 {scheme}://{SERVICE}:9200/",
     ])
     code = (result.stdout or "").strip().strip("'")
     return result.returncode == 0 and code.isdigit() and code != "000"
@@ -80,6 +107,7 @@ def detect_scheme():
 
 def curl(path, errors):
     scheme = detect_scheme()
+    creds = _detect_creds()
     cmd = [
         "kubectl",
         "-n",
@@ -89,7 +117,7 @@ def curl(path, errors):
         "--",
         "/bin/sh",
         "-c",
-        f"curl -s -S -k --max-time 10 {scheme}://{SERVICE}:9200{path}",
+        f"curl -s -S -k {creds} --max-time 10 {scheme}://{SERVICE}:9200{path}",
     ]
     result = run(cmd)
     if result.returncode != 0:
@@ -108,19 +136,9 @@ def curl(path, errors):
 
 
 def get_original_nodes(errors):
-    result = run(
-        [
-            "kubectl",
-            "-n",
-            NAMESPACE,
-            "get",
-            "pods",
-            "-l",
-            f"app={ORIGINAL_STS}",
-            "-o",
-            "json",
-        ]
-    )
+    # Query all pods and filter by StatefulSet ownerReference; the app label
+    # may not match ORIGINAL_STS if a prior stage reconfigured it.
+    result = run(["kubectl", "-n", NAMESPACE, "get", "pods", "-o", "json"])
     if result.returncode != 0:
         errors.append(f"Failed to list Elasticsearch pods: {result.stderr.strip()}")
         return []
