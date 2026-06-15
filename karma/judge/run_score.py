@@ -29,6 +29,7 @@ from pathlib import Path
 from typing import Any
 
 from .client import call_judge_llm
+from .scoring import _extract_json
 
 # Cap each stage prompt included in the adjudicator context (keep the call bounded).
 _PROMPT_CAP = 2000
@@ -99,14 +100,7 @@ def _parse_adjudication(content: str) -> dict[str, Any]:
     the model's answer can't be read, we keep the penalty rather than silently
     awarding full marks.
     """
-    text = content or ""
-    obj: Any = None
-    start, end = text.find("{"), text.rfind("}")
-    if 0 <= start < end:
-        try:
-            obj = json.loads(text[start:end + 1])
-        except Exception:
-            obj = None
+    obj = _extract_json(content or "")
     if not isinstance(obj, dict):
         return {"legitimate_regression": True, "reasoning": "unparseable adjudication; kept as regression"}
     val = obj.get("legitimate_regression")
