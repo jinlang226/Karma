@@ -292,7 +292,7 @@ def list_judge_batches(runs_dir: Path) -> list[dict[str, Any]]:
         for rd in run_dirs:
             stage_scores: list[float] = []
             for jp in (rd / "stages").glob("*/judge.json"):
-                jd = _read_json(jp)
+                jd = catalog._read_json(jp)
                 if jd and isinstance(jd.get("score"), (int, float)):
                     stage_scores.append(float(jd["score"]))
             if stage_scores:
@@ -306,13 +306,3 @@ def list_judge_batches(runs_dir: Path) -> list[dict[str, Any]]:
             "average_final_score": round(sum(scores) / len(scores), 3) if scores else None,
         })
     return result
-
-
-def _read_json(path: Path) -> dict[str, Any] | None:
-    """Read a JSON object from *path*, returning ``None`` on any error."""
-    import json
-    try:
-        data = json.loads(path.read_text())
-        return data if isinstance(data, dict) else None
-    except Exception:
-        return None
