@@ -1,11 +1,19 @@
 #!/usr/bin/env python3
+import os
 import subprocess
 import sys
 
 
 REQUEST_COUNT = 10
 MIN_429 = 4
-HOST = "rate.example.com"
+# Param-aware: a workflow can override host/api_path/health_path via
+# param_overrides; read BENCH_PARAM_* (default = the standalone value) so the
+# oracle exercises the routes this stage configured on the live cluster. The
+# rate-limit pass criterion (>= MIN_429 429s on api, only 200s on health) is
+# unchanged.
+HOST = os.environ.get("BENCH_PARAM_HOST") or "rate.example.com"
+API_PATH = os.environ.get("BENCH_PARAM_API_PATH") or "/api"
+HEALTH_PATH = os.environ.get("BENCH_PARAM_HEALTH_PATH") or "/health"
 SERVICE_URL = "http://ingress-nginx-controller.ingress-nginx.svc"
 
 
@@ -35,13 +43,13 @@ def paced(path):
 
 def main():
     try:
-        api_codes = paced("/api")
+        api_codes = paced(API_PATH)
     except Exception as exc:
         print(f"API test failed: {exc}", file=sys.stderr)
         return 1
 
     try:
-        health_codes = paced("/health")
+        health_codes = paced(HEALTH_PATH)
     except Exception as exc:
         print(f"Health test failed: {exc}", file=sys.stderr)
         return 1

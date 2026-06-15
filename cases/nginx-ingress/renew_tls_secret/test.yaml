@@ -112,6 +112,65 @@ preconditionUnits:
       - command: "kubectl -n demo wait --for=condition=ready pod/{{params.curl_pod_name}} --timeout=5s"
         timeout_sec: 30
 
+  # Additive TLS-fixture unit (Rule 4): when this case is chained after another
+  # nginx-ingress stage, the namespace already has a running curl-test pod, so
+  # the env-ready probe above passes and its destructive apply is skipped --
+  # which PRESERVES the accumulated cluster but leaves the TLS-specific fixtures
+  # (expired secret, test-ca, TLS ingress, openssl-toolbox, ca-mounted
+  # curl-test, /tmp/ingress_env) absent. This unit ensures ONLY those fixtures,
+  # idempotently and WITHOUT deleting the namespace or any prior-stage work. Its
+  # probe gates exactly on the expired-tls-secret, so on a fresh standalone run
+  # (where the env-ready apply already created everything) it simply skips.
+  - name: tls_fixture_ready
+    on_probe_fail: skip
+    probe:
+      - command: "kubectl -n demo get secret expired-tls-secret"
+        timeout_sec: 10
+    apply:
+      - command: "bash -c 'while [ -z \"$(kubectl get svc ingress-nginx-controller -n ingress-nginx -o jsonpath={.status.loadBalancer.ingress[0].ip} 2>/dev/null)\" ] && [ -z \"$(kubectl get svc ingress-nginx-controller -n ingress-nginx -o jsonpath=\"{.spec.ports[?(@.port==443)].nodePort}\" 2>/dev/null)\" ]; do echo \"Waiting for ingress-nginx LoadBalancer...\"; sleep 5; done; NODEPORT=$(kubectl get svc ingress-nginx-controller -n ingress-nginx -o jsonpath=\"{.spec.ports[?(@.port==443)].nodePort}\"); NODE_IP=$(kubectl get nodes -o jsonpath=\"{.items[0].status.addresses[?(@.type==InternalIP)].address}\"); echo \"INGRESS_NODE_IP=$NODE_IP\" > /tmp/ingress_env; echo \"INGRESS_HTTPS_PORT=$NODEPORT\" >> /tmp/ingress_env; echo \"export INGRESS_NODE_IP=$NODE_IP\" >> /tmp/ingress_env; echo \"export INGRESS_HTTPS_PORT=$NODEPORT\" >> /tmp/ingress_env'"
+        sleep: 5
+      - command: "kubectl -n demo apply -f cases/nginx-ingress/renew_tls_secret/resource/openssl-toolbox.yaml"
+        sleep: 2
+      - command: "kubectl -n demo wait --for=condition=Ready pod/openssl-toolbox --timeout=60s"
+        sleep: 1
+      - command: "kubectl -n demo cp cases/nginx-ingress/renew_tls_secret/resource/leaf.cnf openssl-toolbox:/tmp/leaf.cnf"
+        sleep: 1
+      - command: "kubectl -n demo cp cases/nginx-ingress/renew_tls_secret/resource/ca-ext.conf openssl-toolbox:/tmp/ca-ext.conf"
+        sleep: 1
+      - command: "kubectl -n demo apply -f cases/nginx-ingress/renew_tls_secret/resource/echo-server.yaml"
+        sleep: 3
+      - command: "openssl genrsa -out /tmp/test-ca.key 2048"
+        sleep: 1
+      - command: "openssl req -new -key /tmp/test-ca.key -subj /CN=Test\\ CA -out /tmp/test-ca.csr"
+        sleep: 1
+      - command: "openssl x509 -req -in /tmp/test-ca.csr -signkey /tmp/test-ca.key -set_serial 01 -extfile cases/nginx-ingress/renew_tls_secret/resource/ca-ext.conf -not_before 20190101000000Z -not_after 20360101000000Z -out /tmp/test-ca.crt"
+        sleep: 1
+      - command: "openssl genrsa -out /tmp/expired-tls.key 2048"
+        sleep: 1
+      - command: "openssl req -new -key /tmp/expired-tls.key -out /tmp/expired-tls.csr -config cases/nginx-ingress/renew_tls_secret/resource/leaf.cnf"
+        sleep: 1
+      - command: "openssl x509 -req -in /tmp/expired-tls.csr -CA /tmp/test-ca.crt -CAkey /tmp/test-ca.key -CAcreateserial -not_before 20200101000000Z -not_after 20200102000000Z -out /tmp/expired-tls.crt -extfile cases/nginx-ingress/renew_tls_secret/resource/leaf.cnf -extensions req_ext"
+        sleep: 1
+      - command: "kubectl -n demo create secret tls expired-tls-secret --cert=/tmp/expired-tls.crt --key=/tmp/expired-tls.key"
+        sleep: 1
+      - command: "/bin/sh -c 'kubectl -n demo get configmap test-ca >/dev/null 2>&1 || kubectl -n demo create configmap test-ca --from-file=ca.crt=/tmp/test-ca.crt'"
+        sleep: 1
+      - command: "kubectl -n demo apply -f cases/nginx-ingress/renew_tls_secret/resource/demo-ingress-expired.yaml"
+        sleep: 10
+      # Re-create the curl-test pod from THIS case's manifest so it carries the
+      # /tmp/tls/ca.crt mount the oracle needs; a curl-test left by a prior
+      # stage lacks that volume. This replaces only the ephemeral probe pod, not
+      # any accumulated cluster state.
+      - command: "kubectl -n demo delete pod curl-test --ignore-not-found=true --wait=true"
+        sleep: 1
+      - command: "kubectl -n demo apply -f cases/nginx-ingress/renew_tls_secret/resource/curl-test.yaml"
+        sleep: 3
+      - command: "kubectl -n demo wait --for=condition=Ready pod/{{params.curl_pod_name}} --timeout=60s"
+        sleep: 1
+    verify:
+      - command: "kubectl -n demo get secret expired-tls-secret"
+        timeout_sec: 15
+
 oracle:
   verify:
     commands:
