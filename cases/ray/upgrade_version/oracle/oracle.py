@@ -6,6 +6,7 @@ ready, and that Ray still reports the expected live node count.
 """
 from __future__ import annotations
 
+import os
 import sys
 import time
 from pathlib import Path
@@ -21,7 +22,10 @@ from common.oracle_lib import (  # noqa: E402
 NAMESPACE = "ray"
 HEAD = "ray-head"
 WORKER = "ray-worker"
-EXPECTED_IMAGE = "rayproject/ray:2.9.0"
+# Param-aware: a workflow can override to_image (the target upgrade image).
+# Read it from the env (default = the standalone value) so the oracle verifies
+# whatever version this stage upgraded to, not a baked-in tag.
+EXPECTED_IMAGE = os.environ.get("BENCH_PARAM_TO_IMAGE", "rayproject/ray:2.9.0") or "rayproject/ray:2.9.0"
 EXPECTED_WORKERS = 2
 
 CONNECTIVITY_TOTAL_TIMEOUT_SEC = 60

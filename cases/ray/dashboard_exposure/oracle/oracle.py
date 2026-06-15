@@ -6,6 +6,7 @@ endpoint returns HTTP 200 from inside the cluster.
 """
 from __future__ import annotations
 
+import os
 import sys
 from pathlib import Path
 
@@ -16,7 +17,10 @@ from common.oracle_lib import curl_dashboard_status, service_ports  # noqa: E402
 NAMESPACE = "ray"
 HEAD = "ray-head"
 CURL_POD = "curl-test"
-EXPECTED_PORT = 8265
+# Param-aware: a workflow can override dashboard_port. Read it from the env
+# (default = the standalone value 8265) so the oracle checks whichever port the
+# workflow asked the agent to expose.
+EXPECTED_PORT = int(os.environ.get("BENCH_PARAM_DASHBOARD_PORT", "8265") or "8265")
 
 
 def check_service_port() -> int:

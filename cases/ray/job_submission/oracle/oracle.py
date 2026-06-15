@@ -6,6 +6,7 @@ the cluster, exits 0, and prints the expected output.
 """
 from __future__ import annotations
 
+import os
 import sys
 from pathlib import Path
 
@@ -16,7 +17,10 @@ from common.oracle_lib import run  # noqa: E402
 NAMESPACE = "ray"
 CLIENT = "ray-client"
 JOB_PATH = "/opt/job.py"
-EXPECTED_OUTPUT = "pong"
+# Param-aware: a workflow can override expected_output. Read it from the env
+# (default = the standalone value "pong") so the oracle checks whichever string
+# the workflow told the agent to make the job print.
+EXPECTED_OUTPUT = os.environ.get("BENCH_PARAM_EXPECTED_OUTPUT", "pong") or "pong"
 
 
 def check_job() -> int:

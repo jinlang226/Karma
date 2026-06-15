@@ -6,6 +6,7 @@ the target replica count, and Ray reports the expected live node count.
 """
 from __future__ import annotations
 
+import os
 import sys
 import time
 from pathlib import Path
@@ -21,7 +22,12 @@ from common.oracle_lib import (  # noqa: E402
 NAMESPACE = "ray"
 HEAD = "ray-head"
 WORKER = "ray-worker"
-EXPECTED_WORKERS = 3
+# Param-aware: a workflow can override target_worker_replicas (e.g. a scale
+# sweep 1 -> 3 -> 5). Read this stage's live target from the env (default = the
+# standalone value 3) so the oracle verifies whatever this stage scaled to,
+# not a baked-in count. A non-solving agent still fails — the criterion is
+# unchanged, only WHICH count it checks is redirected.
+EXPECTED_WORKERS = int(os.environ.get("BENCH_PARAM_TARGET_WORKER_REPLICAS", "3") or "3")
 
 CONNECTIVITY_TOTAL_TIMEOUT_SEC = 60
 CONNECTIVITY_ATTEMPT_TIMEOUT_SEC = 12
