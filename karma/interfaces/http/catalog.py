@@ -19,7 +19,7 @@ import re
 import subprocess
 import time
 from pathlib import Path
-from typing import Any
+from typing import Any, Iterable
 
 # Short cache for the cluster probe so /api/services (polled by the UI banner)
 # does not shell out to kubectl on every request.
@@ -49,6 +49,23 @@ def _read_json(path: Path) -> dict[str, Any] | None:
     except Exception:
         return None
     return None
+
+
+def _mean_stage_judge_score(stages_dir: Path, stage_ids: Iterable[Any]) -> float | None:
+    """Mean of per-stage judge.json scores (0-100, 0.1 precision), or None.
+
+    The fallback when a run has no run-level judge.json: average each stage's
+    judge.json score, ignoring stages that have none. Returns None when no
+    stage has been judged.
+    """
+    scores: list[float] = []
+    for sid in stage_ids:
+        if not sid:
+            continue
+        jd = _read_json(stages_dir / str(sid) / "judge.json")
+        if jd and isinstance(jd.get("score"), (int, float)):
+            scores.append(float(jd["score"]))
+    return round(sum(scores) / len(scores), 1) if scores else None
 
 
 def list_services(resources_dir: Path) -> list[dict[str, Any]]:
@@ -237,14 +254,10 @@ def list_runs(runs_dir: Path) -> list[dict[str, Any]]:
             entry["judged"] = True
             entry["judge_score"] = round(float(run_judge["score"]), 1)
         elif stages_dir.exists():
-            scores: list[float] = []
-            for sid in stage_ids:
-                jd = _read_json(stages_dir / sid / "judge.json")
-                if jd and isinstance(jd.get("score"), (int, float)):
-                    scores.append(float(jd["score"]))
-            if scores:
+            mean = _mean_stage_judge_score(stages_dir, stage_ids)
+            if mean is not None:
                 entry["judged"] = True
-                entry["judge_score"] = round(sum(scores) / len(scores), 1)
+                entry["judge_score"] = mean
         runs.append(entry)
     return runs
 
@@ -365,16 +378,11 @@ def get_run_detail(runs_dir: Path, run_id: str) -> dict[str, Any]:
     else:
         stages_dir = run_dir / "stages"
         if stages_dir.exists():
-            scores: list[float] = []
-            for sid in (s.get("stage_id") for s in raw_stages):
-                if not sid:
-                    continue
-                jd = _read_json(stages_dir / str(sid) / "judge.json")
-                if jd and isinstance(jd.get("score"), (int, float)):
-                    scores.append(float(jd["score"]))
-            if scores:
+            mean = _mean_stage_judge_score(
+                stages_dir, (s.get("stage_id") for s in raw_stages))
+            if mean is not None:
                 detail["judged"] = True
-                detail["judge_score"] = round(sum(scores) / len(scores), 1)
+                detail["judge_score"] = mean
                 detail["score_max"] = 100.0
     return detail
 
