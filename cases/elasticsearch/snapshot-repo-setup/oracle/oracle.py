@@ -33,6 +33,18 @@ def _resolve_expected_nodes(default=3):
                 return int(val)
             except ValueError:
                 pass
+    # Authoritative inherited topology = the StatefulSet's desired replicas. A
+    # prior stage (e.g. safe-downscale) may have scaled the cluster down; read
+    # spec.replicas rather than a Ready-pod count because a downscaled single
+    # node is YELLOW and so fails its readiness probe (Ready=False) while still
+    # being a fully functional node -- a Ready count would undercount to 0 and
+    # wrongly fall back to the default.
+    sts = run(["kubectl", "-n", NAMESPACE, "get", "statefulset", CLUSTER_PREFIX,
+               "-o", "jsonpath={.spec.replicas}"])
+    if sts.returncode == 0 and sts.stdout.strip().isdigit():
+        desired = int(sts.stdout.strip())
+        if desired > 0:
+            return desired
     res = run(["kubectl", "-n", NAMESPACE, "get", "pods", "-l", f"app={CLUSTER_PREFIX}", "-o", "json"])
     if res.returncode == 0:
         try:
