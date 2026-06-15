@@ -1,8 +1,20 @@
 #!/usr/bin/env python3
+# Verify the agent deployed the cluster to the configured spec. The image
+# version (BENCH_PARAM_TO_VERSION) and per-pod storage size
+# (BENCH_PARAM_STORAGE_SIZE_GI) come from the case params, so a workflow that
+# overrides them is honored instead of a hardcoded value. Standalone (default
+# params) this behaves identically to the old hardcoded check.
 import json
 import math
+import os
 import subprocess
 import sys
+
+
+TO_VERSION = os.environ.get("BENCH_PARAM_TO_VERSION", "24.1.0")
+EXPECTED_IMAGE = f"cockroachdb/cockroach:v{TO_VERSION}"
+STORAGE_SIZE_GI = os.environ.get("BENCH_PARAM_STORAGE_SIZE_GI", "10")
+EXPECTED_STORAGE = f"{STORAGE_SIZE_GI}Gi"
 
 
 def run(cmd):
@@ -199,8 +211,8 @@ def main():
             errors.append("StatefulSet has no containers")
         else:
             image = container.get("image")
-            if image != "cockroachdb/cockroach:v24.1.0":
-                errors.append(f"StatefulSet image should be cockroachdb/cockroach:v24.1.0, got {image}")
+            if image != EXPECTED_IMAGE:
+                errors.append(f"StatefulSet image should be {EXPECTED_IMAGE}, got {image}")
             cmd_str = _container_command(container)
             if "--insecure" not in cmd_str:
                 errors.append("CockroachDB must run in insecure mode for this case")
@@ -238,10 +250,10 @@ def main():
                     .get("requests", {})
                     .get("storage")
                 )
-                if storage == "10Gi":
+                if storage == EXPECTED_STORAGE:
                     found_storage = True
             if not found_storage:
-                errors.append("StatefulSet volumeClaimTemplates must request 10Gi storage")
+                errors.append(f"StatefulSet volumeClaimTemplates must request {EXPECTED_STORAGE} storage")
 
         selector_labels = (
             sts.get("spec", {})

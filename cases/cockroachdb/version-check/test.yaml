@@ -53,15 +53,17 @@ preconditionUnits:
   - name: crdb_env_ready
     on_probe_fail: skip
     probe:
-      # Only skip setup when the cluster is already in the expected pre-upgrade
-      # state: logical version still {{params.from_version}} while the binary is
-      # being moved to {{params.to_version}}. A bare `SELECT 1` matched ANY
-      # running cluster, so a leftover finalized {{params.to_version}} cluster
-      # from a prior workflow stage skipped this setup and the oracle then saw
-      # version {{params.to_version}} instead of {{params.from_version}}. Probing
-      # the cluster version forces a clean redeploy when the leftover cluster is
-      # already finalized.
-      - command: "/bin/sh -c 'kubectl -n cockroachdb exec crdb-cluster-0 -- ./cockroach sql --insecure --format=tsv -e \"SHOW CLUSTER SETTING version;\" 2>/dev/null | grep -q {{params.from_version}}'"
+      # Non-destructive skip-if-running probe. The env PERSISTS across workflow
+      # stages: when a cockroachdb cluster is already serving SQL (inherited from
+      # a prior stage), skip the destructive apply so accumulated state is
+      # preserved. The apply (which deletes+recreates the namespace) runs ONLY on
+      # an empty namespace. NOTE: this case wants a logical-version
+      # v{{params.from_version}} (binary moved to {{params.to_version}}) base; if
+      # chained after a stage that already finalized the upgrade the recorded
+      # version differs — that is a workflow-ordering concern to be curated
+      # separately, NOT something to fix by redeploying and wiping inherited
+      # state.
+      - command: "kubectl -n cockroachdb exec crdb-cluster-0 -- ./cockroach sql --insecure -e 'SELECT 1;' 2>/dev/null"
         timeout_sec: 15
     apply:
       - command: "/bin/sh -c 'kubectl delete namespace cockroachdb --ignore-not-found=true; kubectl wait --for=delete namespace/cockroachdb --timeout=120s || true'"

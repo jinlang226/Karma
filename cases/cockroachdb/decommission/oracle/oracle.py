@@ -1,5 +1,11 @@
 #!/usr/bin/env python3
+# Verify the cluster was safely decommissioned to 3 nodes with the seeded data
+# preserved. The seeded table name comes from the case param
+# (BENCH_PARAM_SEED_TABLE_NAME), so a workflow that overrides it is honored
+# instead of a hardcoded value. Standalone (default param) this behaves
+# identically.
 import json
+import os
 import subprocess
 import sys
 
@@ -8,6 +14,7 @@ NAMESPACE = "cockroachdb"
 POD = "crdb-cluster-0"
 SQL_HOST = "crdb-cluster-0.crdb-cluster.cockroachdb.svc.cluster.local"
 TARGET_PODS = ["crdb-cluster-3", "crdb-cluster-4"]
+SEED_TABLE = os.environ.get("BENCH_PARAM_SEED_TABLE_NAME", "bench.decom_data")
 
 
 def run(cmd):
@@ -136,9 +143,9 @@ def main():
                     elif not target_states[pod]:
                         errors.append(f"{pod} is not decommissioned")
 
-    result = exec_sql("SELECT count(*) FROM bench.decom_data;", fmt="tsv")
+    result = exec_sql(f"SELECT count(*) FROM {SEED_TABLE};", fmt="tsv")
     if result.returncode != 0:
-        errors.append(result.stderr.strip() or "Failed to query bench.decom_data")
+        errors.append(result.stderr.strip() or f"Failed to query {SEED_TABLE}")
     else:
         header, rows = parse_tsv(result.stdout)
         if not rows:

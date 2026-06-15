@@ -1,11 +1,17 @@
 #!/usr/bin/env python3
+# Verify the rolling partitioned update landed on the configured target version.
+# The target version comes from the case param (BENCH_PARAM_TO_VERSION), so a
+# workflow that overrides to_version is honored instead of a hardcoded value.
+# Standalone (default param) this behaves identically to the old hardcoded check.
 import json
+import os
 import subprocess
 import sys
 
 
-TARGET_IMAGE = "cockroachdb/cockroach:v24.1.1"
-TARGET_VERSION = "v24.1.1"
+TO_VERSION = os.environ.get("BENCH_PARAM_TO_VERSION", "24.1.1")
+TARGET_IMAGE = f"cockroachdb/cockroach:v{TO_VERSION}"
+TARGET_VERSION = f"v{TO_VERSION}"
 
 
 def run(cmd):

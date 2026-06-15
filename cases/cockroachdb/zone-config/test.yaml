@@ -62,14 +62,15 @@ preconditionUnits:
   - name: crdb_env_ready
     on_probe_fail: skip
     probe:
-      # Only skip setup when THIS case's seeded tenant schemas already exist on
-      # an INSECURE cluster. A bare "any cockroachdb pod is Running" probe matched
-      # a leftover cluster from a prior workflow stage that lacks the seeded
-      # tenant_a/tenant_b tables (or was left in secure mode), so apply was
-      # skipped and the oracle then failed on the missing target tables. Requiring
-      # the seeded target schema via an --insecure query forces a clean redeploy.
-      - command: "/bin/sh -c 'kubectl -n cockroachdb exec crdb-cluster-0 -- ./cockroach sql --insecure --database=defaultdb -e \"SELECT count(*) FROM {{params.target_schema}}.table_c;\" 2>/dev/null'"
-        timeout_sec: 15
+      # Non-destructive skip-if-running probe. The env PERSISTS across workflow
+      # stages: when a cockroachdb cluster is already present (inherited from a
+      # prior stage), skip the destructive apply so accumulated state is
+      # preserved. The apply (which deletes+recreates the namespace) runs ONLY on
+      # an empty namespace. The seeded tenant schemas/tables this case's oracle
+      # needs are ensured ADDITIVELY by the crdb_zone_seed unit below, so an
+      # inherited cluster does not have to be wiped to get them.
+      - command: "kubectl -n cockroachdb get pods 2>/dev/null | grep -c Running"
+        timeout_sec: 10
     apply:
       - command: "/bin/sh -c 'kubectl delete namespace cockroachdb --ignore-not-found=true; kubectl wait --for=delete namespace/cockroachdb --timeout=120s || true'"
         sleep: 2
@@ -89,6 +90,25 @@ preconditionUnits:
         sleep: 2
     verify:
       - command: "kubectl -n cockroachdb exec crdb-cluster-0 -- ./cockroach sql --insecure -e 'SELECT 1;' 2>/dev/null"
+        timeout_sec: 15
+
+  # Additive fixture-ensure unit (Rule 4): the oracle needs the seeded tenant_a /
+  # tenant_b schemas+tables. Standalone, crdb_env_ready's apply seeds them. In a
+  # workflow crdb_env_ready's destructive apply is skipped (cluster inherited), so
+  # this unit ensures JUST the seed data idempotently WITHOUT deleting the
+  # namespace or touching the cluster. Its probe gates only on the target table:
+  # if it already exists, the seed is skipped. The seed auto-detects secure vs
+  # insecure mode so it works on an inherited secure cluster too.
+  - name: crdb_zone_seed
+    on_probe_fail: skip
+    probe:
+      - command: "/bin/sh -c 'flag=--insecure; kubectl -n cockroachdb exec crdb-cluster-0 -- ls /cockroach/cockroach-certs/ca.crt >/dev/null 2>&1 && flag=--certs-dir=/cockroach/cockroach-certs; kubectl -n cockroachdb exec crdb-cluster-0 -- ./cockroach sql $flag --database=defaultdb -e \"SELECT count(*) FROM {{params.target_schema}}.table_c;\" 2>/dev/null'"
+        timeout_sec: 15
+    apply:
+      - command: "/bin/sh -c 'flag=--insecure; kubectl -n cockroachdb exec crdb-cluster-0 -- ls /cockroach/cockroach-certs/ca.crt >/dev/null 2>&1 && flag=--certs-dir=/cockroach/cockroach-certs; kubectl -n cockroachdb exec crdb-cluster-0 -- ./cockroach sql $flag --database=defaultdb -e \"CREATE SCHEMA IF NOT EXISTS {{params.protected_schema}}; CREATE SCHEMA IF NOT EXISTS {{params.target_schema}}; CREATE TABLE IF NOT EXISTS {{params.protected_schema}}.table_a (id INT PRIMARY KEY, value STRING); CREATE TABLE IF NOT EXISTS {{params.protected_schema}}.table_b (id INT PRIMARY KEY, value STRING); CREATE TABLE IF NOT EXISTS {{params.target_schema}}.table_c (id INT PRIMARY KEY, value STRING); CREATE TABLE IF NOT EXISTS {{params.target_schema}}.table_d (id INT PRIMARY KEY, value STRING); INSERT INTO {{params.protected_schema}}.table_a VALUES (1, 47) ON CONFLICT DO NOTHING; INSERT INTO {{params.target_schema}}.table_c VALUES (1, 47) ON CONFLICT DO NOTHING; INSERT INTO {{params.target_schema}}.table_d VALUES (1, 47) ON CONFLICT DO NOTHING;\"'"
+        sleep: 2
+    verify:
+      - command: "/bin/sh -c 'flag=--insecure; kubectl -n cockroachdb exec crdb-cluster-0 -- ls /cockroach/cockroach-certs/ca.crt >/dev/null 2>&1 && flag=--certs-dir=/cockroach/cockroach-certs; kubectl -n cockroachdb exec crdb-cluster-0 -- ./cockroach sql $flag --database=defaultdb -e \"SELECT count(*) FROM {{params.target_schema}}.table_c;\" 2>/dev/null'"
         timeout_sec: 15
 
 oracle:

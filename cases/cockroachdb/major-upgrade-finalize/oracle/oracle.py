@@ -1,11 +1,19 @@
 #!/usr/bin/env python3
+# Verify the cluster was upgraded AND finalized to the configured target. The
+# target version comes from the case param (BENCH_PARAM_TO_VERSION): the pod
+# image must be that full version and the finalized logical cluster version must
+# be its major.minor. Standalone (default param) this behaves identically to the
+# old hardcoded check.
 import json
+import os
 import subprocess
 import sys
 
 
-TARGET_IMAGE = "cockroachdb/cockroach:v24.1.0"
-TARGET_VERSION = "24.1"
+TO_VERSION = os.environ.get("BENCH_PARAM_TO_VERSION", "24.1.0")
+TARGET_IMAGE = f"cockroachdb/cockroach:v{TO_VERSION}"
+# Logical cluster version is major.minor (e.g. "24.1" for binary "24.1.0").
+TARGET_VERSION = ".".join(TO_VERSION.split(".")[:2])
 
 
 def run(cmd):
