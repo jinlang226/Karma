@@ -17,6 +17,12 @@ params:
   curl_pod_name:
     default: curl-test
     description: Helper pod used to issue HTTP requests against the cluster.
+  elastic_password_secret_name:
+    default: elastic-password
+    description: Secret holding the elastic superuser password (ES 8.x security).
+  elastic_password_key:
+    default: password
+    description: Key within the password secret to read.
 
 deploy:
   on_probe_fail: error
@@ -25,32 +31,22 @@ deploy:
       timeout_sec: 10
   apply:
     - command: >-
-        kubectl -n {{params.namespace}} exec {{params.curl_pod_name}} --
-        curl -s -XPUT "http://{{params.http_service_name}}.{{params.namespace}}.svc:9200/_cluster/settings"
-        -H "Content-Type: application/json"
-        -d '{"persistent":{"cluster.routing.allocation.enable":"none"}}'
+        /bin/sh -c 'NS={{params.namespace}}; POD={{params.curl_pod_name}}; H={{params.http_service_name}}.{{params.namespace}}.svc:9200; PW=$(kubectl -n "$NS" get secret {{params.elastic_password_secret_name}} -o jsonpath="{.data.{{params.elastic_password_key}}}" | base64 -d); A=""; [ -n "$PW" ] && A="-u elastic:$PW"; S=https; kubectl -n "$NS" exec "$POD" -- curl -s -k -o /dev/null $A "https://$H/" || S=http; kubectl -n "$NS" exec "$POD" -- curl -s -k $A -XPUT "$S://$H/_cluster/settings" -H "Content-Type: application/json" -d "{\"persistent\":{\"cluster.routing.allocation.enable\":\"none\"}}"'
       timeout_sec: 20
   verify:
     - command: >-
-        /bin/sh -c "kubectl -n {{params.namespace}} exec {{params.curl_pod_name}} --
-        curl -s 'http://{{params.http_service_name}}.{{params.namespace}}.svc:9200/_cluster/settings'
-        | grep -q '\"enable\":\"none\"'"
+        /bin/sh -c 'NS={{params.namespace}}; POD={{params.curl_pod_name}}; H={{params.http_service_name}}.{{params.namespace}}.svc:9200; PW=$(kubectl -n "$NS" get secret {{params.elastic_password_secret_name}} -o jsonpath="{.data.{{params.elastic_password_key}}}" | base64 -d); A=""; [ -n "$PW" ] && A="-u elastic:$PW"; S=https; kubectl -n "$NS" exec "$POD" -- curl -s -k -o /dev/null $A "https://$H/" || S=http; kubectl -n "$NS" exec "$POD" -- curl -s -k $A "$S://$H/_cluster/settings" | grep -q "\"enable\":\"none\""'
       timeout_sec: 15
 
 lift:
   on_probe_fail: skip
   probe:
     - command: >-
-        /bin/sh -c "kubectl -n {{params.namespace}} exec {{params.curl_pod_name}} --
-        curl -s 'http://{{params.http_service_name}}.{{params.namespace}}.svc:9200/_cluster/settings'
-        | grep -q '\"enable\":\"none\"'"
+        /bin/sh -c 'NS={{params.namespace}}; POD={{params.curl_pod_name}}; H={{params.http_service_name}}.{{params.namespace}}.svc:9200; PW=$(kubectl -n "$NS" get secret {{params.elastic_password_secret_name}} -o jsonpath="{.data.{{params.elastic_password_key}}}" | base64 -d); A=""; [ -n "$PW" ] && A="-u elastic:$PW"; S=https; kubectl -n "$NS" exec "$POD" -- curl -s -k -o /dev/null $A "https://$H/" || S=http; kubectl -n "$NS" exec "$POD" -- curl -s -k $A "$S://$H/_cluster/settings" | grep -q "\"enable\":\"none\""'
       timeout_sec: 15
   apply:
     - command: >-
-        kubectl -n {{params.namespace}} exec {{params.curl_pod_name}} --
-        curl -s -XPUT "http://{{params.http_service_name}}.{{params.namespace}}.svc:9200/_cluster/settings"
-        -H "Content-Type: application/json"
-        -d '{"persistent":{"cluster.routing.allocation.enable":null}}'
+        /bin/sh -c 'NS={{params.namespace}}; POD={{params.curl_pod_name}}; H={{params.http_service_name}}.{{params.namespace}}.svc:9200; PW=$(kubectl -n "$NS" get secret {{params.elastic_password_secret_name}} -o jsonpath="{.data.{{params.elastic_password_key}}}" | base64 -d); A=""; [ -n "$PW" ] && A="-u elastic:$PW"; S=https; kubectl -n "$NS" exec "$POD" -- curl -s -k -o /dev/null $A "https://$H/" || S=http; kubectl -n "$NS" exec "$POD" -- curl -s -k $A -XPUT "$S://$H/_cluster/settings" -H "Content-Type: application/json" -d "{\"persistent\":{\"cluster.routing.allocation.enable\":null}}"'
       timeout_sec: 20
   verify:
     - command: "kubectl -n {{params.namespace}} get pod {{params.curl_pod_name}}"

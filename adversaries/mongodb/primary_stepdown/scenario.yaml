@@ -24,6 +24,12 @@ params:
   stepdown_secs:
     default: "60"
     description: Seconds the stepped-down member avoids being re-elected as primary.
+  admin_secret_name:
+    default: admin-user-password
+    description: Secret holding the admin user's password (key 'password').
+  admin_username:
+    default: admin-user
+    description: Replica-set admin user mongosh authenticates as.
 
 deploy:
   on_probe_fail: error
@@ -32,15 +38,11 @@ deploy:
       timeout_sec: 10
   apply:
     - command: >-
-        kubectl -n {{params.namespace}} exec {{params.primary_pod}} --
-        mongosh --quiet --eval "rs.stepDown({{params.stepdown_secs}})" || true
+        /bin/sh -c 'NS={{params.namespace}}; POD={{params.primary_pod}}; P=$(kubectl -n "$NS" get secret {{params.admin_secret_name}} -o jsonpath="{.data.password}" | base64 -d); T=""; for ca in /etc/tls/ca.crt /etc/mongo-ca/ca.crt /etc/mongodb/tls/ca.crt /etc/ssl/mongodb/ca.crt; do kubectl -n "$NS" exec "$POD" -- test -f "$ca" 2>/dev/null && { T="--tls --tlsAllowInvalidHostnames --tlsCAFile $ca"; break; }; done; kubectl -n "$NS" exec "$POD" -- mongosh --quiet $T -u "{{params.admin_username}}" -p "$P" --authenticationDatabase admin --eval "rs.stepDown({{params.stepdown_secs}})" || true'
       timeout_sec: 30
   verify:
     - command: >-
-        /bin/sh -c "for i in $(seq 1 12); do
-          kubectl -n {{params.namespace}} exec {{params.primary_pod}} --
-          mongosh --quiet --eval 'db.hello().isWritablePrimary' 2>/dev/null | grep -q false && exit 0;
-          sleep 5; done; exit 0"
+        /bin/sh -c 'NS={{params.namespace}}; POD={{params.primary_pod}}; P=$(kubectl -n "$NS" get secret {{params.admin_secret_name}} -o jsonpath="{.data.password}" | base64 -d); T=""; for ca in /etc/tls/ca.crt /etc/mongo-ca/ca.crt /etc/mongodb/tls/ca.crt /etc/ssl/mongodb/ca.crt; do kubectl -n "$NS" exec "$POD" -- test -f "$ca" 2>/dev/null && { T="--tls --tlsAllowInvalidHostnames --tlsCAFile $ca"; break; }; done; for i in $(seq 1 12); do kubectl -n "$NS" exec "$POD" -- mongosh --quiet $T -u "{{params.admin_username}}" -p "$P" --authenticationDatabase admin --eval "db.hello().isWritablePrimary" 2>/dev/null | grep -q false && exit 0; sleep 5; done; exit 0'
       timeout_sec: 90
 
 lift:
@@ -48,17 +50,11 @@ lift:
   on_probe_fail: skip
   probe:
     - command: >-
-        /bin/sh -c "! kubectl -n {{params.namespace}} get pods -l app=mongodb-replica
-        --field-selector=status.phase=Running -o name 2>/dev/null | head -1 | xargs -I{} kubectl -n {{params.namespace}} exec {} --
-        mongosh --quiet --eval 'db.hello().isWritablePrimary' 2>/dev/null | grep -q true"
+        /bin/sh -c 'NS={{params.namespace}}; P=$(kubectl -n "$NS" get secret {{params.admin_secret_name}} -o jsonpath="{.data.password}" | base64 -d); POD=$(kubectl -n "$NS" get pods -l app=mongodb-replica --field-selector=status.phase=Running -o name 2>/dev/null | head -1); [ -z "$POD" ] && exit 0; T=""; for ca in /etc/tls/ca.crt /etc/mongo-ca/ca.crt /etc/mongodb/tls/ca.crt /etc/ssl/mongodb/ca.crt; do kubectl -n "$NS" exec "$POD" -- test -f "$ca" 2>/dev/null && { T="--tls --tlsAllowInvalidHostnames --tlsCAFile $ca"; break; }; done; ! kubectl -n "$NS" exec "$POD" -- mongosh --quiet $T -u "{{params.admin_username}}" -p "$P" --authenticationDatabase admin --eval "db.hello().isWritablePrimary" 2>/dev/null | grep -q true'
       timeout_sec: 15
   apply:
     - command: >-
-        /bin/sh -c "for i in $(seq 1 12); do
-          for pod in mongodb-replica-0 mongodb-replica-1 mongodb-replica-2; do
-            kubectl -n {{params.namespace}} exec $pod --
-            mongosh --quiet --eval 'db.hello().isWritablePrimary' 2>/dev/null | grep -q true && exit 0
-          done; sleep 5; done; exit 0"
+        /bin/sh -c 'NS={{params.namespace}}; P=$(kubectl -n "$NS" get secret {{params.admin_secret_name}} -o jsonpath="{.data.password}" | base64 -d); for i in $(seq 1 12); do for pod in mongodb-replica-0 mongodb-replica-1 mongodb-replica-2; do T=""; for ca in /etc/tls/ca.crt /etc/mongo-ca/ca.crt /etc/mongodb/tls/ca.crt /etc/ssl/mongodb/ca.crt; do kubectl -n "$NS" exec "$pod" -- test -f "$ca" 2>/dev/null && { T="--tls --tlsAllowInvalidHostnames --tlsCAFile $ca"; break; }; done; kubectl -n "$NS" exec "$pod" -- mongosh --quiet $T -u "{{params.admin_username}}" -p "$P" --authenticationDatabase admin --eval "db.hello().isWritablePrimary" 2>/dev/null | grep -q true && exit 0; done; sleep 5; done; exit 0'
       timeout_sec: 90
   verify:
     - command: "kubectl -n {{params.namespace}} get pods -l app=mongodb-replica"
