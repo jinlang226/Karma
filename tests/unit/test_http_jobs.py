@@ -37,12 +37,12 @@ class TestTranslateUiRequest:
             "metadata:\n  id: inline-wf\n"
             "spec:\n  stages:\n    - id: s1\n      service: svc\n      case: c\n"
         )
-        with patch("karma.interfaces.http.jobs.normalize_workflow") as mock_norm:
-            mock_norm.return_value = {"stages": [{"id": "s1"}], "adversary": []}
+        with patch("karma.interfaces.http.jobs.parse_and_normalize_workflow") as mock_parse:
+            mock_parse.return_value = {"stages": [{"id": "s1"}], "adversary": []}
             wf = translate_ui_request(
                 {"workflow_yaml": yaml_str}, resources_dir=tmp_path
             )
-        mock_norm.assert_called_once()
+        mock_parse.assert_called_once()
 
     def test_raises_on_invalid_yaml(self, tmp_path):
         with pytest.raises(ValueError, match="YAML"):

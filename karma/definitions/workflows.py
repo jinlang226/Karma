@@ -231,6 +231,22 @@ def load_workflow_file(path: Path) -> dict[str, Any]:
     return data
 
 
+def parse_and_normalize_workflow(yaml_text: str, resources_dir: Path) -> dict[str, Any]:
+    """Parse workflow YAML *text* (not a path) and return the normalized dict.
+
+    The string-input counterpart to :func:`load_workflow_file`; used by the
+    HTTP layer for builder/import/preview flows. Raises ``ValueError`` when the
+    text is unparseable or is not a YAML object.
+    """
+    try:
+        raw = yaml.safe_load(yaml_text or "") or {}
+    except Exception as exc:
+        raise ValueError(f"failed to parse YAML: {exc}") from exc
+    if not isinstance(raw, dict):
+        raise ValueError("workflow must be a YAML object")
+    return normalize_workflow(raw, resources_dir=resources_dir)
+
+
 def normalize_workflow(
     raw: dict[str, Any],
     *,
