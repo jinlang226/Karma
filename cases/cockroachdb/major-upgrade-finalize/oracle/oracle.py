@@ -131,9 +131,15 @@ def main():
             if not containers:
                 errors.append(f"No containers found in pod {name}")
                 continue
-            image = containers[0].get("image")
-            if image != TARGET_IMAGE:
-                errors.append(f"Pod {name} image is {image}")
+            image = containers[0].get("image") or ""
+            # Accept any patch of the target MAJOR version (e.g. v24.1.1 for a 24.1
+            # finalize). A prior workflow upgrade stage or the agent may validly
+            # land on a different 24.1.x patch, and a major upgrade can't be
+            # downgraded to an exact patch. The logical-cluster-version finalize
+            # check below still enforces the major upgrade; only the patch is free.
+            img_majmin = ".".join(image.split(":")[-1].lstrip("v").split(".")[:2])
+            if img_majmin != TARGET_VERSION:
+                errors.append(f"Pod {name} image is {image} (expected v{TARGET_VERSION}.x)")
 
     cmd = [
         "kubectl",
