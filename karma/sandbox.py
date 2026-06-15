@@ -18,6 +18,7 @@ The public interface is :func:`launch_agent`, which returns an
 from __future__ import annotations
 
 import os
+import shlex
 import subprocess
 import time
 from pathlib import Path
@@ -211,30 +212,58 @@ def launch_agent(
         When the process or container cannot be started.
     """
     run_dir.mkdir(parents=True, exist_ok=True)
-    merged_env = {**os.environ, **env_vars}
-
     if sandbox_mode == "local":
-        log_path = run_dir / "agent.log"
-        if command_override:
-            # Per-run launch command (old --agent-cmd): run the given command
-            # line through the shell, replacing the registered entrypoint.
-            with log_path.open("w") as log_fh:
-                proc = subprocess.Popen(
-                    command_override, shell=True, env=merged_env,
-                    cwd=str(run_dir), stdout=log_fh, stderr=log_fh,
-                )
-            return AgentProcess(proc, sandbox_mode="local", run_dir=run_dir)
-        entrypoint = agent_meta.get("entrypoint") or "entrypoint.sh"
-        folder = agent_meta.get("folder")
-        cmd = [str(Path(folder) / entrypoint)] if folder else [entrypoint]
+        return _launch_local(
+            agent_meta, env_vars=env_vars, run_dir=run_dir,
+            command_override=command_override,
+        )
+    return _launch_docker(
+        agent_meta, env_vars=env_vars, run_dir=run_dir,
+        kubeconfig_path=kubeconfig_path, extra_mounts=extra_mounts,
+        command_override=command_override,
+    )
+
+
+def _launch_local(
+    agent_meta: dict[str, Any],
+    *,
+    env_vars: dict[str, str],
+    run_dir: Path,
+    command_override: str | None,
+) -> AgentProcess:
+    """Spawn the agent as a host subprocess (``sandbox_mode="local"``)."""
+    merged_env = {**os.environ, **env_vars}
+    log_path = run_dir / "agent.log"
+    if command_override:
+        # Per-run launch command (old --agent-cmd): run the given command
+        # line through the shell, replacing the registered entrypoint.
         with log_path.open("w") as log_fh:
             proc = subprocess.Popen(
-                cmd, env=merged_env, cwd=str(run_dir),
-                stdout=log_fh, stderr=log_fh,
+                command_override, shell=True, env=merged_env,
+                cwd=str(run_dir), stdout=log_fh, stderr=log_fh,
             )
         return AgentProcess(proc, sandbox_mode="local", run_dir=run_dir)
+    entrypoint = agent_meta.get("entrypoint") or "entrypoint.sh"
+    folder = agent_meta.get("folder")
+    cmd = [str(Path(folder) / entrypoint)] if folder else [entrypoint]
+    with log_path.open("w") as log_fh:
+        proc = subprocess.Popen(
+            cmd, env=merged_env, cwd=str(run_dir),
+            stdout=log_fh, stderr=log_fh,
+        )
+    return AgentProcess(proc, sandbox_mode="local", run_dir=run_dir)
 
-    # docker mode
+
+def _launch_docker(
+    agent_meta: dict[str, Any],
+    *,
+    env_vars: dict[str, str],
+    run_dir: Path,
+    kubeconfig_path: Path | None,
+    extra_mounts: list[tuple[Path, str]] | None,
+    command_override: str | None,
+) -> AgentProcess:
+    """Build/verify the image and start the agent container (``docker`` mode)."""
     image_tag = agent_meta.get("image_tag") or "karma-agent:latest"
     docker_cmd = ["docker", "run", "-d", "--rm"]
     for k, v in env_vars.items():
@@ -258,7 +287,6 @@ def launch_agent(
     docker_cmd.append(image_tag)
     if command_override:
         # Override the image's default command (old --agent-cmd, docker mode).
-        import shlex
         docker_cmd += shlex.split(command_override)
 
     # Fail with a clear message if the image is not built locally, rather than
