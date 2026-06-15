@@ -58,6 +58,35 @@ preconditionUnits:
       - command: "kubectl -n ray get pods 2>/dev/null | grep -c Running"
         timeout_sec: 10
 
+  # Additive fixture unit (Rule 4): the oracle execs `python /opt/job.py` inside
+  # ray-client. Standalone, ray_env_ready's apply provides the ray-job-script
+  # ConfigMap and a ray-client that mounts it at /opt/job.py. But in a workflow
+  # this case usually inherits a live cluster from a prior stage (deploy/scale/
+  # upgrade), whose ray-client pod does NOT mount the job script and whose apply
+  # is skipped here -- so /opt/job.py is missing and the oracle cannot run. This
+  # unit ensures JUST that fixture idempotently: it (re)creates the job-script
+  # ConfigMap and, if /opt/job.py is absent, recreates ONLY the throwaway
+  # ray-client client pod with the mount. It never touches the head/worker
+  # cluster state or the namespace. The probe gates on the script being present,
+  # so standalone (script already there) it is a harmless no-op.
+  - name: job_script_ready
+    on_probe_fail: skip
+    probe:
+      - command: "kubectl -n ray exec ray-client -- test -s /opt/job.py 2>/dev/null && echo present"
+        timeout_sec: 15
+    apply:
+      - command: "kubectl -n ray apply -f cases/ray/job_submission/resource/ray-job-script.yaml"
+        sleep: 1
+      - command: "kubectl -n ray delete pod ray-client --ignore-not-found=true --wait=true"
+        sleep: 1
+      - command: "kubectl -n ray apply -f cases/ray/job_submission/resource/ray-client.yaml"
+        sleep: 1
+      - command: "kubectl -n ray wait --for=condition=Ready pod/ray-client --timeout=60s"
+        sleep: 1
+    verify:
+      - command: "kubectl -n ray exec ray-client -- test -s /opt/job.py 2>/dev/null && echo present"
+        timeout_sec: 15
+
 oracle:
   verify:
     commands:

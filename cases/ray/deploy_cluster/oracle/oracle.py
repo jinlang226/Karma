@@ -6,6 +6,7 @@ deployments are ready, and the cluster reports the expected live node count.
 """
 from __future__ import annotations
 
+import os
 import sys
 import time
 from pathlib import Path
@@ -21,7 +22,10 @@ from common.oracle_lib import (  # noqa: E402
 NAMESPACE = "ray"
 HEAD = "ray-head"
 WORKER = "ray-worker"
-EXPECTED_WORKERS = 2
+# Param-aware: a workflow can override worker_replicas (deploy a cluster with
+# 1/2/3/5 workers). Read the requested count from the env (default = the
+# standalone value 2) so the oracle verifies the size the workflow asked for.
+EXPECTED_WORKERS = int(os.environ.get("BENCH_PARAM_WORKER_REPLICAS", "2") or "2")
 
 CONNECTIVITY_TOTAL_TIMEOUT_SEC = 60
 CONNECTIVITY_ATTEMPT_TIMEOUT_SEC = 12
