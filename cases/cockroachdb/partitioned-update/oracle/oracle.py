@@ -12,6 +12,9 @@ import sys
 TO_VERSION = os.environ.get("BENCH_PARAM_TO_VERSION", "24.1.1")
 TARGET_IMAGE = f"cockroachdb/cockroach:v{TO_VERSION}"
 TARGET_VERSION = f"v{TO_VERSION}"
+# Accept any patch of the target major.minor (e.g. v24.1.0 for a 24.1 cluster):
+# a prior workflow upgrade stage may leave the cluster on a different 24.1.x patch.
+TARGET_MAJMIN = ".".join(TO_VERSION.split(".")[:2])
 
 
 def run(cmd):
@@ -153,9 +156,9 @@ def main():
             if not containers:
                 errors.append(f"No containers found in pod {name}")
                 continue
-            image = containers[0].get("image")
-            if image != TARGET_IMAGE:
-                errors.append(f"Pod {name} image is {image}")
+            image = containers[0].get("image") or ""
+            if ".".join(image.split(":")[-1].lstrip("v").split(".")[:2]) != TARGET_MAJMIN:
+                errors.append(f"Pod {name} image is {image} (expected v{TARGET_MAJMIN}.x)")
 
     cmd = [
         "kubectl",
@@ -173,8 +176,8 @@ def main():
     result = run(cmd)
     if result.returncode != 0:
         errors.append(result.stderr.strip() or "SQL version check failed")
-    elif TARGET_VERSION not in result.stdout:
-        errors.append("SQL version does not match target")
+    elif f"v{TARGET_MAJMIN}." not in result.stdout:
+        errors.append(f"SQL version does not match target v{TARGET_MAJMIN}.x")
 
     cmd = [
         "kubectl",
