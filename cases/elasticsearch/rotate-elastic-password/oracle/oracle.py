@@ -1,16 +1,28 @@
 #!/usr/bin/env python3
 import base64
 import json
+import os
 import subprocess
 import sys
 
-NAMESPACE = "elasticsearch"
-SERVICE = "es-http"
-CURL_POD = "curl-test"
-SECRET_CURRENT = "elastic-password"
-SECRET_NEXT = "elastic-password-next"
+# Param-aware: a workflow may override the target/current secret names, the
+# auth-checker deployment, or the HTTP service via param_overrides. Defaults
+# equal the standalone hardcoded values, so standalone behaviour is unchanged.
+# This only redirects WHICH live objects are checked, never loosens the pass
+# criterion (old password must still fail, new must still succeed).
+NAMESPACE = os.environ.get("BENCH_NAMESPACE", "elasticsearch")
+SERVICE = os.environ.get("BENCH_PARAM_HTTP_SERVICE_NAME", "es-http")
+CURL_POD = os.environ.get("BENCH_PARAM_CURL_POD_NAME", "curl-test")
+SECRET_CURRENT = os.environ.get(
+    "BENCH_PARAM_CURRENT_PASSWORD_SECRET_NAME", "elastic-password"
+)
+SECRET_NEXT = os.environ.get(
+    "BENCH_PARAM_NEXT_PASSWORD_SECRET_NAME", "elastic-password-next"
+)
 CONFIG_OLD = "elastic-password-prev"
-AUTH_DEPLOY = "auth-checker"
+AUTH_DEPLOY = os.environ.get(
+    "BENCH_PARAM_AUTH_CHECKER_DEPLOYMENT_NAME", "auth-checker"
+)
 
 
 def run(cmd):

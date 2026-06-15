@@ -1,17 +1,23 @@
 #!/usr/bin/env python3
 import base64
 import json
+import os
 import subprocess
 import sys
 
-NAMESPACE = "elasticsearch"
-SERVICE = "es-http"
-SECRET = "es-file-realm-aggregate"
-OPS_USER = "ops-user"
-OPS_PASS = "opspass"
-REPORT_USER = "report-user"
-REPORT_PASS = "reportpass"
-INDEX = "app-data"
+# Param-aware: a workflow may override the file-realm users/passwords, the
+# aggregate secret name, the HTTP service, or the seed index via param_overrides
+# (e.g. custom-users-password-audit renames the users). Defaults equal the
+# standalone hardcoded values, so standalone behaviour is unchanged; this only
+# redirects WHICH live users/secret/index are verified, never loosens the check.
+NAMESPACE = os.environ.get("BENCH_NAMESPACE", "elasticsearch")
+SERVICE = os.environ.get("BENCH_PARAM_HTTP_SERVICE_NAME", "es-http")
+SECRET = os.environ.get("BENCH_PARAM_AGGREGATE_SECRET_NAME", "es-file-realm-aggregate")
+OPS_USER = os.environ.get("BENCH_PARAM_OPS_USER", "ops-user")
+OPS_PASS = os.environ.get("BENCH_PARAM_OPS_PASSWORD", "opspass")
+REPORT_USER = os.environ.get("BENCH_PARAM_REPORT_USER", "report-user")
+REPORT_PASS = os.environ.get("BENCH_PARAM_REPORT_PASSWORD", "reportpass")
+INDEX = os.environ.get("BENCH_PARAM_SEED_INDEX_NAME", "app-data")
 
 
 def run(cmd):
