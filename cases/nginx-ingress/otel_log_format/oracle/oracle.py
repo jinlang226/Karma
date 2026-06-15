@@ -38,9 +38,17 @@ def main():
             print(result.stderr.strip(), file=sys.stderr)
         return 1
 
+    # The request must reach a real backend (non-empty response), but the exact
+    # body text is NOT part of this case's criterion — it verifies the OTel log
+    # FORMAT, not the upstream's payload. Standalone the echo backend returns
+    # "hello"; in a workflow the persistence invariant means this stage inherits
+    # whatever backend a prior stage left (e.g. "otel-echo-ok"), and the
+    # precondition correctly skips redeploying it. Asserting a fixed string here
+    # would falsely fail that valid inherited state. The OTel trace/span/collector
+    # checks below are the unchanged, authoritative pass criterion.
     body = result.stdout.strip()
-    if body and body != "hello":
-        print(f"Unexpected response body: {body}", file=sys.stderr)
+    if not body:
+        print("Empty response body — request did not reach a backend", file=sys.stderr)
         return 1
 
     time.sleep(4)
