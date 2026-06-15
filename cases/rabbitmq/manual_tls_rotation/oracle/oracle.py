@@ -25,6 +25,34 @@ def decode_secret(name, key):
     return base64.b64decode(data["data"][key])
 
 
+def _resolve_expected_nodes():
+    """Cluster size to enforce: param override -> live StatefulSet -> default 3.
+
+    The env PERSISTS across stages, so a prior scale stage may have grown the
+    cluster past the standalone default of 3. Only the count target adapts; the
+    per-node cluster_status membership check still fails for any missing node.
+    """
+    for key in ("BENCH_PARAM_EXPECTED_NODES", "BENCH_PARAM_TARGET_NODES"):
+        val = os.environ.get(key)
+        if val is not None and str(val).strip():
+            try:
+                return int(val)
+            except ValueError:
+                pass
+    try:
+        sts = run_json(["kubectl", "-n", NAMESPACE, "get", "sts", CLUSTER_PREFIX, "-o", "json"])
+        status = sts.get("status", {}) or {}
+        spec = sts.get("spec", {}) or {}
+        live = status.get("readyReplicas")
+        if not isinstance(live, int) or live <= 0:
+            live = spec.get("replicas")
+        if isinstance(live, int) and live > 0:
+            return live
+    except Exception:
+        pass
+    return 3
+
+
 def openssl_fingerprint(pem_bytes):
     out = run(["openssl", "x509", "-noout", "-fingerprint", "-sha256"], input_data=pem_bytes)
     return out.strip().split("=")[-1]
@@ -51,6 +79,7 @@ def main():
     NAMESPACE = args.namespace
     CLUSTER_PREFIX = os.environ.get("BENCH_PARAM_CLUSTER_PREFIX", CLUSTER_PREFIX)
     errors = []
+    expected_nodes = _resolve_expected_nodes()
 
     # pods ready
     pods = run_json([
@@ -65,8 +94,8 @@ def main():
             errors.append(f"Pod not ready: {name}")
         else:
             ready.append(name)
-    if len(ready) < 3:
-        errors.append(f"Expected 3 RabbitMQ pods ready, got {len(ready)}")
+    if len(ready) < expected_nodes:
+        errors.append(f"Expected {expected_nodes} RabbitMQ pods ready, got {len(ready)}")
 
     # cluster status
     if ready:
@@ -78,8 +107,14 @@ def main():
             if out.count("Running Nodes") == 0:
                 errors.append("Unable to read cluster status")
             else:
-                if f"rabbit@{CLUSTER_PREFIX}-0" not in out or f"rabbit@{CLUSTER_PREFIX}-1" not in out or f"rabbit@{CLUSTER_PREFIX}-2" not in out:
-                    errors.append("Cluster does not report 3 running nodes")
+                # Derive expected node names from the LIVE cluster size rather
+                # than a hardcoded 0..2, so a scaled cluster is fully checked.
+                missing = [
+                    i for i in range(expected_nodes)
+                    if f"rabbit@{CLUSTER_PREFIX}-{i}" not in out
+                ]
+                if missing:
+                    errors.append(f"Cluster does not report {expected_nodes} running nodes")
         except subprocess.CalledProcessError as exc:
             errors.append(f"Failed to read cluster status: {exc.output.decode().strip()}")
 

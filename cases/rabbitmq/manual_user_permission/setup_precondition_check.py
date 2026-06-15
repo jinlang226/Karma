@@ -63,6 +63,52 @@ def _is_intentionally_broken_configure(configure_value):
     return configure_value in ("", '""', "^$", '"^$"')
 
 
+def _has_any_permission(perm):
+    """True if a parsed permission row grants any configure/write/read access."""
+    if not perm:
+        return False
+    for value in (perm.get("configure", ""), perm.get("write", ""), perm.get("read", "")):
+        if value not in ("", '""', "^$", '"^$"'):
+            return True
+    return False
+
+
+def _check_ops_scenario(ns, cluster_prefix, errors):
+    """Verify the ops-user mis-permission scenario is planted on the cluster.
+
+    The setup-job intentionally grants ops-user permissions on /app (the wrong
+    vhost) and leaves ops-user WITHOUT access on /ops, so ops-client crashes.
+    This gate makes the ``setup_job_completed`` probe fail whenever an inherited
+    cluster is already in a healthy/fixed state, so the idempotent setup-job
+    re-establishes the scenario additively (no namespace/cluster reset).
+    """
+    try:
+        app_perms = _parse_permissions_table(
+            run([
+                "kubectl", "-n", ns, "exec", f"{cluster_prefix}-0", "--",
+                "rabbitmqctl", "-q", "list_permissions", "-p", "/app",
+            ])
+        )
+    except Exception as exc:
+        errors.append(f"failed to inspect /app permissions for ops-user: {exc}")
+        return
+    if not _has_any_permission(app_perms.get("ops-user")):
+        errors.append("ops-user mis-grant on /app is not planted")
+
+    try:
+        ops_perms = _parse_permissions_table(
+            run([
+                "kubectl", "-n", ns, "exec", f"{cluster_prefix}-0", "--",
+                "rabbitmqctl", "-q", "list_permissions", "-p", "/ops",
+            ])
+        )
+    except Exception as exc:
+        errors.append(f"failed to inspect /ops permissions for ops-user: {exc}")
+        return
+    if _has_any_permission(ops_perms.get("ops-user")):
+        errors.append("ops-user already has access on /ops (scenario not broken)")
+
+
 def _deployment_expected_broken(namespace, label, errors):
     pods = list_pods(namespace, label=label)
     if not pods:
@@ -193,6 +239,11 @@ def main():
             )
     except Exception as exc:
         errors.append(f"failed to inspect /app permissions: {exc}")
+
+    # Gate the setup-job on the ops-user scenario too: if an inherited cluster
+    # left ops-user healthy (access on /ops, no /app mis-grant), the bootstrap
+    # probe must fail so the idempotent setup-job re-plants the broken scenario.
+    _check_ops_scenario(ns, cluster_prefix, errors)
 
     if args.bootstrap_only:
         if errors:
