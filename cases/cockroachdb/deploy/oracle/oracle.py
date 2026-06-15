@@ -15,6 +15,16 @@ TO_VERSION = os.environ.get("BENCH_PARAM_TO_VERSION", "24.1.0")
 EXPECTED_IMAGE = f"cockroachdb/cockroach:v{TO_VERSION}"
 STORAGE_SIZE_GI = os.environ.get("BENCH_PARAM_STORAGE_SIZE_GI", "10")
 EXPECTED_STORAGE = f"{STORAGE_SIZE_GI}Gi"
+# Replica count the agent must deploy. This is the TASK OUTCOME being verified,
+# so it must NOT be read from the live cluster (that would make the count check
+# vacuous). It comes from an explicit param override (a workflow that asks for a
+# different size is honored) and otherwise defaults to the old hardcoded 3.
+# Standalone this behaves identically.
+EXPECTED_REPLICAS = int(
+    os.environ.get("BENCH_PARAM_EXPECTED_REPLICAS")
+    or os.environ.get("BENCH_PARAM_REPLICA_COUNT")
+    or "3"
+)
 
 
 def run(cmd):
@@ -177,13 +187,13 @@ def main():
     sts, err = kubectl_json(["get", "statefulset", "crdb-cluster"])
     selector_labels = {}
     pod_labels = {}
-    replicas = 3
+    replicas = EXPECTED_REPLICAS
     if err:
         errors.append(f"StatefulSet 'crdb-cluster' not found: {err}")
     else:
         replicas = sts.get("spec", {}).get("replicas")
-        if replicas != 3:
-            errors.append(f"StatefulSet should have 3 replicas, got {replicas}")
+        if replicas != EXPECTED_REPLICAS:
+            errors.append(f"StatefulSet should have {EXPECTED_REPLICAS} replicas, got {replicas}")
         service_name = sts.get("spec", {}).get("serviceName")
         if service_name != "crdb-cluster":
             errors.append(f"StatefulSet serviceName should be 'crdb-cluster', got {service_name}")
@@ -230,13 +240,11 @@ def main():
                 errors.append("CockroachDB advertise host should use the pod's stable identity")
 
             required_nodes = [
-                "crdb-cluster-0.crdb-cluster",
-                "crdb-cluster-1.crdb-cluster",
-                "crdb-cluster-2.crdb-cluster",
+                f"crdb-cluster-{i}.crdb-cluster" for i in range(EXPECTED_REPLICAS)
             ]
             missing_nodes = [node for node in required_nodes if node not in cmd_str]
             if missing_nodes:
-                errors.append("CockroachDB join list must include all 3 nodes")
+                errors.append(f"CockroachDB join list must include all {EXPECTED_REPLICAS} nodes")
 
         vclaim_templates = sts.get("spec", {}).get("volumeClaimTemplates", []) or []
         if not vclaim_templates:
@@ -289,11 +297,11 @@ def main():
             errors.append(f"Failed to list pods: {err}")
         else:
             items = pods.get("items") or []
-            if len(items) < 3:
-                errors.append(f"Expected 3 pods, found {len(items)}")
+            if len(items) < EXPECTED_REPLICAS:
+                errors.append(f"Expected {EXPECTED_REPLICAS} pods, found {len(items)}")
             ready_count = sum(1 for pod in items if _pod_ready(pod))
-            if ready_count < 3:
-                errors.append(f"Expected 3 ready pods, found {ready_count}")
+            if ready_count < EXPECTED_REPLICAS:
+                errors.append(f"Expected {EXPECTED_REPLICAS} ready pods, found {ready_count}")
 
     endpoints, err = kubectl_json(["get", "endpoints", "crdb-cluster"])
     if err:
@@ -302,11 +310,11 @@ def main():
         addresses = 0
         for subset in endpoints.get("subsets") or []:
             addresses += len(subset.get("addresses") or [])
-        if addresses < 3:
-            errors.append(f"Expected 3 endpoints, found {addresses}")
+        if addresses < EXPECTED_REPLICAS:
+            errors.append(f"Expected {EXPECTED_REPLICAS} endpoints, found {addresses}")
 
     if pod_labels:
-        _check_quorum_budget(pod_labels, replicas or 3, errors)
+        _check_quorum_budget(pod_labels, replicas or EXPECTED_REPLICAS, errors)
 
     _check_crdbcluster_absent(errors)
 

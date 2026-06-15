@@ -23,6 +23,34 @@ def run(cmd):
     return subprocess.run(cmd, text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
 
 
+_CONN_FLAG = None
+
+
+def conn_flag():
+    """Return the right cockroach SQL connection flag for the live cluster.
+
+    Standalone this case runs against an INSECURE cluster (`--insecure`). But in
+    a workflow this stage can inherit a SECURE cluster left running by a prior
+    stage (e.g. certificate-rotation), whose precondition probe sees pods already
+    Running and skips its own insecure redeploy. A hardcoded `--insecure` then
+    fails with an SSL authentication error. Detect the mode once by checking for
+    the mounted certs dir and connect accordingly so the same oracle works in
+    both contexts. Mirrors cockroachdb/cluster-settings/oracle/oracle.py.
+    """
+    global _CONN_FLAG
+    if _CONN_FLAG is not None:
+        return _CONN_FLAG
+    probe = run([
+        "kubectl", "-n", "cockroachdb", "--request-timeout=15s", "exec",
+        "crdb-cluster-0", "--", "ls", "/cockroach/cockroach-certs/ca.crt",
+    ])
+    if probe.returncode == 0:
+        _CONN_FLAG = "--certs-dir=/cockroach/cockroach-certs"
+    else:
+        _CONN_FLAG = "--insecure"
+    return _CONN_FLAG
+
+
 def tsv_last_value(output):
     lines = [line.strip() for line in output.splitlines() if line.strip()]
     if not lines:
@@ -64,7 +92,7 @@ def main():
         "--",
         "./cockroach",
         "sql",
-        "--insecure",
+        conn_flag(),
         "--format=tsv",
         "-e",
         "SHOW CLUSTER SETTING version;",
@@ -88,7 +116,7 @@ def main():
         "--",
         "./cockroach",
         "sql",
-        "--insecure",
+        conn_flag(),
         "--format=tsv",
         "-e",
         "SHOW CLUSTER SETTING cluster.preserve_downgrade_option;",
@@ -111,7 +139,7 @@ def main():
         "--",
         "./cockroach",
         "sql",
-        "--insecure",
+        conn_flag(),
         "--format=tsv",
         "-e",
         "SELECT version();",

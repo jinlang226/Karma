@@ -23,6 +23,35 @@ def run(cmd, timeout=None):
     )
 
 
+_CONN_FLAG = None
+
+
+def conn_flag():
+    """Return the right cockroach SQL connection flag for the live cluster.
+
+    Standalone this case runs against an INSECURE cluster (`--insecure`). But in
+    a workflow this stage can inherit a SECURE cluster left running by a prior
+    stage (e.g. certificate-rotation), whose precondition probe sees pods already
+    Running and skips its own insecure redeploy. A hardcoded `--insecure` then
+    fails with "node is running secure mode, SSL connection required". Detect the
+    mode once by checking for the mounted certs dir and connect accordingly so
+    the same oracle works in both contexts. Mirrors
+    cockroachdb/cluster-settings/oracle/oracle.py.
+    """
+    global _CONN_FLAG
+    if _CONN_FLAG is not None:
+        return _CONN_FLAG
+    probe = run([
+        "kubectl", "-n", "cockroachdb", "--request-timeout=15s", "exec",
+        "crdb-cluster-0", "--", "ls", "/cockroach/cockroach-certs/ca.crt",
+    ])
+    if probe.returncode == 0:
+        _CONN_FLAG = "--certs-dir=/cockroach/cockroach-certs"
+    else:
+        _CONN_FLAG = "--insecure"
+    return _CONN_FLAG
+
+
 def exec_with_timeout(cmd, timeout_seconds):
     try:
         return run(cmd, timeout=timeout_seconds), None
@@ -56,7 +85,7 @@ def main(timeout_seconds):
     # Check if cluster is initialized by running node status
     cmd = [
         "kubectl", "-n", "cockroachdb", "exec", "crdb-cluster-0", "--",
-        "./cockroach", "node", "status", "--insecure"
+        "./cockroach", "node", "status", conn_flag()
     ]
     result, err = exec_with_timeout(cmd, timeout_seconds)
     if err:
@@ -75,7 +104,7 @@ def main(timeout_seconds):
     # Test SQL connectivity
     cmd = [
         "kubectl", "-n", "cockroachdb", "exec", "crdb-cluster-0", "--",
-        "./cockroach", "sql", "--insecure", "-e", "SELECT 1;"
+        "./cockroach", "sql", conn_flag(), "-e", "SELECT 1;"
     ]
     result, err = exec_with_timeout(cmd, timeout_seconds)
     if err:
@@ -118,7 +147,7 @@ def main(timeout_seconds):
             print(f"  - {error}", file=sys.stderr)
         return 1
     
-    print("Cluster initialized successfully - all 3 nodes are alive and accepting SQL connections")
+    print(f"Cluster initialized successfully - all {REPLICA_COUNT} nodes are alive and accepting SQL connections")
     return 0
 
 

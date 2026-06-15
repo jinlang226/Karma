@@ -13,12 +13,60 @@ import sys
 NAMESPACE = "cockroachdb"
 POD = "crdb-cluster-0"
 SQL_HOST = "crdb-cluster-0.crdb-cluster.cockroachdb.svc.cluster.local"
-TARGET_PODS = ["crdb-cluster-3", "crdb-cluster-4"]
 SEED_TABLE = os.environ.get("BENCH_PARAM_SEED_TABLE_NAME", "bench.decom_data")
+
+# Final node count the cluster must be decommissioned down to. This is the TASK
+# OUTCOME (the agent reduces a 5-node cluster to this many), so it must NOT be
+# read from the live cluster — that would make the count check vacuous. It comes
+# from an explicit param override (a workflow that seeds/targets a different size
+# is honored) and otherwise defaults to the old hardcoded 3. Standalone this
+# behaves identically.
+TARGET_NODES = int(
+    os.environ.get("BENCH_PARAM_TARGET_NODES")
+    or os.environ.get("BENCH_PARAM_EXPECTED_NODES")
+    or "3"
+)
+# The pods expected to be removed are every ordinal at/above the target. With a
+# 5-node start and target 3 this is crdb-cluster-{3,4}, matching the old check;
+# a larger source (param override) extends the set generically.
+SOURCE_NODES = int(
+    os.environ.get("BENCH_PARAM_SOURCE_NODES")
+    or os.environ.get("BENCH_PARAM_SEED_NODE_COUNT")
+    or "5"
+)
+TARGET_PODS = [f"crdb-cluster-{i}" for i in range(TARGET_NODES, SOURCE_NODES)]
 
 
 def run(cmd):
     return subprocess.run(cmd, text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+
+
+_CONN_FLAG = None
+
+
+def conn_flag():
+    """Return the right cockroach SQL connection flag for the live cluster.
+
+    Standalone this case runs against an INSECURE cluster (`--insecure`). But in
+    a workflow this stage can inherit a SECURE cluster left running by a prior
+    stage (e.g. certificate-rotation), whose precondition probe sees pods already
+    Running and skips its own insecure redeploy. A hardcoded `--insecure` then
+    fails with an SSL authentication error. Detect the mode once by checking for
+    the mounted certs dir and connect accordingly so the same oracle works in
+    both contexts. Mirrors cockroachdb/cluster-settings/oracle/oracle.py.
+    """
+    global _CONN_FLAG
+    if _CONN_FLAG is not None:
+        return _CONN_FLAG
+    probe = run([
+        "kubectl", "-n", NAMESPACE, "--request-timeout=15s", "exec", POD, "--",
+        "ls", "/cockroach/cockroach-certs/ca.crt",
+    ])
+    if probe.returncode == 0:
+        _CONN_FLAG = "--certs-dir=/cockroach/cockroach-certs"
+    else:
+        _CONN_FLAG = "--insecure"
+    return _CONN_FLAG
 
 
 def exec_sql(sql, fmt=None):
@@ -31,7 +79,7 @@ def exec_sql(sql, fmt=None):
         "--",
         "./cockroach",
         "sql",
-        "--insecure",
+        conn_flag(),
         f"--host={SQL_HOST}",
     ]
     if fmt:
@@ -63,10 +111,10 @@ def main():
             sts = json.loads(result.stdout)
             replicas = sts.get("spec", {}).get("replicas", 0)
             ready = sts.get("status", {}).get("readyReplicas", 0)
-            if replicas != 3:
-                errors.append(f"StatefulSet should have 3 replicas, got {replicas}")
-            if ready < 3:
-                errors.append(f"StatefulSet readyReplicas should be 3, got {ready}")
+            if replicas != TARGET_NODES:
+                errors.append(f"StatefulSet should have {TARGET_NODES} replicas, got {replicas}")
+            if ready < TARGET_NODES:
+                errors.append(f"StatefulSet readyReplicas should be {TARGET_NODES}, got {ready}")
         except json.JSONDecodeError:
             errors.append("Failed to parse StatefulSet JSON")
     else:
@@ -82,7 +130,7 @@ def main():
         "./cockroach",
         "node",
         "status",
-        "--insecure",
+        conn_flag(),
         "--decommission",
         "--format=tsv",
     ]
@@ -135,8 +183,8 @@ def main():
                     for pod in TARGET_PODS:
                         if pod in address:
                             target_states[pod] = is_decommissioned
-                if live_active != 3:
-                    errors.append(f"Expected 3 live nodes, found {live_active}")
+                if live_active != TARGET_NODES:
+                    errors.append(f"Expected {TARGET_NODES} live nodes, found {live_active}")
                 for pod in TARGET_PODS:
                     if pod not in target_states:
                         errors.append(f"Missing node status for {pod}")

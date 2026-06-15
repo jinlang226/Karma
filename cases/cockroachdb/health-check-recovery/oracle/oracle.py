@@ -1,11 +1,76 @@
 #!/usr/bin/env python3
 import json
+import os
 import subprocess
 import sys
 
 
 def run(cmd):
     return subprocess.run(cmd, text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+
+
+_EXPECTED_NODES = None
+
+
+def expected_nodes():
+    """Resolve how many live nodes the cluster should have.
+
+    This stage RECOVERS an inherited cluster; it does not change topology, so the
+    expected count adapts to whatever was inherited: an explicit param override
+    (BENCH_PARAM_EXPECTED_NODES / _REPLICA_COUNT) wins, else the live
+    StatefulSet's DESIRED size (spec.replicas), else the old hardcoded 3. Using
+    the desired size (not readyReplicas) keeps the check honest — if a node fails
+    to recover, live_nodes < spec.replicas still fails. Cached.
+    """
+    global _EXPECTED_NODES
+    if _EXPECTED_NODES is not None:
+        return _EXPECTED_NODES
+    override = (
+        os.environ.get("BENCH_PARAM_EXPECTED_NODES")
+        or os.environ.get("BENCH_PARAM_REPLICA_COUNT")
+    )
+    if override and override.strip().isdigit():
+        _EXPECTED_NODES = int(override)
+        return _EXPECTED_NODES
+    result = run([
+        "kubectl", "-n", "cockroachdb", "get", "statefulset", "crdb-cluster",
+        "-o", "jsonpath={.spec.replicas}",
+    ])
+    if result.returncode == 0 and result.stdout.strip().isdigit():
+        live = int(result.stdout.strip())
+        if live > 0:
+            _EXPECTED_NODES = live
+            return _EXPECTED_NODES
+    _EXPECTED_NODES = 3
+    return _EXPECTED_NODES
+
+
+_CONN_FLAG = None
+
+
+def conn_flag():
+    """Return the right cockroach SQL connection flag for the live cluster.
+
+    Standalone this case runs against an INSECURE cluster (`--insecure`). But in
+    a workflow this stage can inherit a SECURE cluster left running by a prior
+    stage (e.g. certificate-rotation), whose precondition probe sees pods already
+    Running and skips its own insecure redeploy. A hardcoded `--insecure` then
+    fails with an SSL authentication error. Detect the mode once by checking for
+    the mounted certs dir and connect accordingly so the same oracle works in
+    both contexts. Mirrors cockroachdb/cluster-settings/oracle/oracle.py.
+    """
+    global _CONN_FLAG
+    if _CONN_FLAG is not None:
+        return _CONN_FLAG
+    probe = run([
+        "kubectl", "-n", "cockroachdb", "--request-timeout=15s", "exec",
+        "crdb-cluster-0", "--", "ls", "/cockroach/cockroach-certs/ca.crt",
+    ])
+    if probe.returncode == 0:
+        _CONN_FLAG = "--certs-dir=/cockroach/cockroach-certs"
+    else:
+        _CONN_FLAG = "--insecure"
+    return _CONN_FLAG
 
 
 def parse_tsv(output):
@@ -52,7 +117,7 @@ def main():
         "./cockroach",
         "node",
         "status",
-        "--insecure",
+        conn_flag(),
         "--format=tsv",
     ]
     result = run(cmd)
@@ -74,8 +139,8 @@ def main():
                         continue
                     if to_bool(row[live_idx]):
                         live_nodes += 1
-                if live_nodes != 3:
-                    errors.append(f"Expected 3 live nodes, found {live_nodes}")
+                if live_nodes != expected_nodes():
+                    errors.append(f"Expected {expected_nodes()} live nodes, found {live_nodes}")
 
     # Verify SQL readiness
     cmd = [
@@ -87,7 +152,7 @@ def main():
         "--",
         "./cockroach",
         "sql",
-        "--insecure",
+        conn_flag(),
         "-e",
         "SELECT 1;",
     ]
