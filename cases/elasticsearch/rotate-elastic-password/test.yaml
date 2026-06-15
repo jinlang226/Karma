@@ -120,6 +120,25 @@ preconditionUnits:
       - command: "kubectl -n elasticsearch get pods 2>/dev/null | grep -c Running"
         timeout_sec: 10
 
+  # Additive fixture unit (Rule 4): in a workflow the destructive env apply above
+  # is skipped on an already-running cluster, so when next_password_secret_name is
+  # overridden (e.g. elastic-password-v2/v3 in the password-rotation sweeps) the
+  # target "new password" secret the agent must rotate to does not exist. Ensure
+  # it idempotently WITHOUT touching the cluster/namespace. The probe gates only
+  # this secret; standalone (where the env apply already created
+  # elastic-password-next) the probe passes and this unit is skipped.
+  - name: es_next_password_secret_fixture
+    on_probe_fail: skip
+    probe:
+      - command: "kubectl -n elasticsearch get secret {{params.next_password_secret_name}} >/dev/null 2>&1 && echo present"
+        timeout_sec: 10
+    apply:
+      - command: "/bin/sh -c 'kubectl -n elasticsearch create secret generic {{params.next_password_secret_name}} --from-literal=password=elasticpass-{{params.next_password_secret_name}} --dry-run=client -o yaml | kubectl apply -f -'"
+        sleep: 1
+    verify:
+      - command: "kubectl -n elasticsearch get secret {{params.next_password_secret_name}} >/dev/null 2>&1 && echo present"
+        timeout_sec: 10
+
 oracle:
   verify:
     commands:
