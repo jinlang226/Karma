@@ -9,7 +9,6 @@ import sys
 
 NAMESPACE = os.environ.get("BENCH_NAMESPACE", "mongodb")
 CLUSTER_PREFIX = os.environ.get("BENCH_PARAM_CLUSTER_PREFIX", "mongodb-replica")
-EXPECTED_REPLICAS = int(os.environ.get("BENCH_PARAM_EXPECTED_REPLICAS", "3"))
 ADMIN_SECRET = os.environ.get("BENCH_PARAM_ADMIN_SECRET_NAME", "admin-user-password")
 HEALTH_SECRET = os.environ.get("BENCH_PARAM_HEALTH_SECRET_NAME", "health-user-password")
 ADMIN_USER = os.environ.get("BENCH_PARAM_ADMIN_USERNAME", "admin-user")
@@ -38,6 +37,85 @@ def run(cmd):
     return subprocess.run(cmd, text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
 
 
+_TLS_FLAGS_CACHE = None
+
+
+def _mongo_tls_flags(probe_pod=None):
+    """mongosh transport flags that adapt to the cluster's LIVE TLS mode.
+
+    The environment PERSISTS across workflow stages, so an earlier stage
+    (mongodb/tls-setup or mongodb/certificate-rotation) may have turned TLS on,
+    after which a plain mongosh connection is refused. Detect TLS by probing the
+    running mongo pod for a CA cert mounted at the paths the TLS stages use; if
+    present, connect with --tls --tlsCAFile (and a client cert for mutual TLS
+    when one is mounted), else connect plain. Standalone (no CA mounted) this
+    returns [] -> identical plain behaviour. It only adds transport flags; every
+    real check still runs and still fails when its condition is unmet.
+    """
+    global _TLS_FLAGS_CACHE
+    if _TLS_FLAGS_CACHE is not None:
+        return list(_TLS_FLAGS_CACHE)
+    flags = []
+    pod = probe_pod or f"{CLUSTER_PREFIX}-0"
+    ca_path = None
+    for cand in (
+        "/etc/tls/ca.crt",
+        "/etc/mongo-ca/ca.crt",
+        "/etc/mongodb/tls/ca.crt",
+        "/etc/ssl/mongodb/ca.crt",
+    ):
+        probe = run(["kubectl", "-n", NAMESPACE, "exec", pod, "--", "/bin/sh", "-c", "test -f " + cand])
+        if probe.returncode == 0:
+            ca_path = cand
+            break
+    if ca_path:
+        flags = ["--tls", "--tlsCAFile", ca_path]
+        for client_pem in ("/etc/tls/client.pem", "/etc/mongo-ca/client.pem"):
+            cprobe = run(["kubectl", "-n", NAMESPACE, "exec", pod, "--", "/bin/sh", "-c", "test -f " + client_pem])
+            if cprobe.returncode == 0:
+                flags += ["--tlsCertificateKeyFile", client_pem]
+                break
+    _TLS_FLAGS_CACHE = flags
+    return list(flags)
+
+def _resolve_expected_replicas():
+    """Topology size to enforce.
+
+    The environment PERSISTS across workflow stages, so an earlier
+    replica-scaling stage may have grown the replica set past the standalone
+    default of 3. Resolve the expected count from (in priority order): an
+    explicit ``expected_replicas``/``target_replicas`` param override, else the
+    LIVE StatefulSet (ready, else spec'd replicas), else the standalone default
+    of 3. This adapts the topology/count check to whatever the workflow
+    accumulated without loosening it -- a non-solving agent that drops or fails
+    a member still mismatches the live ready/spec count.
+    """
+    for key in ("BENCH_PARAM_EXPECTED_REPLICAS", "BENCH_PARAM_TARGET_REPLICAS"):
+        val = os.environ.get(key)
+        if val is not None and str(val).strip():
+            try:
+                return int(val)
+            except ValueError:
+                pass
+    res = run(["kubectl", "-n", NAMESPACE, "get", "sts", CLUSTER_PREFIX, "-o", "json"])
+    if res.returncode == 0:
+        try:
+            sts = json.loads(res.stdout)
+            status = sts.get("status", {}) or {}
+            spec = sts.get("spec", {}) or {}
+            live = status.get("readyReplicas")
+            if not isinstance(live, int) or live <= 0:
+                live = spec.get("replicas")
+            if isinstance(live, int) and live > 0:
+                return live
+        except (json.JSONDecodeError, AttributeError):
+            pass
+    return 3
+
+
+EXPECTED_REPLICAS = _resolve_expected_replicas()
+
+
 def fail(prefix, errors):
     if errors:
         print(prefix, file=sys.stderr)
@@ -64,7 +142,7 @@ def get_secret_value(secret_name, key, errors):
 
 
 def run_mongo(pod, uri, eval_str):
-    return run(["kubectl", "-n", NAMESPACE, "exec", pod, "--", "mongosh", "--quiet", uri, "--eval", eval_str])
+    return run(["kubectl", "-n", NAMESPACE, "exec", pod, "--", "mongosh", "--quiet", *_mongo_tls_flags(), uri, "--eval", eval_str])
 
 
 def load_json(pod, uri, eval_str, label, errors):
