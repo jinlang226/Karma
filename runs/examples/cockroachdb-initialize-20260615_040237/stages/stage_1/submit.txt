@@ -1,0 +1,13 @@
+**Done.** Here's a summary of what was diagnosed and fixed:
+
+**Root cause:** The StatefulSet command hardcoded `.default.svc.cluster.local` in both `--advertise-host` and `--join` flags, but the pods run in the `cockroachdb` namespace. DNS lookups for `crdb-cluster-X.crdb-cluster.default.svc.cluster.local` failed with "no such host" because the headless service lives at `crdb-cluster.cockroachdb.svc.cluster.local`.
+
+**Fix:** Patched the StatefulSet to use `$(POD_NAMESPACE)` (already injected as an env var via the downward API) instead of the hardcoded `default`:
+```
+--advertise-host=$(POD_NAME).crdb-cluster.$(POD_NAMESPACE).svc.cluster.local
+--join=crdb-cluster-0.crdb-cluster.$(POD_NAMESPACE).svc.cluster.local:26257,...
+```
+
+Then deleted the pods to force a restart with the corrected template (the rolling update was deadlocked since no pod could pass readiness without init, and init couldn't proceed without correct DNS).
+
+**Result:** All 3 nodes (`crdb-cluster-0/1/2`) are `is_available=true`, `is_live=true`, and the cluster accepts SQL connections.
