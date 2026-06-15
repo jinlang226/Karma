@@ -159,6 +159,50 @@ def translate_ui_request(
     )
 
 
+def _persist_run_config(run_dir: Path, payload: dict[str, Any], workflow: dict[str, Any]) -> None:
+    """Write config.json describing what was submitted (best-effort UI metadata).
+
+    Lets the Results view show every stage + adversary even when the workflow
+    was run inline (no saved file) or the file later changes. Non-essential, so
+    any failure is swallowed.
+    """
+    try:
+        run_dir.mkdir(parents=True, exist_ok=True)
+        run_config_path(run_dir).write_text(json.dumps({
+            "agent": payload.get("agent"),
+            "sandbox": str(payload.get("sandbox") or "local"),
+            "params": payload.get("params") or {},
+            "service": payload.get("service"),
+            "case_name": payload.get("case_name"),
+            "workflow_path": payload.get("workflow_path"),
+            "workflow_id": workflow.get("id"),
+            "prompt_mode": payload.get("prompt_mode") or workflow.get("prompt_mode"),
+            "agent_timeout_sec": payload.get("agent_timeout_sec"),
+            "max_attempts": payload.get("max_attempts"),
+            "stage_total": len(workflow.get("stages") or []),
+            "stages": [
+                {
+                    "id": s.get("id"),
+                    "service": s.get("service"),
+                    "case_name": s.get("case_name"),
+                    "param_overrides": s.get("param_overrides") or {},
+                }
+                for s in (workflow.get("stages") or [])
+            ],
+            "adversary": [
+                {
+                    "scenario": a.get("scenario"),
+                    "inject_at_stage": a.get("inject_at_stage"),
+                    "lift_at_stage": a.get("lift_at_stage"),
+                    "param_overrides": a.get("param_overrides") or {},
+                }
+                for a in (workflow.get("adversary") or [])
+            ],
+        }, indent=2))
+    except Exception:
+        pass
+
+
 def submit_job(
     payload: dict[str, Any],
     *,
@@ -198,45 +242,7 @@ def submit_job(
     _register_job(run_id, {"run_id": run_id, "status": "running", "kind": "run"})
 
     # Persist the submitted config so the Results view can show what was run.
-    try:
-        run_dir = Path(runs_dir) / run_id
-        run_dir.mkdir(parents=True, exist_ok=True)
-        run_config_path(run_dir).write_text(json.dumps({
-            "agent": payload.get("agent"),
-            "sandbox": str(payload.get("sandbox") or "local"),
-            "params": payload.get("params") or {},
-            "service": payload.get("service"),
-            "case_name": payload.get("case_name"),
-            "workflow_path": payload.get("workflow_path"),
-            "workflow_id": workflow.get("id"),
-            "prompt_mode": payload.get("prompt_mode") or workflow.get("prompt_mode"),
-            "agent_timeout_sec": payload.get("agent_timeout_sec"),
-            "max_attempts": payload.get("max_attempts"),
-            "stage_total": len(workflow.get("stages") or []),
-            # Persist the resolved stage + adversary definitions so the Results
-            # detail can show every stage even when the workflow was run inline
-            # (no saved file) or the file later changes.
-            "stages": [
-                {
-                    "id": s.get("id"),
-                    "service": s.get("service"),
-                    "case_name": s.get("case_name"),
-                    "param_overrides": s.get("param_overrides") or {},
-                }
-                for s in (workflow.get("stages") or [])
-            ],
-            "adversary": [
-                {
-                    "scenario": a.get("scenario"),
-                    "inject_at_stage": a.get("inject_at_stage"),
-                    "lift_at_stage": a.get("lift_at_stage"),
-                    "param_overrides": a.get("param_overrides") or {},
-                }
-                for a in (workflow.get("adversary") or [])
-            ],
-        }, indent=2))
-    except Exception:
-        pass
+    _persist_run_config(Path(runs_dir) / run_id, payload, workflow)
 
     def _stage_cb(stage_result: dict[str, Any]) -> None:
         hub.publish(
