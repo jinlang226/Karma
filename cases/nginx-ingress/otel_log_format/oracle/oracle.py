@@ -1,8 +1,16 @@
 #!/usr/bin/env python3
+import os
 import re
 import subprocess
 import sys
 import time
+
+# Param-aware: a workflow can override host/path via param_overrides; read
+# BENCH_PARAM_* (default = the standalone value) so the oracle generates and
+# matches the access-log line for the path this stage was asked to trace on the
+# live cluster. The OTel/log-format pass criterion is unchanged.
+HOST = os.environ.get("BENCH_PARAM_HOST") or "otel.example.com"
+PATH = os.environ.get("BENCH_PARAM_PATH") or "/otel-check"
 
 
 def run(cmd):
@@ -20,8 +28,8 @@ def main():
         "curl",
         "-sS",
         "-H",
-        "Host: otel.example.com",
-        "http://ingress-nginx-controller.ingress-nginx.svc/otel-check",
+        f"Host: {HOST}",
+        f"http://ingress-nginx-controller.ingress-nginx.svc{PATH}",
     ]
     result = run(request_cmd)
     if result.returncode != 0:
@@ -57,7 +65,7 @@ def main():
     trace_id = None
     span_id = None
     for line in logs.stdout.splitlines():
-        if "/otel-check" not in line:
+        if PATH not in line:
             continue
         trace_match = trace_re.search(line)
         span_match = span_re.search(line)

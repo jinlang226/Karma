@@ -23,6 +23,13 @@ def load_ingress_env(path="/tmp/ingress_env"):
 
 
 def main():
+    # Param-aware: a workflow can override host/expected_body via
+    # param_overrides; read BENCH_PARAM_* (default = the standalone value) so
+    # the oracle validates HTTPS against whichever host this stage targets on
+    # the live cluster. Pass criterion (valid cert, body matches) is unchanged.
+    host = os.environ.get("BENCH_PARAM_HOST") or "demo.example.com"
+    expected_body = os.environ.get("BENCH_PARAM_EXPECTED_BODY") or "hello"
+
     env = load_ingress_env()
     node_ip = env.get("INGRESS_NODE_IP") or os.environ.get("INGRESS_NODE_IP")
     node_port = env.get("INGRESS_HTTPS_PORT") or os.environ.get("INGRESS_HTTPS_PORT")
@@ -30,8 +37,8 @@ def main():
         print("Missing INGRESS_NODE_IP or INGRESS_HTTPS_PORT", file=sys.stderr)
         return 1
 
-    resolve = f"demo.example.com:{node_port}:{node_ip}"
-    url = f"https://demo.example.com:{node_port}/"
+    resolve = f"{host}:{node_port}:{node_ip}"
+    url = f"https://{host}:{node_port}/"
 
     cmd = [
         "kubectl",
@@ -52,7 +59,7 @@ def main():
     result = subprocess.run(cmd, text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
     if result.returncode == 0:
         body = result.stdout.strip()
-        if body == "hello":
+        if body == expected_body:
             return 0
         print(f"Unexpected body: {body}", file=sys.stderr)
         return 1
