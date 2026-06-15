@@ -46,6 +46,11 @@ class Settings:
     # legitimately slow precondition is not killed by a too-small literal.
     setup_timeout_mode: str = "auto"
     oracle_timeout_sec: int = 120
+    # Absolute upper bound (seconds) on a single agent attempt. The per-stage
+    # agent_timeout_sec is treated as an IDLE budget that resets while the agent
+    # keeps producing output, so a still-working agent is never cut off by the
+    # clock; this cap only stops a runaway agent that loops while still emitting.
+    agent_hard_cap_sec: int = 3600
 
     # Logging
     log_level: str = "INFO"
@@ -87,6 +92,7 @@ class Settings:
             precondition_timeout_sec=_int("KARMA_PRECONDITION_TIMEOUT_SEC", 600),
             setup_timeout_mode=_str("KARMA_SETUP_TIMEOUT_MODE", "auto"),
             oracle_timeout_sec=_int("KARMA_ORACLE_TIMEOUT_SEC", 120),
+            agent_hard_cap_sec=_int("KARMA_AGENT_HARD_CAP_SEC", 3600),
             log_level=_str("KARMA_LOG_LEVEL", "INFO"),
         )
 

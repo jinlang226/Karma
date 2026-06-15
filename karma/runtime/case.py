@@ -380,9 +380,20 @@ def _wait_for_submit(
     poll_interval_sec: float = 1.0,
     agent_process: Any = None,
     should_cancel: Any = None,
+    activity_path: Path | None = None,
+    hard_cap_sec: int | None = None,
 ) -> tuple[bool, str | None, bool]:
     """Poll for the agent's submit file until it appears, the agent exits, or
-    the timeout expires.
+    the agent goes idle / a runaway cap expires.
+
+    Time is an IDLE budget, not a wall-clock guillotine: an agent that keeps
+    making progress (its log at *activity_path* grows) is never cut off by the
+    clock -- the ``agent_timeout_sec`` idle window RESETS on every new burst of
+    output. Only a genuinely stuck agent (silent for ``agent_timeout_sec``)
+    times out. ``hard_cap_sec`` is a generous absolute bound so a runaway agent
+    that loops while still emitting output cannot run forever. When
+    *activity_path* is absent the idle clock never resets, reproducing the old
+    fixed-timeout behaviour.
 
     When *agent_process* is given, a process that terminates before writing
     ``submit.txt`` ends the wait immediately rather than burning the full
@@ -394,10 +405,23 @@ def _wait_for_submit(
         ``(submitted, content, agent_exited)``. *submitted* is ``True`` when
         the file appeared (with its text in *content*). *agent_exited* is
         ``True`` when the process died before submitting. ``(False, None,
-        False)`` is a genuine timeout.
+        False)`` is a genuine timeout (stuck/idle or runaway cap).
     """
-    deadline = time.monotonic() + agent_timeout_sec
-    while time.monotonic() < deadline:
+    start = time.monotonic()
+    if hard_cap_sec is None:
+        hard_cap_sec = max(agent_timeout_sec * 4, 3600)
+    hard_deadline = start + hard_cap_sec
+
+    def _logsize() -> int:
+        try:
+            return activity_path.stat().st_size if activity_path is not None else 0
+        except OSError:
+            return 0
+
+    last_activity = start
+    last_size = _logsize()
+    while True:
+        now = time.monotonic()
         if should_cancel is not None and should_cancel():
             # Cancelled mid-run: end the wait so the caller terminates the agent.
             return False, None, True
@@ -415,8 +439,16 @@ def _wait_for_submit(
                 except Exception:
                     pass
             return False, None, True
+        # Reset the idle window whenever the agent produces new output.
+        size = _logsize()
+        if size > last_size:
+            last_size = size
+            last_activity = now
+        if now >= hard_deadline:
+            return False, None, False
+        if now - last_activity >= agent_timeout_sec:
+            return False, None, False
         time.sleep(poll_interval_sec)
-    return False, None, False
 
 
 # ---------------------------------------------------------------------------
@@ -676,6 +708,11 @@ def run_stage(
                 agent_timeout_sec=row.get("agent_timeout_sec") or 900,
                 agent_process=agent_process,
                 should_cancel=should_cancel,
+                # Treat the timeout as an IDLE budget: a still-working agent (its
+                # agent.log keeps growing) is never cut off by the clock; only a
+                # stuck one is, bounded by a generous runaway cap.
+                activity_path=protocol.stage_agent_log_path(run_dir, stage_id),
+                hard_cap_sec=_settings.agent_hard_cap_sec,
             )
             agent_process.terminate()
             # A crashed/early-exiting agent is not a timeout; let the oracle
