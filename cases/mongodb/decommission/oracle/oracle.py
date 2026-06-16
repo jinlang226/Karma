@@ -88,6 +88,37 @@ def mongo_eval(pod, script):
     )
 
 
+_PRIMARY_POD_CACHE = None
+
+
+def find_primary():
+    """Locate the replica-set PRIMARY pod, falling back to CLUSTER_PREFIX-0.
+
+    The environment PERSISTS across workflow stages, so an earlier stage (e.g.
+    mongodb/arbiters) can trigger an election that moves the PRIMARY off
+    ``{CLUSTER_PREFIX}-0``. The data count read requires the primary -- on a
+    secondary it fails with "not primary and secondaryOk=false". Exec
+    db.hello() into each member, parse the writable-primary node, and route the
+    data read there. (rs.conf()/rs.status() are fine on any node, so the
+    topology check is left on -0.) Standalone (single node) this resolves to
+    -0 -> identical behaviour; no check or expected value changes.
+    """
+    global _PRIMARY_POD_CACHE
+    if _PRIMARY_POD_CACHE is not None:
+        return _PRIMARY_POD_CACHE
+    for idx in range(9):
+        pod = f"{CLUSTER_PREFIX}-{idx}"
+        res = mongo_eval(pod, "db.hello().isWritablePrimary")
+        if res.returncode != 0:
+            if idx > 0 and "NotFound" in (res.stderr or ""):
+                break
+            continue
+        if "true" in (res.stdout or ""):
+            _PRIMARY_POD_CACHE = pod
+            return pod
+    return f"{CLUSTER_PREFIX}-0"
+
+
 def mongo_json(pod, script, label, errors):
     res = mongo_eval(pod, script)
     if res.returncode != 0:
@@ -163,7 +194,9 @@ def check_topology():
 
 def check_data():
     errors = []
-    pod = f"{CLUSTER_PREFIX}-0"
+    # Count must run on the PRIMARY (secondaryOk=false), which a workflow
+    # election may have moved off CLUSTER_PREFIX-0.
+    pod = find_primary()
     res = mongo_eval(
         pod,
         f"db.getSiblingDB('{APP_DATABASE}').{APP_COLLECTION}.countDocuments({{}})",
