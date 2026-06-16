@@ -156,13 +156,13 @@ def parse_users_roles(text):
     return users
 
 
-def main():
+def evaluate():
+    """One full snapshot of the file-realm merge checks; returns the error list."""
     errors = []
 
     secret = get_secret(errors)
     if secret is None:
-        print_errors(errors)
-        return 1
+        return errors
 
     data = secret.get("data", {})
     users_text = decode_field(data, "users", errors)
@@ -191,6 +191,25 @@ def main():
     if isinstance(count, dict):
         if "count" not in count:
             errors.append("report-user failed to read app-data count")
+
+    return errors
+
+
+def main():
+    # The agent enables the file realm by patching the StatefulSet + ConfigMap,
+    # which triggers a rolling restart; the merged users (report-user/ops-user)
+    # only become authenticatable AFTER that restart reloads the realm. A single
+    # snapshot can run before that convergence and see "report-user failed to
+    # read app-data count" on a correctly-configured cluster. Re-evaluate for up
+    # to ~120s and pass on the first clean snapshot. A genuinely missing
+    # user/role/permission never authenticates, so the oracle still fails after
+    # the deadline.
+    import time
+    deadline = time.monotonic() + 120
+    errors = evaluate()
+    while errors and time.monotonic() < deadline:
+        time.sleep(8)
+        errors = evaluate()
 
     if errors:
         print_errors(errors)
