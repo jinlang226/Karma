@@ -1,0 +1,70 @@
+# cockroachdb/adversarial/delete_cert_secret
+#
+# Deletes the crdb-cluster-certs Secret that the TLS-enabled StatefulSet mounts,
+# simulating an accidental secret deletion or a cert-rotation automation gone
+# wrong mid-flight. After deletion the CockroachDB pods can no longer read their
+# certs directory, causing new pod restarts to fail their TLS handshake. The
+# agent must recreate the Secret with valid certificates and trigger a rolling
+# restart so all pods remount the new certs and the cluster becomes healthy again.
+#
+# Deploy: delete the TLS secret.
+# Lift:   if the Secret still does not exist, recreate a minimal placeholder so
+#         the cluster can restart (the agent should have done this already).
+
+params:
+  namespace:
+    default: cockroachdb
+    description: Namespace containing the CockroachDB TLS Secret.
+  secret_name:
+    default: crdb-cluster-certs
+    description: Name of the TLS Secret used by the CockroachDB StatefulSet.
+
+deploy:
+  on_probe_fail: error
+  probe:
+    - command: "kubectl -n {{params.namespace}} get secret {{params.secret_name}}"
+      timeout_sec: 10
+  apply:
+    - command: "kubectl -n {{params.namespace}} delete secret {{params.secret_name}} --ignore-not-found=true"
+      timeout_sec: 20
+  verify:
+    - command: >-
+        /bin/sh -c "! kubectl -n {{params.namespace}} get secret {{params.secret_name}} 2>/dev/null"
+      timeout_sec: 10
+
+lift:
+  # Skip if the agent has already recreated the secret.
+  on_probe_fail: skip
+  probe:
+    - command: >-
+        /bin/sh -c "! kubectl -n {{params.namespace}} get secret {{params.secret_name}} 2>/dev/null"
+      timeout_sec: 10
+  apply:
+    # Recreate with self-signed placeholder certs so pods can at least start.
+    - command: >-
+        /bin/sh -c "
+        openssl req -x509 -newkey rsa:2048 -keyout /tmp/lift-node.key -out /tmp/lift-node.crt
+        -days 365 -nodes -subj '/CN=node' -extensions san
+        -config <(printf '[req]\ndistinguished_name=dn\n[dn]\n[san]\nsubjectAltName=IP:127.0.0.1')
+        2>/dev/null;
+        cp /tmp/lift-node.crt /tmp/lift-ca.crt;
+        kubectl -n {{params.namespace}} create secret generic {{params.secret_name}}
+        --from-file=ca.crt=/tmp/lift-ca.crt
+        --from-file=node.crt=/tmp/lift-node.crt
+        --from-file=node.key=/tmp/lift-node.key
+        --from-file=client.root.crt=/tmp/lift-node.crt
+        --from-file=client.root.key=/tmp/lift-node.key
+        --dry-run=client -o yaml | kubectl apply -f -"
+      timeout_sec: 30
+  verify:
+    - command: "kubectl -n {{params.namespace}} get secret {{params.secret_name}}"
+      timeout_sec: 10
+
+prompt_hints:
+  deploy: |
+    Note: an external process may have deleted or altered TLS secrets during this
+    task. Verify the crdb-cluster-certs Secret exists and contains valid cert
+    data before assuming TLS is healthy.
+  active: |
+    Reminder: the TLS Secret may have been deleted by an external actor. Confirm
+    the Secret exists and the cluster pods can mount it successfully.

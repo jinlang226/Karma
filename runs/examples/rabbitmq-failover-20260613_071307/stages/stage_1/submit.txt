@@ -1,0 +1,15 @@
+The cluster is fully restored. Here's a summary of what happened and what was done:
+
+**Root cause:** The Secret `rabbitmq-cookie-perpod` had a deliberate fault — `rabbitmq-2` was given the Erlang cookie `driftedcookie` while nodes 0 and 1 had `supersecretcookie`. The init container (`copy-cookie`) copies the pod's named entry from this Secret into `/var/lib/rabbitmq/.erlang.cookie` at startup. With a mismatched cookie, Erlang's distributed protocol rejects all inter-node communication, so rabbitmq-2 bootstrapped as an isolated standalone cluster instead of joining.
+
+**What was done (all native Kubernetes resources, no CRDs):**
+
+1. **Patched the Secret** — changed `rabbitmq-2`'s cookie entry to `supersecretcookie` (same base64 as nodes 0 and 1)
+2. **Deleted the pod** — the StatefulSet controller recreated it; the init container ran again and copied the now-correct cookie
+3. **Reset + joined** inside the pod:
+   - `rabbitmqctl stop_app` — stopped the app layer (Erlang VM stayed up)
+   - `rabbitmqctl reset` — wiped the standalone mnesia cluster identity from node 2's PVC
+   - `rabbitmqctl join_cluster rabbit@rabbitmq-0...` — joined to the existing cluster
+   - `rabbitmqctl start_app` — started the app layer back up
+
+**Result:** All 3 nodes are now Disk Nodes, all Running, no Alarms, no Network Partitions.

@@ -1,0 +1,70 @@
+# adversaries/elasticsearch/elastic-password-corrupted
+#
+# The elastic superuser Secret (elastic-password) is overwritten with a wrong password value.
+# This simulates a common CI/CD pipeline accident where a secret rotation job writes the
+# wrong credential, breaking any service that reads the password from the Secret to
+# authenticate with Elasticsearch. Clients immediately start returning 401 Unauthorized.
+# The agent must detect the broken credential, restore the correct password in the Secret
+# and in Elasticsearch's internal user store (via the Elasticsearch change-password API),
+# and confirm the auth-checker deployment becomes healthy again.
+
+params:
+  namespace:
+    default: elasticsearch
+    description: Namespace the Elasticsearch cluster and password secret reside in.
+  password_secret_name:
+    default: elastic-password
+    description: Secret holding the current elastic user password.
+  password_key:
+    default: password
+    description: Data key within the password secret.
+  correct_password:
+    default: elasticpass-old
+    description: Known-good password to restore on lift.
+  corrupt_password:
+    default: CORRUPTED_BY_ADVERSARY
+    description: Wrong password value written by the fault.
+
+deploy:
+  on_probe_fail: error
+  probe:
+    - command: "kubectl -n {{params.namespace}} get secret {{params.password_secret_name}}"
+      timeout_sec: 10
+  apply:
+    - command: >-
+        kubectl -n {{params.namespace}} patch secret {{params.password_secret_name}}
+        --type=json
+        -p '[{"op":"replace","path":"/stringData","value":{"{{params.password_key}}":"{{params.corrupt_password}}"}}]'
+      timeout_sec: 20
+  verify:
+    - command: >-
+        /bin/sh -c "val=$(kubectl -n {{params.namespace}} get secret {{params.password_secret_name}}
+        -o jsonpath='{.data.{{params.password_key}}}' | base64 -d);
+        test \"$val\" = '{{params.corrupt_password}}'"
+      timeout_sec: 15
+
+lift:
+  on_probe_fail: skip
+  probe:
+    - command: >-
+        /bin/sh -c "val=$(kubectl -n {{params.namespace}} get secret {{params.password_secret_name}}
+        -o jsonpath='{.data.{{params.password_key}}}' | base64 -d);
+        test \"$val\" = '{{params.corrupt_password}}'"
+      timeout_sec: 15
+  apply:
+    - command: >-
+        kubectl -n {{params.namespace}} patch secret {{params.password_secret_name}}
+        --type=json
+        -p '[{"op":"replace","path":"/stringData","value":{"{{params.password_key}}":"{{params.correct_password}}"}}]'
+      timeout_sec: 20
+  verify:
+    - command: "kubectl -n {{params.namespace}} get secret {{params.password_secret_name}}"
+      timeout_sec: 10
+
+prompt_hints:
+  deploy: |
+    Note: an external process may have modified the elastic user Secret during this task.
+    Verify authentication works against Elasticsearch before assuming the Secret is correct.
+  active: |
+    Reminder: the elastic-password Secret may have been corrupted. Re-check the Secret value
+    and confirm Elasticsearch accepts the credential before finishing.

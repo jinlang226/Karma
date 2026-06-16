@@ -1,0 +1,150 @@
+# mongodb/custom-roles
+# MongoDB custom-roles task
+
+params:
+  cluster_prefix:
+    default: mongodb-replica
+    description: StatefulSet name of the replica set members.
+  replica_set_name:
+    default: mongodb-replica
+    description: MongoDB replica set _id used when initiating the set.
+  admin_secret_name:
+    default: admin-user-password
+    description: Kubernetes Secret holding the admin user's password.
+  reporting_secret_name:
+    default: reporting-user-password
+    description: Kubernetes Secret holding the reporting user's password.
+  admin_username:
+    default: admin-user
+    description: Username of the MongoDB admin user.
+  reporting_username:
+    default: reporting-user
+    description: Username of the reporting user.
+  app_database:
+    default: appdb
+    description: Application database holding the reporting collections.
+  reports_collection:
+    default: reports
+    description: Collection backing the reporting dashboards.
+  raw_collection:
+    default: raw
+    description: Collection with ingestion data that must not be exposed.
+  bad_role_name:
+    default: rawRead
+    description: Overly-permissive role initially granted to the reporting user.
+
+prompt: |
+  A 3-member MongoDB replica set is running in the mongodb namespace.
+  Authentication is enabled. Passwords are stored in these Secrets:
+  - {{params.admin_secret_name}}
+  - {{params.reporting_secret_name}}
+
+  Reporting dashboards are failing for {{params.reporting_username}} after a permissions change.
+  Dashboards are built from {{params.app_database}}.{{params.reports_collection}}. {{params.app_database}}.{{params.raw_collection}} contains ingestion data and
+  must not be exposed. Restore the minimum access needed for reporting dashboards.
+
+  Notes:
+  - Do not use operators or CRDs.
+
+namespace_contract:
+  required_roles: []
+
+metrics:
+  - time_to_first_mutation
+
+preconditionUnits:
+  - name: mongo_env_ready
+    on_probe_fail: skip
+    probe:
+      - command: "kubectl -n mongodb get pod {{params.cluster_prefix}}-0 2>/dev/null | grep -c Running"
+        timeout_sec: 10
+    apply:
+      - command: |
+          /bin/sh -c '
+          kubectl delete namespace mongodb --ignore-not-found=true; kubectl wait --for=delete namespace/mongodb --timeout=120s || true
+          '
+        sleep: 2
+      - command: "kubectl create namespace mongodb"
+        sleep: 1
+      - command: "kubectl -n mongodb apply -f cases/mongodb/custom-roles/resource/secrets.yaml"
+        sleep: 1
+      - command: "kubectl -n mongodb apply -f cases/mongodb/custom-roles/resource/services.yaml"
+        sleep: 1
+      - command: "kubectl -n mongodb apply -f cases/mongodb/custom-roles/resource/statefulset.yaml"
+        sleep: 5
+      - command: |
+          for i in $(seq 1 120); do
+            ready=$(kubectl -n mongodb get sts {{params.cluster_prefix}} -o jsonpath='{.status.readyReplicas}' 2>/dev/null)
+            if [ "${ready:-0}" -ge 3 ]; then
+              exit 0
+            fi
+            sleep 5
+          done
+          exit 1
+        sleep: 2
+      - command: |
+          kubectl -n mongodb exec mongodb-replica-0 -- mongosh --quiet --eval '
+          rs.initiate({_id:"{{params.replica_set_name}}",members:[
+            {_id:0,host:"mongodb-replica-0.mongodb-replica-svc.mongodb.svc.cluster.local:27017"},
+            {_id:1,host:"mongodb-replica-1.mongodb-replica-svc.mongodb.svc.cluster.local:27017"},
+            {_id:2,host:"mongodb-replica-2.mongodb-replica-svc.mongodb.svc.cluster.local:27017"}
+          ]})'
+        sleep: 5
+      - command: |
+          for i in $(seq 1 20); do
+            kubectl -n mongodb exec mongodb-replica-0 -- mongosh --quiet --eval 'db.hello().isWritablePrimary' | grep true && exit 0
+            sleep 3
+          done
+          exit 1
+        sleep: 2
+      - command: |
+          kubectl -n mongodb exec mongodb-replica-0 -- mongosh --quiet --eval '
+          db.getSiblingDB("admin").createUser({
+            user: "{{params.admin_username}}",
+            pwd: "admin123password",
+            roles: [
+              {role: "clusterAdmin", db: "admin"},
+              {role: "userAdminAnyDatabase", db: "admin"},
+              {role: "readWriteAnyDatabase", db: "admin"}
+            ]
+          })'
+        sleep: 2
+      - command: |
+          kubectl -n mongodb exec mongodb-replica-0 -- mongosh --quiet \
+          "mongodb://{{params.admin_username}}:admin123password@localhost:27017/admin" \
+          --eval 'db.getSiblingDB("{{params.app_database}}").createRole({
+            role: "{{params.bad_role_name}}",
+            privileges: [
+              { resource: { db: "{{params.app_database}}", collection: "{{params.raw_collection}}" }, actions: ["find"] }
+            ],
+            roles: []
+          })'
+        sleep: 2
+      - command: |
+          kubectl -n mongodb exec mongodb-replica-0 -- mongosh --quiet \
+          "mongodb://{{params.admin_username}}:admin123password@localhost:27017/admin" \
+          --eval 'db.getSiblingDB("admin").createUser({
+            user: "{{params.reporting_username}}",
+            pwd: "reporting123password",
+            roles: [{role: "{{params.bad_role_name}}", db: "{{params.app_database}}"}]
+          })'
+        sleep: 2
+      - command: |
+          kubectl -n mongodb exec mongodb-replica-0 -- mongosh --quiet \
+          "mongodb://{{params.admin_username}}:admin123password@localhost:27017/admin" \
+          --eval 'db.getSiblingDB("{{params.app_database}}").{{params.reports_collection}}.insertMany([{x:1},{x:2},{x:3}], {writeConcern:{w:1}})'
+        sleep: 2
+      - command: |
+          kubectl -n mongodb exec mongodb-replica-0 -- mongosh --quiet \
+          "mongodb://{{params.admin_username}}:admin123password@localhost:27017/admin" \
+          --eval 'db.getSiblingDB("{{params.app_database}}").{{params.raw_collection}}.insertMany([{x:10},{x:11}], {writeConcern:{w:1}})'
+        sleep: 2
+    verify:
+      - command: "kubectl -n mongodb get pods 2>/dev/null | grep -c Running"
+        timeout_sec: 10
+
+oracle:
+  verify:
+    commands:
+      - command: "python3 cases/mongodb/custom-roles/oracle/oracle.py"
+        timeout_sec: 60

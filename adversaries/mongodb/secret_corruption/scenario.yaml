@@ -1,0 +1,71 @@
+# mongodb/adversarial/secret_corruption
+#
+# Overwrites the `password` field in the `admin-user-password` Secret with a
+# wrong value while the agent is working, simulating a credential rotation
+# pipeline that clobbers the active secret. The agent must detect the mismatch
+# between the in-cluster MongoDB password and the Secret, update the Secret to
+# the correct value (or rotate both sides consistently) before submitting.
+#
+# Targets the literal `mongodb` namespace. The Secret `admin-user-password` is
+# deployed by several cases (custom-roles, password-rotation, replica-scaling,
+# mongod-config-update, statefulset-customization, user-management, version-upgrade,
+# version-upgrade-hard).
+#
+# Deploy: overwrite the password key in the Secret with a bad value.
+# Lift:   if the agent has not restored the correct value, put admin123password back.
+
+params:
+  namespace:
+    default: mongodb
+    description: Namespace where the admin-user-password Secret lives.
+  secret_name:
+    default: admin-user-password
+    description: Secret holding the admin user's password.
+  bad_password_b64:
+    default: d3JvbmdwYXNzd29yZA==
+    description: Base64-encoded corrupted password injected by the adversary (wrongpassword).
+  good_password_b64:
+    default: YWRtaW4xMjNwYXNzd29yZA==
+    description: Base64-encoded correct password restored on lift (admin123password).
+
+deploy:
+  on_probe_fail: error
+  probe:
+    - command: "kubectl -n {{params.namespace}} get secret {{params.secret_name}}"
+      timeout_sec: 10
+  apply:
+    - command: >-
+        kubectl -n {{params.namespace}} patch secret {{params.secret_name}}
+        --type=json -p='[{"op":"replace","path":"/data/password","value":"{{params.bad_password_b64}}"}]'
+      timeout_sec: 20
+  verify:
+    - command: >-
+        /bin/sh -c "test \"$(kubectl -n {{params.namespace}} get secret {{params.secret_name}}
+        -o jsonpath='{.data.password}')\" = '{{params.bad_password_b64}}'"
+      timeout_sec: 10
+
+lift:
+  on_probe_fail: skip
+  probe:
+    - command: >-
+        /bin/sh -c "test \"$(kubectl -n {{params.namespace}} get secret {{params.secret_name}}
+        -o jsonpath='{.data.password}')\" = '{{params.bad_password_b64}}'"
+      timeout_sec: 10
+  apply:
+    - command: >-
+        kubectl -n {{params.namespace}} patch secret {{params.secret_name}}
+        --type=json -p='[{"op":"replace","path":"/data/password","value":"{{params.good_password_b64}}"}]'
+      timeout_sec: 20
+  verify:
+    - command: "kubectl -n {{params.namespace}} get secret {{params.secret_name}}"
+      timeout_sec: 10
+
+prompt_hints:
+  deploy: |
+    Note: an external rotation pipeline may overwrite Kubernetes Secret values
+    during this task. Verify that the in-cluster MongoDB credentials match the
+    Secret content before assuming connectivity is healthy.
+  active: |
+    Reminder: the admin-user-password Secret may have been overwritten by an
+    external process. Cross-check the Secret against actual MongoDB authentication
+    before finishing.

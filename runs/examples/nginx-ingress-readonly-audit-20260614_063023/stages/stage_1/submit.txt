@@ -1,0 +1,26 @@
+The `config-audit` ConfigMap is live in the `demo` namespace with a populated `findings.txt`. The controller Deployment (rv `287475`) and its ConfigMap (rv `287191`) are untouched — live configuration is unchanged.
+
+---
+
+Here's a summary of what the audit found:
+
+**HIGH (3)**
+1. `readOnlyRootFilesystem: false` — controller can write its own filesystem; TLS material at `/usr/local/certificates/` is at risk if the process is compromised.
+2. ClusterRole grants `list`/`watch` on `secrets` cluster-wide — the controller can enumerate Secret metadata across all namespaces, far beyond what ingress routing needs.
+3. No resource limits — only requests (`cpu: 100m`, `mem: 90Mi`) set; unbounded consumption possible.
+
+**MEDIUM (3)**
+4. Duplicate conflicting arg: `--watch-ingress-without-class` appears twice (`=true` then `=false`); last value wins (safe), but indicates a broken patching pattern.
+5. LoadBalancer Service has no `loadBalancerSourceRanges` and `externalTrafficPolicy: Cluster` — open to any source IP, and real client IPs are SNAT-masked at the node, defeating IP-based ACLs in NGINX.
+6. `terminationGracePeriodSeconds: 0` — pod force-killed with no connection drain, dropping in-flight requests.
+
+**LOW (3)**
+7. ConfigMap `ingress-nginx-controller` is empty — no TLS floor (1.2+), no cipher list, `server-tokens` not suppressed, no rate-limit zones.
+8. Two orphaned IngressClass resources (`ingress-1`, `ingress-2`) whose controller types have no running instance — silently routes nothing.
+9. `hostPort: 80/443` — binds NGINX to the node network directly, constraining scheduling and expanding node attack surface.
+
+**INFO (4)**
+10. No Ingress resources in `demo` namespace — the demo app is not actually routed through the controller.
+11. No Service for `demo-app` — backend unreachable even if an Ingress were added.
+12. Single replica, no PodDisruptionBudget — node drain takes the controller fully offline.
+13. `--publish-status-address=localhost` — Ingress status shows `localhost` as the external address, breaking DNS automation.

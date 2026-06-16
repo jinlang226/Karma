@@ -1,0 +1,62 @@
+# adversaries/elasticsearch/statefulset-scaled-down
+#
+# The es-cluster StatefulSet is scaled from 3 replicas to 1. This simulates an accidental
+# kubectl scale or an autoscaler misconfiguration that removes two of the three Elasticsearch
+# data nodes mid-operation. With only one master-eligible node remaining the cluster can
+# still form, but data redundancy is lost, the cluster turns yellow/red, and any task
+# requiring quorum changes (like a snapshot or upgrade) may stall. The agent must detect
+# the reduced replica count and scale it back up to 3.
+
+params:
+  namespace:
+    default: elasticsearch
+    description: Namespace the Elasticsearch StatefulSet runs in.
+  statefulset_name:
+    default: es-cluster
+    description: Name of the Elasticsearch StatefulSet.
+  wrong_replicas:
+    default: "1"
+    description: Replica count injected by the fault.
+  restore_replicas:
+    default: "3"
+    description: Correct replica count restored on lift.
+
+deploy:
+  on_probe_fail: error
+  probe:
+    - command: "kubectl -n {{params.namespace}} get statefulset {{params.statefulset_name}}"
+      timeout_sec: 10
+  apply:
+    - command: >-
+        kubectl -n {{params.namespace}} scale statefulset {{params.statefulset_name}}
+        --replicas={{params.wrong_replicas}}
+      timeout_sec: 20
+  verify:
+    - command: >-
+        /bin/sh -c "test \"$(kubectl -n {{params.namespace}} get statefulset {{params.statefulset_name}}
+        -o jsonpath='{.spec.replicas}')\" = '{{params.wrong_replicas}}'"
+      timeout_sec: 15
+
+lift:
+  on_probe_fail: skip
+  probe:
+    - command: >-
+        /bin/sh -c "test \"$(kubectl -n {{params.namespace}} get statefulset {{params.statefulset_name}}
+        -o jsonpath='{.spec.replicas}')\" = '{{params.wrong_replicas}}'"
+      timeout_sec: 15
+  apply:
+    - command: >-
+        kubectl -n {{params.namespace}} scale statefulset {{params.statefulset_name}}
+        --replicas={{params.restore_replicas}}
+      timeout_sec: 20
+  verify:
+    - command: "kubectl -n {{params.namespace}} get statefulset {{params.statefulset_name}}"
+      timeout_sec: 10
+
+prompt_hints:
+  deploy: |
+    Note: an external process may be scaling the Elasticsearch StatefulSet during this task.
+    Verify the live replica count matches the expected topology before proceeding.
+  active: |
+    Reminder: the es-cluster StatefulSet may have been scaled down. Re-check the replica count
+    and restore it to 3 if the cluster has fewer nodes than expected.

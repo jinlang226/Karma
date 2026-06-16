@@ -1,0 +1,25 @@
+All three jobs are complete. Here's a full summary of what was found and done:
+
+## Bug Fixed
+
+**`skew-job-aqe.yaml` — invalid AQE threshold**
+
+The embedded Python script (base64-encoded in the YAML) had:
+```python
+spark.conf.set("spark.sql.adaptive.skewJoin.skewedPartitionThresholdInBytes", "1b")
+```
+Setting the threshold to **1 byte** makes every partition look skewed, causing AQE to misfire on all partitions rather than selectively splitting the hot ones. Fixed to `"256mb"` — the standard sensible default.
+
+## Performance Comparison
+
+| Strategy | Elapsed | Optimization | Mechanism |
+|---|---|---|---|
+| **baseline** | 17.6s | none | Skewed shuffle join — straggler partitions block completion |
+| **broadcast** | 8.59s | broadcast join | Products table (<100 rows) replicated to each executor; no shuffle, no skew |
+| **aqe** | 9.09s | AQE skew join | Spark auto-detects and splits hot partitions at runtime |
+
+**Data skew confirmed:** 44x ratio (max partition 11,579 rows vs min 263) from the 5 hot products (product_id 1–5) receiving 50% of all orders.
+
+Both optimizations deliver ~2x speedup over baseline:
+- **Broadcast join** eliminates the shuffle entirely — best when one side fits in memory.
+- **AQE** works transparently at runtime — best for cases where you can't predict skew ahead of time or the smaller table is too large to broadcast.

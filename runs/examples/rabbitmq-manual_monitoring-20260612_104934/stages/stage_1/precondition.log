@@ -1,0 +1,71 @@
+[precondition:rabbitmq_secrets_ready:preconditionUnits[0] 'rabbitmq_secrets_ready':probe] $ /bin/sh -c 'set -e; kubectl -n ${BENCH_NAMESPACE} get secret rabbitmq-erlang-cookie >/dev/null; kubectl -n ${BENCH_NAMESPACE} get secret rabbitmq-admin >/dev/null'
+Error from server (NotFound): secrets "rabbitmq-erlang-cookie" not found
+
+[precondition:rabbitmq_secrets_ready:preconditionUnits[0] 'rabbitmq_secrets_ready':apply] $ /bin/sh -c 'kubectl -n ${BENCH_NAMESPACE} create secret generic rabbitmq-erlang-cookie --from-literal=cookie=supersecretcookie --dry-run=client -o yaml | kubectl apply -f -'
+secret/rabbitmq-erlang-cookie created
+
+[precondition:rabbitmq_secrets_ready:preconditionUnits[0] 'rabbitmq_secrets_ready':apply] $ /bin/sh -c 'kubectl -n ${BENCH_NAMESPACE} create secret generic rabbitmq-admin --from-literal=username=admin --from-literal=password=adminpass --dry-run=client -o yaml | kubectl apply -f -'
+secret/rabbitmq-admin created
+
+[precondition:rabbitmq_secrets_ready:preconditionUnits[0] 'rabbitmq_secrets_ready':verify] $ /bin/sh -c 'set -e; kubectl -n ${BENCH_NAMESPACE} get secret rabbitmq-erlang-cookie >/dev/null; kubectl -n ${BENCH_NAMESPACE} get secret rabbitmq-admin >/dev/null'
+
+[precondition:rbac_ready:preconditionUnits[1] 'rbac_ready':probe] $ kubectl -n ${BENCH_NAMESPACE} get sa rabbitmq
+Error from server (NotFound): serviceaccounts "rabbitmq" not found
+
+[precondition:rbac_ready:preconditionUnits[1] 'rbac_ready':apply] $ envsubst '$BENCH_NAMESPACE $BENCH_NS_SOURCE $BENCH_NS_TARGET $BENCH_PARAM_CLUSTER_PREFIX $BENCH_PARAM_BLUE_CLUSTER_PREFIX $BENCH_PARAM_GREEN_CLUSTER_PREFIX $BENCH_PARAM_FROM_VERSION' < resources/rabbitmq/manual_monitoring/resource/rbac.yaml | kubectl -n ${BENCH_NAMESPACE} apply -f -
+serviceaccount/rabbitmq created
+role.rbac.authorization.k8s.io/rabbitmq-peer-discovery created
+rolebinding.rbac.authorization.k8s.io/rabbitmq-peer-discovery created
+
+[precondition:rbac_ready:preconditionUnits[1] 'rbac_ready':verify] $ kubectl -n ${BENCH_NAMESPACE} get sa rabbitmq
+NAME       AGE
+rabbitmq   1s
+
+[precondition:infra_ready:preconditionUnits[2] 'infra_ready':probe] $ /bin/sh -c 'set -e; kubectl -n ${BENCH_NAMESPACE} get svc rabbitmq >/dev/null; kubectl -n ${BENCH_NAMESPACE} get svc prometheus >/dev/null'
+Error from server (NotFound): services "rabbitmq" not found
+
+[precondition:infra_ready:preconditionUnits[2] 'infra_ready':apply] $ envsubst '$BENCH_NAMESPACE $BENCH_NS_SOURCE $BENCH_NS_TARGET $BENCH_PARAM_CLUSTER_PREFIX $BENCH_PARAM_BLUE_CLUSTER_PREFIX $BENCH_PARAM_GREEN_CLUSTER_PREFIX $BENCH_PARAM_FROM_VERSION' < resources/rabbitmq/manual_monitoring/resource/configmap.yaml | kubectl -n ${BENCH_NAMESPACE} apply -f -
+configmap/rabbitmq-config created
+
+[precondition:infra_ready:preconditionUnits[2] 'infra_ready':apply] $ envsubst '$BENCH_NAMESPACE $BENCH_NS_SOURCE $BENCH_NS_TARGET $BENCH_PARAM_CLUSTER_PREFIX $BENCH_PARAM_BLUE_CLUSTER_PREFIX $BENCH_PARAM_GREEN_CLUSTER_PREFIX $BENCH_PARAM_FROM_VERSION' < resources/rabbitmq/manual_monitoring/resource/services.yaml | kubectl -n ${BENCH_NAMESPACE} apply -f -
+service/rabbitmq-headless created
+service/rabbitmq created
+service/prometheus created
+
+[precondition:infra_ready:preconditionUnits[2] 'infra_ready':apply] $ envsubst '$BENCH_NAMESPACE $BENCH_NS_SOURCE $BENCH_NS_TARGET $BENCH_PARAM_CLUSTER_PREFIX $BENCH_PARAM_BLUE_CLUSTER_PREFIX $BENCH_PARAM_GREEN_CLUSTER_PREFIX $BENCH_PARAM_FROM_VERSION' < resources/rabbitmq/manual_monitoring/resource/prometheus.yaml | kubectl -n ${BENCH_NAMESPACE} apply -f -
+configmap/prometheus-config created
+deployment.apps/prometheus created
+
+[precondition:infra_ready:preconditionUnits[2] 'infra_ready':verify] $ /bin/sh -c 'set -e; kubectl -n ${BENCH_NAMESPACE} get svc rabbitmq >/dev/null; kubectl -n ${BENCH_NAMESPACE} get svc prometheus >/dev/null'
+
+[precondition:rabbitmq_cluster_ready:preconditionUnits[3] 'rabbitmq_cluster_ready':probe] $ /bin/sh -c 'set -e; [ "$(kubectl -n ${BENCH_NAMESPACE} get sts rabbitmq -o jsonpath="{.status.readyReplicas}")" = "3" ]'
+Error from server (NotFound): statefulsets.apps "rabbitmq" not found
+
+[precondition:rabbitmq_cluster_ready:preconditionUnits[3] 'rabbitmq_cluster_ready':apply] $ envsubst '$BENCH_NAMESPACE $BENCH_NS_SOURCE $BENCH_NS_TARGET $BENCH_PARAM_CLUSTER_PREFIX $BENCH_PARAM_BLUE_CLUSTER_PREFIX $BENCH_PARAM_GREEN_CLUSTER_PREFIX $BENCH_PARAM_FROM_VERSION' < resources/rabbitmq/manual_monitoring/resource/statefulset.yaml | kubectl -n ${BENCH_NAMESPACE} apply -f -
+statefulset.apps/rabbitmq created
+
+[precondition:rabbitmq_cluster_ready:preconditionUnits[3] 'rabbitmq_cluster_ready':apply] $ kubectl -n ${BENCH_NAMESPACE} rollout status statefulset/rabbitmq --timeout=600s
+Waiting for 3 pods to be ready...
+Waiting for 2 pods to be ready...
+Waiting for 2 pods to be ready...
+Waiting for 1 pods to be ready...
+Waiting for 1 pods to be ready...
+partitioned roll out complete: 3 new pods have been updated...
+
+[precondition:rabbitmq_cluster_ready:preconditionUnits[3] 'rabbitmq_cluster_ready':verify] $ /bin/sh -c 'set -e; [ "$(kubectl -n ${BENCH_NAMESPACE} get sts rabbitmq -o jsonpath="{.status.readyReplicas}")" = "3" ]'
+
+[precondition:curl_test_ready:preconditionUnits[4] 'curl_test_ready':probe] $ kubectl -n ${BENCH_NAMESPACE} wait --for=condition=ready pod -l app=curl-test --timeout=3s
+error: no matching resources found
+
+[precondition:curl_test_ready:preconditionUnits[4] 'curl_test_ready':apply] $ envsubst '$BENCH_NAMESPACE $BENCH_NS_SOURCE $BENCH_NS_TARGET $BENCH_PARAM_CLUSTER_PREFIX $BENCH_PARAM_BLUE_CLUSTER_PREFIX $BENCH_PARAM_GREEN_CLUSTER_PREFIX $BENCH_PARAM_FROM_VERSION' < resources/rabbitmq/manual_monitoring/resource/curl-test.yaml | kubectl -n ${BENCH_NAMESPACE} apply -f -
+pod/curl-test created
+
+[precondition:curl_test_ready:preconditionUnits[4] 'curl_test_ready':apply] $ kubectl -n ${BENCH_NAMESPACE} wait --for=condition=ready pod -l app=curl-test --timeout=300s
+pod/curl-test condition met
+
+[precondition:curl_test_ready:preconditionUnits[4] 'curl_test_ready':verify] $ kubectl -n ${BENCH_NAMESPACE} wait --for=condition=ready pod -l app=curl-test --timeout=3s
+pod/curl-test condition met
+
+[precondition:monitoring_baseline_ready:preconditionUnits[5] 'monitoring_baseline_ready':probe] $ python3 resources/rabbitmq/manual_monitoring/setup_precondition_check.py --namespace ${BENCH_NAMESPACE} --min-ready 3
+setup-precondition-check: ok
+

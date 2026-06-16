@@ -1,0 +1,46 @@
+[precondition:es_env_ready:preconditionUnits[0] 'es_env_ready':probe] $ kubectl -n elasticsearch get pods 2>/dev/null | grep -c Running
+0
+
+[precondition:es_env_ready:preconditionUnits[0] 'es_env_ready':apply] $ /bin/sh -c 'kubectl delete namespace elasticsearch --ignore-not-found=true; kubectl wait --for=delete namespace/elasticsearch --timeout=120s || true'
+
+[precondition:es_env_ready:preconditionUnits[0] 'es_env_ready':apply] $ kubectl create namespace elasticsearch
+namespace/elasticsearch created
+
+[precondition:es_env_ready:preconditionUnits[0] 'es_env_ready':apply] $ kubectl -n elasticsearch apply -f resources/elasticsearch/snapshot-repo-setup/resource/
+configmap/es-config created
+pod/curl-test created
+secret/es-secure-settings created
+job.batch/minio-init created
+secret/minio-root created
+deployment.apps/minio created
+service/es-cluster created
+service/es-http created
+service/minio created
+statefulset.apps/es-cluster created
+
+[precondition:es_env_ready:preconditionUnits[0] 'es_env_ready':apply] $ kubectl -n elasticsearch wait --for=condition=ready pod -l app=minio --timeout=300s
+pod/minio-7c4cdd4ff4-g8r6p condition met
+
+[precondition:es_env_ready:preconditionUnits[0] 'es_env_ready':apply] $ kubectl -n elasticsearch wait --for=condition=complete job/minio-init --timeout=300s
+job.batch/minio-init condition met
+
+[precondition:es_env_ready:preconditionUnits[0] 'es_env_ready':apply] $ kubectl -n elasticsearch wait --for=condition=ready pod -l app=es-cluster --timeout=600s
+pod/es-cluster-0 condition met
+pod/es-cluster-1 condition met
+pod/es-cluster-2 condition met
+
+[precondition:es_env_ready:preconditionUnits[0] 'es_env_ready':apply] $ kubectl -n elasticsearch wait --for=condition=ready pod/curl-test --timeout=300s
+pod/curl-test condition met
+
+[precondition:es_env_ready:preconditionUnits[0] 'es_env_ready':apply] $ /bin/sh -c '
+for i in $(seq 1 30); do
+  kubectl -n elasticsearch exec curl-test -- curl -s --max-time 5 "http://es-http.elasticsearch.svc:9200/_cluster/health?wait_for_status=yellow&timeout=10s" | grep -q status && exit 0
+  sleep 2
+done
+exit 1
+'
+
+
+[precondition:es_env_ready:preconditionUnits[0] 'es_env_ready':verify] $ kubectl -n elasticsearch get pods 2>/dev/null | grep -c Running
+5
+

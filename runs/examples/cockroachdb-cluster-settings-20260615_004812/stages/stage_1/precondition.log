@@ -1,0 +1,39 @@
+[precondition:crdb_env_ready:preconditionUnits[0] 'crdb_env_ready':probe] $ kubectl -n cockroachdb get pods 2>/dev/null | grep -c Running
+0
+
+[precondition:crdb_env_ready:preconditionUnits[0] 'crdb_env_ready':apply] $ /bin/sh -c 'kubectl delete namespace cockroachdb --ignore-not-found=true; kubectl wait --for=delete namespace/cockroachdb --timeout=120s || true'
+
+[precondition:crdb_env_ready:preconditionUnits[0] 'crdb_env_ready':apply] $ kubectl create namespace cockroachdb
+namespace/cockroachdb created
+
+[precondition:crdb_env_ready:preconditionUnits[0] 'crdb_env_ready':apply] $ kubectl -n cockroachdb apply -f cases/cockroachdb/cluster-settings/resource/rbac.yaml
+serviceaccount/crdb-cluster-sa created
+role.rbac.authorization.k8s.io/crdb-cluster-role created
+rolebinding.rbac.authorization.k8s.io/crdb-cluster-rolebinding created
+
+[precondition:crdb_env_ready:preconditionUnits[0] 'crdb_env_ready':apply] $ kubectl -n cockroachdb apply -f cases/cockroachdb/cluster-settings/resource/services.yaml
+service/crdb-cluster created
+service/crdb-cluster-public created
+
+[precondition:crdb_env_ready:preconditionUnits[0] 'crdb_env_ready':apply] $ kubectl -n cockroachdb apply -f cases/cockroachdb/cluster-settings/resource/statefulset.yaml
+statefulset.apps/crdb-cluster created
+
+[precondition:crdb_env_ready:preconditionUnits[0] 'crdb_env_ready':apply] $ /bin/sh -c 'for i in $(seq 1 30); do count=$(kubectl -n cockroachdb get pod -l app.kubernetes.io/name=cockroachdb --no-headers 2>/dev/null | wc -l | tr -d " "); if [ "${count}" -ge 1 ]; then exit 0; fi; sleep 2; done; exit 1'
+
+[precondition:crdb_env_ready:preconditionUnits[0] 'crdb_env_ready':apply] $ kubectl -n cockroachdb wait --for=jsonpath={.status.phase}=Running pod -l app.kubernetes.io/name=cockroachdb --timeout=300s
+pod/crdb-cluster-0 condition met
+pod/crdb-cluster-1 condition met
+pod/crdb-cluster-2 condition met
+
+[precondition:crdb_env_ready:preconditionUnits[0] 'crdb_env_ready':apply] $ /bin/sh -c 'for i in $(seq 1 30); do kubectl -n cockroachdb exec crdb-cluster-0 -- ./cockroach init --insecure --host=crdb-cluster-0.crdb-cluster.cockroachdb.svc.cluster.local && exit 0; sleep 3; done; exit 1'
+Cluster successfully initialized
+
+[precondition:crdb_env_ready:preconditionUnits[0] 'crdb_env_ready':apply] $ kubectl -n cockroachdb wait --for=condition=ready pod -l app.kubernetes.io/name=cockroachdb --timeout=300s
+pod/crdb-cluster-0 condition met
+pod/crdb-cluster-1 condition met
+pod/crdb-cluster-2 condition met
+
+[precondition:crdb_env_ready:preconditionUnits[0] 'crdb_env_ready':verify] $ kubectl -n cockroachdb exec crdb-cluster-0 -- ./cockroach sql --insecure -e 'SELECT 1;' 2>/dev/null
+?column?
+1
+

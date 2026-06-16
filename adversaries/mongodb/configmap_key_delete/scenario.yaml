@@ -1,0 +1,73 @@
+# mongodb/adversarial/configmap_key_delete
+#
+# Deletes the `mongod.conf` key from the `mongod-config` ConfigMap while the
+# agent is working, simulating a misconfigured CI pipeline that wipes a known
+# config key. The pods will crash-loop on the next rolling restart because the
+# ConfigMap mount loses its expected file. The agent must detect the missing key
+# and restore a valid mongod.conf to the ConfigMap before rolling out.
+#
+# Targets the literal `mongodb` namespace (mongod-config-update uses -n mongodb).
+# The ConfigMap is named `mongod-config` as deployed by that case.
+#
+# Deploy: patch the ConfigMap to remove the mongod.conf key.
+# Lift:   if the agent has not already restored it, put back a minimal valid config.
+
+params:
+  namespace:
+    default: mongodb
+    description: Namespace where the mongod-config ConfigMap lives.
+  configmap_name:
+    default: mongod-config
+    description: ConfigMap that holds the mongod configuration file.
+  restore_mongod_conf:
+    default: |
+      systemLog:
+        verbosity: 0
+        slowOpThresholdMs: 100
+      storage:
+        wiredTiger:
+          engineConfig:
+            journalCompressor: snappy
+    description: Minimal mongod.conf content restored by lift if the agent did not.
+
+deploy:
+  on_probe_fail: error
+  probe:
+    - command: "kubectl -n {{params.namespace}} get configmap {{params.configmap_name}}"
+      timeout_sec: 10
+  apply:
+    - command: >-
+        kubectl -n {{params.namespace}} patch configmap {{params.configmap_name}}
+        --type=json -p='[{"op":"remove","path":"/data/mongod.conf"}]'
+      timeout_sec: 20
+  verify:
+    - command: >-
+        /bin/sh -c "! kubectl -n {{params.namespace}} get configmap {{params.configmap_name}}
+        -o jsonpath='{.data.mongod\.conf}' 2>/dev/null | grep -q systemLog"
+      timeout_sec: 10
+
+lift:
+  on_probe_fail: skip
+  probe:
+    - command: >-
+        /bin/sh -c "! kubectl -n {{params.namespace}} get configmap {{params.configmap_name}}
+        -o jsonpath='{.data.mongod\.conf}' 2>/dev/null | grep -q systemLog"
+      timeout_sec: 10
+  apply:
+    - command: >-
+        kubectl -n {{params.namespace}} patch configmap {{params.configmap_name}}
+        --type=merge -p='{"data":{"mongod.conf":"systemLog:\n  verbosity: 0\n  slowOpThresholdMs: 100\nstorage:\n  wiredTiger:\n    engineConfig:\n      journalCompressor: snappy\n"}}'
+      timeout_sec: 20
+  verify:
+    - command: >-
+        kubectl -n {{params.namespace}} get configmap {{params.configmap_name}}
+        -o jsonpath='{.data.mongod\.conf}'
+      timeout_sec: 10
+
+prompt_hints:
+  deploy: |
+    Note: an external process may modify ConfigMap contents during this task.
+    Verify the mongod configuration is intact before applying and after rolling out changes.
+  active: |
+    Reminder: a ConfigMap key may have been removed by an external process.
+    Check that mongod.conf exists in the ConfigMap and pods can mount it correctly.

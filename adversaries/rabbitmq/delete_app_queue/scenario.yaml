@@ -1,0 +1,69 @@
+# rabbitmq/adversarial/delete_app_queue
+#
+# Deletes the durable classic queue "app-queue" from the /app vhost mid-task,
+# simulating an accidental or malicious queue deletion that disrupts in-flight
+# producer/consumer pipelines. The agent must detect the missing queue and
+# recreate it (or allow the producer to recreate it) so that messages flow again.
+#
+# Commands target the bench namespace explicitly (-n ${BENCH_NAMESPACE}) and
+# exec into <cluster_prefix>-0.
+#
+# Deploy: delete the app-queue from /app vhost.
+# Lift:   recreate app-queue if the agent has not already restored it.
+
+params:
+  cluster_prefix:
+    default: rabbitmq
+    description: Name prefix of the RabbitMQ cluster; execs into <prefix>-0.
+  vhost:
+    default: /app
+    description: Virtual host containing the queue that is deleted.
+  queue_name:
+    default: app-queue
+    description: Name of the durable classic queue the adversary removes.
+
+deploy:
+  on_probe_fail: error
+  probe:
+    - command: >-
+        /bin/sh -c "kubectl -n ${BENCH_NAMESPACE} exec {{params.cluster_prefix}}-0 -- rabbitmqctl list_queues -p {{params.vhost}} name
+        | grep -qw {{params.queue_name}}"
+      timeout_sec: 30
+  apply:
+    - command: >-
+        kubectl -n ${BENCH_NAMESPACE} exec {{params.cluster_prefix}}-0 -- rabbitmqctl delete_queue
+        {{params.queue_name}} -p {{params.vhost}}
+      timeout_sec: 30
+  verify:
+    - command: >-
+        /bin/sh -c "! kubectl -n ${BENCH_NAMESPACE} exec {{params.cluster_prefix}}-0 -- rabbitmqctl list_queues -p {{params.vhost}} name
+        | grep -qw {{params.queue_name}}"
+      timeout_sec: 30
+
+lift:
+  # If the agent already recreated the queue, probe fails (queue exists) → skip.
+  on_probe_fail: skip
+  probe:
+    - command: >-
+        /bin/sh -c "! kubectl -n ${BENCH_NAMESPACE} exec {{params.cluster_prefix}}-0 -- rabbitmqctl list_queues -p {{params.vhost}} name
+        | grep -qw {{params.queue_name}}"
+      timeout_sec: 30
+  apply:
+    - command: >-
+        kubectl -n ${BENCH_NAMESPACE} exec {{params.cluster_prefix}}-0 -- rabbitmqctl eval
+        'rabbit_amqqueue:declare(rabbit_misc:r(<<"/app">>, queue, <<"app-queue">>), true, false, [], none, <<"">>).'
+      timeout_sec: 30
+  verify:
+    - command: >-
+        /bin/sh -c "kubectl -n ${BENCH_NAMESPACE} exec {{params.cluster_prefix}}-0 -- rabbitmqctl list_queues -p {{params.vhost}} name
+        | grep -qw {{params.queue_name}}"
+      timeout_sec: 30
+
+prompt_hints:
+  deploy: |
+    Note: a queue that should exist in the cluster may have been removed by an
+    external process during this task. Verify queue presence in each vhost before
+    assuming your producer or consumer will succeed.
+  active: |
+    Reminder: a queue deletion injected earlier may still be in effect.
+    Re-check the vhost's queue list and recreate any missing queues before finishing.

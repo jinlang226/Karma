@@ -1,68 +1,80 @@
-apiVersion: benchmark/v1alpha1
-kind: Workflow
+# workflows/rabbitmq-upgrade-tls-migration-a-to-b
+#
+# Five-stage workflow that exercises a full RabbitMQ upgrade and TLS rotation
+# sequence across two namespace roles (cluster_a and cluster_b), followed by a
+# blue-green migration from cluster_a to cluster_b.
+#
+# Stage order:
+#   1. Upgrade cluster_a from 3.9 to 3.10
+#   2. Upgrade cluster_b from 3.9 to 3.11
+#   3. Rotate TLS certs on cluster_a
+#   4. Rotate TLS certs on cluster_b
+#   5. Blue-green migration: cluster_a (source) → cluster_b (target)
+#
+# prompt_mode: concat_blind — the agent receives all stage prompts at once.
+# retries: 2 — each stage retries up to two additional times on failure.
+
 metadata:
-  name: rabbitmq-upgrade-tls-migration-a-to-b
+  id: rabbitmq-upgrade-tls-migration-a-to-b
+  label: "RabbitMQ \u2014 upgrade, TLS rotation, and blue-green migration (A\u2192B)"
 spec:
   prompt_mode: concat_blind
-  namespaces:
+  stages:
+  - id: stage_1_upgrade_a_39_to_310
+    service: rabbitmq
+    case: manual_skip_upgrade
+    namespaces:
+    - cluster_a
+    retries: 0
+    param_overrides:
+      cluster_prefix: rabbitmq-cluster-a
+      from_version: '3.9'
+      to_version: '3.10'
+    namespace_binding:
+      default: cluster_a
+  - id: stage_2_upgrade_b_39_to_311
+    service: rabbitmq
+    case: manual_skip_upgrade
+    namespaces:
+    - cluster_b
+    retries: 0
+    param_overrides:
+      cluster_prefix: rabbitmq-cluster-b
+      from_version: '3.9'
+      to_version: '3.11'
+    namespace_binding:
+      default: cluster_b
+  - id: stage_3_rotate_tls_a
+    service: rabbitmq
+    case: manual_tls_rotation
+    namespaces:
+    - cluster_a
+    retries: 0
+    param_overrides:
+      cluster_prefix: rabbitmq-cluster-a
+    namespace_binding:
+      default: cluster_a
+  - id: stage_4_rotate_tls_b
+    service: rabbitmq
+    case: manual_tls_rotation
+    namespaces:
+    - cluster_b
+    retries: 0
+    param_overrides:
+      cluster_prefix: rabbitmq-cluster-b
+    namespace_binding:
+      default: cluster_b
+  - id: stage_5_migrate_a_to_b
+    service: rabbitmq
+    case: blue_green_migration
+    namespaces:
     - cluster_a
     - cluster_b
-  stages:
-    - id: stage_1_upgrade_a_39_to_310
-      service: rabbitmq-experiments
-      case: manual_skip_upgrade
-      namespaces:
-        - cluster_a
-      namespace_binding:
-        default: cluster_a
-      max_attempts: 3
-      param_overrides:
-        cluster_prefix: rabbitmq-cluster-a
-        from_version: "3.9"
-        to_version: "3.10"
-    - id: stage_2_upgrade_b_39_to_311
-      service: rabbitmq-experiments
-      case: manual_skip_upgrade
-      namespaces:
-        - cluster_b
-      namespace_binding:
-        default: cluster_b
-      max_attempts: 3
-      param_overrides:
-        cluster_prefix: rabbitmq-cluster-b
-        from_version: "3.9"
-        to_version: "3.11"
-    - id: stage_3_rotate_tls_a
-      service: rabbitmq-experiments
-      case: manual_tls_rotation
-      namespaces:
-        - cluster_a
-      namespace_binding:
-        default: cluster_a
-      max_attempts: 3
-      param_overrides:
-        cluster_prefix: rabbitmq-cluster-a
-    - id: stage_4_rotate_tls_b
-      service: rabbitmq-experiments
-      case: manual_tls_rotation
-      namespaces:
-        - cluster_b
-      namespace_binding:
-        default: cluster_b
-      max_attempts: 3
-      param_overrides:
-        cluster_prefix: rabbitmq-cluster-b
-    - id: stage_5_migrate_a_to_b
-      service: rabbitmq-experiments
-      case: blue_green_migration
-      namespaces:
-        - cluster_a
-        - cluster_b
-      namespace_binding:
-        default: cluster_b
-        source: cluster_a
-        target: cluster_b
-      max_attempts: 3
-      param_overrides:
-        blue_cluster_prefix: rabbitmq-cluster-a
-        green_cluster_prefix: rabbitmq-cluster-b
+    retries: 0
+    param_overrides:
+      blue_cluster_prefix: rabbitmq-cluster-a
+      green_cluster_prefix: rabbitmq-cluster-b
+    namespace_binding:
+      default: cluster_b
+      source: cluster_a
+      target: cluster_b

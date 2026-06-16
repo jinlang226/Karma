@@ -1,0 +1,109 @@
+[precondition:mongo_env_ready:preconditionUnits[0] 'mongo_env_ready':probe] $ kubectl -n mongodb get pod mongodb-replica-0 2>/dev/null | grep -c Running
+0
+
+[precondition:mongo_env_ready:preconditionUnits[0] 'mongo_env_ready':apply] $ /bin/sh -c 'kubectl delete namespace mongodb --ignore-not-found=true; kubectl wait --for=delete namespace/mongodb --timeout=120s || true'
+
+[precondition:mongo_env_ready:preconditionUnits[0] 'mongo_env_ready':apply] $ kubectl create namespace mongodb
+namespace/mongodb created
+
+[precondition:mongo_env_ready:preconditionUnits[0] 'mongo_env_ready':apply] $ kubectl -n mongodb apply -f cases/mongodb/readiness-probe-tuning/resource/secrets.yaml
+secret/admin-user-password created
+secret/health-user-password created
+secret/mongo-keyfile created
+
+[precondition:mongo_env_ready:preconditionUnits[0] 'mongo_env_ready':apply] $ kubectl -n mongodb apply -f cases/mongodb/readiness-probe-tuning/resource/probe-script.yaml
+configmap/health-check-script created
+
+[precondition:mongo_env_ready:preconditionUnits[0] 'mongo_env_ready':apply] $ kubectl -n mongodb apply -f cases/mongodb/readiness-probe-tuning/resource/services.yaml
+service/mongodb-replica-svc created
+
+[precondition:mongo_env_ready:preconditionUnits[0] 'mongo_env_ready':apply] $ kubectl -n mongodb apply -f cases/mongodb/readiness-probe-tuning/resource/statefulset.yaml
+statefulset.apps/mongodb-replica created
+
+[precondition:mongo_env_ready:preconditionUnits[0] 'mongo_env_ready':apply] $ /bin/sh -c 'for i in $(seq 1 120); do phase=$(kubectl -n mongodb get pod mongodb-replica-0 -o jsonpath='\''{.status.phase}'\'' 2>/dev/null); if [ "${phase}" = "Running" ]; then exit 0; fi; sleep 5; done; exit 1'
+
+
+[precondition:mongo_env_ready:preconditionUnits[0] 'mongo_env_ready':apply] $ /bin/sh -c 'for i in $(seq 1 120); do phase=$(kubectl -n mongodb get pod mongodb-replica-2 -o jsonpath='\''{.status.phase}'\'' 2>/dev/null); if [ "${phase}" = "Running" ]; then exit 0; fi; sleep 5; done; exit 1'
+
+
+[precondition:mongo_env_ready:preconditionUnits[0] 'mongo_env_ready':apply] $ /bin/sh -c 'kubectl -n mongodb exec mongodb-replica-0 -- mongosh --quiet --eval '\''rs.initiate({_id:"mongodb-replica",members:[{_id:0,host:"mongodb-replica-0.mongodb-replica-svc.mongodb.svc.cluster.local:27017"},{_id:1,host:"mongodb-replica-1.mongodb-replica-svc.mongodb.svc.cluster.local:27017"},{_id:2,host:"mongodb-replica-2.mongodb-replica-svc.mongodb.svc.cluster.local:27017"}]})'\'''
+
+{ ok: 1 }
+
+[precondition:mongo_env_ready:preconditionUnits[0] 'mongo_env_ready':apply] $ /bin/sh -c 'for i in $(seq 1 20); do kubectl -n mongodb exec mongodb-replica-0 -- mongosh --quiet --eval '\''db.hello().isWritablePrimary'\'' | grep true && exit 0; sleep 3; done; exit 1'
+
+true
+
+[precondition:mongo_env_ready:preconditionUnits[0] 'mongo_env_ready':apply] $ /bin/sh -c 'kubectl -n mongodb exec mongodb-replica-0 -- mongosh --quiet --eval '\''db.getSiblingDB("admin").createUser({user:"admin-user",pwd:"admin123password",roles:[{role:"clusterAdmin",db:"admin"},{role:"userAdminAnyDatabase",db:"admin"},{role:"readWriteAnyDatabase",db:"admin"}]})'\'''
+
+{
+  ok: 1,
+  '$clusterTime': {
+    clusterTime: Timestamp({ t: 1781496397, i: 4 }),
+    signature: {
+      hash: Binary(Buffer.from("c9b5b8c6da0ca7163f986e3b4d57de4cb0729a12", "hex"), 0),
+      keyId: Long("7651468741581996038")
+    }
+  },
+  operationTime: Timestamp({ t: 1781496397, i: 4 })
+}
+
+[precondition:mongo_env_ready:preconditionUnits[0] 'mongo_env_ready':apply] $ /bin/sh -c 'kubectl -n mongodb exec mongodb-replica-0 -- mongosh --quiet "mongodb://admin-user:admin123password@localhost:27017/admin" --eval '\''db.getSiblingDB("admin").createUser({user:"health-user",pwd:"healthpass123",roles:[{role:"clusterMonitor",db:"admin"}]})'\'''
+
+{
+  ok: 1,
+  '$clusterTime': {
+    clusterTime: Timestamp({ t: 1781496400, i: 1 }),
+    signature: {
+      hash: Binary(Buffer.from("dfba0a83b61cd6450a2037e5f72e47aa951445f5", "hex"), 0),
+      keyId: Long("7651468741581996038")
+    }
+  },
+  operationTime: Timestamp({ t: 1781496400, i: 1 })
+}
+
+[precondition:mongo_env_ready:preconditionUnits[0] 'mongo_env_ready':apply] $ kubectl -n mongodb wait --for=condition=ready pod -l app=mongodb-replica --timeout=300s
+pod/mongodb-replica-0 condition met
+pod/mongodb-replica-1 condition met
+pod/mongodb-replica-2 condition met
+
+[precondition:mongo_env_ready:preconditionUnits[0] 'mongo_env_ready':apply] $ /bin/sh -c 'kubectl -n mongodb patch sts mongodb-replica --type=json -p='\''[{"op":"replace","path":"/spec/template/spec/containers/0/readinessProbe/initialDelaySeconds","value":5},{"op":"replace","path":"/spec/template/spec/containers/0/readinessProbe/timeoutSeconds","value":1},{"op":"replace","path":"/spec/template/spec/containers/0/readinessProbe/failureThreshold","value":2},{"op":"replace","path":"/spec/template/spec/containers/0/livenessProbe/initialDelaySeconds","value":15},{"op":"replace","path":"/spec/template/spec/containers/0/livenessProbe/timeoutSeconds","value":1},{"op":"replace","path":"/spec/template/spec/containers/0/livenessProbe/failureThreshold","value":2}]'\'''
+
+statefulset.apps/mongodb-replica patched
+
+[precondition:mongo_env_ready:preconditionUnits[0] 'mongo_env_ready':apply] $ kubectl -n mongodb delete pod -l app=mongodb-replica
+pod "mongodb-replica-0" deleted
+pod "mongodb-replica-1" deleted
+pod "mongodb-replica-2" deleted
+
+[precondition:mongo_env_ready:preconditionUnits[0] 'mongo_env_ready':verify] $ kubectl -n mongodb get pods 2>/dev/null | grep -c Running
+3
+
+[precondition:health_user_fixture:preconditionUnits[1] 'health_user_fixture':probe] $ /bin/sh -c '
+kubectl -n mongodb get secret health-user-password >/dev/null 2>&1 || exit 1
+kubectl -n mongodb get pod mongodb-replica-0 >/dev/null 2>&1 || exit 1
+admin_pw=$(kubectl -n mongodb get secret admin-user-password -o jsonpath="{.data.password}" 2>/dev/null | base64 -d 2>/dev/null)
+[ -n "$admin_pw" ] || exit 1
+kubectl -n mongodb exec mongodb-replica-0 -- mongosh --quiet "mongodb://admin-user:${admin_pw}@localhost:27017/admin" --eval "db.getUser(\"health-user\") ? quit(0) : quit(1)" >/dev/null 2>&1
+'
+
+
+[precondition:health_user_fixture:preconditionUnits[1] 'health_user_fixture':apply] $ /bin/sh -c '
+kubectl -n mongodb get secret health-user-password >/dev/null 2>&1 || \
+  kubectl -n mongodb create secret generic health-user-password --from-literal=password=healthpass123
+'
+
+
+[precondition:health_user_fixture:preconditionUnits[1] 'health_user_fixture':apply] $ /bin/sh -c '
+admin_pw=$(kubectl -n mongodb get secret admin-user-password -o jsonpath="{.data.password}" 2>/dev/null | base64 -d 2>/dev/null)
+[ -n "$admin_pw" ] || { echo "admin-user-password secret unavailable; cannot ensure health-user"; exit 0; }
+kubectl -n mongodb exec mongodb-replica-0 -- mongosh --quiet "mongodb://admin-user:${admin_pw}@localhost:27017/admin" --eval "
+  if (!db.getUser(\"health-user\")) {
+    db.getSiblingDB(\"admin\").createUser({user:\"health-user\",pwd:\"healthpass123\",roles:[{role:\"clusterMonitor\",db:\"admin\"}]});
+  }" >/dev/null 2>&1 || true
+'
+
+
+[precondition:health_user_fixture:preconditionUnits[1] 'health_user_fixture':verify] $ kubectl -n mongodb get secret health-user-password >/dev/null 2>&1 && echo ok
+ok
+

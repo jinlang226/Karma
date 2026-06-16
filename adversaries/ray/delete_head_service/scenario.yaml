@@ -1,0 +1,55 @@
+# ray/adversarial/delete_head_service
+#
+# Deletes the ray-head Service mid-workflow, severing all GCS (port 6379),
+# dashboard (port 8265), and client (port 10001) connectivity to the head node.
+# This simulates a disruptive kubectl delete by a CI pipeline or operator that
+# did not realise the service was load-bearing. Workers lose their discovery
+# endpoint, job submissions fail, and the dashboard becomes unreachable.
+# The agent must notice the missing Service and recreate it.
+#
+# Deploy: delete the ray-head Service if it exists.
+# Lift:   recreate the Service using the canonical GCS-port manifest if the
+#         agent has not already done so.
+
+params:
+  namespace:
+    default: ray
+    description: Namespace the Ray cluster runs in.
+  service_name:
+    default: ray-head
+    description: Name of the Ray head Service deleted by the adversary.
+
+deploy:
+  on_probe_fail: error
+  probe:
+    - command: "kubectl -n {{params.namespace}} get service {{params.service_name}}"
+      timeout_sec: 10
+  apply:
+    - command: "kubectl -n {{params.namespace}} delete service {{params.service_name}}"
+      timeout_sec: 20
+  verify:
+    - command: >-
+        /bin/sh -c "! kubectl -n {{params.namespace}} get service {{params.service_name}} 2>/dev/null"
+      timeout_sec: 10
+
+lift:
+  on_probe_fail: skip
+  probe:
+    - command: >-
+        /bin/sh -c "! kubectl -n {{params.namespace}} get service {{params.service_name}} 2>/dev/null"
+      timeout_sec: 10
+  apply:
+    - command: >-
+        kubectl -n {{params.namespace}} apply -f cases/ray/deploy_cluster/resource/ray-head-service.yaml
+      timeout_sec: 20
+  verify:
+    - command: "kubectl -n {{params.namespace}} get service {{params.service_name}}"
+      timeout_sec: 10
+
+prompt_hints:
+  deploy: |
+    Note: a Service that workers and clients depend on may have been removed by
+    an external change. Verify cluster connectivity before proceeding.
+  active: |
+    Reminder: the head Service may have been deleted earlier in this workflow.
+    Confirm all Ray services are present before concluding the task is complete.

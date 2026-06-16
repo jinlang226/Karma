@@ -1,0 +1,97 @@
+# ray/job_submission
+# Fix the Ray job script to connect to the correct head address and print "pong"
+
+prompt: |
+  A Ray cluster is running, and the ray-client pod contains a job script at
+  /opt/job.py. The job should connect to the head service and print "{{params.expected_output}}".
+
+  Current issue: the script uses the wrong head address and fails to connect.
+
+  Your task:
+  - Update the job script so it connects to ray-head:6379.
+  - Ensure the job runs successfully and prints "{{params.expected_output}}".
+
+  You can test with:
+  ```bash
+  kubectl -n ray exec ray-client -- python /opt/job.py
+  ```
+
+  Success criteria: the command exits 0 and prints "{{params.expected_output}}".
+
+params:
+  expected_output:
+    default: pong
+    description: String the Ray job is expected to print on success
+
+namespace_contract:
+  required_roles: []
+
+metrics:
+  - time_to_first_mutation
+
+preconditionUnits:
+  - name: ray_env_ready
+    on_probe_fail: skip
+    probe:
+      - command: "kubectl -n ray get pods 2>/dev/null | grep -c Running"
+        timeout_sec: 10
+    apply:
+      - command: "kubectl create namespace ray"
+        sleep: 0
+      - command: "kubectl -n ray apply -f cases/ray/job_submission/resource/ray-head-service.yaml"
+        sleep: 1
+      - command: "kubectl -n ray apply -f cases/ray/job_submission/resource/ray-head.yaml"
+        sleep: 2
+      - command: "kubectl -n ray rollout status deploy/ray-head --timeout=120s"
+        sleep: 2
+      - command: "kubectl -n ray apply -f cases/ray/job_submission/resource/ray-worker.yaml"
+        sleep: 2
+      - command: "kubectl -n ray rollout status deploy/ray-worker --timeout=120s"
+        sleep: 2
+      - command: "kubectl -n ray apply -f cases/ray/job_submission/resource/ray-job-script.yaml"
+        sleep: 1
+      - command: "kubectl -n ray apply -f cases/ray/job_submission/resource/ray-client.yaml"
+        sleep: 1
+      - command: "kubectl -n ray wait --for=condition=Ready pod/ray-client --timeout=60s"
+        sleep: 1
+    verify:
+      - command: "kubectl -n ray get pods 2>/dev/null | grep -c Running"
+        timeout_sec: 10
+
+  # Additive fixture unit (Rule 4): the oracle execs `python /opt/job.py` inside
+  # ray-client. Standalone, ray_env_ready's apply provides the ray-job-script
+  # ConfigMap and a ray-client that mounts it at /opt/job.py. But in a workflow
+  # this case usually inherits a live cluster from a prior stage (deploy/scale/
+  # upgrade), whose ray-client pod does NOT mount the job script and whose apply
+  # is skipped here -- so /opt/job.py is missing and the oracle cannot run. This
+  # unit ensures JUST that fixture idempotently: it (re)creates the job-script
+  # ConfigMap and, if /opt/job.py is absent, recreates ONLY the throwaway
+  # ray-client client pod with the mount. It never touches the head/worker
+  # cluster state or the namespace. The probe gates on the script being present,
+  # so standalone (script already there) it is a harmless no-op.
+  - name: job_script_ready
+    on_probe_fail: skip
+    probe:
+      - command: "kubectl -n ray exec ray-client -- test -s /opt/job.py 2>/dev/null && echo present"
+        timeout_sec: 15
+    apply:
+      - command: "kubectl -n ray apply -f cases/ray/job_submission/resource/ray-job-script.yaml"
+        sleep: 1
+      - command: "kubectl -n ray delete pod ray-client --ignore-not-found=true --wait=true"
+        sleep: 1
+      - command: "kubectl -n ray apply -f cases/ray/job_submission/resource/ray-client.yaml"
+        sleep: 1
+      - command: "kubectl -n ray wait --for=condition=Ready pod/ray-client --timeout=60s"
+        sleep: 1
+    verify:
+      - command: "kubectl -n ray exec ray-client -- test -s /opt/job.py 2>/dev/null && echo present"
+        timeout_sec: 15
+
+oracle:
+  verify:
+    commands:
+      # The oracle execs the Ray client job, whose first connection to the cluster
+      # (ray://...) is legitimately slow on a cold cluster; 60s was too tight and
+      # could fail a correct fix. Allow 150s.
+      - command: "python3 cases/ray/job_submission/oracle/oracle.py"
+        timeout_sec: 150

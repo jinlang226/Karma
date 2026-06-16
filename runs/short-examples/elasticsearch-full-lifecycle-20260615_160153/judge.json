@@ -1,0 +1,40 @@
+{
+  "score": 75.0,
+  "score_max": 100.0,
+  "method": "stage-pass + regression-adjudication",
+  "total_stages": 8,
+  "passed_stages": 8,
+  "base_score": 100.0,
+  "all_passed": true,
+  "regression_sweep_run": true,
+  "regression_failures": 4,
+  "legitimate_regressions": 2,
+  "regressions": [
+    {
+      "stage_id": "stage_01",
+      "legitimate": false,
+      "reasoning": "Stage 02 deploys a brand-new 3-node Elasticsearch cluster from scratch (observed state: no StatefulSets, ConfigMaps, or Services exist), which requires bootstrapping with `cluster.initial_master_nodes` in the config. The agent legitimately re-added that setting to `es-config` to form the new cluster, so stage 01's oracle \u2014 which checks that the bootstrap setting was removed from the previous cluster \u2014 is now stale and inapplicable.",
+      "output": "$ python3 cases/elasticsearch/bootstrap-initial-master-nodes/oracle/oracle.py\nBootstrap verification failed:\n  - cluster.initial_master_nodes still present in es-config\n"
+    },
+    {
+      "stage_id": "stage_04",
+      "legitimate": true,
+      "reasoning": "No later stage is designed to change the elastic user password or the auth-checker state \u2014 stages 05\u201308 cover node scaling, a version upgrade restart, snapshot config, and monitoring, none of which should revert the password or break auth-checker. The oracle failure ('old password still works, new password returns 405, auth-checker not Ready') means a later stage's actions (most likely stage_06's full-cluster restart/upgrade) inadvertently reset or lost the security state that stage_04 established, which counts as a real regression.",
+      "output": "$ python3 cases/elasticsearch/rotate-elastic-password/oracle/oracle.py\nRotate elastic password verification failed:\n  - New password auth returned status 405\n  - Old password still works\n  - auth-checker is not Ready\n"
+    },
+    {
+      "stage_id": "stage_05",
+      "legitimate": false,
+      "reasoning": "Stage 06 explicitly upgrades the cluster via a full restart and its own verification requires exactly 3 nodes, meaning the 2 extra nodes added in stage 05 are intentionally removed as part of the upgrade process. The oracle failure (5 nodes expected, 3 found) reflects a deliberate later-stage change, not careless breakage by the agent.",
+      "output": "$ python3 cases/elasticsearch/scale-up-new-nodeset/oracle/oracle.py\nScale-up nodeset verification failed:\n  - Expected 5 nodes, got 3\n  - Expected 5 nodes in _cat/nodes, got 3\n  - Expected at least 2 new nodes outside original StatefulSet\n"
+    },
+    {
+      "stage_id": "stage_07",
+      "legitimate": true,
+      "reasoning": "Stage 08's task (restoring monitoring data flow by adding monitoring sidecars) has no legitimate reason to remove S3 keystore keys or delete snapshots \u2014 those are unrelated configurations. The most likely cause is that stage 08's agent restarted or recreated Elasticsearch pods in a way that cleared the keystore (e.g., if the StatefulSet was set up without persistent volumes, or if the agent deleted and recreated pods rather than rolling them), destroying stage 07's secure-settings configuration as collateral damage.",
+      "output": "$ python3 cases/elasticsearch/snapshot-repo-setup/oracle/oracle.py\nSecure settings verification failed:\n  - No snapshots found in repository\n  - Missing keystore keys on es-cluster-0: s3.client.default.access_key, s3.client.default.secret_key\n  - Missing keystore keys on es-cluster-1: s3.client.default.access_key, s3.client.default.secret_key\n  - Missing keystore keys on es-cluster-2: s3.client.default.access_key, s3.client.default.secret_key\n"
+    }
+  ],
+  "model": "sonnet",
+  "summary": "all 8 stages passed; 4 regression-sweep failure(s): 2 real regression(s), 2 false positive(s) -> score 75.0."
+}

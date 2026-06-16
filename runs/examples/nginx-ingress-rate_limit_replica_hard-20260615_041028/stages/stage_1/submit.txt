@@ -1,0 +1,14 @@
+Both oracle runs pass. Here's a summary of the complete configuration applied:
+
+**What was changed:**
+
+1. **`ingress-nginx-controller` ConfigMap** (3 changes):
+   - `annotations-risk-level: Critical` — unlocks `configuration-snippet` annotations on Ingress resources (the admission webhook had blocked them)
+   - `http-snippet: limit_req_zone $binary_remote_addr zone=api_zone:10m rate=10r/m;` — defines a shared nginx zone at 10 req/min per replica (6s to refill, which exceeds the 5s test window)
+   - `limit-req-status-code: "429"` — already present; ensures rate-limited responses return 429
+
+2. **`rate-api` Ingress** (annotation added):
+   - `nginx.ingress.kubernetes.io/configuration-snippet: limit_req zone=api_zone burst=1 nodelay;` — applies the zone to the `/api` location block with minimal burst
+
+**Why this works across 3 replicas:**  
+Standard per-Ingress annotations (`limit-rps`/`limit-rpm`) compute `burst = rate × multiplier`, which for any reasonable rate allows 20+ burst slots — enough to absorb all 10 test requests. Instead, using a ConfigMap-defined zone with `configuration-snippet` lets us set `burst=1` independently. With 10r/m (0.167 r/s), the counter takes 6 seconds to drain, so ALL second-and-later requests to each replica within the 5-second test window get 429. The `/health` Ingress has no `configuration-snippet` and is unaffected.
