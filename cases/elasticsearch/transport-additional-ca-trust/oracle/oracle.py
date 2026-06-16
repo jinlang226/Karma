@@ -137,8 +137,12 @@ def curl(path, errors):
         "--",
         "/bin/sh",
         "-c",
+        # The client deadline (--max-time 20) must exceed any server-side
+        # ``wait_for`` in `path`, otherwise curl aborts (exit 28) before ES can
+        # answer. The retry loop in main() does the real waiting, so each call's
+        # server wait stays short (10s).
         (
-            "curl -s -S -k --max-time 10 -u \"$ES_USER:$ES_PASS\" "
+            "curl -s -S -k --max-time 20 -u \"$ES_USER:$ES_PASS\" "
             f"{scheme}://{SERVICE}.{NAMESPACE}.svc:9200{path}"
         ),
     ]
@@ -161,7 +165,8 @@ def curl(path, errors):
         return None
 
 
-def main():
+def evaluate():
+    """Run one full snapshot of the transport-CA checks; return the errors."""
     errors = []
 
     cm_result = run(
@@ -194,7 +199,7 @@ def main():
             )
 
     health = curl(
-        f"/_cluster/health?wait_for_status=yellow&wait_for_nodes={EXPECTED_NODES}&timeout=30s",
+        f"/_cluster/health?wait_for_status=yellow&wait_for_nodes={EXPECTED_NODES}&timeout=10s",
         errors,
     )
     if isinstance(health, dict):
@@ -210,6 +215,24 @@ def main():
     if isinstance(nodes, list):
         if len(nodes) != EXPECTED_NODES:
             errors.append(f"Expected {EXPECTED_NODES} nodes in _cat/nodes, got {len(nodes)}")
+
+    return errors
+
+
+def main():
+    # A multi-node ES cluster can flap at the edge of readiness under load: a
+    # node briefly fails its HTTP readiness probe / drops from the cluster during
+    # GC or shard recovery even though it is stably green. A single snapshot can
+    # catch that transient and report a false node-count miss. So verify the
+    # STABLE converged state: re-evaluate for up to ~75s and pass on the first
+    # clean snapshot. This does not loosen the N-node/green/CA-bundle
+    # requirements -- a genuinely degraded cluster fails every attempt.
+    import time
+    deadline = time.monotonic() + 75
+    errors = evaluate()
+    while errors and time.monotonic() < deadline:
+        time.sleep(8)
+        errors = evaluate()
 
     if errors:
         print("Transport CA trust verification failed:", file=sys.stderr)

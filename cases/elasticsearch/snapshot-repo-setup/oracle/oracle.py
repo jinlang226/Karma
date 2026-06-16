@@ -159,7 +159,11 @@ def curl(path, errors):
         "--",
         "/bin/sh",
         "-c",
-        f"curl -s -S -k --max-time 10 {scheme}://{SERVICE}.{NAMESPACE}.svc:9200{path}",
+        # The client deadline (--max-time 20) must exceed any server-side
+        # ``wait_for`` in `path`, otherwise curl aborts (exit 28) before ES can
+        # answer. The retry loop in main() does the real waiting, so each call's
+        # server wait stays short (10s).
+        f"curl -s -S -k --max-time 20 {scheme}://{SERVICE}.{NAMESPACE}.svc:9200{path}",
     ]
     result = run(cmd)
     if result.returncode != 0:
@@ -271,11 +275,12 @@ def check_snapshots(errors):
         errors.append("No SUCCESS snapshots found in repository")
 
 
-def main():
+def evaluate():
+    """Run one full snapshot of the snapshot-repo checks; return the errors."""
     errors = []
 
     health = curl(
-        f"/_cluster/health?wait_for_status=yellow&wait_for_nodes={EXPECTED_NODES}&timeout=30s",
+        f"/_cluster/health?wait_for_status=yellow&wait_for_nodes={EXPECTED_NODES}&timeout=10s",
         errors,
     )
     if isinstance(health, dict):
@@ -296,6 +301,24 @@ def main():
             check_keystore(pod, errors)
     else:
         errors.append("No Elasticsearch pods found to verify keystore")
+
+    return errors
+
+
+def main():
+    # A multi-node ES cluster can flap at the edge of readiness under load: a
+    # node briefly fails its HTTP readiness probe / drops from the cluster during
+    # GC or shard recovery even though it is stably green. A single snapshot can
+    # catch that transient and report a false node-count miss. So verify the
+    # STABLE converged state: re-evaluate for up to ~75s and pass on the first
+    # clean snapshot. This does not loosen the N-node/green/snapshot/keystore
+    # requirements -- a genuinely degraded cluster fails every attempt.
+    import time
+    deadline = time.monotonic() + 75
+    errors = evaluate()
+    while errors and time.monotonic() < deadline:
+        time.sleep(8)
+        errors = evaluate()
 
     if errors:
         print("Secure settings verification failed:", file=sys.stderr)

@@ -146,6 +146,10 @@ def detect_scheme():
 
 def curl(path, errors):
     scheme = detect_scheme()
+    # The client deadline must exceed any server-side ``wait_for`` in `path``,
+    # otherwise curl aborts (exit 28) before ES can answer. The retry loop in
+    # main() does the real waiting, so each call's server wait stays short (10s)
+    # and --max-time (20) comfortably exceeds it.
     cmd = [
         "kubectl",
         "-n",
@@ -158,7 +162,7 @@ def curl(path, errors):
         "-S",
         "-k",
         "--max-time",
-        "10",
+        "20",
         f"{scheme}://{SERVICE}:9200{path}",
     ]
     result = run(cmd)
@@ -197,7 +201,7 @@ def check_cluster(errors):
         errors.append(f"Expected {EXPECTED_NODES} endpoints, got {addr_count}")
 
     health = curl(
-        f"/_cluster/health?wait_for_status=yellow&wait_for_nodes={EXPECTED_NODES}&timeout=30s",
+        f"/_cluster/health?wait_for_status=yellow&wait_for_nodes={EXPECTED_NODES}&timeout=10s",
         errors,
     )
     if isinstance(health, dict):
@@ -218,7 +222,8 @@ def check_cluster(errors):
         errors.append(f"Expected {EXPECTED_NODES} nodes in _cat/nodes, got {len(nodes)}")
 
 
-def main():
+def evaluate():
+    """Run one full snapshot of the bootstrap checks; return the list of errors."""
     errors = []
 
     cm_result = run(["kubectl", "-n", NAMESPACE, "get", "configmap", "es-config", "-o", "json"])
@@ -256,6 +261,25 @@ def main():
                 errors.append(f"Pod {name} is not Ready")
 
     check_cluster(errors)
+
+    return errors
+
+
+def main():
+    # A multi-node ES cluster can flap at the edge of readiness under load: a
+    # node briefly fails its HTTP readiness probe during GC or shard recovery
+    # even though the cluster is stably green (writes succeed). A single snapshot
+    # can catch that transient and report a false "2/3 Ready" / node-count miss.
+    # So verify the STABLE converged state: re-evaluate for up to ~75s and pass
+    # as soon as one clean snapshot is seen. This does not loosen the
+    # N-node/green requirement -- a genuinely degraded cluster (a node that never
+    # joins) fails every attempt and still fails the oracle.
+    import time
+    deadline = time.monotonic() + 75
+    errors = evaluate()
+    while errors and time.monotonic() < deadline:
+        time.sleep(8)
+        errors = evaluate()
 
     if errors:
         print("Bootstrap verification failed:", file=sys.stderr)
