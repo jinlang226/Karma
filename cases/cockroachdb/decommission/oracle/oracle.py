@@ -101,7 +101,8 @@ def to_bool(value):
     return str(value).strip().lower() in ("true", "t", "1", "yes")
 
 
-def main():
+def evaluate():
+    """One full snapshot of the decommission checks; returns error list."""
     errors = []
 
     cmd = ["kubectl", "-n", NAMESPACE, "get", "statefulset", "crdb-cluster", "-o", "json"]
@@ -205,6 +206,29 @@ def main():
                     errors.append(f"Expected at least 3 rows, got {count}")
             except ValueError:
                 errors.append("Failed to parse row count")
+
+    return errors
+
+
+def main():
+    # Decommission removes nodes and reshuffles replicas; the StatefulSet's
+    # readyReplicas and the removed nodes' membership (is_decommissioning ->
+    # decommissioned) settle a beat after the operation reports done, and a
+    # surviving node briefly restarting during the scale-down can dip is_live. A
+    # single snapshot can race that convergence on a cluster healthily finishing
+    # its decommission (the same case passes at the prior stages). Every assertion
+    # here already encodes the POST-decommission expectation -- the reduced
+    # TARGET_NODES live count and each removed node confirmed decommissioned -- so
+    # re-evaluating only waits for that asserted state to settle; it never flips
+    # an assertion. A node that genuinely fails to decommission never reports
+    # decommissioned, and a lost survivor never returns to live, so the oracle
+    # still fails after the deadline.
+    import time
+    deadline = time.monotonic() + 70
+    errors = evaluate()
+    while errors and time.monotonic() < deadline:
+        time.sleep(7)
+        errors = evaluate()
 
     if errors:
         print("Decommission verification failed:", file=sys.stderr)

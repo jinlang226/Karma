@@ -70,7 +70,8 @@ def parse_args():
     return parser.parse_args()
 
 
-def main(timeout_seconds):
+def evaluate(timeout_seconds):
+    """One full snapshot of the initialization checks; returns error list."""
     errors = []
     # Guardrail: disallow operator CRs if CRDs are installed.
     result = run(["kubectl", "-n", "cockroachdb", "get", "crdbcluster", "-o", "json"])
@@ -136,17 +137,35 @@ def main(timeout_seconds):
             
             if len(pods) != REPLICA_COUNT:
                 errors.append(f"Expected {REPLICA_COUNT} pods, found {len(pods)}")
-                
+
         except (json.JSONDecodeError, KeyError) as e:
             errors.append(f"Failed to parse pod status: {e}")
-    
+
+    return errors
+
+
+def main(timeout_seconds):
+    # Initialization brings nodes up one at a time as they join the cluster; a
+    # just-started node takes a short while to become Ready and report in node
+    # status. A single snapshot can race that convergence and see fewer than
+    # REPLICA_COUNT nodes on a cluster healthily finishing init. Re-evaluate for
+    # up to ~70s and pass on the first clean snapshot. This does not loosen the
+    # check -- a node that genuinely fails to join never appears, so the oracle
+    # still fails after the deadline.
+    import time
+    deadline = time.monotonic() + 70
+    errors = evaluate(timeout_seconds)
+    while errors and time.monotonic() < deadline:
+        time.sleep(7)
+        errors = evaluate(timeout_seconds)
+
     # Print results
     if errors:
         print("Initialization verification failed:", file=sys.stderr)
         for error in errors:
             print(f"  - {error}", file=sys.stderr)
         return 1
-    
+
     print(f"Cluster initialized successfully - all {REPLICA_COUNT} nodes are alive and accepting SQL connections")
     return 0
 
