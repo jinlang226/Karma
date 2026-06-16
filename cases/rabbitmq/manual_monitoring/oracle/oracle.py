@@ -55,7 +55,8 @@ def _resolve_expected_nodes():
     return 3
 
 
-def main():
+def evaluate():
+    """One full snapshot of the monitoring checks; returns the error list."""
     errors = []
     expected_nodes = _resolve_expected_nodes()
 
@@ -134,6 +135,25 @@ def main():
                     break
     except Exception as exc:
         errors.append(f"Failed to query up{{job=\"rabbitmq\"}}: {exc}")
+
+    return errors
+
+
+def main():
+    # Monitoring converges asynchronously after the agent's change: rabbitmq must
+    # reload to expose the prometheus plugin's /metrics endpoint (the port refuses
+    # connections until it does), and Prometheus only marks the targets UP after
+    # its next scrape interval. A single snapshot can run before that convergence
+    # and report unreachable metrics / targets-not-UP on a correctly-configured
+    # cluster. Re-evaluate for up to ~120s and pass on the first clean snapshot. A
+    # genuinely mis-configured monitoring setup never comes UP, so the oracle
+    # still fails after the deadline.
+    import time
+    deadline = time.monotonic() + 120
+    errors = evaluate()
+    while errors and time.monotonic() < deadline:
+        time.sleep(8)
+        errors = evaluate()
 
     if errors:
         print("RabbitMQ monitoring verification failed:")
