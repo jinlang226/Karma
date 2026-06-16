@@ -89,10 +89,47 @@ def get_secret(secret_name, errors):
         return None
 
 
-def run_mongo(uri, eval_str):
+def _exec_mongo(pod, uri, eval_str):
     return run([
-        "kubectl", "-n", NAMESPACE, "exec", POD, "--", "mongosh", "--quiet", *_mongo_tls_flags(), uri, "--eval", eval_str
+        "kubectl", "-n", NAMESPACE, "exec", pod, "--", "mongosh", "--quiet", *_mongo_tls_flags(), uri, "--eval", eval_str
     ])
+
+
+_PRIMARY_POD_CACHE = None
+
+
+def find_primary(uri):
+    """Locate the replica-set PRIMARY pod, falling back to POD.
+
+    The environment PERSISTS across workflow stages, so an earlier stage (e.g.
+    mongodb/arbiters) can trigger an election that moves the PRIMARY off
+    ``{CLUSTER_PREFIX}-0``. getRole/getUser lookups and reads/writes here
+    require the primary -- on a secondary they fail with "not primary and
+    secondaryOk=false". Exec db.hello() into each member, parse the
+    writable-primary node, and route subsequent mongosh exec there. Standalone
+    (single node) this resolves to POD -> identical behaviour; no check or
+    expected value changes.
+    """
+    global _PRIMARY_POD_CACHE
+    if _PRIMARY_POD_CACHE is not None:
+        return _PRIMARY_POD_CACHE
+    for idx in range(9):
+        pod = f"{CLUSTER_PREFIX}-{idx}"
+        res = _exec_mongo(pod, uri, "db.hello().isWritablePrimary")
+        if res.returncode != 0:
+            if idx > 0 and "NotFound" in (res.stderr or ""):
+                break
+            continue
+        if "true" in (res.stdout or ""):
+            _PRIMARY_POD_CACHE = pod
+            return pod
+    return POD
+
+
+def run_mongo(uri, eval_str):
+    # Route every read/write to the PRIMARY so a workflow election off
+    # replica-0 does not surface as "not primary"/missing-role failures.
+    return _exec_mongo(find_primary(uri), uri, eval_str)
 
 
 def load_json(uri, eval_str, label, errors):
