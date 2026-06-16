@@ -143,6 +143,31 @@ preconditionUnits:
       - command: "kubectl -n mongodb get pods 2>/dev/null | grep -c Running"
         timeout_sec: 10
 
+  # Additive credential+role+seed fixture (composition safety): standalone the
+  # build above creates the reporting-user, its rawRead role, the
+  # reporting-user-password secret, and the reports/raw seed data. Chained on an
+  # INHERITED cluster that build is skipped, so the oracle fails with
+  # "reporting-user-password not found". Ensure each artifact additively when
+  # missing, authenticating as the LIVE admin user (a prior rotation respected)
+  # and writing on the current primary. Never drops/alters existing users/data;
+  # standalone the probe finds everything present and skips -> identical behaviour.
+  - name: reporting_user_fixture
+    on_probe_fail: skip
+    probe:
+      - command: |
+          /bin/sh -c 'kubectl -n mongodb get secret {{params.reporting_secret_name}} >/dev/null 2>&1 || exit 1; pw=$(kubectl -n mongodb get secret {{params.admin_secret_name}} -o jsonpath="{.data.password}" 2>/dev/null | base64 -d 2>/dev/null); pw=${pw:-admin123password}; P=$(kubectl -n mongodb exec mongodb-replica-0 -- mongosh --quiet "mongodb://{{params.admin_username}}:$pw@localhost:27017/admin?directConnection=true" --eval '\''rs.hello().primary'\'' 2>/dev/null | cut -d. -f1); P=${P:-mongodb-replica-0}; kubectl -n mongodb exec "$P" -- mongosh --quiet "mongodb://{{params.admin_username}}:$pw@localhost:27017/admin" --eval '\''db.getSiblingDB("admin").getUser("{{params.reporting_username}}")?quit(0):quit(1)'\'' >/dev/null 2>&1'
+        timeout_sec: 30
+    apply:
+      - command: "kubectl -n mongodb apply -f cases/mongodb/custom-roles/resource/secrets.yaml"
+        sleep: 1
+      - command: |
+          /bin/sh -c 'pw=$(kubectl -n mongodb get secret {{params.admin_secret_name}} -o jsonpath="{.data.password}" 2>/dev/null | base64 -d 2>/dev/null); pw=${pw:-admin123password}; P=$(kubectl -n mongodb exec mongodb-replica-0 -- mongosh --quiet "mongodb://{{params.admin_username}}:$pw@localhost:27017/admin?directConnection=true" --eval '\''rs.hello().primary'\'' 2>/dev/null | cut -d. -f1); P=${P:-mongodb-replica-0}; kubectl -n mongodb exec "$P" -- mongosh --quiet "mongodb://{{params.admin_username}}:$pw@localhost:27017/admin" --eval '\''var a=db.getSiblingDB("{{params.app_database}}"); if(!a.getRole("{{params.bad_role_name}}")){a.createRole({role:"{{params.bad_role_name}}",privileges:[{resource:{db:"{{params.app_database}}",collection:"{{params.raw_collection}}"},actions:["find"]}],roles:[]});} if(!db.getSiblingDB("admin").getUser("{{params.reporting_username}}")){db.getSiblingDB("admin").createUser({user:"{{params.reporting_username}}",pwd:"reporting123password",roles:[{role:"{{params.bad_role_name}}",db:"{{params.app_database}}"}]});} if(a.{{params.reports_collection}}.countDocuments({})<3){a.{{params.reports_collection}}.insertMany([{x:1},{x:2},{x:3}],{writeConcern:{w:1}});} if(a.{{params.raw_collection}}.countDocuments({})<2){a.{{params.raw_collection}}.insertMany([{x:10},{x:11}],{writeConcern:{w:1}});}'\'' >/dev/null 2>&1 || true'
+        sleep: 2
+    verify:
+      - command: |
+          /bin/sh -c 'kubectl -n mongodb get secret {{params.reporting_secret_name}} >/dev/null 2>&1 || exit 1; pw=$(kubectl -n mongodb get secret {{params.admin_secret_name}} -o jsonpath="{.data.password}" 2>/dev/null | base64 -d 2>/dev/null); pw=${pw:-admin123password}; P=$(kubectl -n mongodb exec mongodb-replica-0 -- mongosh --quiet "mongodb://{{params.admin_username}}:$pw@localhost:27017/admin?directConnection=true" --eval '\''rs.hello().primary'\'' 2>/dev/null | cut -d. -f1); P=${P:-mongodb-replica-0}; kubectl -n mongodb exec "$P" -- mongosh --quiet "mongodb://{{params.admin_username}}:$pw@localhost:27017/admin" --eval '\''db.getSiblingDB("admin").getUser("{{params.reporting_username}}")?quit(0):quit(1)'\'' >/dev/null 2>&1'
+        timeout_sec: 30
+
 oracle:
   verify:
     commands:

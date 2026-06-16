@@ -125,6 +125,29 @@ preconditionUnits:
           /bin/sh -c 'pw=$(kubectl -n mongodb get secret admin-user-password -o jsonpath="{.data.password}" 2>/dev/null | base64 -d 2>/dev/null); pw=${pw:-admin123password}; n=$(P=$(kubectl -n mongodb exec mongodb-replica-0 -- mongosh --quiet "mongodb://{{params.admin_username}}:$pw@localhost:27017/admin?directConnection=true" --eval '\''rs.hello().primary'\'' 2>/dev/null | cut -d. -f1); P=${P:-mongodb-replica-0}; kubectl -n mongodb exec "$P" -- mongosh --quiet "mongodb://{{params.admin_username}}:$pw@localhost:27017/admin" --eval '\''db.getSiblingDB("{{params.app_database}}").{{params.reports_collection}}.countDocuments({})'\'' 2>/dev/null | tr -dc 0-9); [ "${n:-0}" -ge 3 ]'
         timeout_sec: 30
 
+  # Additive credential fixture (composition safety): standalone the build above
+  # creates the readonly-user + its secret. Chained on an INHERITED cluster that
+  # build is skipped, so the oracle (which authenticates as readonly-user to read
+  # the reports collection) fails. Ensure the secret + readonly-user additively
+  # when missing, as the LIVE admin on the current primary. Never drops/alters
+  # existing users; standalone the probe finds it present and skips.
+  - name: readonly_user_fixture
+    on_probe_fail: skip
+    probe:
+      - command: |
+          /bin/sh -c 'kubectl -n mongodb get secret {{params.readonly_secret_name}} >/dev/null 2>&1 || exit 1; pw=$(kubectl -n mongodb get secret {{params.admin_secret_name}} -o jsonpath="{.data.password}" 2>/dev/null | base64 -d 2>/dev/null); pw=${pw:-admin123password}; P=$(kubectl -n mongodb exec mongodb-replica-0 -- mongosh --quiet "mongodb://{{params.admin_username}}:$pw@localhost:27017/admin?directConnection=true" --eval '\''rs.hello().primary'\'' 2>/dev/null | cut -d. -f1); P=${P:-mongodb-replica-0}; kubectl -n mongodb exec "$P" -- mongosh --quiet "mongodb://{{params.admin_username}}:$pw@localhost:27017/admin" --eval '\''db.getSiblingDB("admin").getUser("{{params.readonly_username}}")?quit(0):quit(1)'\'' >/dev/null 2>&1'
+        timeout_sec: 30
+    apply:
+      - command: "kubectl -n mongodb apply -f cases/mongodb/user-management/resource/secrets.yaml"
+        sleep: 1
+      - command: |
+          /bin/sh -c 'pw=$(kubectl -n mongodb get secret {{params.admin_secret_name}} -o jsonpath="{.data.password}" 2>/dev/null | base64 -d 2>/dev/null); pw=${pw:-admin123password}; P=$(kubectl -n mongodb exec mongodb-replica-0 -- mongosh --quiet "mongodb://{{params.admin_username}}:$pw@localhost:27017/admin?directConnection=true" --eval '\''rs.hello().primary'\'' 2>/dev/null | cut -d. -f1); P=${P:-mongodb-replica-0}; kubectl -n mongodb exec "$P" -- mongosh --quiet "mongodb://{{params.admin_username}}:$pw@localhost:27017/admin" --eval '\''if(!db.getSiblingDB("admin").getUser("{{params.readonly_username}}")){db.getSiblingDB("admin").createUser({user:"{{params.readonly_username}}",pwd:"readonly123password",roles:[{role:"read",db:"{{params.app_database}}"}]});}'\'' >/dev/null 2>&1 || true'
+        sleep: 2
+    verify:
+      - command: |
+          /bin/sh -c 'kubectl -n mongodb get secret {{params.readonly_secret_name}} >/dev/null 2>&1 || exit 1; pw=$(kubectl -n mongodb get secret {{params.admin_secret_name}} -o jsonpath="{.data.password}" 2>/dev/null | base64 -d 2>/dev/null); pw=${pw:-admin123password}; P=$(kubectl -n mongodb exec mongodb-replica-0 -- mongosh --quiet "mongodb://{{params.admin_username}}:$pw@localhost:27017/admin?directConnection=true" --eval '\''rs.hello().primary'\'' 2>/dev/null | cut -d. -f1); P=${P:-mongodb-replica-0}; kubectl -n mongodb exec "$P" -- mongosh --quiet "mongodb://{{params.admin_username}}:$pw@localhost:27017/admin" --eval '\''db.getSiblingDB("admin").getUser("{{params.readonly_username}}")?quit(0):quit(1)'\'' >/dev/null 2>&1'
+        timeout_sec: 30
+
 oracle:
   verify:
     commands:
