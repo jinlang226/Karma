@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 import json
 import os
+import re
 import subprocess
 import sys
 
@@ -102,45 +103,67 @@ STS_NAME = resolve_es_sts()[0]
 APP_LABEL = resolve_es_sts()[1]
 
 
-def _sum_es_statefulset_replicas():
-    """Sum spec.replicas across every Elasticsearch StatefulSet in the namespace.
-
-    This is the DESIRED node topology (mirrors scale-up-new-nodeset's oracle).
-    Deriving from desired replicas — not a point-in-time Ready-pod count — makes
-    the check adapt to whatever cluster the persisted env accumulated (e.g. a
-    prior scale-up stage grew it to 6) WITHOUT masking a node that fails to
-    rejoin after the restart (a still-down node leaves the desired count
-    unmet). Returns None when no ES StatefulSet is found.
-    """
+def _list_es_statefulset_replicas():
+    """Return {sts_name: spec.replicas} for the namespace's Elasticsearch
+    StatefulSets (those whose pod template runs an Elasticsearch image)."""
     res = run(["kubectl", "-n", NAMESPACE, "get", "sts", "-o", "json"])
     if res.returncode != 0:
-        return None
+        return {}
     try:
         items = json.loads(res.stdout).get("items", [])
     except (json.JSONDecodeError, AttributeError):
-        return None
-    total = 0
-    found = False
+        return {}
+    out = {}
     for sts in items:
         spec = sts.get("spec", {})
         containers = spec.get("template", {}).get("spec", {}).get("containers", [])
         if "elasticsearch" not in " ".join(c.get("image", "") for c in containers):
             continue
+        name = sts.get("metadata", {}).get("name")
         replicas = spec.get("replicas")
-        if isinstance(replicas, int):
-            total += replicas
-            found = True
-    return total if found else None
+        if name and isinstance(replicas, int):
+            out[name] = replicas
+    return out
 
 
-def _resolve_expected_nodes(default=3):
-    """Node count to enforce (param override -> desired StatefulSet replicas ->
-    default).
+def _sts_name_for_node(node_name):
+    """Map a live ES node name to its backing StatefulSet name.
 
-    The env PERSISTS across stages; the expected count is the DESIRED topology
-    (sum of spec.replicas over every ES StatefulSet), not a live Ready-pod count.
-    This adapts to a cluster a prior stage scaled up AND still mismatches when a
-    node fails to rejoin (no masking).
+    An ES node name equals its pod name, which for a StatefulSet pod is
+    ``<statefulset-name>-<ordinal>`` (e.g. ``es-cluster-0`` -> ``es-cluster``,
+    ``es-data-1`` -> ``es-data``). Strip the trailing ``-<digits>`` ordinal.
+    Returns the node name unchanged if it carries no ordinal suffix.
+    """
+    if not node_name:
+        return node_name
+    return re.sub(r"-\d+$", "", node_name)
+
+
+def _live_sts_names(node_names):
+    """Set of StatefulSet names actually backing the live cluster nodes.
+
+    Derived by stripping each live node name's ordinal. This excludes
+    accumulated/stale/other ES StatefulSets in the (persisted) namespace that
+    back no node in the queried cluster.
+    """
+    return {_sts_name_for_node(n) for n in node_names if n}
+
+
+def _resolve_expected_nodes(node_names, default=3):
+    """Expected node count to enforce, derived from the LIVE cluster.
+
+    The expected total is the DESIRED topology of ONLY the StatefulSets that
+    actually back the live cluster (the nodes returned by ``_cat/nodes``): the
+    sum of spec.replicas over just those StatefulSets. The namespace PERSISTS
+    across workflow stages and accumulates multiple ES clusters, so summing
+    replicas across *every* ES StatefulSet overcounts versus the single cluster
+    the oracle queries. Restricting to the live cluster's StatefulSets fixes that.
+
+    Using DESIRED spec.replicas (not the live count) keeps the check strict: a
+    node that FAILED to rejoin after the restart leaves its StatefulSet "live"
+    (siblings are up) but absent from ``_cat/nodes``, so EXPECTED stays above the
+    actual count -- no masking. Param override is honored FIRST; falls back to
+    ``default`` when no live StatefulSets resolve (e.g. _cat/nodes failed/empty).
     """
     for key in ("BENCH_PARAM_EXPECTED_NODES", "BENCH_PARAM_EXPECTED_NODE_COUNT"):
         val = os.environ.get(key)
@@ -149,13 +172,17 @@ def _resolve_expected_nodes(default=3):
                 return int(val)
             except ValueError:
                 pass
-    desired = _sum_es_statefulset_replicas()
-    if desired is not None and desired > 0:
-        return desired
+    live_names = _live_sts_names(node_names)
+    if live_names:
+        replicas_by_name = _list_es_statefulset_replicas()
+        desired = sum(
+            replicas_by_name[n]
+            for n in live_names
+            if isinstance(replicas_by_name.get(n), int)
+        )
+        if desired > 0:
+            return desired
     return default
-
-
-EXPECTED_NODES = _resolve_expected_nodes(3)
 
 
 def _probe_scheme(scheme):
@@ -246,22 +273,31 @@ def evaluate():
     else:
         errors.append("Failed to read Elasticsearch root version")
 
+    # Resolve the live cluster's node list FIRST: the expected node count is
+    # derived from only the StatefulSets that actually back these live nodes
+    # (the persisted namespace accumulates several ES clusters across stages, so
+    # summing every ES StatefulSet's replicas overcounts the queried cluster).
+    nodes = curl("/_cat/nodes?format=json", errors)
+    node_names = []
+    if isinstance(nodes, list):
+        node_names = [n.get("name") for n in nodes if n.get("name")]
+    expected_nodes = _resolve_expected_nodes(node_names, default=3)
+
     health = curl(
-        f"/_cluster/health?wait_for_status=yellow&wait_for_nodes={EXPECTED_NODES}&timeout=10s",
+        f"/_cluster/health?wait_for_status=yellow&wait_for_nodes={expected_nodes}&timeout=10s",
         errors,
     )
     if isinstance(health, dict):
         status = health.get("status")
         if status not in {"yellow", "green"}:
             errors.append(f"Cluster health status expected yellow/green, got {status}")
-        if health.get("number_of_nodes") != EXPECTED_NODES:
-            errors.append(f"Expected {EXPECTED_NODES} nodes, got {health.get('number_of_nodes')}")
+        if health.get("number_of_nodes") != expected_nodes:
+            errors.append(f"Expected {expected_nodes} nodes, got {health.get('number_of_nodes')}")
     else:
         errors.append("Failed to read cluster health")
 
-    nodes = curl("/_cat/nodes?format=json", errors)
-    if isinstance(nodes, list) and len(nodes) != EXPECTED_NODES:
-        errors.append(f"Expected {EXPECTED_NODES} nodes in _cat/nodes, got {len(nodes)}")
+    if isinstance(nodes, list) and len(node_names) != expected_nodes:
+        errors.append(f"Expected {expected_nodes} nodes in _cat/nodes, got {len(node_names)}")
 
     if index and expected:
         count = curl(f"/{index}/_count", errors)
