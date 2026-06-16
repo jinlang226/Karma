@@ -79,11 +79,45 @@ STS_NAME = resolve_es_sts()[0]
 APP_LABEL = resolve_es_sts()[1]
 
 
-def _resolve_expected_nodes(default=3):
-    """Node count to enforce (param override -> live Ready es pods -> default).
+def _sum_es_statefulset_replicas():
+    """Sum spec.replicas across every Elasticsearch StatefulSet in the namespace.
 
-    The env PERSISTS across stages; adapt the target to the live cluster
-    without loosening it (a missing/NotReady node still mismatches).
+    This is the DESIRED node topology (mirrors scale-up-new-nodeset's oracle).
+    Deriving from desired replicas — not a point-in-time Ready-pod count — makes
+    the check adapt to whatever cluster the persisted env accumulated (e.g. a
+    prior scale-up stage grew it to 6) WITHOUT masking a node that fails to
+    rejoin after the restart (a still-down node leaves the desired count
+    unmet). Returns None when no ES StatefulSet is found.
+    """
+    res = run(["kubectl", "-n", NAMESPACE, "get", "sts", "-o", "json"])
+    if res.returncode != 0:
+        return None
+    try:
+        items = json.loads(res.stdout).get("items", [])
+    except (json.JSONDecodeError, AttributeError):
+        return None
+    total = 0
+    found = False
+    for sts in items:
+        spec = sts.get("spec", {})
+        containers = spec.get("template", {}).get("spec", {}).get("containers", [])
+        if "elasticsearch" not in " ".join(c.get("image", "") for c in containers):
+            continue
+        replicas = spec.get("replicas")
+        if isinstance(replicas, int):
+            total += replicas
+            found = True
+    return total if found else None
+
+
+def _resolve_expected_nodes(default=3):
+    """Node count to enforce (param override -> desired StatefulSet replicas ->
+    default).
+
+    The env PERSISTS across stages; the expected count is the DESIRED topology
+    (sum of spec.replicas over every ES StatefulSet), not a live Ready-pod count.
+    This adapts to a cluster a prior stage scaled up AND still mismatches when a
+    node fails to rejoin (no masking).
     """
     for key in ("BENCH_PARAM_EXPECTED_NODES", "BENCH_PARAM_EXPECTED_NODE_COUNT"):
         val = os.environ.get(key)
@@ -92,19 +126,9 @@ def _resolve_expected_nodes(default=3):
                 return int(val)
             except ValueError:
                 pass
-    res = run(["kubectl", "-n", NAMESPACE, "get", "pods", "-l", APP_LABEL, "-o", "json"])
-    if res.returncode == 0:
-        try:
-            items = json.loads(res.stdout).get("items", [])
-            ready = sum(
-                1 for p in items
-                if any(c.get("type") == "Ready" and c.get("status") == "True"
-                       for c in p.get("status", {}).get("conditions", []))
-            )
-            if ready > 0:
-                return ready
-        except (json.JSONDecodeError, AttributeError):
-            pass
+    desired = _sum_es_statefulset_replicas()
+    if desired is not None and desired > 0:
+        return desired
     return default
 
 
