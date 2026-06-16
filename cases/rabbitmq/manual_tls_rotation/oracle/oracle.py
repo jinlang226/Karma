@@ -150,20 +150,38 @@ def main():
             f"(min_days={args.min_rotated_leaf_validity_days})"
         )
 
-    # ensure live TLS uses new leaf
-    try:
-        live_fp = run([
-            # Run s_client from the broker pod, not the curl-only oracle-client
-            # (curlimages/curl ships no openssl). The rabbitmq image has openssl,
-            # and the pod can reach its own TLS service on 5671.
-            "kubectl", "-n", NAMESPACE, "exec", f"{CLUSTER_PREFIX}-0", "--",
-            "/bin/sh", "-c",
-            f"echo | openssl s_client -connect {CLUSTER_PREFIX}.{NAMESPACE}.svc.cluster.local:5671 -servername {CLUSTER_PREFIX} 2>/dev/null | openssl x509 -noout -fingerprint -sha256"
-        ]).strip().split("=")[-1]
-        if live_fp != new_leaf_fp:
-            errors.append("Live TLS certificate does not match rotated leaf")
-    except subprocess.CalledProcessError as exc:
-        errors.append(f"Failed to check live TLS certificate: {exc.output.decode().strip()}")
+    # ensure live TLS uses new leaf. Right after the agent rotates the cert the
+    # broker reloads its TLS listener, which can be briefly unresponsive, and on
+    # a loaded node the handshake is slow -- `openssl s_client` then HANGS, and
+    # the un-bounded run() (timeout=60) would raise TimeoutExpired and crash the
+    # whole oracle. Bound each attempt with `timeout 15` and retry, treating a
+    # hang/failure as "not converged yet" rather than fatal. Run s_client from the
+    # broker pod (the curl-only oracle-client image ships no openssl); the pod can
+    # reach its own TLS service on 5671.
+    import time
+    s_client_cmd = (
+        f"echo | timeout 15 openssl s_client -connect "
+        f"{CLUSTER_PREFIX}.{NAMESPACE}.svc.cluster.local:5671 -servername {CLUSTER_PREFIX} "
+        f"2>/dev/null | openssl x509 -noout -fingerprint -sha256"
+    )
+    live_fp = None
+    for _attempt in range(8):
+        try:
+            out = run([
+                "kubectl", "-n", NAMESPACE, "exec", f"{CLUSTER_PREFIX}-0", "--",
+                "/bin/sh", "-c", s_client_cmd,
+            ])
+        except (subprocess.CalledProcessError, subprocess.TimeoutExpired):
+            out = ""
+        fp = out.strip().split("=")[-1] if out and out.strip() else ""
+        if fp:
+            live_fp = fp
+            break
+        time.sleep(5)
+    if live_fp is None:
+        errors.append("Failed to check live TLS certificate (s_client unreachable after retries)")
+    elif live_fp != new_leaf_fp:
+        errors.append("Live TLS certificate does not match rotated leaf")
 
     if errors:
         print("Manual TLS rotation verification failed:")
