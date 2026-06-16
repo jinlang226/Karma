@@ -254,34 +254,27 @@ def get_sts_replicas(errors):
 
 
 def attribute_differs(attributes_by_node, original_nodes, new_nodes):
-    # The new nodeset is "distinguished" if the agent applied an allocation
-    # attribute to the new nodes that the original nodes do not share -- EITHER a
-    # brand-new key the originals lack (e.g. zone=new on the new nodes while the
-    # originals carry no zone attribute at all), OR a shared key with a different
-    # value. The earlier logic only inspected keys present on ALL original nodes,
-    # so it missed the common "add a new allocation-attribute key to the new
-    # nodeset" solution and falsely reported no difference.
+    # The new nodeset is "distinguished" when some new node carries an allocation
+    # attribute KEY that no original node has at all -- e.g. node.attr.zone=new or
+    # node.attr.rack=new on the new data nodes while the originals carry no
+    # zone/rack attribute. Keying on a BRAND-NEW attribute key (rather than a
+    # differing value on a shared key) avoids false positives from ES built-in
+    # per-node attributes (xpack.installed, transform.node, ml.*) that every node
+    # carries with varying values. It also does NOT require the new nodes to be
+    # homogeneous: a scaled-up data nodeset (rack=new) is detected even when the
+    # cluster also holds an unrelated inherited nodeset (e.g. a transform node)
+    # that lacks that key -- the earlier intersection-of-all-new-nodes rule missed
+    # exactly that case. An agent that added no distinguishing attribute leaves the
+    # new nodes carrying only keys the originals also have, so this still fails.
     if not original_nodes or not new_nodes:
         return False
-    new_attrs = [attributes_by_node.get(n, {}) for n in new_nodes]
-    original_attrs = [attributes_by_node.get(n, {}) for n in original_nodes]
-    # Candidate keys = attributes the agent set uniformly across the WHOLE new
-    # nodeset (a real allocation attribute is applied to every new node; per-node
-    # built-ins that vary are excluded by the uniformity requirement).
-    new_keys = set.intersection(*(set(a.keys()) for a in new_attrs)) if new_attrs else set()
-    for key in sorted(new_keys):
-        new_values = {a.get(key) for a in new_attrs}
-        if len(new_values) != 1:
-            continue
-        new_value = next(iter(new_values))
-        # Differs when no original node carries this exact value for the key:
-        # covers both a key the originals lack (their value is absent) and a
-        # shared key whose value differs. Homogeneous built-ins are identical on
-        # every node, so they appear on the originals too and are not flagged --
-        # an agent that added no distinguishing attribute still fails.
-        original_values = {a.get(key) for a in original_attrs}
-        if new_value not in original_values:
-            return True
+    original_keys = set()
+    for n in original_nodes:
+        original_keys |= set(attributes_by_node.get(n, {}).keys())
+    for n in new_nodes:
+        for key, value in attributes_by_node.get(n, {}).items():
+            if key not in original_keys and value not in (None, ""):
+                return True
     return False
 
 
@@ -298,6 +291,10 @@ def evaluate():
         if status not in {"yellow", "green"}:
             errors.append(f"Cluster health status expected yellow/green, got {status}")
         if health.get("number_of_nodes") != EXPECTED_NODES:
+            # Diagnostic: when the desired-replica total disagrees with the live
+            # node count, dump the per-StatefulSet replica breakdown so an
+            # over-provisioned / inherited nodeset is visible in the verdict.
+            print("[diag] es statefulsets (name,replicas,created)=%s" % (_list_es_statefulsets(),), file=sys.stderr)
             errors.append(f"Expected {EXPECTED_NODES} nodes, got {health.get('number_of_nodes')}")
 
     nodes = curl("/_cat/nodes?format=json", errors)
@@ -324,22 +321,6 @@ def evaluate():
             if name:
                 attributes_by_node[name] = node.get("attributes", {})
         if original_nodes and new_nodes and not attribute_differs(attributes_by_node, original_nodes, new_nodes):
-            # Diagnostic dump (stderr is captured into the verdict output) so a
-            # false negative here is debuggable without a live cluster: it shows
-            # the resolved original StatefulSet and the actual attributes the
-            # oracle compared, exposing any node-name / attribute-key mismatch.
-            print(
-                "[diag] original_sts=%s\n[diag] original_nodes=%s -> %s\n[diag] new_nodes=%s -> %s\n[diag] all_attr_node_names=%s"
-                % (
-                    resolve_original_sts(),
-                    original_nodes,
-                    {n: attributes_by_node.get(n, {}) for n in original_nodes},
-                    new_nodes,
-                    {n: attributes_by_node.get(n, {}) for n in new_nodes},
-                    sorted(attributes_by_node.keys()),
-                ),
-                file=sys.stderr,
-            )
             errors.append("No allocation attribute differs between original nodes and new nodes")
 
     shards = curl(f"/_cat/shards/{INDEX_NAME}?format=json", errors)
