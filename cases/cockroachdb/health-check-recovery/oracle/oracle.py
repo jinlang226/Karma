@@ -86,9 +86,10 @@ def to_bool(value):
     return str(value).strip().lower() in ("true", "t", "1", "yes")
 
 
-def main():
+def evaluate():
+    """One full snapshot of the health-check-recovery checks; returns error list."""
     errors = []
-    
+
     # Check all pods are healthy
     cmd = ["kubectl", "-n", "cockroachdb", "get", "pods", "-l", 
            "app.kubernetes.io/name=cockroachdb", "-o", "json"]
@@ -159,13 +160,31 @@ def main():
     result = run(cmd)
     if result.returncode != 0:
         errors.append(result.stderr.strip() or "SQL query failed")
-    
+
+    return errors
+
+
+def main():
+    # Health recovery restarts nodes one at a time; a just-restarted node takes a
+    # short while to become Ready and report is_live again. A single snapshot can
+    # race that convergence and see e.g. "2 live nodes" on a cluster healthily
+    # finishing recovery (the same case passes at the prior stages). Re-evaluate
+    # for up to ~70s and pass on the first clean snapshot. This does not loosen
+    # the check -- a node that genuinely fails to recover never becomes live, so
+    # the oracle still fails after the deadline.
+    import time
+    deadline = time.monotonic() + 70
+    errors = evaluate()
+    while errors and time.monotonic() < deadline:
+        time.sleep(7)
+        errors = evaluate()
+
     if errors:
         print("Health check recovery verification failed:", file=sys.stderr)
         for error in errors:
             print(f"  - {error}", file=sys.stderr)
         return 1
-    
+
     print("All pods recovered and healthy")
     return 0
 
