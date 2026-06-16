@@ -247,16 +247,25 @@ def evaluate():
 
 def main():
     # The agent fixes the broken permissions, but the legitimate outcome -- the
-    # app-client (re)declaring app-queue in /app and publishing to it -- happens
-    # ASYNCHRONOUSLY after the fix: the client must restart out of
-    # CrashLoopBackOff, reconnect, declare the queue, and publish. A single
-    # snapshot can run before that convergence and see "app-queue not found". So
-    # re-evaluate for up to ~90s and pass on the first clean snapshot. This does
-    # not loosen the check -- a genuinely unfixed permission keeps the client
-    # crashing, so the queue never appears and the oracle still fails after the
-    # deadline.
+    # app-client/ops-client running under the corrected permissions and the
+    # app-client (re)declaring app-queue and publishing -- happens
+    # ASYNCHRONOUSLY. By the time the agent fixes the perms the clients have
+    # usually crashed several times and entered CrashLoopBackOff, whose backoff
+    # grows to minutes; the next restart that would finally succeed with the
+    # fixed perms can be far past a short wait, so the clients show "not Ready"
+    # and the queue is absent well after the agent is done. Delete the client
+    # pods ONCE so their Deployments recreate them immediately and they retry
+    # against the now-correct permissions WITHOUT the backoff delay, then
+    # re-evaluate for up to ~120s and pass on the first clean snapshot. This does
+    # not loosen the check: clients whose permissions are still broken keep
+    # crashing and never become Ready or declare the queue, so the oracle still
+    # fails after the deadline.
     import time
-    deadline = time.monotonic() + 90
+    for _dep in ("app-client", "ops-client"):
+        run(["kubectl", "-n", NAMESPACE, "delete", "pod",
+             "-l", f"app={_dep}", "--ignore-not-found=true", "--wait=false"])
+
+    deadline = time.monotonic() + 120
     errors = evaluate()
     while errors and time.monotonic() < deadline:
         time.sleep(8)
