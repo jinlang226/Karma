@@ -140,6 +140,39 @@ preconditionUnits:
       - command: "kubectl -n elasticsearch get pods 2>/dev/null | grep -c Running"
         timeout_sec: 10
 
+  - name: capture_http_cert_baseline
+    # Snapshot the cluster's CURRENT HTTP cert as the pre-rotation baseline the
+    # oracle compares the rotated cert against. es_env_ready creates es-http-old /
+    # es-http-ca, but its apply is SKIPPED when an ES cluster is inherited from a
+    # prior workflow stage (probe sees pods Running) -- leaving those ConfigMaps
+    # absent and the rotate-http-certs oracle unable to verify rotation. Capture
+    # them here additively from the live TLS secret when the baseline ConfigMap
+    # is missing. Workflow-agnostic and non-destructive: it only reads the cert
+    # and writes ConfigMaps, never mutating the cluster or the rotated secret. The
+    # fingerprint formatting matches the deploy-path capture so the oracle's
+    # old-vs-new comparison is identical on both paths.
+    on_probe_fail: skip
+    probe:
+      - command: "kubectl -n elasticsearch get configmap {{params.old_fingerprint_configmap_name}}"
+        timeout_sec: 10
+    apply:
+      - command: |
+          /bin/sh -c '
+          set -e
+          T=$(mktemp -d)
+          kubectl -n elasticsearch get secret {{params.tls_secret_name}} -o jsonpath="{.data.ca\.crt}" | base64 -d > "$T/ca.crt"
+          kubectl -n elasticsearch get secret {{params.tls_secret_name}} -o jsonpath="{.data.tls\.crt}" | base64 -d > "$T/tls.crt"
+          kubectl -n elasticsearch create configmap {{params.http_ca_configmap_name}} --from-file=ca.crt="$T/ca.crt" --dry-run=client -o yaml | kubectl apply -f -
+          CA_FP=$(openssl x509 -noout -fingerprint -sha256 -in "$T/ca.crt" | cut -d= -f2)
+          LEAF_FP=$(openssl x509 -noout -fingerprint -sha256 -in "$T/tls.crt" | cut -d= -f2)
+          kubectl -n elasticsearch create configmap {{params.old_fingerprint_configmap_name}} --from-file=ca.crt="$T/ca.crt" --from-literal=ca_fingerprint_sha256="$CA_FP" --from-literal=leaf_fingerprint_sha256="$LEAF_FP" --dry-run=client -o yaml | kubectl apply -f -
+          '
+        timeout_sec: 60
+        sleep: 1
+    verify:
+      - command: "kubectl -n elasticsearch get configmap {{params.old_fingerprint_configmap_name}} -o jsonpath='{.data.ca_fingerprint_sha256}'"
+        timeout_sec: 10
+
 oracle:
   verify:
     commands:
