@@ -330,6 +330,12 @@ def evaluate():
         if status not in {"yellow", "green"}:
             errors.append(f"Cluster health status expected yellow/green, got {status}")
         if health.get("number_of_nodes") != EXPECTED_NODES:
+            # Diagnostic: dump the per-StatefulSet replica breakdown so a topology
+            # mismatch (a live node not backed by an ES-image StatefulSet the sum
+            # counts) is visible in the verdict on the next run.
+            _sts = run(["kubectl", "-n", NAMESPACE, "get", "sts", "-o",
+                        "jsonpath={range .items[*]}{.metadata.name}={.spec.replicas}:{.spec.template.spec.containers[0].image} {end}"])
+            print(f"[diag] EXPECTED={EXPECTED_NODES} live_nodes={health.get('number_of_nodes')} sts={(_sts.stdout or '').strip()}", file=sys.stderr)
             errors.append(
                 f"Expected {EXPECTED_NODES} nodes, got {health.get('number_of_nodes')}"
             )
