@@ -90,13 +90,21 @@ preconditionUnits:
         sleep: 1
       - command: "openssl req -new -key /tmp/test-ca.key -subj /CN=Test\\ CA -out /tmp/test-ca.csr"
         sleep: 1
-      - command: "openssl x509 -req -in /tmp/test-ca.csr -signkey /tmp/test-ca.key -set_serial 01 -extfile cases/nginx-ingress/renew_tls_secret/resource/ca-ext.conf -not_before 20190101000000Z -not_after 20360101000000Z -out /tmp/test-ca.crt"
+      # Long-lived, currently-valid CA. `-days 9000` (~24.6y) is portable to every
+      # openssl/LibreSSL; the old `-not_before/-not_after` flags need OpenSSL 3.2+
+      # (the runner/toolbox ships <3.2) and fail with "x509: Use -help for summary".
+      - command: "openssl x509 -req -in /tmp/test-ca.csr -signkey /tmp/test-ca.key -set_serial 01 -extfile cases/nginx-ingress/renew_tls_secret/resource/ca-ext.conf -days 9000 -out /tmp/test-ca.crt"
         sleep: 1
       - command: "openssl genrsa -out /tmp/expired-tls.key 2048"
         sleep: 1
       - command: "openssl req -new -key /tmp/expired-tls.key -out /tmp/expired-tls.csr -config cases/nginx-ingress/renew_tls_secret/resource/leaf.cnf"
         sleep: 1
-      - command: "openssl x509 -req -in /tmp/expired-tls.csr -CA /tmp/test-ca.crt -CAkey /tmp/test-ca.key -CAcreateserial -not_before 20200101000000Z -not_after 20200102000000Z -out /tmp/expired-tls.crt -extfile cases/nginx-ingress/renew_tls_secret/resource/leaf.cnf -extensions req_ext"
+      # Backdated/EXPIRED leaf (the agent must renew it). A forward-counting `-days`
+      # cannot express a past validity window, so use the portable `openssl ca`
+      # path (-startdate/-enddate exist back to OpenSSL 1.x/LibreSSL) with a
+      # throwaway CA db. SAN (req_ext) is preserved so curl validation still keys
+      # on demo.example.com; the result is an in-the-past cert signed by the CA.
+      - command: "/bin/sh -c 'D=$(mktemp -d); mkdir -p \"$D/newcerts\"; : > \"$D/index.txt\"; echo 1000 > \"$D/serial\"; printf \"[ca]\\ndefault_ca=CA_default\\n[CA_default]\\ndir=%s\\ndatabase=%s/index.txt\\nnew_certs_dir=%s/newcerts\\nserial=%s/serial\\ncertificate=/tmp/test-ca.crt\\nprivate_key=/tmp/test-ca.key\\ndefault_md=sha256\\npolicy=pol\\n[pol]\\ncommonName=supplied\\n\" \"$D\" \"$D\" \"$D\" \"$D\" > \"$D/ca.cnf\"; openssl ca -batch -config \"$D/ca.cnf\" -startdate 20200101000000Z -enddate 20200102000000Z -extfile cases/nginx-ingress/renew_tls_secret/resource/leaf.cnf -extensions req_ext -in /tmp/expired-tls.csr -out /tmp/expired-tls.crt; rm -rf \"$D\"'"
         sleep: 1
       - command: "kubectl -n demo create secret tls expired-tls-secret --cert=/tmp/expired-tls.crt --key=/tmp/expired-tls.key"
         sleep: 1
@@ -143,13 +151,15 @@ preconditionUnits:
         sleep: 1
       - command: "openssl req -new -key /tmp/test-ca.key -subj /CN=Test\\ CA -out /tmp/test-ca.csr"
         sleep: 1
-      - command: "openssl x509 -req -in /tmp/test-ca.csr -signkey /tmp/test-ca.key -set_serial 01 -extfile cases/nginx-ingress/renew_tls_secret/resource/ca-ext.conf -not_before 20190101000000Z -not_after 20360101000000Z -out /tmp/test-ca.crt"
+      # See nginx_env_ready above: portable `-days` CA + `openssl ca` backdated leaf
+      # (the old OpenSSL 3.2+ `-not_before/-not_after` flags fail on the runner).
+      - command: "openssl x509 -req -in /tmp/test-ca.csr -signkey /tmp/test-ca.key -set_serial 01 -extfile cases/nginx-ingress/renew_tls_secret/resource/ca-ext.conf -days 9000 -out /tmp/test-ca.crt"
         sleep: 1
       - command: "openssl genrsa -out /tmp/expired-tls.key 2048"
         sleep: 1
       - command: "openssl req -new -key /tmp/expired-tls.key -out /tmp/expired-tls.csr -config cases/nginx-ingress/renew_tls_secret/resource/leaf.cnf"
         sleep: 1
-      - command: "openssl x509 -req -in /tmp/expired-tls.csr -CA /tmp/test-ca.crt -CAkey /tmp/test-ca.key -CAcreateserial -not_before 20200101000000Z -not_after 20200102000000Z -out /tmp/expired-tls.crt -extfile cases/nginx-ingress/renew_tls_secret/resource/leaf.cnf -extensions req_ext"
+      - command: "/bin/sh -c 'D=$(mktemp -d); mkdir -p \"$D/newcerts\"; : > \"$D/index.txt\"; echo 1000 > \"$D/serial\"; printf \"[ca]\\ndefault_ca=CA_default\\n[CA_default]\\ndir=%s\\ndatabase=%s/index.txt\\nnew_certs_dir=%s/newcerts\\nserial=%s/serial\\ncertificate=/tmp/test-ca.crt\\nprivate_key=/tmp/test-ca.key\\ndefault_md=sha256\\npolicy=pol\\n[pol]\\ncommonName=supplied\\n\" \"$D\" \"$D\" \"$D\" \"$D\" > \"$D/ca.cnf\"; openssl ca -batch -config \"$D/ca.cnf\" -startdate 20200101000000Z -enddate 20200102000000Z -extfile cases/nginx-ingress/renew_tls_secret/resource/leaf.cnf -extensions req_ext -in /tmp/expired-tls.csr -out /tmp/expired-tls.crt; rm -rf \"$D\"'"
         sleep: 1
       - command: "kubectl -n demo create secret tls expired-tls-secret --cert=/tmp/expired-tls.crt --key=/tmp/expired-tls.key"
         sleep: 1
