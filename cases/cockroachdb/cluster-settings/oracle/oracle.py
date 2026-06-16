@@ -246,7 +246,7 @@ def check(errors, phase):
         )
 
 
-def wait_pod_ready(deadline_sec=90):
+def wait_pod_ready(deadline_sec=150):
     """Wait for POD to exist AND become Ready, tolerating the recreation window.
 
     The agent and this oracle both restart crdb-cluster-0 to test persistence,
@@ -282,7 +282,16 @@ def main():
 
     check(errors, "before restart")
 
-    delete = run(["kubectl", "-n", NAMESPACE, "--request-timeout=30s", "delete", "pod", POD], timeout=40)
+    # `kubectl delete pod` blocks until the pod fully terminates, and a
+    # CockroachDB node drains on SIGTERM -- under concurrent multi-cluster load
+    # that graceful shutdown routinely exceeds 40s, so the old 40s budget
+    # aborted the persistence check before the pod was gone. Bound the drain
+    # with --grace-period and give the call room to complete (120s).
+    delete = run(
+        ["kubectl", "-n", NAMESPACE, "--request-timeout=90s",
+         "delete", "pod", POD, "--grace-period=60"],
+        timeout=120,
+    )
     if delete.returncode != 0:
         errors.append(f"Failed to delete pod for persistence check: {delete.stderr.strip()}")
     # After the delete the StatefulSet recreates the pod; wait for it to exist
