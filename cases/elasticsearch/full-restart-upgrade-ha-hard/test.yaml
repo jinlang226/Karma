@@ -53,6 +53,35 @@ preconditionUnits:
       - command: "kubectl -n elasticsearch get pods 2>/dev/null | grep -c Running"
         timeout_sec: 10
 
+  - name: seed_index_baseline
+    # Seed the index + record the es-seed baseline ConfigMap the oracle reads.
+    # This MUST run every stage, but the seed lives inside es_env_ready's apply,
+    # which is SKIPPED when an ES cluster is inherited from a prior workflow
+    # stage (probe sees pods Running) -- leaving the index unseeded and es-seed
+    # absent, so the oracle errors "Failed to read es-seed ConfigMap: not found".
+    # So seed it here additively: when the baseline ConfigMap is missing, ensure
+    # the curl-test pod is ready, write the index/docs over the HTTP service, and
+    # record the ConfigMap. Workflow-agnostic and non-destructive -- it only
+    # seeds data and writes a ConfigMap, never deleting anything. The seed
+    # commands match es_env_ready's so the standalone and inherited paths are
+    # identical.
+    on_probe_fail: skip
+    probe:
+      - command: "kubectl -n elasticsearch get configmap es-seed"
+        timeout_sec: 10
+    apply:
+      - command: "kubectl -n elasticsearch wait --for=condition=ready pod/curl-test --timeout=300s"
+        sleep: 1
+      - command: "/bin/sh -c 'for i in $(seq 1 90); do kubectl -n elasticsearch exec curl-test -- curl -s --max-time 5 \"http://es-http.elasticsearch.svc:9200/_cluster/health?wait_for_status=yellow&timeout=5s\" | grep -q \"\\\"status\\\"\" && exit 0; sleep 2; done; exit 1'"
+        sleep: 1
+      - command: "/bin/sh -c 'kubectl -n elasticsearch exec curl-test -- curl -s -X PUT http://es-http.elasticsearch.svc:9200/app-data >/dev/null; kubectl -n elasticsearch exec curl-test -- curl -s -X POST http://es-http.elasticsearch.svc:9200/app-data/_doc -H \"Content-Type: application/json\" -d \"{\\\"x\\\":1}\" >/dev/null; kubectl -n elasticsearch exec curl-test -- curl -s -X POST http://es-http.elasticsearch.svc:9200/app-data/_doc -H \"Content-Type: application/json\" -d \"{\\\"x\\\":2}\" >/dev/null; kubectl -n elasticsearch exec curl-test -- curl -s -X POST http://es-http.elasticsearch.svc:9200/app-data/_doc -H \"Content-Type: application/json\" -d \"{\\\"x\\\":3}\" >/dev/null; kubectl -n elasticsearch exec curl-test -- curl -s -X POST http://es-http.elasticsearch.svc:9200/app-data/_refresh >/dev/null'"
+        sleep: 1
+      - command: "/bin/sh -c 'kubectl -n elasticsearch create configmap es-seed --from-literal=index=app-data --from-literal=expected_count=3 --dry-run=client -o yaml | kubectl apply -f -'"
+        sleep: 1
+    verify:
+      - command: "kubectl -n elasticsearch get configmap es-seed"
+        timeout_sec: 10
+
 oracle:
   verify:
     commands:
