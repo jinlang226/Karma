@@ -274,18 +274,30 @@
   async function refreshClusterBanner() {
     const banner = document.getElementById("cluster-banner");
     if (!banner) return;
+    let ok = false, detail = "";
     try {
       const data = await KARMA.api.get("/api/services");
       const cluster = (data && data.cluster) || {};
-      const ok = cluster.status === "ok";
-      banner.className = "banner " + (ok ? "ok" : "warn");
-      banner.textContent = ok
-        ? "Cluster reachable"
-        : "Cluster: " + (cluster.status || "unknown") +
-          (cluster.detail ? " — " + cluster.detail : "");
+      ok = cluster.status === "ok";
+      detail = ok ? "" :
+        "Cluster: " + (cluster.status || "unknown") +
+        (cluster.detail ? " — " + cluster.detail : "");
     } catch (e) {
-      banner.className = "banner warn";
-      banner.textContent = "Backend unreachable: " + e.message;
+      ok = false;
+      detail = "Backend unreachable: " + e.message;
+    }
+    // Keep the widget compact in BOTH states (just the status). When unreachable
+    // the full error is not shown inline -- the banner becomes clickable and
+    // surfaces the detail as a toast message, like other messages in the app.
+    banner.className = "banner " + (ok ? "ok" : "warn clickable");
+    banner.textContent = ok ? "Cluster reachable" : "Cluster unreachable";
+    banner._detail = detail;
+    banner.title = ok ? "" : "Click for details";
+    if (!banner._clickWired) {
+      banner.addEventListener("click", () => {
+        if (banner._detail) KARMA.toast(banner._detail, "error");
+      });
+      banner._clickWired = true;
     }
   }
 
