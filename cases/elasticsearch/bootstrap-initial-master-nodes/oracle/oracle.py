@@ -7,7 +7,61 @@ import sys
 
 NAMESPACE = os.environ.get("BENCH_NAMESPACE", "elasticsearch")
 SERVICE = os.environ.get("BENCH_PARAM_HTTP_SERVICE_NAME", "es-http")
-CLUSTER_PREFIX = os.environ.get("BENCH_PARAM_CLUSTER_PREFIX", "es-cluster")
+# Hint for the Elasticsearch pod app label. Used as an override when it matches a
+# live StatefulSet's selector; otherwise the real selector label is detected
+# live from the cluster. The env PERSISTS across stages, so a workflow's
+# inherited ES cluster may label its pods differently than this case's standalone
+# default of 'es-cluster'.
+CLUSTER_PREFIX_HINT = os.environ.get("BENCH_PARAM_CLUSTER_PREFIX", "es-cluster")
+
+
+def _run_for_label(cmd):
+    """Minimal subprocess runner used by label detection (mirrors run())."""
+    return subprocess.run(cmd, text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+
+
+_APP_LABEL = None
+
+
+def resolve_app_label():
+    """Resolve the 'app=<value>' selector for the live ES pods.
+
+    Priority: the BENCH_PARAM_CLUSTER_PREFIX hint when some live StatefulSet
+    actually selects on app=<hint> (explicit override wins) -> the app label of
+    the namespace's Elasticsearch StatefulSet detected live -> the hint.
+    Workflow-agnostic: adapts to an inherited cluster labelled e.g.
+    app=elasticsearch instead of app=es-cluster.
+    """
+    global _APP_LABEL
+    if _APP_LABEL is not None:
+        return _APP_LABEL
+    res = _run_for_label(["kubectl", "-n", NAMESPACE, "get", "sts", "-o", "json"])
+    labels = []
+    if res.returncode == 0:
+        try:
+            for sts in json.loads(res.stdout).get("items", []):
+                spec = sts.get("spec", {})
+                containers = spec.get("template", {}).get("spec", {}).get("containers", [])
+                if "elasticsearch" not in " ".join(c.get("image", "") for c in containers):
+                    continue
+                app = (spec.get("selector", {}).get("matchLabels", {}) or {}).get("app")
+                ts = sts.get("metadata", {}).get("creationTimestamp", "")
+                if app:
+                    labels.append((app, ts))
+        except (json.JSONDecodeError, AttributeError):
+            pass
+    if any(app == CLUSTER_PREFIX_HINT for app, _ in labels):
+        _APP_LABEL = f"app={CLUSTER_PREFIX_HINT}"
+        return _APP_LABEL
+    if labels:
+        labels.sort(key=lambda x: (x[1] or ""))
+        _APP_LABEL = f"app={labels[0][0]}"
+        return _APP_LABEL
+    _APP_LABEL = f"app={CLUSTER_PREFIX_HINT}"
+    return _APP_LABEL
+
+
+APP_LABEL = resolve_app_label()
 
 
 def _resolve_expected_nodes(default=3):
@@ -28,7 +82,7 @@ def _resolve_expected_nodes(default=3):
             except ValueError:
                 pass
     res = subprocess.run(
-        ["kubectl", "-n", NAMESPACE, "get", "pods", "-l", f"app={CLUSTER_PREFIX}", "-o", "json"],
+        ["kubectl", "-n", NAMESPACE, "get", "pods", "-l", APP_LABEL, "-o", "json"],
         text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
     )
     if res.returncode == 0:
@@ -181,7 +235,7 @@ def main():
             errors.append("cluster.initial_master_nodes still present in es-config")
 
     pods_result = run(
-        ["kubectl", "-n", NAMESPACE, "get", "pods", "-l", f"app={CLUSTER_PREFIX}", "-o", "json"]
+        ["kubectl", "-n", NAMESPACE, "get", "pods", "-l", APP_LABEL, "-o", "json"]
     )
     if pods_result.returncode != 0:
         errors.append(f"Failed to read pods: {pods_result.stderr.strip()}")

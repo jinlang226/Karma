@@ -6,7 +6,12 @@ import sys
 
 NAMESPACE = "elasticsearch"
 SERVICE = "es-http"
-CLUSTER_PREFIX = "es-cluster"
+# Hint for the Elasticsearch StatefulSet name. Used as an override when it names
+# a StatefulSet that actually exists; otherwise the StatefulSet (and its real
+# pod selector label) are detected live from the cluster. The env PERSISTS
+# across stages, so a workflow's inherited ES cluster may carry a different
+# StatefulSet name/label than this case's standalone default of 'es-cluster'.
+CLUSTER_PREFIX_HINT = os.environ.get("BENCH_PARAM_CLUSTER_PREFIX", "es-cluster")
 REPO_NAME = "minio-repo"
 KEYS = {
     "s3.client.default.access_key",
@@ -18,6 +23,62 @@ _SCHEME = None
 
 def run(cmd):
     return subprocess.run(cmd, text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+
+
+_ES_STS = None
+
+
+def _list_es_statefulsets():
+    """Return [(name, app_label_value, creationTimestamp)] for the namespace's
+    StatefulSets whose pod template runs an Elasticsearch image."""
+    res = run(["kubectl", "-n", NAMESPACE, "get", "sts", "-o", "json"])
+    if res.returncode != 0:
+        return []
+    try:
+        items = json.loads(res.stdout).get("items", [])
+    except (json.JSONDecodeError, AttributeError):
+        return []
+    out = []
+    for sts in items:
+        meta = sts.get("metadata", {})
+        spec = sts.get("spec", {})
+        containers = spec.get("template", {}).get("spec", {}).get("containers", [])
+        if "elasticsearch" not in " ".join(c.get("image", "") for c in containers):
+            continue
+        app = (spec.get("selector", {}).get("matchLabels", {}) or {}).get("app")
+        out.append((meta.get("name"), app, meta.get("creationTimestamp", "")))
+    return out
+
+
+def resolve_es_sts():
+    """Resolve (sts_name, app_label_selector) for the live ES StatefulSet.
+
+    Priority: the BENCH_PARAM_CLUSTER_PREFIX hint when it names a real
+    StatefulSet (explicit override wins) -> the single ES StatefulSet detected
+    live (oldest first if several). Workflow-agnostic: adapts to an inherited
+    cluster whose StatefulSet name/label differ from the standalone default.
+    """
+    global _ES_STS
+    if _ES_STS is not None:
+        return _ES_STS
+    es_sets = _list_es_statefulsets()
+    by_name = {n: (n, a) for (n, a, _c) in es_sets if n}
+    if CLUSTER_PREFIX_HINT in by_name:
+        name, app = by_name[CLUSTER_PREFIX_HINT]
+        _ES_STS = (name, f"app={app}" if app else f"app={name}")
+        return _ES_STS
+    if es_sets:
+        candidates = [s for s in es_sets if s[0]]
+        candidates.sort(key=lambda s: (s[2] or ""))
+        name, app, _c = candidates[0]
+        _ES_STS = (name, f"app={app}" if app else f"app={name}")
+        return _ES_STS
+    _ES_STS = (CLUSTER_PREFIX_HINT, f"app={CLUSTER_PREFIX_HINT}")
+    return _ES_STS
+
+
+STS_NAME = resolve_es_sts()[0]
+APP_LABEL = resolve_es_sts()[1]
 
 
 def _resolve_expected_nodes(default=3):
@@ -39,13 +100,13 @@ def _resolve_expected_nodes(default=3):
     # node is YELLOW and so fails its readiness probe (Ready=False) while still
     # being a fully functional node -- a Ready count would undercount to 0 and
     # wrongly fall back to the default.
-    sts = run(["kubectl", "-n", NAMESPACE, "get", "statefulset", CLUSTER_PREFIX,
+    sts = run(["kubectl", "-n", NAMESPACE, "get", "statefulset", STS_NAME,
                "-o", "jsonpath={.spec.replicas}"])
     if sts.returncode == 0 and sts.stdout.strip().isdigit():
         desired = int(sts.stdout.strip())
         if desired > 0:
             return desired
-    res = run(["kubectl", "-n", NAMESPACE, "get", "pods", "-l", f"app={CLUSTER_PREFIX}", "-o", "json"])
+    res = run(["kubectl", "-n", NAMESPACE, "get", "pods", "-l", APP_LABEL, "-o", "json"])
     if res.returncode == 0:
         try:
             items = json.loads(res.stdout).get("items", [])
@@ -125,7 +186,7 @@ def get_pods(errors):
             "get",
             "pods",
             "-l",
-            "app=es-cluster",
+            APP_LABEL,
             "-o",
             "json",
         ]
