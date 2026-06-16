@@ -153,7 +153,8 @@ def _check_quorum_budget(labels, replicas, errors):
     errors.append("No disruption budget enforces quorum safety (>=2 pods available)")
 
 
-def main():
+def evaluate():
+    """One full snapshot of the deploy checks; returns the list of errors."""
     errors = []
     svc = None
     pub_svc = None
@@ -317,6 +318,25 @@ def main():
         _check_quorum_budget(pod_labels, replicas or EXPECTED_REPLICAS, errors)
 
     _check_crdbcluster_absent(errors)
+
+    return errors
+
+
+def main():
+    # Most checks here are static config (services, StatefulSet spec, image),
+    # but pod readiness and endpoint membership are volatile: a freshly-deployed
+    # CockroachDB pod takes a moment to pass its readiness probe and register an
+    # endpoint, and under concurrent multi-cluster load one of the three can be
+    # briefly NotReady at the instant the oracle samples (seen as "found 2"). So
+    # re-evaluate for up to ~70s and pass on the first clean snapshot. This does
+    # not loosen anything -- a pod that never becomes ready keeps failing after
+    # the deadline; it only waits for the deploy to settle.
+    import time
+    deadline = time.monotonic() + 70
+    errors = evaluate()
+    while errors and time.monotonic() < deadline:
+        time.sleep(7)
+        errors = evaluate()
 
     if errors:
         print("Verification failed:", file=sys.stderr)
