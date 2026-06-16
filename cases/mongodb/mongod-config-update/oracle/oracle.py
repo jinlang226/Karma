@@ -13,8 +13,11 @@ ADMIN_SECRET = os.environ.get("BENCH_PARAM_ADMIN_SECRET_NAME", "admin-user-passw
 ADMIN_USER = os.environ.get("BENCH_PARAM_ADMIN_USERNAME", "admin-user")
 SEED_DB = os.environ.get("BENCH_PARAM_SEED_DATABASE", "testdb")
 SEED_COLLECTION = os.environ.get("BENCH_PARAM_SEED_COLLECTION", "data")
-TARGET_LOG_LEVEL = int(os.environ.get("BENCH_PARAM_TARGET_LOG_LEVEL", "1"))
-TARGET_SLOW_MS = int(os.environ.get("BENCH_PARAM_TARGET_SLOW_MS", "200"))
+# Prompt is RELATIVE to the seeded config (verbosity 1, slowOpThresholdMs 200):
+# "increase verbosity by one level" -> 2; "2x the current value" -> 400. The
+# oracle defaults below must match those post-change targets, not the seed.
+TARGET_LOG_LEVEL = int(os.environ.get("BENCH_PARAM_TARGET_LOG_LEVEL", "2"))
+TARGET_SLOW_MS = int(os.environ.get("BENCH_PARAM_TARGET_SLOW_MS", "400"))
 TARGET_COMPRESSOR = os.environ.get("BENCH_PARAM_TARGET_JOURNAL_COMPRESSOR", "zlib")
 POD_PREFIX = f"{CLUSTER_PREFIX}-"
 
