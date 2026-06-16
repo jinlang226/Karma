@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 import json
 import os
+import re
 import subprocess
 import sys
 
@@ -15,6 +16,11 @@ SERVICE = os.environ.get("BENCH_PARAM_HTTP_SERVICE_NAME", "es-http")
 CLUSTER_PREFIX_HINT = os.environ.get("BENCH_PARAM_CLUSTER_PREFIX", "es-cluster")
 INDEX_NAME = os.environ.get("BENCH_PARAM_INDEX_NAME", "app-data")
 ORIGINAL_REPLICAS = int(os.environ.get("BENCH_PARAM_ORIGINAL_REPLICAS", "3"))
+# Fallback expected-node count when the live cluster's StatefulSets can't be
+# resolved (e.g. _cat/nodes failed/empty for an attempt). The real expected
+# count is derived per-evaluate from the live cluster — see
+# _resolve_expected_nodes().
+DEFAULT_EXPECTED_NODES = 5
 DEFAULT_SCHEME = "http"
 _SCHEME = None
 _CREDS = None
@@ -116,46 +122,74 @@ def _detect_creds():
     return _CREDS
 
 
-def _resolve_expected_nodes(default=5):
-    """Total node count to enforce after scale-up.
+def _sts_name_for_node(node_name):
+    """Map a live ES node name to its backing StatefulSet name.
 
-    The expected total is the DESIRED topology: the sum of spec.replicas across
-    every Elasticsearch StatefulSet in the namespace (original cluster + any new
-    nodeset, plus any extra nodeset an earlier workflow stage left behind, e.g.
-    a dedicated transform node). Deriving from desired replicas — not a
-    point-in-time Ready-pod count — makes this adapt to whatever topology the
-    persisted env accumulated AND avoids racing a node that is still joining.
-
-    BENCH_PARAM_EXPECTED_NODES is honored ONLY as an explicit override when it is
-    at least as large as the live desired total: the case ships a standalone
-    default of 5, which would otherwise wrongly pin the count below an inherited
-    cluster that already carries more nodes. The 'at least 2 new nodes' and
-    original-StatefulSet checks below still enforce the real task.
+    An ES node name equals its pod name, which for a StatefulSet pod is
+    ``<statefulset-name>-<ordinal>`` (e.g. ``es-cluster-0`` -> ``es-cluster``,
+    ``es-data-1`` -> ``es-data``). Strip the trailing ``-<digits>`` ordinal.
+    Returns the node name unchanged if it carries no ordinal suffix.
     """
-    desired = None
-    es_sets = _list_es_statefulsets()
-    replica_counts = [r for (_n, r, _c) in es_sets if isinstance(r, int)]
-    if replica_counts:
-        desired = sum(replica_counts)
+    if not node_name:
+        return node_name
+    return re.sub(r"-\d+$", "", node_name)
 
+
+def _live_sts_names(node_names):
+    """Set of StatefulSet names actually backing the live cluster nodes.
+
+    Derived by stripping each live node name's ordinal. This excludes
+    accumulated/stale/other ES StatefulSets in the (persisted) namespace that
+    back no node in the queried cluster.
+    """
+    return {_sts_name_for_node(n) for n in node_names if n}
+
+
+def _resolve_expected_nodes(node_names, default=5):
+    """Expected node count to enforce, derived from the LIVE cluster.
+
+    The expected total is the DESIRED topology of ONLY the StatefulSets that
+    actually back the live cluster (the nodes returned by ``_cat/nodes``): the
+    sum of spec.replicas over just those StatefulSets. The namespace PERSISTS
+    across workflow stages and accumulates multiple ES clusters (different
+    stages' agents create differently-named clusters), so summing replicas
+    across *every* ES StatefulSet wildly overcounts versus the single cluster
+    the oracle queries. Restricting to the live cluster's StatefulSets fixes
+    that overcount.
+
+    Using DESIRED spec.replicas (not the live count) keeps the check strict: a
+    node that FAILED to join leaves its StatefulSet "live" (siblings are up) but
+    absent from ``_cat/nodes``, so EXPECTED stays above the actual count and the
+    oracle still fails — no masking of a real node loss.
+
+    BENCH_PARAM_EXPECTED_NODES / EXPECTED_NODE_COUNT is honored FIRST as an
+    explicit override. Falls back to ``default`` when no live StatefulSets can
+    be resolved (e.g. _cat/nodes failed or returned empty).
+    """
     val = os.environ.get("BENCH_PARAM_EXPECTED_NODES")
+    if val is None or not str(val).strip():
+        val = os.environ.get("BENCH_PARAM_EXPECTED_NODE_COUNT")
+    if val is None or not str(val).strip():
+        val = os.environ.get("EXPECTED_NODE_COUNT")
     if val is not None and str(val).strip():
         try:
-            override = int(val)
-            # Only let the param raise the bar, never lower it below the live
-            # desired topology (defeats the stale standalone default in a
-            # workflow with an inherited, larger cluster).
-            if desired is None or override >= desired:
-                return override
+            return int(val)
         except ValueError:
             pass
 
-    if desired is not None and desired > 0:
-        return desired
+    live_names = _live_sts_names(node_names)
+    if live_names:
+        es_sets = _list_es_statefulsets()
+        replicas_by_name = {n: r for (n, r, _c) in es_sets if n}
+        desired = sum(
+            replicas_by_name[n]
+            for n in live_names
+            if isinstance(replicas_by_name.get(n), int)
+        )
+        if desired > 0:
+            return desired
+
     return default
-
-
-EXPECTED_NODES = _resolve_expected_nodes(5)
 
 
 def _probe_scheme(scheme):
@@ -296,27 +330,34 @@ def evaluate():
     """Run one full snapshot of the scale-up checks; return the list of errors."""
     errors = []
 
+    # Resolve the live cluster's node list FIRST: the expected node count is
+    # derived from only the StatefulSets that actually back these live nodes
+    # (the persisted namespace accumulates several ES clusters across stages, so
+    # summing every ES StatefulSet's replicas overcounts the queried cluster).
+    nodes = curl("/_cat/nodes?format=json", errors)
+    node_names = []
+    if isinstance(nodes, list):
+        node_names = [n.get("name") for n in nodes if n.get("name")]
+    expected_nodes = _resolve_expected_nodes(node_names, default=DEFAULT_EXPECTED_NODES)
+
     health = curl(
-        f"/_cluster/health?wait_for_status=yellow&wait_for_nodes={EXPECTED_NODES}&timeout=10s",
+        f"/_cluster/health?wait_for_status=yellow&wait_for_nodes={expected_nodes}&timeout=10s",
         errors,
     )
     if isinstance(health, dict):
         status = health.get("status")
         if status not in {"yellow", "green"}:
             errors.append(f"Cluster health status expected yellow/green, got {status}")
-        if health.get("number_of_nodes") != EXPECTED_NODES:
+        if health.get("number_of_nodes") != expected_nodes:
             # Diagnostic: when the desired-replica total disagrees with the live
             # node count, dump the per-StatefulSet replica breakdown so an
             # over-provisioned / inherited nodeset is visible in the verdict.
             print("[diag] es statefulsets (name,replicas,created)=%s" % (_list_es_statefulsets(),), file=sys.stderr)
-            errors.append(f"Expected {EXPECTED_NODES} nodes, got {health.get('number_of_nodes')}")
+            errors.append(f"Expected {expected_nodes} nodes, got {health.get('number_of_nodes')}")
 
-    nodes = curl("/_cat/nodes?format=json", errors)
-    node_names = []
     if isinstance(nodes, list):
-        node_names = [n.get("name") for n in nodes if n.get("name")]
-        if len(node_names) != EXPECTED_NODES:
-            errors.append(f"Expected {EXPECTED_NODES} nodes in _cat/nodes, got {len(node_names)}")
+        if len(node_names) != expected_nodes:
+            errors.append(f"Expected {expected_nodes} nodes in _cat/nodes, got {len(node_names)}")
 
     original_nodes = get_original_nodes(errors)
     if original_nodes:
