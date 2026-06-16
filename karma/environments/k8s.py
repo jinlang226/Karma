@@ -11,6 +11,7 @@ it directly from ``runtime.*``.
 
 from __future__ import annotations
 
+import hashlib
 import re
 import subprocess
 import time
@@ -90,7 +91,17 @@ class K8sEnvironment:
         dict
             Map of role name to physical namespace name.
         """
-        safe_run = re.sub(r"[^a-z0-9-]", "-", run_id.lower())[:40].rstrip("-")
+        _safe = re.sub(r"[^a-z0-9-]", "-", run_id.lower())
+        if len(_safe) > 40:
+            # Plain [:40] truncation drops the run_id's unique timestamp, so a long
+            # workflow name yields the SAME namespace for every run/attempt. A stale
+            # Terminating namespace from a prior attempt then collides (ensure sees
+            # AlreadyExists and proceeds against a dying namespace). Append a hash of
+            # the full run_id to stay unique while bounded (<=40 chars).
+            _h = hashlib.sha1(run_id.encode("utf-8")).hexdigest()[:8]
+            safe_run = _safe[:31].rstrip("-") + "-" + _h
+        else:
+            safe_run = _safe.rstrip("-")
         bindings: dict[str, str] = {}
         for role in (roles or []):
             safe_role = re.sub(r"[^a-z0-9-]", "-", str(role).lower()).strip("-")
