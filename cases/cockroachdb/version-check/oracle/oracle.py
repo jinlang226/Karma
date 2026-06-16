@@ -104,8 +104,14 @@ def main():
         errors.append(f"Error: {cluster_result.stderr.strip()}")
     else:
         cluster_version = tsv_last_value(cluster_result.stdout)
-        if FROM_VERSION not in cluster_version:
-            errors.append(f"Cluster version mismatch: {cluster_version or 'empty'}")
+        # NOTE: do not assert the active feature version equals FROM_VERSION. That
+        # asserts a PRE-finalization setup (binary ahead of feature, downgrade
+        # pinned) which is the standalone scenario, but the env PERSISTS across a
+        # workflow: a prior major-upgrade-finalize stage legitimately advances the
+        # feature version to the binary's. The agent's task -- report the cluster's
+        # ACTUAL active feature version -- is verified below (cm_version must equal
+        # this live cluster_version), so the check stays honest regardless of
+        # whether the upgrade has been finalized.
 
     preserve_cmd = [
         "kubectl",
@@ -126,9 +132,12 @@ def main():
         errors.append("Failed to read preserve_downgrade_option")
         errors.append(f"Error: {preserve_result.stderr.strip()}")
     else:
-        preserve_value = tsv_last_value(preserve_result.stdout)
-        if not preserve_value:
-            errors.append("preserve_downgrade_option is empty")
+        # preserve_downgrade_option being SET is likewise a pre-finalization setup
+        # detail, not the agent's task: once a workflow's major-upgrade-finalize
+        # stage finalizes the upgrade it is correctly cleared. Reading it is kept
+        # for diagnostics; its value is not asserted so the case composes after
+        # finalization.
+        _ = tsv_last_value(preserve_result.stdout)
 
     binary_cmd = [
         "kubectl",
