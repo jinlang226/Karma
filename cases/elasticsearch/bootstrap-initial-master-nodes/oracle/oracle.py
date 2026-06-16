@@ -64,15 +64,50 @@ def resolve_app_label():
 APP_LABEL = resolve_app_label()
 
 
+def _sum_es_statefulset_replicas():
+    """Sum spec.replicas across every Elasticsearch StatefulSet in the namespace.
+
+    This is the DESIRED node topology. Deriving from desired replicas -- not a
+    point-in-time Ready-pod count -- adapts to whatever the persisted env
+    accumulated (e.g. a prior scale-up grew it across multiple nodesets) WITHOUT
+    masking a node that fails to come up: a still-down node leaves the desired
+    count unmet rather than silently lowering the expectation. Returns None when
+    no ES StatefulSet is found.
+    """
+    res = subprocess.run(
+        ["kubectl", "-n", NAMESPACE, "get", "sts", "-o", "json"],
+        text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+    )
+    if res.returncode != 0:
+        return None
+    try:
+        items = json.loads(res.stdout).get("items", [])
+    except (json.JSONDecodeError, AttributeError):
+        return None
+    total = 0
+    found = False
+    for sts in items:
+        spec = sts.get("spec", {})
+        containers = spec.get("template", {}).get("spec", {}).get("containers", [])
+        if "elasticsearch" not in " ".join(c.get("image", "") for c in containers):
+            continue
+        replicas = spec.get("replicas")
+        if isinstance(replicas, int):
+            total += replicas
+            found = True
+    return total if found else None
+
+
 def _resolve_expected_nodes(default=3):
     """Topology size to enforce.
 
     The env PERSISTS across stages, so a prior scale stage may have grown the
     cluster past this case's standalone default. Resolve from (priority):
-    explicit BENCH_PARAM_EXPECTED_NODES / *_NODE_COUNT param -> the LIVE count
-    of Ready es pods (label app=<prefix>) -> the standalone default. Only the
-    count target adapts; a non-solving agent (missing/NotReady node) still
-    mismatches the live count.
+    explicit BENCH_PARAM_EXPECTED_NODES / *_NODE_COUNT param -> the DESIRED
+    topology (sum of spec.replicas over every ES StatefulSet) -> the standalone
+    default. Desired replicas (not a Ready-pod count) both reflects a scaled-up
+    cluster AND avoids MASKING a node that failed to come up (a Ready count would
+    lower the expectation and false-pass).
     """
     for key in ("BENCH_PARAM_EXPECTED_NODES", "BENCH_PARAM_EXPECTED_NODE_COUNT"):
         val = os.environ.get(key)
@@ -81,22 +116,9 @@ def _resolve_expected_nodes(default=3):
                 return int(val)
             except ValueError:
                 pass
-    res = subprocess.run(
-        ["kubectl", "-n", NAMESPACE, "get", "pods", "-l", APP_LABEL, "-o", "json"],
-        text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-    )
-    if res.returncode == 0:
-        try:
-            items = json.loads(res.stdout).get("items", [])
-            ready = 0
-            for pod in items:
-                conds = pod.get("status", {}).get("conditions", [])
-                if any(c.get("type") == "Ready" and c.get("status") == "True" for c in conds):
-                    ready += 1
-            if ready > 0:
-                return ready
-        except (json.JSONDecodeError, AttributeError):
-            pass
+    desired = _sum_es_statefulset_replicas()
+    if desired is not None and desired > 0:
+        return desired
     return default
 
 
