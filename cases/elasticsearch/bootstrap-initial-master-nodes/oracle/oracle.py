@@ -13,6 +13,27 @@ SERVICE = os.environ.get("BENCH_PARAM_HTTP_SERVICE_NAME", "es-http")
 # inherited ES cluster may label its pods differently than this case's standalone
 # default of 'es-cluster'.
 CLUSTER_PREFIX_HINT = os.environ.get("BENCH_PARAM_CLUSTER_PREFIX", "es-cluster")
+# ES 8.x runs with security enabled, so the HTTP API requires authenticating as
+# the elastic superuser. When this case inherits a secured cluster from an
+# earlier workflow stage, read its password from the secret that stage created
+# so the oracle's queries aren't rejected with 401. Absent secret -> None -> no
+# -u, so a standalone unsecured cluster still works.
+PASSWORD_SECRET = os.environ.get("BENCH_PARAM_ELASTIC_PASSWORD_SECRET_NAME", "elastic-password")
+PASSWORD_KEY = os.environ.get("BENCH_PARAM_ELASTIC_PASSWORD_KEY", "password")
+ELASTIC_PASSWORD = None  # set in main() once kubectl is reachable
+
+
+def _elastic_password():
+    """Fetch the elastic-user password from its secret (base64-decoded), or None."""
+    import base64
+    r = _run_for_label(["kubectl", "-n", NAMESPACE, "get", "secret", PASSWORD_SECRET,
+                        "-o", "jsonpath={.data." + PASSWORD_KEY + "}"])
+    if r.returncode != 0 or not r.stdout.strip():
+        return None
+    try:
+        return base64.b64decode(r.stdout.strip()).decode()
+    except Exception:
+        return None
 
 
 def _run_for_label(cmd):
@@ -183,6 +204,10 @@ def curl(path, errors):
         "-s",
         "-S",
         "-k",
+    ]
+    if ELASTIC_PASSWORD:
+        cmd += ["-u", f"elastic:{ELASTIC_PASSWORD}"]
+    cmd += [
         "--max-time",
         "20",
         f"{scheme}://{SERVICE}:9200{path}",
@@ -288,6 +313,9 @@ def evaluate():
 
 
 def main():
+    global ELASTIC_PASSWORD
+    ELASTIC_PASSWORD = _elastic_password()
+
     # A multi-node ES cluster can flap at the edge of readiness under load: a
     # node briefly fails its HTTP readiness probe during GC or shard recovery
     # even though the cluster is stably green (writes succeed). A single snapshot
