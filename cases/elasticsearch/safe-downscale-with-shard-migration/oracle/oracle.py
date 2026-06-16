@@ -13,12 +13,35 @@ SERVICE = os.environ.get("BENCH_PARAM_HTTP_SERVICE_NAME", "es-http")
 # StatefulSet name/label than this case's standalone default of 'es-cluster'.
 CLUSTER_PREFIX_HINT = os.environ.get("BENCH_PARAM_CLUSTER_PREFIX", "es-cluster")
 MARKER_PATH = "/usr/share/elasticsearch/data/pvc-gc-marker"
+# ES 8.x runs with security enabled, so the HTTP API requires authenticating as
+# the elastic superuser. When this case inherits a secured cluster from an
+# earlier workflow stage, read its password from the secret that stage created
+# so the oracle's queries aren't rejected with 401. Absent secret -> None -> no
+# -u, so a standalone unsecured cluster still works.
+PASSWORD_SECRET = os.environ.get("BENCH_PARAM_ELASTIC_PASSWORD_SECRET_NAME", "elastic-password")
+PASSWORD_KEY = os.environ.get("BENCH_PARAM_ELASTIC_PASSWORD_KEY", "password")
 DEFAULT_SCHEME = "http"
 _SCHEME = None
 
 
 def run(cmd):
     return subprocess.run(cmd, text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+
+
+def _elastic_password():
+    """Fetch the elastic-user password from its secret (base64-decoded), or None."""
+    import base64
+    r = run(["kubectl", "-n", NAMESPACE, "get", "secret", PASSWORD_SECRET,
+             "-o", "jsonpath={.data." + PASSWORD_KEY + "}"])
+    if r.returncode != 0 or not r.stdout.strip():
+        return None
+    try:
+        return base64.b64decode(r.stdout.strip()).decode()
+    except Exception:
+        return None
+
+
+ELASTIC_PASSWORD = None  # set in main() once kubectl is reachable
 
 
 _ES_STS = None
@@ -132,6 +155,10 @@ def detect_scheme():
 
 def curl(path, errors):
     scheme = detect_scheme()
+    auth = ""
+    if ELASTIC_PASSWORD:
+        import shlex
+        auth = f"-u {shlex.quote('elastic:' + ELASTIC_PASSWORD)} "
     result = run(
         [
             "kubectl",
@@ -142,7 +169,7 @@ def curl(path, errors):
             "--",
             "/bin/sh",
             "-c",
-            f"curl -s -S -k --connect-timeout 2 --max-time 3 {scheme}://{SERVICE}:9200{path}",
+            f"curl -s -S -k {auth}--connect-timeout 2 --max-time 3 {scheme}://{SERVICE}:9200{path}",
         ]
     )
     if result.returncode != 0:
@@ -285,6 +312,9 @@ def evaluate():
 
 
 def main():
+    global ELASTIC_PASSWORD
+    ELASTIC_PASSWORD = _elastic_password()
+
     # A multi-node ES cluster can flap at the edge of readiness under load: a
     # surviving node briefly fails its HTTP readiness probe / the cluster reports
     # transient unassigned shards mid shard-migration even though it converges

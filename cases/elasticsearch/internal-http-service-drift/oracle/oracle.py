@@ -12,6 +12,13 @@ DEV_APP = os.environ.get("BENCH_PARAM_DEV_APP_LABEL", "es-beta")
 INDEX = os.environ.get("BENCH_PARAM_INDEX_NAME", "app-logs")
 MIN_COUNT = int(os.environ.get("BENCH_PARAM_MIN_DOC_COUNT", "5"))
 LOG_READER_DEPLOY = os.environ.get("BENCH_PARAM_LOG_READER_DEPLOYMENT", "log-reader")
+# ES 8.x runs with security enabled, so the HTTP API requires authenticating as
+# the elastic superuser. When this case's backing clusters are deployed secured
+# (e.g. a workflow stage created the namespace-level elastic-password secret),
+# read it so the oracle's queries aren't rejected with 401. Absent secret ->
+# None -> no -u, so the standalone unsecured clusters still work.
+PASSWORD_SECRET = os.environ.get("BENCH_PARAM_ELASTIC_PASSWORD_SECRET_NAME", "elastic-password")
+PASSWORD_KEY = os.environ.get("BENCH_PARAM_ELASTIC_PASSWORD_KEY", "password")
 # Per-service scheme cache: each backing cluster may carry a different live
 # scheme (the env PERSISTS across stages), so detect independently per service.
 _SCHEME = {}
@@ -35,6 +42,22 @@ sleep infinity
 
 def run(cmd):
     return subprocess.run(cmd, text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+
+
+def _elastic_password():
+    """Fetch the elastic-user password from its secret (base64-decoded), or None."""
+    import base64
+    r = run(["kubectl", "-n", NAMESPACE, "get", "secret", PASSWORD_SECRET,
+             "-o", "jsonpath={.data." + PASSWORD_KEY + "}"])
+    if r.returncode != 0 or not r.stdout.strip():
+        return None
+    try:
+        return base64.b64decode(r.stdout.strip()).decode()
+    except Exception:
+        return None
+
+
+ELASTIC_PASSWORD = None  # set in main() once kubectl is reachable
 
 
 def _resolve_count(env_keys, app_label, default):
@@ -110,6 +133,10 @@ def curl_json(service, path, errors):
         "-s",
         "-S",
         "-k",
+    ]
+    if ELASTIC_PASSWORD:
+        cmd += ["-u", f"elastic:{ELASTIC_PASSWORD}"]
+    cmd += [
         "--max-time",
         "20",
         f"{scheme}://{service}:9200{path}",
@@ -219,6 +246,9 @@ def evaluate():
 
 
 def main():
+    global ELASTIC_PASSWORD
+    ELASTIC_PASSWORD = _elastic_password()
+
     # A multi-node ES cluster can flap at the edge of readiness under load: a
     # node briefly fails its readiness probe / drops from the cluster during GC
     # or shard recovery even though it is stably green. A single snapshot can

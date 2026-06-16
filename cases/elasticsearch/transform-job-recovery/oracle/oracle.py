@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 import json
+import os
 import subprocess
 import sys
 
@@ -9,12 +10,35 @@ CURL_POD = "curl-test"
 TRANSFORM_ID = "events-by-service"
 CHECKPOINT_CM = "transform-checkpoint"
 DEST_INDEX = "app-events-rollup"
+# ES 8.x runs with security enabled, so the HTTP API requires authenticating as
+# the elastic superuser. When this case inherits a secured cluster from an
+# earlier workflow stage, read its password from the secret that stage created
+# so the oracle's queries aren't rejected with 401. Absent secret -> None -> no
+# -u, so a standalone unsecured cluster still works.
+PASSWORD_SECRET = os.environ.get("BENCH_PARAM_ELASTIC_PASSWORD_SECRET_NAME", "elastic-password")
+PASSWORD_KEY = os.environ.get("BENCH_PARAM_ELASTIC_PASSWORD_KEY", "password")
 DEFAULT_SCHEME = "http"
 _SCHEME = None
 
 
 def run(cmd):
     return subprocess.run(cmd, text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+
+
+def _elastic_password():
+    """Fetch the elastic-user password from its secret (base64-decoded), or None."""
+    import base64
+    r = run(["kubectl", "-n", NAMESPACE, "get", "secret", PASSWORD_SECRET,
+             "-o", "jsonpath={.data." + PASSWORD_KEY + "}"])
+    if r.returncode != 0 or not r.stdout.strip():
+        return None
+    try:
+        return base64.b64decode(r.stdout.strip()).decode()
+    except Exception:
+        return None
+
+
+ELASTIC_PASSWORD = None  # set in main() once kubectl is reachable
 
 
 def _probe_scheme(scheme):
@@ -60,6 +84,9 @@ def curl_json(path, errors):
             "-s",
             "-S",
             "-k",
+        ]
+        + (["-u", f"elastic:{ELASTIC_PASSWORD}"] if ELASTIC_PASSWORD else [])
+        + [
             "--max-time",
             "5",
             f"{scheme}://{SERVICE}.{NAMESPACE}.svc:9200{path}",
@@ -132,6 +159,9 @@ def extract_checkpoint(transform):
 
 
 def main():
+    global ELASTIC_PASSWORD
+    ELASTIC_PASSWORD = _elastic_password()
+
     errors = []
 
     checkpoint_before = get_checkpoint_before(errors)
