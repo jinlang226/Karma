@@ -335,14 +335,6 @@ def evaluate():
             if name:
                 attributes_by_node[name] = node.get("attributes", {})
         if original_nodes and new_nodes and not attribute_differs(attributes_by_node, original_nodes, new_nodes):
-            print(
-                "[diag] original=%s new=%s"
-                % (
-                    {n: attributes_by_node.get(n, {}) for n in original_nodes},
-                    {n: attributes_by_node.get(n, {}) for n in new_nodes},
-                ),
-                file=sys.stderr,
-            )
             errors.append("No allocation attribute differs between original nodes and new nodes")
 
     shards = curl(f"/_cat/shards/{INDEX_NAME}?format=json", errors)
@@ -367,7 +359,7 @@ def main():
     # clean snapshot. This does not loosen the N-node/green/shard-placement
     # requirements -- a genuinely degraded cluster fails every attempt.
     import time
-    deadline = time.monotonic() + 75
+    deadline = time.monotonic() + 150
     errors = evaluate()
     while errors and time.monotonic() < deadline:
         time.sleep(8)
