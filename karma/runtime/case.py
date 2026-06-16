@@ -90,13 +90,16 @@ def _is_transient_apply_error(text: str) -> bool:
     """True if a precondition apply failed on a transient not-ready-yet condition
     that clears on its own, rather than a genuine error.
 
-    Covers two common races on a fresh / loaded cluster:
+    Covers common races on a fresh / loaded / reused cluster:
     * the namespace's default ServiceAccount not provisioned yet (pod apply
       ``error looking up service account <ns>/default: serviceaccount "default"
       not found``);
     * a peer/service not yet accepting connections (e.g. a Mongo replica that is
       still starting when ``rs.initiate`` runs -> ``Connection refused``), or the
-      apiserver briefly unreachable.
+      apiserver briefly unreachable;
+    * a fixed namespace from a prior run still Terminating when the case
+      re-creates it (``object is being deleted: namespaces "X" already exists``)
+      -> retrying ``kubectl create namespace`` waits out the termination.
 
     These resolve within seconds, so the caller retries the (idempotent) apply
     command. Genuine errors (bad manifest, forbidden field) do not match, so they
@@ -112,6 +115,7 @@ def _is_transient_apply_error(text: str) -> bool:
         or "i/o timeout" in t
         or "the server is currently unable to handle the request" in t
         or "unable to connect to the server" in t
+        or "object is being deleted" in t
     )
 
 
