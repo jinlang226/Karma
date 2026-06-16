@@ -219,8 +219,29 @@ def evaluate():
     return errors
 
 
+def _ensure_curl_test():
+    """(Re)create the curl-test helper pod the oracle queries ES through.
+
+    The precondition creates curl-test, but deploy-core's agent task is to tear
+    down the existing wrong-version cluster before redeploying and may remove
+    this helper along with it; the agent's own deploy does not recreate this
+    oracle-only pod. Without it every query fails 'pods "curl-test" not found'.
+    So ensure it exists and is Ready here, before querying. Idempotent.
+    """
+    ready = run(["kubectl", "-n", NAMESPACE, "get", "pod", "curl-test",
+                 "-o", "jsonpath={.status.conditions[?(@.type=='Ready')].status}"])
+    if ready.returncode == 0 and ready.stdout.strip() == "True":
+        return
+    manifest = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                            "..", "resource", "curl-test.yaml")
+    run(["kubectl", "-n", NAMESPACE, "apply", "-f", manifest])
+    run(["kubectl", "-n", NAMESPACE, "wait", "--for=condition=ready",
+         "pod/curl-test", "--timeout=120s"])
+
+
 def main():
     global ELASTIC_PASSWORD
+    _ensure_curl_test()
     ELASTIC_PASSWORD = _elastic_password()
 
     # A freshly-deployed multi-node ES cluster can flap at the edge of readiness
