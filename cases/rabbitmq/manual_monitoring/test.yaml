@@ -114,6 +114,35 @@ preconditionUnits:
       - command: "kubectl -n ${BENCH_NAMESPACE} wait --for=condition=ready pod -l app=curl-test --timeout=3s"
         timeout_sec: 10
 
+  - name: prometheus_plugin_ready
+    # Standalone, this case's own statefulset boots with rabbitmq_prometheus
+    # enabled (its configmap lists the plugin + prometheus.tcp.port=15692), so
+    # the broker already exposes :15692/metrics and the agent's only task is the
+    # broken Prometheus scrape config. When the cluster is INHERITED from an
+    # earlier stage whose configmap omits the plugin (e.g. classic_queue), this
+    # case's statefulset apply is skipped (cluster already 3-ready), so the
+    # running pods never load rabbitmq_prometheus and :15692 refuses (exit 7) —
+    # handing the agent a harder, different task than the standalone case poses.
+    # Restore the scenario's broker-side metrics exposure by starting the plugin
+    # app at runtime on each live pod. This is purely additive: ensure_all_started
+    # neither restarts the pod (the cluster uses emptyDir, so a restart would wipe
+    # the inherited users/policies) nor writes the read-only enabled_plugins file.
+    # The probe checks the RUNNING app set (file-independent), so it passes — and
+    # the unit is skipped — whenever the plugin is already active (standalone).
+    on_probe_fail: skip
+    verify_retries: 3
+    verify_interval_sec: 5
+    probe:
+      - command: "/bin/sh -c 'set -e; pods=$(kubectl -n ${BENCH_NAMESPACE} get pods -l app=${BENCH_PARAM_CLUSTER_PREFIX} -o jsonpath=\"{.items[*].metadata.name}\"); [ -n \"$pods\" ]; for p in $pods; do kubectl -n ${BENCH_NAMESPACE} exec $p -- rabbitmqctl eval \"application:which_applications().\" 2>/dev/null | grep -q rabbitmq_prometheus; done'"
+        timeout_sec: 60
+    apply:
+      - command: "/bin/sh -c 'pods=$(kubectl -n ${BENCH_NAMESPACE} get pods -l app=${BENCH_PARAM_CLUSTER_PREFIX} -o jsonpath=\"{.items[*].metadata.name}\"); for p in $pods; do kubectl -n ${BENCH_NAMESPACE} exec $p -- rabbitmqctl eval \"application:ensure_all_started(rabbitmq_prometheus).\" || true; done'"
+        timeout_sec: 90
+        sleep: 5
+    verify:
+      - command: "/bin/sh -c 'set -e; pods=$(kubectl -n ${BENCH_NAMESPACE} get pods -l app=${BENCH_PARAM_CLUSTER_PREFIX} -o jsonpath=\"{.items[*].metadata.name}\"); [ -n \"$pods\" ]; for p in $pods; do kubectl -n ${BENCH_NAMESPACE} exec $p -- rabbitmqctl eval \"application:which_applications().\" 2>/dev/null | grep -q rabbitmq_prometheus; done'"
+        timeout_sec: 60
+
   - name: monitoring_baseline_ready
     on_probe_fail: error
     probe:
