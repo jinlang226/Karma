@@ -103,6 +103,53 @@ class TestRunOperationUnits:
         )
         assert result["ok"] is True
 
+    def test_error_gate_retries_probe_until_it_converges(self, tmp_path):
+        # An on_probe_fail="error" gate is a readiness/convergence condition the
+        # apply cannot create. Under load it may need a few seconds to settle, so
+        # the probe is retried up to verify_retries times before failing. Here the
+        # probe passes only on its 3rd try (counter file): with verify_retries=5
+        # the unit must converge to ok rather than failing on the one-shot first
+        # sample.
+        counter = tmp_path / "n"
+        probe = (
+            f'n=$(cat {counter} 2>/dev/null || echo 0); n=$((n+1)); '
+            f'echo $n > {counter}; [ "$n" -ge 3 ]'
+        )
+        units = [
+            {
+                "id": "unit:gate",
+                "probe_commands": [{"command": probe, "sleep": 0}],
+                "apply_commands": [{"command": "true", "sleep": 0}],
+                "verify_commands": [{"command": "true", "sleep": 0}],
+                "verify_retries": 5,
+                "verify_interval_sec": 0.0,
+                "on_probe_fail": "error",
+            }
+        ]
+        log = tmp_path / "ops.log"
+        result = _run_operation_units(units, role_bindings={}, log_path=log)
+        assert result["ok"] is True
+        assert counter.read_text().strip() == "3"
+
+    def test_error_gate_fails_after_exhausting_probe_retries(self, tmp_path):
+        # If the required state never converges, the error gate still fails after
+        # its retry budget -- retrying only waits, it never turns a miss into a
+        # pass.
+        units = [
+            {
+                "id": "unit:gate",
+                "probe_commands": [{"command": "false", "sleep": 0}],
+                "apply_commands": [{"command": "true", "sleep": 0}],
+                "verify_commands": [{"command": "true", "sleep": 0}],
+                "verify_retries": 3,
+                "verify_interval_sec": 0.0,
+                "on_probe_fail": "error",
+            }
+        ]
+        log = tmp_path / "ops.log"
+        result = _run_operation_units(units, role_bindings={}, log_path=log)
+        assert result["ok"] is False
+
     def test_empty_units_returns_ok(self, tmp_path):
         log = tmp_path / "ops.log"
         result = _run_operation_units([], role_bindings={}, log_path=log)

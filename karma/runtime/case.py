@@ -142,8 +142,10 @@ def _run_operation_units(
     * probe **fails** + ``on_probe_fail="skip"`` (the default, used by setup
       units) -> the "not yet present" signal is expected, so apply runs to
       establish the state, then verify.
-    * probe **fails** + ``on_probe_fail="error"`` -> the failure is fatal
-      (e.g. a readiness gate the apply cannot satisfy), so the unit fails.
+    * probe **fails** + ``on_probe_fail="error"`` -> a readiness/convergence
+      gate the apply cannot satisfy. The probe is retried up to
+      ``verify_retries`` times (``verify_interval_sec`` apart) to let a slow
+      cluster converge; the failure becomes fatal only after that budget.
 
     Retries verify up to ``verify_retries`` times with
     ``verify_interval_sec`` between attempts. All command output is
@@ -239,12 +241,29 @@ def _run_operation_units(
         if on_progress:
             on_progress(f"    • {label}: {unit_id}")
 
-        # Probe
-        probe_ok = True
-        for cmd_entry in unit.get("probe_commands") or []:
-            rc = _exec(cmd_entry, "probe", unit_id)
-            if rc != 0:
-                probe_ok = False
+        # Probe. A skip-gate probes once: a failure just means "not present
+        # yet" -> fall through to apply. An error-gate asserts a state the apply
+        # cannot create (a readiness/convergence condition: pods Ready, cluster
+        # quorate, a planted baseline reaching its expected steady-state). On a
+        # loaded/slow cluster a one-shot check is flaky and such a condition may
+        # need a few seconds to settle, so an error-gate retries its probe up to
+        # verify_retries times with verify_interval_sec between tries before the
+        # failure becomes fatal. This never turns a genuine miss into a pass --
+        # if the state never holds it still fails after the budget; it only
+        # waits for convergence instead of sampling exactly once.
+        probe_tries = (unit.get("verify_retries") or 1) if on_fail == "error" else 1
+        probe_interval = unit.get("verify_interval_sec") or 0.0
+        probe_ok = False
+        for _p_attempt in range(probe_tries):
+            if _p_attempt > 0:
+                time.sleep(probe_interval)
+            probe_ok = True
+            for cmd_entry in unit.get("probe_commands") or []:
+                rc = _exec(cmd_entry, "probe", unit_id)
+                if rc != 0:
+                    probe_ok = False
+                    break
+            if probe_ok or timed_out:
                 break
         if timed_out:
             overall_ok = False
@@ -258,8 +277,8 @@ def _run_operation_units(
                 on_progress(f"    ✓ {label}: {unit_id} (already present)")
             continue
         if on_fail == "error":
-            # Probe failure is fatal: apply cannot establish the state
-            # (e.g. a readiness gate), so the precondition fails.
+            # Probe failed after its full retry budget: the required state never
+            # converged, so the precondition fails.
             overall_ok = False
             unit_outcomes.append({"id": unit_id, "ok": False, "phase": "probe"})
             continue
@@ -361,10 +380,15 @@ def _precondition_auto_budget_seconds(units: list[dict[str, Any]]) -> int:
         verify_once = _command_list_budget_seconds(unit.get("verify_commands"), 30)
         retries = max(1, int(unit.get("verify_retries") or 1))
         interval = max(0, int(float(unit.get("verify_interval_sec") or 0)))
+        # An error-gate retries its probe up to `retries` times (waiting
+        # verify_interval_sec between tries) before failing, so budget the probe
+        # as that full wait rather than a single run.
+        probe_tries = retries if unit.get("on_probe_fail") == "error" else 1
+        probe_total = probe * probe_tries + interval * (probe_tries - 1)
         # verify is mostly waiting (interval) between quick checks, not running the
         # full command timeout on every attempt, so budget it as one command run
         # plus the inter-retry gaps rather than (command timeout * retries).
-        total += probe + apply_ + verify_once + interval * retries
+        total += probe_total + apply_ + verify_once + interval * retries
     return total + 60  # slack, matching the old auto budget
 
 
