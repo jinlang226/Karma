@@ -1,7 +1,9 @@
 #!/usr/bin/env python3
+import base64
 import json
 import os
 import re
+import shlex
 import subprocess
 import sys
 
@@ -20,6 +22,40 @@ _SCHEME = None
 
 def run(cmd):
     return subprocess.run(cmd, text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+
+
+_ELASTIC_PW = None
+
+
+def _elastic_password():
+    """Live elastic-user password.
+
+    Reads the elastic-password secret, base64-decoded. The env PERSISTS across
+    stages, so a prior rotate-elastic-password stage may have rotated the
+    password away from this case's standalone default — the running curl-test
+    pod's $ES_PASS env was captured at pod creation and goes stale after such a
+    rotation (env from a secret does not live-update), which is why the queries
+    must read the secret fresh here. Falls back to the case default. Cached so
+    the retry loop does not re-read the secret each attempt.
+    """
+    global _ELASTIC_PW
+    if _ELASTIC_PW is not None:
+        return _ELASTIC_PW
+    r = run(["kubectl", "-n", NAMESPACE, "get", "secret", "elastic-password",
+             "-o", "jsonpath={.data.password}"])
+    pw = None
+    if r.returncode == 0 and r.stdout.strip():
+        try:
+            pw = base64.b64decode(r.stdout.strip()).decode()
+        except Exception:
+            pw = None
+    _ELASTIC_PW = pw or os.environ.get("BENCH_PARAM_ELASTIC_PASSWORD") or "elasticpass"
+    return _ELASTIC_PW
+
+
+def _auth_flag():
+    """`-u elastic:<live-pw>`, shell-quoted for the curl-test pod's /bin/sh."""
+    return "-u " + shlex.quote("elastic:" + _elastic_password())
 
 
 _APP_LABEL = None
@@ -151,13 +187,13 @@ def _resolve_expected_nodes(node_names, default=3):
 def _probe_scheme(scheme):
     """True if the ES HTTP API answers on the given scheme (auth-agnostic).
 
-    Authenticates with the same $ES_USER/$ES_PASS the real queries use; a 401
-    still proves the scheme is live, so any HTTP status code counts.
+    Authenticates with the same live elastic password the real queries use; a
+    401 still proves the scheme is live, so any HTTP status code counts.
     """
     result = run([
         "kubectl", "-n", NAMESPACE, "exec", "curl-test", "--", "/bin/sh", "-c",
         ("curl -s -S -k -o /dev/null -w '%{http_code}' --max-time 5 "
-         "-u \"$ES_USER:$ES_PASS\" "
+         f"{_auth_flag()} "
          f"{scheme}://{SERVICE}.{NAMESPACE}.svc:9200/"),
     ])
     code = (result.stdout or "").strip().strip("'")
@@ -193,7 +229,7 @@ def curl(path, errors):
         # answer. The retry loop in main() does the real waiting, so each call's
         # server wait stays short (10s).
         (
-            "curl -s -S -k --max-time 20 -u \"$ES_USER:$ES_PASS\" "
+            f"curl -s -S -k --max-time 20 {_auth_flag()} "
             f"{scheme}://{SERVICE}.{NAMESPACE}.svc:9200{path}"
         ),
     ]
