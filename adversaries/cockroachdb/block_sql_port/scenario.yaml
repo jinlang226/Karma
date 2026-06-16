@@ -1,0 +1,70 @@
+# cockroachdb/adversarial/block_sql_port
+#
+# Applies a NetworkPolicy that denies all ingress to port 26257 (CockroachDB
+# SQL/gRPC) in the cockroachdb namespace, simulating a misconfigured network
+# policy accidentally pushed by a security team or CI pipeline. With the SQL
+# port blocked, clients cannot connect and inter-node replication stalls. The
+# agent must identify and remove (or correct) the NetworkPolicy to restore SQL
+# connectivity on port 26257 without breaking the HTTP admin port (8080).
+#
+# Deploy: apply a deny-all-26257 NetworkPolicy.
+# Lift:   delete the NetworkPolicy if the agent has not already removed it.
+
+params:
+  namespace:
+    default: cockroachdb
+    description: Namespace where the blocking NetworkPolicy is applied.
+  policy_name:
+    default: block-crdb-sql
+    description: Name of the NetworkPolicy that blocks port 26257.
+
+deploy:
+  on_probe_fail: error
+  probe:
+    - command: "kubectl -n {{params.namespace}} get pods -l app.kubernetes.io/name=cockroachdb --no-headers"
+      timeout_sec: 10
+  apply:
+    - command: |
+        kubectl -n {{params.namespace}} apply -f - <<'EOF'
+        apiVersion: networking.k8s.io/v1
+        kind: NetworkPolicy
+        metadata:
+          name: {{params.policy_name}}
+          namespace: {{params.namespace}}
+        spec:
+          podSelector:
+            matchLabels:
+              app.kubernetes.io/name: cockroachdb
+          policyTypes:
+          - Ingress
+          ingress:
+          - ports:
+            - port: 8080
+              protocol: TCP
+        EOF
+      timeout_sec: 20
+  verify:
+    - command: "kubectl -n {{params.namespace}} get networkpolicy {{params.policy_name}}"
+      timeout_sec: 10
+
+lift:
+  on_probe_fail: skip
+  probe:
+    - command: "kubectl -n {{params.namespace}} get networkpolicy {{params.policy_name}}"
+      timeout_sec: 10
+  apply:
+    - command: "kubectl -n {{params.namespace}} delete networkpolicy {{params.policy_name}} --ignore-not-found=true"
+      timeout_sec: 20
+  verify:
+    - command: >-
+        /bin/sh -c "! kubectl -n {{params.namespace}} get networkpolicy {{params.policy_name}} 2>/dev/null"
+      timeout_sec: 10
+
+prompt_hints:
+  deploy: |
+    Note: a NetworkPolicy may be blocking SQL port 26257 in the cockroachdb
+    namespace. If SQL connections fail, inspect NetworkPolicies before assuming
+    the cluster itself is unhealthy.
+  active: |
+    Reminder: a NetworkPolicy blocking port 26257 may still be in effect. Verify
+    SQL connectivity is restored before declaring the task complete.

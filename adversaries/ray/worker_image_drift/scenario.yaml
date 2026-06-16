@@ -1,0 +1,70 @@
+# ray/adversarial/worker_image_drift
+#
+# Patches the ray-worker Deployment to use a mismatched Ray image (2.8.0)
+# while the head is running 2.9.0. This simulates a version drift introduced
+# by an automation pipeline that updated only part of the cluster. Mixed-version
+# clusters suffer protocol mismatches: workers may refuse to connect or exhibit
+# subtle scheduling failures. The agent must detect the image mismatch and
+# align the worker Deployment image with the head's version.
+#
+# Deploy: patch ray-worker to use the wrong (older) image.
+# Lift:   if the agent has not already corrected the image, restore it to the
+#         correct version.
+
+params:
+  namespace:
+    default: ray
+    description: Namespace the Ray cluster runs in.
+  deployment_name:
+    default: ray-worker
+    description: Name of the Ray worker Deployment the adversary patches.
+  wrong_image:
+    default: rayproject/ray:2.8.0
+    description: Mismatched image the adversary sets on the worker Deployment.
+  correct_image:
+    default: rayproject/ray:2.9.0
+    description: Correct image restored on lift if the agent did not fix it.
+
+deploy:
+  on_probe_fail: error
+  probe:
+    - command: "kubectl -n {{params.namespace}} get deployment {{params.deployment_name}}"
+      timeout_sec: 10
+  apply:
+    - command: >-
+        kubectl -n {{params.namespace}} set image deployment/{{params.deployment_name}}
+        ray-worker={{params.wrong_image}}
+      timeout_sec: 20
+  verify:
+    - command: >-
+        /bin/sh -c "kubectl -n {{params.namespace}} get deployment {{params.deployment_name}}
+        -o jsonpath={.spec.template.spec.containers[0].image} | grep -qF '2.8.0'"
+      timeout_sec: 10
+
+lift:
+  on_probe_fail: skip
+  probe:
+    - command: >-
+        /bin/sh -c "kubectl -n {{params.namespace}} get deployment {{params.deployment_name}}
+        -o jsonpath={.spec.template.spec.containers[0].image} | grep -qF '2.8.0'"
+      timeout_sec: 10
+  apply:
+    - command: >-
+        kubectl -n {{params.namespace}} set image deployment/{{params.deployment_name}}
+        ray-worker={{params.correct_image}}
+      timeout_sec: 20
+  verify:
+    - command: >-
+        /bin/sh -c "kubectl -n {{params.namespace}} get deployment {{params.deployment_name}}
+        -o jsonpath={.spec.template.spec.containers[0].image} | grep -qF '2.9.0'"
+      timeout_sec: 10
+
+prompt_hints:
+  deploy: |
+    Note: the worker Deployment image may not match the head node version. A
+    version mismatch can cause worker registration failures. Inspect both
+    Deployments before assuming the cluster is homogeneous.
+  active: |
+    Reminder: image drift introduced earlier may still be present on the worker
+    Deployment. Confirm both head and worker use the same Ray image version before
+    concluding the upgrade is complete.

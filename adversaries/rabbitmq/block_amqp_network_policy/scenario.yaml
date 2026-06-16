@@ -1,0 +1,73 @@
+# rabbitmq/adversarial/block_amqp_network_policy
+#
+# Applies a NetworkPolicy that denies all ingress to RabbitMQ pods on the AMQP
+# port (5672), simulating a misconfigured network security change that cuts off
+# producers and consumers mid-task. Management port (15672) is left open so
+# the cluster is still inspectable via the API, but AMQP traffic is blocked.
+# The agent must identify the blocking policy and remove or correct it so AMQP
+# connections resume without leaving the cluster exposed.
+#
+# Commands target the bench namespace explicitly (-n ${BENCH_NAMESPACE}).
+#
+# Deploy: apply a deny-amqp NetworkPolicy targeting RabbitMQ pods.
+# Lift:   delete the blocking policy if the agent has not already removed it.
+
+params:
+  cluster_prefix:
+    default: rabbitmq
+    description: Name prefix of the RabbitMQ cluster (used as the pod app label).
+  policy_name:
+    default: deny-amqp-ingress
+    description: Name of the NetworkPolicy injected by the adversary.
+
+deploy:
+  on_probe_fail: error
+  probe:
+    - command: "kubectl -n ${BENCH_NAMESPACE} get statefulset {{params.cluster_prefix}}"
+      timeout_sec: 15
+  apply:
+    - command: >-
+        kubectl -n ${BENCH_NAMESPACE} apply -f - <<'EOF'
+        apiVersion: networking.k8s.io/v1
+        kind: NetworkPolicy
+        metadata:
+          name: deny-amqp-ingress
+        spec:
+          podSelector:
+            matchLabels:
+              app: rabbitmq
+          policyTypes:
+            - Ingress
+          ingress:
+            - ports:
+                - port: 15672
+                  protocol: TCP
+        EOF
+      timeout_sec: 20
+  verify:
+    - command: "kubectl -n ${BENCH_NAMESPACE} get networkpolicy {{params.policy_name}}"
+      timeout_sec: 15
+
+lift:
+  # If the agent already removed the policy, probe fails (policy not found) → skip.
+  on_probe_fail: skip
+  probe:
+    - command: "kubectl -n ${BENCH_NAMESPACE} get networkpolicy {{params.policy_name}}"
+      timeout_sec: 15
+  apply:
+    - command: "kubectl -n ${BENCH_NAMESPACE} delete networkpolicy {{params.policy_name}} --ignore-not-found=true"
+      timeout_sec: 20
+  verify:
+    - command: >-
+        /bin/sh -c "! kubectl -n ${BENCH_NAMESPACE} get networkpolicy {{params.policy_name}} 2>/dev/null"
+      timeout_sec: 15
+
+prompt_hints:
+  deploy: |
+    Note: a NetworkPolicy may have been applied during this task that restricts
+    traffic to the RabbitMQ cluster. If AMQP clients cannot connect, inspect
+    NetworkPolicy resources in the namespace before assuming a broker-level fault.
+  active: |
+    Reminder: a NetworkPolicy injected earlier may still be blocking AMQP (port
+    5672) traffic. Verify network policies in the namespace before concluding that
+    connectivity is restored.

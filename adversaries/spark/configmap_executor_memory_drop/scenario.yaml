@@ -1,0 +1,68 @@
+# spark/adversarial/configmap_executor_memory_drop
+#
+# Patches the spark-config ConfigMap in spark-runtime to drop the
+# spark.executor.memory value from its healthy setting back down to an
+# under-provisioned "128m". This simulates a configuration-management system
+# or accidental rollback overwriting a tuned value. With only 128 MB the
+# executor OOMs on any non-trivial stage; the agent must detect the incorrect
+# value in the ConfigMap and raise it to at least "512m".
+#
+# Targets the literal `spark-runtime` namespace used by spark_runtime_ops.
+#
+# Deploy: patch spark-config so spark.executor.memory = "128m".
+# Lift:   if the agent has not already corrected it, restore to "512m".
+
+params:
+  namespace:
+    default: spark-runtime
+    description: Namespace where the spark-config ConfigMap lives.
+  configmap_name:
+    default: spark-config
+    description: ConfigMap holding Spark runtime configuration.
+  bad_memory:
+    default: "128m"
+    description: Under-provisioned executor memory the adversary injects.
+  good_memory:
+    default: "512m"
+    description: Healthy executor memory restored on lift if the agent did not fix it.
+
+deploy:
+  on_probe_fail: error
+  probe:
+    - command: "kubectl -n {{params.namespace}} get configmap {{params.configmap_name}}"
+      timeout_sec: 10
+  apply:
+    - command: >-
+        kubectl -n {{params.namespace}} patch configmap {{params.configmap_name}}
+        --type=merge -p '{"data":{"spark.executor.memory":"{{params.bad_memory}}"}}'
+      timeout_sec: 20
+  verify:
+    - command: >-
+        /bin/sh -c "test \"$(kubectl -n {{params.namespace}} get configmap {{params.configmap_name}}
+        -o jsonpath='{.data.spark\.executor\.memory}')\" = '{{params.bad_memory}}'"
+      timeout_sec: 10
+
+lift:
+  on_probe_fail: skip
+  probe:
+    - command: >-
+        /bin/sh -c "test \"$(kubectl -n {{params.namespace}} get configmap {{params.configmap_name}}
+        -o jsonpath='{.data.spark\.executor\.memory}')\" = '{{params.bad_memory}}'"
+      timeout_sec: 10
+  apply:
+    - command: >-
+        kubectl -n {{params.namespace}} patch configmap {{params.configmap_name}}
+        --type=merge -p '{"data":{"spark.executor.memory":"{{params.good_memory}}"}}'
+      timeout_sec: 20
+  verify:
+    - command: "kubectl -n {{params.namespace}} get configmap {{params.configmap_name}}"
+      timeout_sec: 10
+
+prompt_hints:
+  deploy: |
+    Note: an external process may be altering ConfigMap values during this task.
+    If executor OOM errors appear, verify the live spark-config values rather than
+    assuming they match what was set earlier.
+  active: |
+    Reminder: spark-config may have been reverted by an external actor earlier in
+    this workflow. Re-read the ConfigMap before concluding configuration is correct.

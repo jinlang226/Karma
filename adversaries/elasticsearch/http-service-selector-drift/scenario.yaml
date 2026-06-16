@@ -1,0 +1,64 @@
+# adversaries/elasticsearch/http-service-selector-drift
+#
+# The es-http Service selector is patched to use an app label that does not match any
+# running Elasticsearch pod (e.g., app=es-cluster-wrong). This simulates a GitOps drift
+# or an accidental kubectl patch that makes the HTTP service point at no pods, causing all
+# client requests (curl, auth-checker, log-reader) to time out even though the StatefulSet
+# pods are healthy. The agent must detect the broken selector, restore the correct one
+# (app=es-cluster), and confirm HTTP access is working again.
+
+params:
+  namespace:
+    default: elasticsearch
+    description: Namespace the Elasticsearch Service and pods reside in.
+  http_service_name:
+    default: es-http
+    description: Name of the Elasticsearch HTTP Service to patch.
+  correct_label_value:
+    default: es-cluster
+    description: Correct app label value the Service selector should use.
+  wrong_label_value:
+    default: es-cluster-wrong
+    description: Wrong app label value injected as the Service selector.
+
+deploy:
+  on_probe_fail: error
+  probe:
+    - command: "kubectl -n {{params.namespace}} get service {{params.http_service_name}}"
+      timeout_sec: 10
+  apply:
+    - command: >-
+        kubectl -n {{params.namespace}} patch service {{params.http_service_name}}
+        --type=merge
+        -p '{"spec":{"selector":{"app":"{{params.wrong_label_value}}"}}}'
+      timeout_sec: 20
+  verify:
+    - command: >-
+        /bin/sh -c "kubectl -n {{params.namespace}} get service {{params.http_service_name}}
+        -o jsonpath='{.spec.selector.app}' | grep -q '{{params.wrong_label_value}}'"
+      timeout_sec: 15
+
+lift:
+  on_probe_fail: skip
+  probe:
+    - command: >-
+        /bin/sh -c "kubectl -n {{params.namespace}} get service {{params.http_service_name}}
+        -o jsonpath='{.spec.selector.app}' | grep -q '{{params.wrong_label_value}}'"
+      timeout_sec: 15
+  apply:
+    - command: >-
+        kubectl -n {{params.namespace}} patch service {{params.http_service_name}}
+        --type=merge
+        -p '{"spec":{"selector":{"app":"{{params.correct_label_value}}"}}}'
+      timeout_sec: 20
+  verify:
+    - command: "kubectl -n {{params.namespace}} get service {{params.http_service_name}}"
+      timeout_sec: 10
+
+prompt_hints:
+  deploy: |
+    Note: an external process may have modified Service selectors in the elasticsearch namespace.
+    Verify the es-http Service selector matches the running pod labels before assuming HTTP is reachable.
+  active: |
+    Reminder: the es-http Service selector may be pointing at the wrong app label.
+    Re-check selector vs pod labels if HTTP requests are timing out despite healthy pods.

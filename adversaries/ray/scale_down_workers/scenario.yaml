@@ -1,0 +1,63 @@
+# ray/adversarial/scale_down_workers
+#
+# Scales the ray-worker Deployment down to a wrong (lower) replica count while
+# the agent is working. This simulates an automation job or operator error that
+# fights the agent's scale-up task. The cluster appears to have fewer workers
+# than intended, causing resource shortfalls for pending jobs. The agent must
+# detect the regressed worker count and restore the target replica count.
+#
+# Targets the literal `ray` namespace used by all Ray cases.
+#
+# Deploy: scale ray-worker down to wrong_replicas.
+# Lift:   if the agent has not already scaled back up, restore to restore_replicas.
+
+params:
+  namespace:
+    default: ray
+    description: Namespace the Ray cluster runs in.
+  deployment_name:
+    default: ray-worker
+    description: Name of the Ray worker Deployment the adversary scales down.
+  wrong_replicas:
+    default: "1"
+    description: Worker replica count the adversary shrinks to (the injected fault).
+  restore_replicas:
+    default: "3"
+    description: Healthy worker replica count restored on lift if the agent did not fix it.
+
+deploy:
+  on_probe_fail: error
+  probe:
+    - command: "kubectl -n {{params.namespace}} get deployment {{params.deployment_name}}"
+      timeout_sec: 10
+  apply:
+    - command: "kubectl -n {{params.namespace}} scale deployment {{params.deployment_name}} --replicas={{params.wrong_replicas}}"
+      timeout_sec: 20
+  verify:
+    - command: >-
+        /bin/sh -c "test \"$(kubectl -n {{params.namespace}} get deployment {{params.deployment_name}}
+        -o jsonpath={.spec.replicas})\" = '{{params.wrong_replicas}}'"
+      timeout_sec: 10
+
+lift:
+  on_probe_fail: skip
+  probe:
+    - command: >-
+        /bin/sh -c "test \"$(kubectl -n {{params.namespace}} get deployment {{params.deployment_name}}
+        -o jsonpath={.spec.replicas})\" = '{{params.wrong_replicas}}'"
+      timeout_sec: 10
+  apply:
+    - command: "kubectl -n {{params.namespace}} scale deployment {{params.deployment_name}} --replicas={{params.restore_replicas}}"
+      timeout_sec: 20
+  verify:
+    - command: "kubectl -n {{params.namespace}} get deployment {{params.deployment_name}}"
+      timeout_sec: 10
+
+prompt_hints:
+  deploy: |
+    Note: an external process may be changing cluster state during this task.
+    Verify the live worker replica count against the target before assuming the
+    cluster is correctly sized.
+  active: |
+    Reminder: the worker replica count may have been changed by an external actor
+    earlier in this workflow. Re-check before concluding the task is complete.

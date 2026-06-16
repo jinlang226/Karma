@@ -1,0 +1,61 @@
+# adversaries/elasticsearch/shard-allocation-disabled
+#
+# A cluster-level persistent setting disables shard allocation (cluster.routing.allocation.enable=none).
+# This simulates a common operational mistake during maintenance windows: an operator sets
+# allocation to "none" to freeze shard movement and forgets to re-enable it. The cluster stays
+# green (existing shards are fine) but any new index shards are left UNASSIGNED and no
+# rebalancing occurs — recovery or scale-up tasks will appear to hang. The agent must
+# detect the misconfigured allocation setting and re-enable it.
+
+params:
+  namespace:
+    default: elasticsearch
+    description: Namespace the Elasticsearch cluster runs in.
+  http_service_name:
+    default: es-http
+    description: Name of the Elasticsearch HTTP service (port 9200).
+  curl_pod_name:
+    default: curl-test
+    description: Helper pod used to issue HTTP requests against the cluster.
+  elastic_password_secret_name:
+    default: elastic-password
+    description: Secret holding the elastic superuser password (ES 8.x security).
+  elastic_password_key:
+    default: password
+    description: Key within the password secret to read.
+
+deploy:
+  on_probe_fail: error
+  probe:
+    - command: "kubectl -n {{params.namespace}} get pod {{params.curl_pod_name}}"
+      timeout_sec: 10
+  apply:
+    - command: >-
+        /bin/sh -c 'NS={{params.namespace}}; POD={{params.curl_pod_name}}; H={{params.http_service_name}}.{{params.namespace}}.svc:9200; PW=$(kubectl -n "$NS" get secret {{params.elastic_password_secret_name}} -o jsonpath="{.data.{{params.elastic_password_key}}}" | base64 -d); A=""; [ -n "$PW" ] && A="-u elastic:$PW"; S=https; kubectl -n "$NS" exec "$POD" -- curl -s -k -o /dev/null $A "https://$H/" || S=http; kubectl -n "$NS" exec "$POD" -- curl -s -k $A -XPUT "$S://$H/_cluster/settings" -H "Content-Type: application/json" -d "{\"persistent\":{\"cluster.routing.allocation.enable\":\"none\"}}"'
+      timeout_sec: 20
+  verify:
+    - command: >-
+        /bin/sh -c 'NS={{params.namespace}}; POD={{params.curl_pod_name}}; H={{params.http_service_name}}.{{params.namespace}}.svc:9200; PW=$(kubectl -n "$NS" get secret {{params.elastic_password_secret_name}} -o jsonpath="{.data.{{params.elastic_password_key}}}" | base64 -d); A=""; [ -n "$PW" ] && A="-u elastic:$PW"; S=https; kubectl -n "$NS" exec "$POD" -- curl -s -k -o /dev/null $A "https://$H/" || S=http; kubectl -n "$NS" exec "$POD" -- curl -s -k $A "$S://$H/_cluster/settings" | grep -q "\"enable\":\"none\""'
+      timeout_sec: 15
+
+lift:
+  on_probe_fail: skip
+  probe:
+    - command: >-
+        /bin/sh -c 'NS={{params.namespace}}; POD={{params.curl_pod_name}}; H={{params.http_service_name}}.{{params.namespace}}.svc:9200; PW=$(kubectl -n "$NS" get secret {{params.elastic_password_secret_name}} -o jsonpath="{.data.{{params.elastic_password_key}}}" | base64 -d); A=""; [ -n "$PW" ] && A="-u elastic:$PW"; S=https; kubectl -n "$NS" exec "$POD" -- curl -s -k -o /dev/null $A "https://$H/" || S=http; kubectl -n "$NS" exec "$POD" -- curl -s -k $A "$S://$H/_cluster/settings" | grep -q "\"enable\":\"none\""'
+      timeout_sec: 15
+  apply:
+    - command: >-
+        /bin/sh -c 'NS={{params.namespace}}; POD={{params.curl_pod_name}}; H={{params.http_service_name}}.{{params.namespace}}.svc:9200; PW=$(kubectl -n "$NS" get secret {{params.elastic_password_secret_name}} -o jsonpath="{.data.{{params.elastic_password_key}}}" | base64 -d); A=""; [ -n "$PW" ] && A="-u elastic:$PW"; S=https; kubectl -n "$NS" exec "$POD" -- curl -s -k -o /dev/null $A "https://$H/" || S=http; kubectl -n "$NS" exec "$POD" -- curl -s -k $A -XPUT "$S://$H/_cluster/settings" -H "Content-Type: application/json" -d "{\"persistent\":{\"cluster.routing.allocation.enable\":null}}"'
+      timeout_sec: 20
+  verify:
+    - command: "kubectl -n {{params.namespace}} get pod {{params.curl_pod_name}}"
+      timeout_sec: 10
+
+prompt_hints:
+  deploy: |
+    Note: an external process may have altered cluster-level settings during this task.
+    Check persistent cluster settings (/_cluster/settings) before assuming shard health.
+  active: |
+    Reminder: cluster.routing.allocation.enable may have been set to a restrictive value.
+    Verify and reset it if shards are unassigned or rebalancing is stalled.

@@ -1,0 +1,70 @@
+# mongodb/adversarial/primary_stepdown
+#
+# Forces the current MongoDB primary to step down (rs.stepDown) while the agent
+# is working, simulating a planned maintenance or a split-brain trigger. The
+# replica set will elect a new primary within seconds, but in-flight writes
+# may fail momentarily and connections are interrupted. The agent must verify
+# the replica set re-elects a primary and complete its task against the new
+# primary without assuming the original pod-0 is still writable.
+#
+# Targets the literal `mongodb` namespace. The primary pod is expected to be
+# mongodb-replica-0 on a freshly-initiated set, but step-down will cause an
+# election and another member may become primary.
+#
+# Deploy: exec rs.stepDown() into the current primary pod.
+# Lift:   verify a primary exists; no-op if election already happened cleanly.
+
+params:
+  namespace:
+    default: mongodb
+    description: Namespace where the replica set is running.
+  primary_pod:
+    default: mongodb-replica-0
+    description: Pod to exec rs.stepDown() into (assumed current primary at inject time).
+  stepdown_secs:
+    default: "60"
+    description: Seconds the stepped-down member avoids being re-elected as primary.
+  admin_secret_name:
+    default: admin-user-password
+    description: Secret holding the admin user's password (key 'password').
+  admin_username:
+    default: admin-user
+    description: Replica-set admin user mongosh authenticates as.
+
+deploy:
+  on_probe_fail: error
+  probe:
+    - command: "kubectl -n {{params.namespace}} get pod {{params.primary_pod}}"
+      timeout_sec: 10
+  apply:
+    - command: >-
+        /bin/sh -c 'NS={{params.namespace}}; POD={{params.primary_pod}}; P=$(kubectl -n "$NS" get secret {{params.admin_secret_name}} -o jsonpath="{.data.password}" | base64 -d); T=""; for ca in /etc/tls/ca.crt /etc/mongo-ca/ca.crt /etc/mongodb/tls/ca.crt /etc/ssl/mongodb/ca.crt; do kubectl -n "$NS" exec "$POD" -- test -f "$ca" 2>/dev/null && { T="--tls --tlsAllowInvalidHostnames --tlsCAFile $ca"; break; }; done; kubectl -n "$NS" exec "$POD" -- mongosh --quiet $T -u "{{params.admin_username}}" -p "$P" --authenticationDatabase admin --eval "rs.stepDown({{params.stepdown_secs}})" || true'
+      timeout_sec: 30
+  verify:
+    - command: >-
+        /bin/sh -c 'NS={{params.namespace}}; POD={{params.primary_pod}}; P=$(kubectl -n "$NS" get secret {{params.admin_secret_name}} -o jsonpath="{.data.password}" | base64 -d); T=""; for ca in /etc/tls/ca.crt /etc/mongo-ca/ca.crt /etc/mongodb/tls/ca.crt /etc/ssl/mongodb/ca.crt; do kubectl -n "$NS" exec "$POD" -- test -f "$ca" 2>/dev/null && { T="--tls --tlsAllowInvalidHostnames --tlsCAFile $ca"; break; }; done; for i in $(seq 1 12); do kubectl -n "$NS" exec "$POD" -- mongosh --quiet $T -u "{{params.admin_username}}" -p "$P" --authenticationDatabase admin --eval "db.hello().isWritablePrimary" 2>/dev/null | grep -q false && exit 0; sleep 5; done; exit 0'
+      timeout_sec: 90
+
+lift:
+  # Skip if a primary already exists (election succeeded).
+  on_probe_fail: skip
+  probe:
+    - command: >-
+        /bin/sh -c 'NS={{params.namespace}}; P=$(kubectl -n "$NS" get secret {{params.admin_secret_name}} -o jsonpath="{.data.password}" | base64 -d); POD=$(kubectl -n "$NS" get pods -l app=mongodb-replica --field-selector=status.phase=Running -o name 2>/dev/null | head -1); [ -z "$POD" ] && exit 0; T=""; for ca in /etc/tls/ca.crt /etc/mongo-ca/ca.crt /etc/mongodb/tls/ca.crt /etc/ssl/mongodb/ca.crt; do kubectl -n "$NS" exec "$POD" -- test -f "$ca" 2>/dev/null && { T="--tls --tlsAllowInvalidHostnames --tlsCAFile $ca"; break; }; done; ! kubectl -n "$NS" exec "$POD" -- mongosh --quiet $T -u "{{params.admin_username}}" -p "$P" --authenticationDatabase admin --eval "db.hello().isWritablePrimary" 2>/dev/null | grep -q true'
+      timeout_sec: 15
+  apply:
+    - command: >-
+        /bin/sh -c 'NS={{params.namespace}}; P=$(kubectl -n "$NS" get secret {{params.admin_secret_name}} -o jsonpath="{.data.password}" | base64 -d); for i in $(seq 1 12); do for pod in mongodb-replica-0 mongodb-replica-1 mongodb-replica-2; do T=""; for ca in /etc/tls/ca.crt /etc/mongo-ca/ca.crt /etc/mongodb/tls/ca.crt /etc/ssl/mongodb/ca.crt; do kubectl -n "$NS" exec "$pod" -- test -f "$ca" 2>/dev/null && { T="--tls --tlsAllowInvalidHostnames --tlsCAFile $ca"; break; }; done; kubectl -n "$NS" exec "$pod" -- mongosh --quiet $T -u "{{params.admin_username}}" -p "$P" --authenticationDatabase admin --eval "db.hello().isWritablePrimary" 2>/dev/null | grep -q true && exit 0; done; sleep 5; done; exit 0'
+      timeout_sec: 90
+  verify:
+    - command: "kubectl -n {{params.namespace}} get pods -l app=mongodb-replica"
+      timeout_sec: 10
+
+prompt_hints:
+  deploy: |
+    Note: the current primary may step down at any point during this task due to
+    an external maintenance trigger. Always discover the current primary via
+    rs.hello() or db.hello() rather than assuming pod-0 is writable.
+  active: |
+    Reminder: the primary may have changed since you started. Re-check which
+    member is primary before performing write operations or checking replica set status.

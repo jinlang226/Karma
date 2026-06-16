@@ -1,0 +1,82 @@
+# mongodb/adversarial/readiness_probe_break
+#
+# Patches the mongodb-replica StatefulSet to set an extremely short readiness
+# probe timeout (1 s) and failure threshold (1), then deletes the pods to force
+# a rolling restart with the faulty probe settings. This simulates a platform
+# automation pushing a hardened probe policy that is too aggressive for MongoDB's
+# startup time. Pods start failing readiness checks, the replica set degrades,
+# and the agent must detect the bad probe parameters and restore sensible values.
+#
+# Targets the literal `mongodb` namespace. StatefulSet name `mongodb-replica`
+# is used by custom-roles, health-check-recovery, initialize, mongod-config-update,
+# password-rotation, readiness-probe-tuning, replica-scaling, statefulset-customization,
+# user-management, version-upgrade, and version-upgrade-hard.
+#
+# Deploy: patch probe to very short timeout+threshold, delete pods to trigger rollout.
+# Lift:   restore reasonable probe values and delete pods again if not already fixed.
+
+params:
+  namespace:
+    default: mongodb
+    description: Namespace where the mongodb-replica StatefulSet runs.
+  statefulset_name:
+    default: mongodb-replica
+    description: Name of the StatefulSet whose readiness probe is patched.
+  bad_timeout_sec:
+    default: "1"
+    description: Adversarially short timeoutSeconds injected into the probe.
+  bad_failure_threshold:
+    default: "1"
+    description: Adversarially low failureThreshold injected into the probe.
+  restore_timeout_sec:
+    default: "5"
+    description: Restored timeoutSeconds applied on lift.
+  restore_failure_threshold:
+    default: "3"
+    description: Restored failureThreshold applied on lift.
+
+deploy:
+  on_probe_fail: error
+  probe:
+    - command: "kubectl -n {{params.namespace}} get statefulset {{params.statefulset_name}}"
+      timeout_sec: 10
+  apply:
+    - command: >-
+        kubectl -n {{params.namespace}} patch statefulset {{params.statefulset_name}}
+        --type=json -p='[{"op":"replace","path":"/spec/template/spec/containers/0/readinessProbe/timeoutSeconds","value":{{params.bad_timeout_sec}}},{"op":"replace","path":"/spec/template/spec/containers/0/readinessProbe/failureThreshold","value":{{params.bad_failure_threshold}}}]'
+      timeout_sec: 20
+    - command: "kubectl -n {{params.namespace}} delete pod -l app={{params.statefulset_name}} --ignore-not-found"
+      timeout_sec: 30
+  verify:
+    - command: >-
+        /bin/sh -c "test \"$(kubectl -n {{params.namespace}} get statefulset {{params.statefulset_name}}
+        -o jsonpath='{.spec.template.spec.containers[0].readinessProbe.timeoutSeconds}')\" = '{{params.bad_timeout_sec}}'"
+      timeout_sec: 10
+
+lift:
+  on_probe_fail: skip
+  probe:
+    - command: >-
+        /bin/sh -c "test \"$(kubectl -n {{params.namespace}} get statefulset {{params.statefulset_name}}
+        -o jsonpath='{.spec.template.spec.containers[0].readinessProbe.timeoutSeconds}')\" = '{{params.bad_timeout_sec}}'"
+      timeout_sec: 10
+  apply:
+    - command: >-
+        kubectl -n {{params.namespace}} patch statefulset {{params.statefulset_name}}
+        --type=json -p='[{"op":"replace","path":"/spec/template/spec/containers/0/readinessProbe/timeoutSeconds","value":{{params.restore_timeout_sec}}},{"op":"replace","path":"/spec/template/spec/containers/0/readinessProbe/failureThreshold","value":{{params.restore_failure_threshold}}}]'
+      timeout_sec: 20
+    - command: "kubectl -n {{params.namespace}} delete pod -l app={{params.statefulset_name}} --ignore-not-found"
+      timeout_sec: 30
+  verify:
+    - command: "kubectl -n {{params.namespace}} get statefulset {{params.statefulset_name}}"
+      timeout_sec: 10
+
+prompt_hints:
+  deploy: |
+    Note: readiness probe parameters on the StatefulSet may have been changed by
+    an external automation. If pods are failing readiness checks on a healthy
+    MongoDB, inspect the probe configuration before looking elsewhere.
+  active: |
+    Reminder: readiness probe timeouts may have been tightened by an external
+    process. Verify probe settings match recommended values before declaring
+    pods stable.
