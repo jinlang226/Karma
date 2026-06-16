@@ -106,7 +106,8 @@ def curl_api(path, user, password):
     ])
 
 
-def main():
+def evaluate():
+    """One full snapshot of the permission + client/queue checks; returns errors."""
     errors = []
     expected_nodes = _resolve_expected_nodes()
 
@@ -240,6 +241,26 @@ def main():
     except subprocess.CalledProcessError:
         # cronjob not found is acceptable
         pass
+
+    return errors
+
+
+def main():
+    # The agent fixes the broken permissions, but the legitimate outcome -- the
+    # app-client (re)declaring app-queue in /app and publishing to it -- happens
+    # ASYNCHRONOUSLY after the fix: the client must restart out of
+    # CrashLoopBackOff, reconnect, declare the queue, and publish. A single
+    # snapshot can run before that convergence and see "app-queue not found". So
+    # re-evaluate for up to ~90s and pass on the first clean snapshot. This does
+    # not loosen the check -- a genuinely unfixed permission keeps the client
+    # crashing, so the queue never appears and the oracle still fails after the
+    # deadline.
+    import time
+    deadline = time.monotonic() + 90
+    errors = evaluate()
+    while errors and time.monotonic() < deadline:
+        time.sleep(8)
+        errors = evaluate()
 
     if errors:
         print("Manual user permission verification failed:")
