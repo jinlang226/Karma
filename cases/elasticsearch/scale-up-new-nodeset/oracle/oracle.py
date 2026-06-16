@@ -324,6 +324,22 @@ def evaluate():
             if name:
                 attributes_by_node[name] = node.get("attributes", {})
         if original_nodes and new_nodes and not attribute_differs(attributes_by_node, original_nodes, new_nodes):
+            # Diagnostic dump (stderr is captured into the verdict output) so a
+            # false negative here is debuggable without a live cluster: it shows
+            # the resolved original StatefulSet and the actual attributes the
+            # oracle compared, exposing any node-name / attribute-key mismatch.
+            print(
+                "[diag] original_sts=%s\n[diag] original_nodes=%s -> %s\n[diag] new_nodes=%s -> %s\n[diag] all_attr_node_names=%s"
+                % (
+                    resolve_original_sts(),
+                    original_nodes,
+                    {n: attributes_by_node.get(n, {}) for n in original_nodes},
+                    new_nodes,
+                    {n: attributes_by_node.get(n, {}) for n in new_nodes},
+                    sorted(attributes_by_node.keys()),
+                ),
+                file=sys.stderr,
+            )
             errors.append("No allocation attribute differs between original nodes and new nodes")
 
     shards = curl(f"/_cat/shards/{INDEX_NAME}?format=json", errors)
