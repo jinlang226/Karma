@@ -145,6 +145,42 @@ preconditionUnits:
       - command: "kubectl -n mongodb get pods 2>/dev/null | grep -c Running"
         timeout_sec: 10
 
+  # Additive baseline capture (composition safety): the oracle proves rotation by
+  # comparing the rotated server cert against the PRE-rotation fingerprints stored
+  # in configmap {{params.old_tls_configmap_name}}. The unit above only writes that
+  # configmap on the destructive fresh-build path, which is SKIPPED when this case
+  # runs chained on an inherited (already-running) cluster -> the baseline is never
+  # captured and the oracle fails "configmap {{params.old_tls_configmap_name}} not found".
+  # This unit gates on the CONFIGMAP ITSELF (not "pods Running"), so it runs whenever
+  # the baseline is missing regardless of how the cluster came to exist, and captures
+  # the CURRENT LIVE server/CA cert fingerprints (read from the same secrets the oracle
+  # later compares) into the configmap get-or-create. It runs in the precondition, i.e.
+  # BEFORE the agent rotates, so it records the genuine pre-rotation certs. It NEVER
+  # rotates/replaces the live cert, drops the configmap, or touches the namespace/cluster.
+  # Standalone the configmap already exists (written above) so the probe matches and this
+  # unit skips -> identical behaviour. Idempotent: writes only when the configmap is absent.
+  - name: mongo_tls_baseline_capture
+    on_probe_fail: skip
+    probe:
+      - command: "kubectl -n mongodb get configmap {{params.old_tls_configmap_name}}"
+        timeout_sec: 10
+    apply:
+      - command: |
+          set -e
+          TMP_DIR=$(mktemp -d)
+          kubectl -n mongodb get secret {{params.tls_cert_secret_name}} -o jsonpath='{.data.server\.pem}' | base64 -d > "${TMP_DIR}/server.pem"
+          kubectl -n mongodb get secret {{params.tls_ca_secret_name}} -o jsonpath='{.data.ca\.crt}' | base64 -d > "${TMP_DIR}/ca.crt"
+          SERVER_FP=$(kubectl -n mongodb exec -i {{params.openssl_pod_name}} -- openssl x509 -noout -fingerprint -sha256 < "${TMP_DIR}/server.pem" | cut -d= -f2)
+          CA_FP=$(kubectl -n mongodb exec -i {{params.openssl_pod_name}} -- openssl x509 -noout -fingerprint -sha256 < "${TMP_DIR}/ca.crt" | cut -d= -f2)
+          kubectl -n mongodb create configmap {{params.old_tls_configmap_name}} \
+            --from-literal=server_fingerprint_sha256="${SERVER_FP}" \
+            --from-literal=ca_fingerprint_sha256="${CA_FP}" \
+            --dry-run=client -o yaml | kubectl apply -f -
+        sleep: 2
+    verify:
+      - command: "kubectl -n mongodb get configmap {{params.old_tls_configmap_name}} -o jsonpath='{.data.server_fingerprint_sha256}'"
+        timeout_sec: 10
+
 oracle:
   verify:
     commands:
