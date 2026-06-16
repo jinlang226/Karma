@@ -155,7 +155,22 @@ def find_primary(uri):
 def run_mongo(uri, eval_str):
     # Route every read/write to the PRIMARY so a workflow election off
     # replica-0 does not surface as "not primary"/missing-role failures.
-    return _exec_mongo(find_primary(uri), uri, eval_str)
+    #
+    # `uri` may be a single URI or a list of candidate URIs that differ only in
+    # auth database (admin vs the app DB). Try each and return the first that
+    # AUTHENTICATES -- i.e. whose failure, if any, is no longer "Authentication
+    # failed". The actual operation result (success, or a legitimate
+    # Unauthorized for the read-only write-denied check) is then evaluated by the
+    # caller. This lets the oracle find users wherever the agent created them
+    # without changing any role/permission assertion.
+    uris = uri if isinstance(uri, (list, tuple)) else [uri]
+    res = None
+    for candidate in uris:
+        res = _exec_mongo(find_primary(candidate), candidate, eval_str)
+        blob = (res.stderr or "") + (res.stdout or "")
+        if res.returncode == 0 or "Authentication failed" not in blob:
+            return res
+    return res
 
 
 def load_json(uri, eval_str, label, errors):
@@ -202,10 +217,21 @@ def creds(errors):
     ro_pw = get_secret_value(READONLY_SECRET, "password", errors)
     if errors:
         return None
+    # The prompt does not mandate WHICH database the agent creates the users in:
+    # centralized users live in `admin` (authSource=admin), but creating them in
+    # the application database (authSource=<APP_DB>) is an equally valid pattern.
+    # Offer both candidate auth databases per user so the oracle authenticates
+    # against wherever the agent legitimately placed them; the role/permission
+    # assertions are unchanged.
+    def _uris(user, pw, conn_db):
+        return [
+            f"mongodb://{user}:{pw}@localhost:27017/{conn_db}?authSource=admin",
+            f"mongodb://{user}:{pw}@localhost:27017/{conn_db}?authSource={APP_DB}",
+        ]
     return {
-        "admin_uri": f"mongodb://{ADMIN_USER}:{admin_pw}@localhost:27017/admin",
-        "app_uri": f"mongodb://{APP_USER}:{app_pw}@localhost:27017/{APP_DB}?authSource=admin",
-        "ro_uri": f"mongodb://{READONLY_USER}:{ro_pw}@localhost:27017/{APP_DB}?authSource=admin",
+        "admin_uri": _uris(ADMIN_USER, admin_pw, "admin"),
+        "app_uri": _uris(APP_USER, app_pw, APP_DB),
+        "ro_uri": _uris(READONLY_USER, ro_pw, APP_DB),
     }
 
 
