@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 import json
+import os
 import subprocess
 import sys
 
@@ -7,13 +8,59 @@ MON_NS = "monitoring"
 ES_NS = "elasticsearch"
 MON_SERVICE = "monitoring-es-http"
 MON_CURL = "monitoring-curl-test"
-ES_APP_LABEL = "es-cluster"
+# Hint for the Elasticsearch pod app label. Used as an override when it matches a
+# live StatefulSet's selector; otherwise the real selector label is detected
+# live from the cluster. The env PERSISTS across stages, so a workflow's
+# inherited ES cluster may label its pods differently than this case's standalone
+# default of 'es-cluster'.
+ES_APP_HINT = os.environ.get("BENCH_PARAM_CLUSTER_PREFIX", "es-cluster")
 DEFAULT_SCHEME = "http"
 _SCHEME = {}
 
 
 def run(cmd):
     return subprocess.run(cmd, text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+
+
+_ES_APP_LABEL = None
+
+
+def resolve_es_app_label():
+    """Resolve the 'app=<value>' selector for the live ES pods in ES_NS.
+
+    Priority: the BENCH_PARAM_CLUSTER_PREFIX hint when some live StatefulSet
+    actually selects on app=<hint> (explicit override wins) -> the app label of
+    the namespace's Elasticsearch StatefulSet detected live -> the hint.
+    Workflow-agnostic: adapts to an inherited cluster labelled e.g.
+    app=elasticsearch instead of app=es-cluster.
+    """
+    global _ES_APP_LABEL
+    if _ES_APP_LABEL is not None:
+        return _ES_APP_LABEL
+    res = run(["kubectl", "-n", ES_NS, "get", "sts", "-o", "json"])
+    labels = []
+    if res.returncode == 0:
+        try:
+            for sts in json.loads(res.stdout).get("items", []):
+                spec = sts.get("spec", {})
+                containers = spec.get("template", {}).get("spec", {}).get("containers", [])
+                if "elasticsearch" not in " ".join(c.get("image", "") for c in containers):
+                    continue
+                app = (spec.get("selector", {}).get("matchLabels", {}) or {}).get("app")
+                ts = sts.get("metadata", {}).get("creationTimestamp", "")
+                if app:
+                    labels.append((app, ts))
+        except (json.JSONDecodeError, AttributeError):
+            pass
+    if any(app == ES_APP_HINT for app, _ in labels):
+        _ES_APP_LABEL = f"app={ES_APP_HINT}"
+        return _ES_APP_LABEL
+    if labels:
+        labels.sort(key=lambda x: (x[1] or ""))
+        _ES_APP_LABEL = f"app={labels[0][0]}"
+        return _ES_APP_LABEL
+    _ES_APP_LABEL = f"app={ES_APP_HINT}"
+    return _ES_APP_LABEL
 
 
 def _probe_scheme(service, scheme):
@@ -87,7 +134,7 @@ def check_sidecars(errors):
             "get",
             "pods",
             "-l",
-            f"app={ES_APP_LABEL}",
+            resolve_es_app_label(),
             "-o",
             "json",
         ]

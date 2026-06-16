@@ -7,16 +7,88 @@ import sys
 
 NAMESPACE = os.environ.get("BENCH_NAMESPACE", "elasticsearch")
 SERVICE = os.environ.get("BENCH_PARAM_HTTP_SERVICE_NAME", "es-http")
-ORIGINAL_STS = os.environ.get("BENCH_PARAM_CLUSTER_PREFIX", "es-cluster")
+# Hint for the original StatefulSet name. Used as an override when it names an
+# StatefulSet that actually exists; otherwise the original is detected live from
+# the cluster (the env PERSISTS across stages, so a workflow's inherited ES
+# cluster may carry a different StatefulSet name than this case's standalone
+# default).
+CLUSTER_PREFIX_HINT = os.environ.get("BENCH_PARAM_CLUSTER_PREFIX", "es-cluster")
 INDEX_NAME = os.environ.get("BENCH_PARAM_INDEX_NAME", "app-data")
 ORIGINAL_REPLICAS = int(os.environ.get("BENCH_PARAM_ORIGINAL_REPLICAS", "3"))
 DEFAULT_SCHEME = "http"
 _SCHEME = None
 _CREDS = None
+_ORIGINAL_STS = None
 
 
 def run(cmd):
     return subprocess.run(cmd, text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+
+
+def _list_es_statefulsets():
+    """Return the StatefulSet items in NAMESPACE whose pod template runs an
+    Elasticsearch image. Returns a list of (name, replicas, creationTimestamp)."""
+    res = run(["kubectl", "-n", NAMESPACE, "get", "sts", "-o", "json"])
+    if res.returncode != 0:
+        return []
+    try:
+        items = json.loads(res.stdout).get("items", [])
+    except (json.JSONDecodeError, AttributeError):
+        return []
+    out = []
+    for sts in items:
+        meta = sts.get("metadata", {})
+        spec = sts.get("spec", {})
+        containers = spec.get("template", {}).get("spec", {}).get("containers", [])
+        imgs = " ".join(c.get("image", "") for c in containers)
+        if "elasticsearch" not in imgs:
+            continue
+        out.append((
+            meta.get("name"),
+            spec.get("replicas"),
+            meta.get("creationTimestamp", ""),
+        ))
+    return out
+
+
+def resolve_original_sts():
+    """Resolve the ORIGINAL Elasticsearch StatefulSet name (pre-scale-up).
+
+    Priority:
+    1. The BENCH_PARAM_CLUSTER_PREFIX hint, IF it names a StatefulSet that
+       actually exists in the cluster (explicit override wins).
+    2. Live detection: among the namespace's Elasticsearch StatefulSets, the
+       original is the one whose replicas match ORIGINAL_REPLICAS (the new
+       nodeset is a separate StatefulSet); ties broken by oldest
+       creationTimestamp. This makes the oracle workflow-agnostic regardless of
+       the inherited cluster's StatefulSet name (e.g. 'es' vs 'es-cluster').
+    3. The hint as a last resort (so error messages name something concrete).
+    """
+    global _ORIGINAL_STS
+    if _ORIGINAL_STS is not None:
+        return _ORIGINAL_STS
+
+    es_sets = _list_es_statefulsets()
+    names = {n for (n, _r, _c) in es_sets if n}
+
+    # 1. Honor an explicit hint that points at a real StatefulSet.
+    if CLUSTER_PREFIX_HINT in names:
+        _ORIGINAL_STS = CLUSTER_PREFIX_HINT
+        return _ORIGINAL_STS
+
+    if es_sets:
+        # 2a. Prefer the StatefulSet still at the original replica count.
+        at_original = [s for s in es_sets if s[1] == ORIGINAL_REPLICAS and s[0]]
+        candidates = at_original or [s for s in es_sets if s[0]]
+        # Oldest first — the original cluster predates any new nodeset.
+        candidates.sort(key=lambda s: (s[2] or ""))
+        if candidates:
+            _ORIGINAL_STS = candidates[0][0]
+            return _ORIGINAL_STS
+
+    # 3. Nothing detected; fall back to the hint (will surface a NotFound).
+    _ORIGINAL_STS = CLUSTER_PREFIX_HINT
+    return _ORIGINAL_STS
 
 
 def _detect_creds():
@@ -137,7 +209,8 @@ def curl(path, errors):
 
 def get_original_nodes(errors):
     # Query all pods and filter by StatefulSet ownerReference; the app label
-    # may not match ORIGINAL_STS if a prior stage reconfigured it.
+    # may not match the original StatefulSet if a prior stage reconfigured it.
+    original_sts = resolve_original_sts()
     result = run(["kubectl", "-n", NAMESPACE, "get", "pods", "-o", "json"])
     if result.returncode != 0:
         errors.append(f"Failed to list Elasticsearch pods: {result.stderr.strip()}")
@@ -151,16 +224,17 @@ def get_original_nodes(errors):
     names = []
     for item in payload.get("items", []):
         for owner in item.get("metadata", {}).get("ownerReferences", []):
-            if owner.get("kind") == "StatefulSet" and owner.get("name") == ORIGINAL_STS:
+            if owner.get("kind") == "StatefulSet" and owner.get("name") == original_sts:
                 names.append(item.get("metadata", {}).get("name"))
                 break
     return names
 
 
 def get_sts_replicas(errors):
-    result = run(["kubectl", "-n", NAMESPACE, "get", "sts", ORIGINAL_STS, "-o", "json"])
+    original_sts = resolve_original_sts()
+    result = run(["kubectl", "-n", NAMESPACE, "get", "sts", original_sts, "-o", "json"])
     if result.returncode != 0:
-        errors.append(f"Failed to read StatefulSet {ORIGINAL_STS}: {result.stderr.strip()}")
+        errors.append(f"Failed to read StatefulSet {original_sts}: {result.stderr.strip()}")
         return None
     try:
         payload = json.loads(result.stdout)
@@ -235,7 +309,7 @@ def main():
 
     replicas = get_sts_replicas(errors)
     if replicas is not None and replicas != ORIGINAL_REPLICAS:
-        errors.append(f"StatefulSet {ORIGINAL_STS} replicas expected {ORIGINAL_REPLICAS}, got {replicas}")
+        errors.append(f"StatefulSet {resolve_original_sts()} replicas expected {ORIGINAL_REPLICAS}, got {replicas}")
 
     if errors:
         print("Scale-up nodeset verification failed:", file=sys.stderr)
