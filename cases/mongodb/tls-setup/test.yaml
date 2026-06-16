@@ -71,6 +71,30 @@ preconditionUnits:
       - command: "kubectl -n mongodb get pods 2>/dev/null | grep -c Running"
         timeout_sec: 10
 
+  # Additive data fixture (composition safety): the oracle requires >= 3 docs in
+  # {{params.app_database}}.{{params.app_collection}}. When this case runs chained on an inherited cluster the
+  # destructive `apply` above is skipped, so a prior stage may have left the
+  # collection short. This unit tops it up ADDITIVELY to the required count WITHOUT
+  # dropping/recreating the collection or touching the namespace/cluster.
+  # The probe gates on the DATA COUNT (not "pods Running"), so it runs
+  # whenever the collection is short; standalone (where `apply` already seeded 3)
+  # it sees the required count and skips -> identical behaviour. Idempotent: inserts
+  # only the deficit (required - current).
+  - name: mongo_seed_fixture
+    on_probe_fail: skip
+    probe:
+      - command: |
+          /bin/sh -c 'n=$(kubectl -n mongodb exec mongo-rs-0 -- mongosh --quiet --eval '\''db.getSiblingDB("{{params.app_database}}").{{params.app_collection}}.countDocuments({})'\'' 2>/dev/null | tr -dc 0-9); [ "${n:-0}" -ge 3 ] && echo ok | grep -c ok'
+        timeout_sec: 30
+    apply:
+      - command: |
+          /bin/sh -c 'kubectl -n mongodb exec mongo-rs-0 -- mongosh --quiet --eval '\''var c=db.getSiblingDB("{{params.app_database}}").{{params.app_collection}}; var need=3-c.countDocuments({}); var docs=[]; for(var i=0;i<need;i++){docs.push({seed:"fixture",ts:new Date()});} if(docs.length>0){c.insertMany(docs,{writeConcern:{w:1}});}'\'''
+        sleep: 2
+    verify:
+      - command: |
+          /bin/sh -c 'n=$(kubectl -n mongodb exec mongo-rs-0 -- mongosh --quiet --eval '\''db.getSiblingDB("{{params.app_database}}").{{params.app_collection}}.countDocuments({})'\'' 2>/dev/null | tr -dc 0-9); [ "${n:-0}" -ge 3 ]'
+        timeout_sec: 30
+
 oracle:
   verify:
     commands:

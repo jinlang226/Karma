@@ -52,6 +52,31 @@ preconditionUnits:
       - command: "kubectl -n mongodb get pods 2>/dev/null | grep -c Running"
         timeout_sec: 10
 
+  # Additive data fixture (composition safety): the oracle requires >= 1 docs in
+  # testdb.data. When this case runs chained on an inherited cluster the
+  # destructive `apply` above is skipped, so a prior stage may have left the
+  # collection short. This unit tops it up ADDITIVELY to the required count WITHOUT
+  # dropping/recreating the collection or touching the namespace/cluster.
+  # It authenticates as the stable admin user (password from the admin
+  # secret, like the case/oracle). The probe gates on the DATA COUNT (not "pods Running"), so it runs
+  # whenever the collection is short; standalone (where `apply` already seeded 1)
+  # it sees the required count and skips -> identical behaviour. Idempotent: inserts
+  # only the deficit (required - current).
+  - name: mongo_seed_fixture
+    on_probe_fail: skip
+    probe:
+      - command: |
+          /bin/sh -c 'pw=$(kubectl -n mongodb get secret admin-user-password -o jsonpath="{.data.password}" 2>/dev/null | base64 -d 2>/dev/null); pw=${pw:-admin123password}; n=$(kubectl -n mongodb exec mongodb-replica-0 -- mongosh --quiet "mongodb://admin-user:$pw@localhost:27017/admin" --eval '\''db.getSiblingDB("testdb").data.countDocuments({})'\'' 2>/dev/null | tr -dc 0-9); [ "${n:-0}" -ge 1 ] && echo ok | grep -c ok'
+        timeout_sec: 30
+    apply:
+      - command: |
+          /bin/sh -c 'pw=$(kubectl -n mongodb get secret admin-user-password -o jsonpath="{.data.password}" 2>/dev/null | base64 -d 2>/dev/null); pw=${pw:-admin123password}; kubectl -n mongodb exec mongodb-replica-0 -- mongosh --quiet "mongodb://admin-user:$pw@localhost:27017/admin" --eval '\''var c=db.getSiblingDB("testdb").data; var need=1-c.countDocuments({}); var docs=[]; for(var i=0;i<need;i++){docs.push({seed:"fixture",ts:new Date()});} if(docs.length>0){c.insertMany(docs,{writeConcern:{w:1}});}'\'''
+        sleep: 2
+    verify:
+      - command: |
+          /bin/sh -c 'pw=$(kubectl -n mongodb get secret admin-user-password -o jsonpath="{.data.password}" 2>/dev/null | base64 -d 2>/dev/null); pw=${pw:-admin123password}; n=$(kubectl -n mongodb exec mongodb-replica-0 -- mongosh --quiet "mongodb://admin-user:$pw@localhost:27017/admin" --eval '\''db.getSiblingDB("testdb").data.countDocuments({})'\'' 2>/dev/null | tr -dc 0-9); [ "${n:-0}" -ge 1 ]'
+        timeout_sec: 30
+
 oracle:
   verify:
     commands:

@@ -68,29 +68,43 @@ preconditionUnits:
       - command: "kubectl -n mongodb get pods 2>/dev/null | grep -c Running"
         timeout_sec: 10
 
-  # Additive fixture unit (composition safety): when this case runs chained on an
-  # inherited cluster, the destructive `apply` above is skipped, so the admin
-  # secret / admin user / seed data it normally provisions would be missing. This
-  # unit ensures JUST those fixtures idempotently WITHOUT touching the namespace or
-  # cluster. Its probe gates on the admin secret, so standalone (where `apply`
-  # already created it) this unit skips and behaviour is identical.
-  - name: mongo_admin_fixture
+  # Additive data fixture (composition safety): the oracle requires >= 3 docs in
+  # {{params.app_database}}.{{params.app_collection}}. When this case runs chained
+  # on an inherited cluster, the destructive `apply` above is skipped, so a prior
+  # stage may have left the collection with FEWER than the required docs (e.g.
+  # mongod-config-update seeds a single {config:'initial'} doc). This unit tops the
+  # collection up ADDITIVELY to the required count WITHOUT dropping/recreating the
+  # collection or touching the namespace/cluster, and also ensures the admin
+  # secret/user exist (tolerantly) so the seed authenticates exactly as the case
+  # does. The probe gates on the DATA COUNT (not the secret), so it runs whenever
+  # the collection is short regardless of cluster/secret presence; standalone
+  # (where `apply` already seeded 3) it sees >= 3 and skips -> identical behaviour.
+  # Idempotent: it only inserts the deficit (required - current), so re-running on
+  # a cluster already at >= 3 inserts nothing.
+  - name: mongo_seed_fixture
     on_probe_fail: skip
     probe:
-      - command: "kubectl -n mongodb get secret admin-user-password >/dev/null 2>&1 && echo present | grep -c present"
-        timeout_sec: 10
+      # Pass (skip apply) only when the collection already holds the required count.
+      - command: |
+          /bin/sh -c 'pw=$(kubectl -n mongodb get secret admin-user-password -o jsonpath="{.data.password}" 2>/dev/null | base64 -d 2>/dev/null); pw=${pw:-admin123password}; n=$(kubectl -n mongodb exec mongodb-replica-0 -- mongosh --quiet "mongodb://{{params.admin_username}}:$pw@localhost:27017/admin" --eval '\''db.getSiblingDB("{{params.app_database}}").{{params.app_collection}}.countDocuments({})'\'' 2>/dev/null | tr -dc 0-9); [ "${n:-0}" -ge 3 ] && echo ok | grep -c ok'
+        timeout_sec: 30
     apply:
+      # Ensure the admin secret + user exist (tolerant; they usually already do).
       - command: "kubectl -n mongodb apply -f cases/mongodb/replica-scaling/resource/secrets.yaml"
         sleep: 1
       - command: |
           /bin/sh -c 'kubectl -n mongodb exec mongodb-replica-0 -- mongosh --quiet --eval '\''db.getSiblingDB("admin").createUser({user:"{{params.admin_username}}",pwd:"admin123password",roles:[{role:"clusterAdmin",db:"admin"},{role:"userAdminAnyDatabase",db:"admin"},{role:"readWriteAnyDatabase",db:"admin"}]})'\'' || true'
         sleep: 2
+      # Additively top the collection up to 3 docs: insert exactly (3 - current),
+      # never dropping or resetting. Authenticates as the admin user like the case.
       - command: |
-          /bin/sh -c 'kubectl -n mongodb exec mongodb-replica-0 -- mongosh --quiet "mongodb://{{params.admin_username}}:admin123password@localhost:27017/admin" --eval '\''db.getSiblingDB("{{params.app_database}}").{{params.app_collection}}.insertMany([{id:1},{id:2},{id:3}],{writeConcern:{w:1}})'\'' || true'
+          /bin/sh -c 'pw=$(kubectl -n mongodb get secret admin-user-password -o jsonpath="{.data.password}" 2>/dev/null | base64 -d 2>/dev/null); pw=${pw:-admin123password}; kubectl -n mongodb exec mongodb-replica-0 -- mongosh --quiet "mongodb://{{params.admin_username}}:$pw@localhost:27017/admin" --eval '\''var c=db.getSiblingDB("{{params.app_database}}").{{params.app_collection}}; var need=3-c.countDocuments({}); var docs=[]; for(var i=0;i<need;i++){docs.push({seed:"fixture",ts:new Date()});} if(docs.length>0){c.insertMany(docs,{writeConcern:{w:1}});}'\'''
         sleep: 2
     verify:
-      - command: "kubectl -n mongodb get secret admin-user-password -o name"
-        timeout_sec: 10
+      # Confirm the collection now meets the oracle's required count.
+      - command: |
+          /bin/sh -c 'pw=$(kubectl -n mongodb get secret admin-user-password -o jsonpath="{.data.password}" 2>/dev/null | base64 -d 2>/dev/null); pw=${pw:-admin123password}; n=$(kubectl -n mongodb exec mongodb-replica-0 -- mongosh --quiet "mongodb://{{params.admin_username}}:$pw@localhost:27017/admin" --eval '\''db.getSiblingDB("{{params.app_database}}").{{params.app_collection}}.countDocuments({})'\'' 2>/dev/null | tr -dc 0-9); [ "${n:-0}" -ge 3 ]'
+        timeout_sec: 30
 
 oracle:
   verify:
