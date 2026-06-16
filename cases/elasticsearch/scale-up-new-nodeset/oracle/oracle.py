@@ -253,27 +253,41 @@ def get_sts_replicas(errors):
     return payload.get("spec", {}).get("replicas")
 
 
+# ES system/built-in node attributes (not operator-set allocation attributes).
+# These vary across nodes for reasons unrelated to allocation awareness (a
+# transform/ml node carries transform.node=true, ml.* memory sizing differs by
+# pod, etc.), so they must be excluded when deciding whether the agent applied a
+# *distinguishing allocation attribute*.
+_BUILTIN_ATTR_PREFIXES = ("ml.", "xpack.", "transform.")
+
+
+def _is_builtin_attr(key):
+    return any(key.startswith(p) for p in _BUILTIN_ATTR_PREFIXES)
+
+
 def attribute_differs(attributes_by_node, original_nodes, new_nodes):
-    # The new nodeset is "distinguished" when some new node carries an allocation
-    # attribute KEY that no original node has at all -- e.g. node.attr.zone=new or
-    # node.attr.rack=new on the new data nodes while the originals carry no
-    # zone/rack attribute. Keying on a BRAND-NEW attribute key (rather than a
-    # differing value on a shared key) avoids false positives from ES built-in
-    # per-node attributes (xpack.installed, transform.node, ml.*) that every node
-    # carries with varying values. It also does NOT require the new nodes to be
-    # homogeneous: a scaled-up data nodeset (rack=new) is detected even when the
-    # cluster also holds an unrelated inherited nodeset (e.g. a transform node)
-    # that lacks that key -- the earlier intersection-of-all-new-nodes rule missed
-    # exactly that case. An agent that added no distinguishing attribute leaves the
-    # new nodes carrying only keys the originals also have, so this still fails.
+    # The new nodeset is "distinguished" when some new node carries a custom
+    # allocation attribute (key,value) that no original node has -- covering BOTH
+    # a brand-new key the originals lack (node.attr.rack=new on a scaled-up data
+    # nodeset while the originals have no rack) AND a shared key with a different
+    # value (node.attr.zone=new on the new nodes while the originals carry
+    # node.attr.zone=<other>). ES built-in attributes (transform.node, xpack.*,
+    # ml.*) are excluded so a transform/ml node is not mistaken for a
+    # distinguishing allocation attribute, and the new nodes need NOT be
+    # homogeneous. An agent that added no custom allocation attribute leaves the
+    # new nodes carrying only keys/values the originals also have, so this fails.
     if not original_nodes or not new_nodes:
         return False
-    original_keys = set()
+    original_pairs = set()
     for n in original_nodes:
-        original_keys |= set(attributes_by_node.get(n, {}).keys())
+        for key, value in attributes_by_node.get(n, {}).items():
+            if not _is_builtin_attr(key):
+                original_pairs.add((key, value))
     for n in new_nodes:
         for key, value in attributes_by_node.get(n, {}).items():
-            if key not in original_keys and value not in (None, ""):
+            if _is_builtin_attr(key) or value in (None, ""):
+                continue
+            if (key, value) not in original_pairs:
                 return True
     return False
 
@@ -321,6 +335,14 @@ def evaluate():
             if name:
                 attributes_by_node[name] = node.get("attributes", {})
         if original_nodes and new_nodes and not attribute_differs(attributes_by_node, original_nodes, new_nodes):
+            print(
+                "[diag] original=%s new=%s"
+                % (
+                    {n: attributes_by_node.get(n, {}) for n in original_nodes},
+                    {n: attributes_by_node.get(n, {}) for n in new_nodes},
+                ),
+                file=sys.stderr,
+            )
             errors.append("No allocation attribute differs between original nodes and new nodes")
 
     shards = curl(f"/_cat/shards/{INDEX_NAME}?format=json", errors)
