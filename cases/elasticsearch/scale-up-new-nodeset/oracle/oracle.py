@@ -254,19 +254,34 @@ def get_sts_replicas(errors):
 
 
 def attribute_differs(attributes_by_node, original_nodes, new_nodes):
+    # The new nodeset is "distinguished" if the agent applied an allocation
+    # attribute to the new nodes that the original nodes do not share -- EITHER a
+    # brand-new key the originals lack (e.g. zone=new on the new nodes while the
+    # originals carry no zone attribute at all), OR a shared key with a different
+    # value. The earlier logic only inspected keys present on ALL original nodes,
+    # so it missed the common "add a new allocation-attribute key to the new
+    # nodeset" solution and falsely reported no difference.
     if not original_nodes or not new_nodes:
         return False
+    new_attrs = [attributes_by_node.get(n, {}) for n in new_nodes]
     original_attrs = [attributes_by_node.get(n, {}) for n in original_nodes]
-    candidate_keys = set.intersection(*(set(a.keys()) for a in original_attrs if a)) if original_attrs else set()
-    for key in sorted(candidate_keys):
-        values = {a.get(key) for a in original_attrs}
-        if len(values) != 1:
+    # Candidate keys = attributes the agent set uniformly across the WHOLE new
+    # nodeset (a real allocation attribute is applied to every new node; per-node
+    # built-ins that vary are excluded by the uniformity requirement).
+    new_keys = set.intersection(*(set(a.keys()) for a in new_attrs)) if new_attrs else set()
+    for key in sorted(new_keys):
+        new_values = {a.get(key) for a in new_attrs}
+        if len(new_values) != 1:
             continue
-        original_value = next(iter(values))
-        for node in new_nodes:
-            node_attrs = attributes_by_node.get(node, {})
-            if key in node_attrs and node_attrs.get(key) != original_value:
-                return True
+        new_value = next(iter(new_values))
+        # Differs when no original node carries this exact value for the key:
+        # covers both a key the originals lack (their value is absent) and a
+        # shared key whose value differs. Homogeneous built-ins are identical on
+        # every node, so they appear on the originals too and are not flagged --
+        # an agent that added no distinguishing attribute still fails.
+        original_values = {a.get(key) for a in original_attrs}
+        if new_value not in original_values:
+            return True
     return False
 
 
