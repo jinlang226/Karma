@@ -104,6 +104,33 @@ def verify_cert(ca_path, cert_path):
     return run(["openssl", "verify", "-CAfile", ca_path, cert_path])
 
 
+_ELASTIC_PW = None
+
+
+def _elastic_password():
+    """Live elastic-user password.
+
+    Reads the elastic-password secret (a prior rotate-elastic-password stage may
+    have rotated it away from this case's default, so the env PERSISTS a new
+    value), base64-decoded; falls back to the case default. Cached so the retry
+    loop does not re-read the secret each attempt.
+    """
+    global _ELASTIC_PW
+    if _ELASTIC_PW is not None:
+        return _ELASTIC_PW
+    import base64
+    r = run(["kubectl", "-n", NAMESPACE, "get", "secret", "elastic-password",
+             "-o", "jsonpath={.data.password}"])
+    pw = None
+    if r.returncode == 0 and r.stdout.strip():
+        try:
+            pw = base64.b64decode(r.stdout.strip()).decode()
+        except Exception:
+            pw = None
+    _ELASTIC_PW = pw or os.environ.get("BENCH_PARAM_ELASTIC_PASSWORD") or "elasticpass"
+    return _ELASTIC_PW
+
+
 def _health_curl(scheme):
     """Run the cluster-health curl over the given scheme.
 
@@ -122,7 +149,7 @@ def _health_curl(scheme):
     ]
     if scheme == "https":
         cmd += ["--cacert", "/etc/es-http-ca/ca.crt", "-k"]
-    cmd += ["-u", "elastic:elasticpass",
+    cmd += ["-u", f"elastic:{_elastic_password()}",
             f"{scheme}://{SERVICE}.{NAMESPACE}.svc:9200{path}"]
     return run(cmd)
 
