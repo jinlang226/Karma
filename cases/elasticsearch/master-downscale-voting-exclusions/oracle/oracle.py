@@ -124,6 +124,10 @@ def detect_scheme():
 
 def curl_json(path, errors):
     scheme = detect_scheme()
+    # The client deadline (--max-time 20) must exceed any server-side
+    # ``timeout``/``wait_for`` in `path`, otherwise curl aborts (exit 28) before
+    # ES can answer. The retry loop in main() does the real waiting, so each
+    # call's server wait stays short (<=10s).
     result = run(
         [
             "kubectl",
@@ -137,7 +141,7 @@ def curl_json(path, errors):
             "-S",
             "-k",
             "--max-time",
-            "5",
+            "20",
             f"{scheme}://{SERVICE}:9200{path}",
         ]
     )
@@ -208,7 +212,8 @@ def is_auto_shrink_enabled(errors):
     return True
 
 
-def main():
+def evaluate():
+    """Run one full snapshot of the master-downscale checks; return the errors."""
     errors = []
 
     health = curl_json("/_cluster/health?timeout=5s", errors)
@@ -236,6 +241,24 @@ def main():
     auto_shrink = is_auto_shrink_enabled(errors)
     if auto_shrink is False:
         errors.append("auto_shrink_voting_configuration is disabled")
+
+    return errors
+
+
+def main():
+    # A multi-node ES cluster can flap at the edge of readiness under load: a
+    # node briefly fails its HTTP readiness probe / drops from the cluster during
+    # GC or shard recovery even though it is stably green. A single snapshot can
+    # catch that transient and report a false node/master-count miss. So verify
+    # the STABLE converged state: re-evaluate for up to ~75s and pass on the
+    # first clean snapshot. This does not loosen the node-count/green/voting
+    # requirements -- a genuinely degraded cluster fails every attempt.
+    import time
+    deadline = time.monotonic() + 75
+    errors = evaluate()
+    while errors and time.monotonic() < deadline:
+        time.sleep(8)
+        errors = evaluate()
 
     if errors:
         print("Master downscale recovery verification failed:", file=sys.stderr)

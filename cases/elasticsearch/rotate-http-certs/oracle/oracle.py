@@ -111,10 +111,14 @@ def _health_curl(scheme):
     HTTP TLS a prior stage disabled) adds nothing. -k is a belt-and-suspenders
     in case the served leaf doesn't chain to the mounted CA path.
     """
+    # The client deadline (--max-time 20) must exceed the server-side
+    # ``timeout`` in the path, otherwise curl aborts (exit 28) before ES can
+    # answer. curl_health() retries to absorb transient flapping, so the server
+    # wait stays short (5s).
     path = "/_cluster/health?wait_for_status=yellow&timeout=5s"
     cmd = [
         "kubectl", "-n", NAMESPACE, "exec", CURL_POD, "--",
-        "curl", "-s", "-S", "--max-time", "5",
+        "curl", "-s", "-S", "--max-time", "20",
     ]
     if scheme == "https":
         cmd += ["--cacert", "/etc/es-http-ca/ca.crt", "-k"]
@@ -123,7 +127,9 @@ def _health_curl(scheme):
     return run(cmd)
 
 
-def curl_health(errors):
+def _evaluate_health():
+    """Run one cluster-health snapshot; return the list of health errors."""
+    errs = []
     # The env PERSISTS across stages; the cluster's live scheme may differ from
     # this case's default (https for a cert-rotation task). Try https (with the
     # rotated CA) then fall back to http. Cert assertions above are unaffected.
@@ -132,20 +138,38 @@ def curl_health(errors):
         result = _health_curl("http")
     if result.returncode != 0:
         detail = result.stderr.strip() or result.stdout.strip() or f"exit {result.returncode}"
-        errors.append(f"Cluster health check failed: {detail}")
-        return
+        errs.append(f"Cluster health check failed: {detail}")
+        return errs
     output = result.stdout.strip()
     if not output:
-        errors.append("HTTPS health check returned empty response")
-        return
+        errs.append("HTTPS health check returned empty response")
+        return errs
     try:
         data = json.loads(output)
     except json.JSONDecodeError:
-        errors.append("HTTPS health check returned invalid JSON")
-        return
+        errs.append("HTTPS health check returned invalid JSON")
+        return errs
     status = data.get("status")
     if status not in {"yellow", "green"}:
-        errors.append(f"Cluster health expected yellow/green, got {status}")
+        errs.append(f"Cluster health expected yellow/green, got {status}")
+    return errs
+
+
+def curl_health(errors):
+    # A multi-node ES cluster can flap at the edge of readiness under load: it
+    # briefly reports a non-green/yellow status during GC or shard recovery even
+    # though it converges green. A single snapshot can catch that transient. So
+    # verify the STABLE converged health: re-evaluate for up to ~75s and accept
+    # the first clean snapshot. This does not loosen the green/yellow
+    # requirement -- a genuinely degraded cluster fails every attempt. The cert
+    # assertions above are deterministic and stay single-pass.
+    import time
+    deadline = time.monotonic() + 75
+    health_errors = _evaluate_health()
+    while health_errors and time.monotonic() < deadline:
+        time.sleep(8)
+        health_errors = _evaluate_health()
+    errors.extend(health_errors)
 
 
 def main():

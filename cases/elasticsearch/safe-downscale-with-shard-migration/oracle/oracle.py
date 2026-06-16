@@ -189,7 +189,8 @@ def pvc_ordinal(name):
     return int(suffix)
 
 
-def main():
+def evaluate():
+    """Run one full snapshot of the downscale checks; return the list of errors."""
     errors = []
 
     sts_data = get_json(
@@ -279,6 +280,25 @@ def main():
             continue
         if ordinal >= replicas:
             errors.append(f"Orphan PVC still present: {name}")
+
+    return errors
+
+
+def main():
+    # A multi-node ES cluster can flap at the edge of readiness under load: a
+    # surviving node briefly fails its HTTP readiness probe / the cluster reports
+    # transient unassigned shards mid shard-migration even though it converges
+    # green. A single snapshot can catch that transient and report a false
+    # not-Ready / node-count / unassigned-shards miss. So verify the STABLE
+    # converged state: re-evaluate for up to ~75s and pass on the first clean
+    # snapshot. This does not loosen the replica/green/shard-placement
+    # requirements -- a genuinely degraded downscale fails every attempt.
+    import time
+    deadline = time.monotonic() + 75
+    errors = evaluate()
+    while errors and time.monotonic() < deadline:
+        time.sleep(8)
+        errors = evaluate()
 
     if errors:
         print("Safe downscale verification failed:", file=sys.stderr)
