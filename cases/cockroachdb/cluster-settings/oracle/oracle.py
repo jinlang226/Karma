@@ -28,6 +28,65 @@ POD = "crdb-cluster-0"
 SETTING_NAME = os.environ.get("BENCH_PARAM_SETTING_NAME", "kv.snapshot_rebalance.max_rate")
 SETTING_VALUE = os.environ.get("BENCH_PARAM_SETTING_VALUE", "128MiB")
 
+# Some cluster settings were renamed/consolidated across CockroachDB versions, so
+# a name that is valid on the version this case deploys standalone can be
+# *unknown* on the version a prior workflow upgrade left running. Map each such
+# legacy name to its modern equivalent (and vice-versa) so the oracle reads the
+# name the live cluster actually understands. The two settings below are
+# interchangeable in intent (both cap snapshot/rebalance throughput):
+#   kv.snapshot_recovery.max_rate was removed in v23.1 (PR cockroachdb#102596),
+#   consolidated into kv.snapshot_rebalance.max_rate, which exists in every
+#   version this case runs on (standalone v24.1 and the v23.2->24.1 upgrade path).
+# Resolution is symmetric, so whichever name the workflow asks for resolves to
+# the one present on the cluster without loosening what is verified — the value
+# still has to be set and persist across a restart.
+SETTING_ALIASES = {
+    "kv.snapshot_recovery.max_rate": "kv.snapshot_rebalance.max_rate",
+    "kv.snapshot_rebalance.max_rate": "kv.snapshot_recovery.max_rate",
+}
+
+_RESOLVED_NAME = None
+
+
+def setting_exists(name):
+    """Return True if `name` is a known cluster setting on the live cluster."""
+    probe = run([
+        "kubectl", "-n", NAMESPACE, "--request-timeout=20s", "exec", POD, "--",
+        "./cockroach", "sql", conn_flag(), "--format=tsv",
+        "-e", f"SHOW CLUSTER SETTING {name};",
+    ], timeout=25)
+    if probe.returncode == 0:
+        return True
+    # "unknown setting" means the name does not exist on this version; any other
+    # error (auth/transient) should not be read as "missing", so only treat the
+    # explicit unknown-setting message as non-existence.
+    return "unknown setting" not in (probe.stderr or "").lower()
+
+
+def resolve_setting_name():
+    """Pick the setting name the live cluster understands.
+
+    Prefer the configured name; if it is a version-removed alias that the cluster
+    rejects as unknown, fall back to its modern equivalent (when that one
+    exists). Cached after the first probe so a single resolution is reused for
+    the before/after-restart reads.
+    """
+    global _RESOLVED_NAME
+    if _RESOLVED_NAME is not None:
+        return _RESOLVED_NAME
+    if setting_exists(SETTING_NAME):
+        _RESOLVED_NAME = SETTING_NAME
+        return _RESOLVED_NAME
+    alias = SETTING_ALIASES.get(SETTING_NAME)
+    if alias and setting_exists(alias):
+        _RESOLVED_NAME = alias
+        return _RESOLVED_NAME
+    # No known equivalent exists either; keep the configured name so the read
+    # fails loudly with the real "unknown setting" error rather than silently
+    # passing on the wrong setting.
+    _RESOLVED_NAME = SETTING_NAME
+    return _RESOLVED_NAME
+
 
 def run(cmd, timeout=30):
     """Run a kubectl command, bounding it so a stalled exec/wait cannot hang.
@@ -139,11 +198,17 @@ def values_match(expected, actual):
 
 
 def get_setting():
-    """Read the live value of the configured cluster setting (last tsv line)."""
+    """Read the live value of the configured cluster setting (last tsv line).
+
+    Reads the name the live cluster actually understands (see
+    resolve_setting_name), which may be the modern equivalent of a configured
+    legacy/removed alias.
+    """
+    name = resolve_setting_name()
     cmd = [
         "kubectl", "-n", NAMESPACE, "--request-timeout=20s", "exec", POD, "--",
         "./cockroach", "sql", conn_flag(), "--format=tsv",
-        "-e", f"SHOW CLUSTER SETTING {SETTING_NAME};",
+        "-e", f"SHOW CLUSTER SETTING {name};",
     ]
     result = run(cmd, timeout=25)
     if result.returncode != 0:
@@ -171,12 +236,13 @@ def check(errors, phase):
         if not err or time.monotonic() >= deadline:
             break
         time.sleep(3)
+    name = resolve_setting_name()
     if err:
-        errors.append(f"Failed to read {SETTING_NAME} {phase}: {err}")
+        errors.append(f"Failed to read {name} {phase}: {err}")
         return
     if not values_match(SETTING_VALUE, actual):
         errors.append(
-            f"{SETTING_NAME} {phase} is '{actual}', expected '{SETTING_VALUE}'"
+            f"{name} {phase} is '{actual}', expected '{SETTING_VALUE}'"
         )
 
 
@@ -233,7 +299,7 @@ def main():
             print(f"  - {error}", file=sys.stderr)
         return 1
 
-    print(f"Cluster setting {SETTING_NAME} = {SETTING_VALUE} verified (persists across restart)")
+    print(f"Cluster setting {resolve_setting_name()} = {SETTING_VALUE} verified (persists across restart)")
     return 0
 
 
