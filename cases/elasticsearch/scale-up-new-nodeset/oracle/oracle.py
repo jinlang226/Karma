@@ -119,34 +119,39 @@ def _detect_creds():
 def _resolve_expected_nodes(default=5):
     """Total node count to enforce after scale-up.
 
-    Priority: explicit BENCH_PARAM_EXPECTED_NODES param -> the LIVE count of
-    Ready Elasticsearch pods namespace-wide (original StatefulSet + the new
-    nodeset) -> the standalone default. The env PERSISTS across stages, so the
-    total adapts to whatever topology accumulated; the 'at least 2 new nodes'
-    and original-StatefulSet checks below still enforce the real task.
+    The expected total is the DESIRED topology: the sum of spec.replicas across
+    every Elasticsearch StatefulSet in the namespace (original cluster + any new
+    nodeset, plus any extra nodeset an earlier workflow stage left behind, e.g.
+    a dedicated transform node). Deriving from desired replicas — not a
+    point-in-time Ready-pod count — makes this adapt to whatever topology the
+    persisted env accumulated AND avoids racing a node that is still joining.
+
+    BENCH_PARAM_EXPECTED_NODES is honored ONLY as an explicit override when it is
+    at least as large as the live desired total: the case ships a standalone
+    default of 5, which would otherwise wrongly pin the count below an inherited
+    cluster that already carries more nodes. The 'at least 2 new nodes' and
+    original-StatefulSet checks below still enforce the real task.
     """
+    desired = None
+    es_sets = _list_es_statefulsets()
+    replica_counts = [r for (_n, r, _c) in es_sets if isinstance(r, int)]
+    if replica_counts:
+        desired = sum(replica_counts)
+
     val = os.environ.get("BENCH_PARAM_EXPECTED_NODES")
     if val is not None and str(val).strip():
         try:
-            return int(val)
+            override = int(val)
+            # Only let the param raise the bar, never lower it below the live
+            # desired topology (defeats the stale standalone default in a
+            # workflow with an inherited, larger cluster).
+            if desired is None or override >= desired:
+                return override
         except ValueError:
             pass
-    res = run(["kubectl", "-n", NAMESPACE, "get", "pods", "-o", "json"])
-    if res.returncode == 0:
-        try:
-            items = json.loads(res.stdout).get("items", [])
-            ready = 0
-            for pod in items:
-                imgs = " ".join(c.get("image", "") for c in pod.get("spec", {}).get("containers", []))
-                if "elasticsearch" not in imgs:
-                    continue
-                conds = pod.get("status", {}).get("conditions", [])
-                if any(c.get("type") == "Ready" and c.get("status") == "True" for c in conds):
-                    ready += 1
-            if ready > 0:
-                return ready
-        except (json.JSONDecodeError, AttributeError):
-            pass
+
+    if desired is not None and desired > 0:
+        return desired
     return default
 
 
