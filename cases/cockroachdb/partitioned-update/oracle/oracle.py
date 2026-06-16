@@ -98,7 +98,8 @@ def to_bool(value):
     return str(value).strip().lower() in ("true", "t", "1", "yes")
 
 
-def main():
+def evaluate():
+    """One full snapshot of the partitioned-update checks; returns error list."""
     errors = []
 
     cmd = ["kubectl", "-n", "cockroachdb", "get", "statefulset", "crdb-cluster", "-o", "json"]
@@ -213,6 +214,25 @@ def main():
                         live_nodes += 1
                 if live_nodes != expected_nodes():
                     errors.append(f"Expected {expected_nodes()} live nodes, found {live_nodes}")
+
+    return errors
+
+
+def main():
+    # A partitioned rolling update restarts nodes one at a time; a just-restarted
+    # node takes a short while to rejoin and report is_live, and the StatefulSet's
+    # updatedReplicas/revisions settle a beat after the last pod restarts. A
+    # single snapshot can race that convergence and see e.g. "2 live nodes" on a
+    # cluster healthily finishing its rollout (the same case passes at the prior
+    # stages). Re-evaluate for up to ~70s and pass on the first clean snapshot.
+    # This does not loosen the check -- a node that genuinely fails to rejoin
+    # never becomes live, so the oracle still fails after the deadline.
+    import time
+    deadline = time.monotonic() + 70
+    errors = evaluate()
+    while errors and time.monotonic() < deadline:
+        time.sleep(7)
+        errors = evaluate()
 
     if errors:
         print("Partitioned update verification failed:", file=sys.stderr)
