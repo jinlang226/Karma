@@ -185,7 +185,26 @@
     // as the current location so a later jump returns here.
     KARMA.clearHistory();
     KARMA.currentLocation = () => KARMA.activate("results");
-    KARMA.setBreadcrumb(null);
+    // Breadcrumb (top-left): at the top level the "Results" heading is the title,
+    // so no crumb path. When browsing a folder, show "Results / <folder…>" in the
+    // same top-left spot the run-detail view uses, so the path persists when you
+    // click a folder crumb from a run detail (instead of vanishing). Each ancestor
+    // segment is clickable; the current folder is the non-clickable tail; the back
+    // arrow steps up one folder.
+    if (runsFolder && sub === "runs") {
+      const goFolder = (folder) => () => { runsFolder = folder; sub = "runs"; render(); };
+      const crumbs = [{ label: "Results", onClick: goFolder("") }];
+      let acc = "";
+      const segs = runsFolder.split("/");
+      segs.forEach((seg, i) => {
+        acc = acc ? acc + "/" + seg : seg;
+        crumbs.push(i === segs.length - 1 ? { label: seg } : { label: seg, onClick: goFolder(acc) });
+      });
+      const parent = runsFolder.includes("/") ? runsFolder.slice(0, runsFolder.lastIndexOf("/")) : "";
+      KARMA.setBreadcrumb({ back: goFolder(parent), crumbs });
+    } else {
+      KARMA.setBreadcrumb(null);
+    }
     root.appendChild(el("h2", {}, "Results"));
     root.appendChild(el("p", { class: "field-help" },
       "Every run, live and historical. Click a run for its config, per-stage " +
@@ -268,25 +287,15 @@
       el("td", {}, el("button", { class: "btn secondary", onClick: open }, "Open")));
   }
 
-  // Fill (or hide) the current-folder bar above the runs list.
+  // The in-page folder bar above the runs list is retired: the top-left
+  // breadcrumb (set in render()) now shows "Results / <folder…>" for the folder
+  // view, matching the run-detail view, so a second in-page path would be
+  // redundant. Keep the element hidden.
   function renderRunsCrumbBar() {
     const bar = document.getElementById("runs-crumb-bar");
     if (!bar) return;
     clear(bar);
-    if (!runsFolder) { bar.style.display = "none"; return; }
-    const parent = runsFolder.includes("/") ? runsFolder.slice(0, runsFolder.lastIndexOf("/")) : "";
-    const go = (folder) => () => openRunsFolder(folder);
-    bar.appendChild(el("span", { class: "crumb-link dir-up", title: "Up one folder", onClick: go(parent) }, "←"));
-    bar.appendChild(el("span", { class: "crumb-link", onClick: go("") }, "runs"));
-    let acc = "";
-    runsFolder.split("/").forEach((seg, i, segs) => {
-      acc = acc ? acc + "/" + seg : seg;
-      bar.appendChild(el("span", { class: "crumb-sep" }, "/"));
-      bar.appendChild(i === segs.length - 1
-        ? el("span", { class: "wf-crumb-current" }, seg)
-        : el("span", { class: "crumb-link", onClick: go(acc) }, seg));
-    });
-    bar.style.display = "";
+    bar.style.display = "none";
   }
 
   // Render the tbody. With a search term, show a flat loose-matched result across
