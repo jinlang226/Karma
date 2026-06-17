@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 import argparse
+import base64
 import json
 import os
 import subprocess
@@ -20,6 +21,32 @@ SEED_DOCS = int(os.environ.get("BENCH_PARAM_SEED_DOCS", "3"))
 
 def run(cmd):
     return subprocess.run(cmd, text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+
+
+_ADMIN_PW = None
+
+
+def _admin_auth_flags():
+    """`-u <admin> -p <pw> --authenticationDatabase admin` when the admin secret
+    exists. The env PERSISTS across stages, so a prior deploy stage may have
+    enabled auth (keyfile + admin user), after which rs.conf()/rs.status()
+    require credentials. Empty when no admin secret is present. Cached."""
+    global _ADMIN_PW
+    if _ADMIN_PW is None:
+        secret = os.environ.get("BENCH_PARAM_ADMIN_SECRET_NAME", "admin-user-password")
+        r = run(["kubectl", "-n", NAMESPACE, "get", "secret", secret,
+                 "-o", "jsonpath={.data.password}"])
+        pw = ""
+        if r.returncode == 0 and r.stdout.strip():
+            try:
+                pw = base64.b64decode(r.stdout.strip()).decode()
+            except Exception:
+                pw = ""
+        _ADMIN_PW = pw
+    if _ADMIN_PW:
+        user = os.environ.get("BENCH_PARAM_ADMIN_USERNAME", "admin")
+        return ["-u", user, "-p", _ADMIN_PW, "--authenticationDatabase", "admin"]
+    return []
 
 
 _TLS_FLAGS_CACHE = None
@@ -73,21 +100,20 @@ def fail(prefix, errors):
 
 
 def mongo_eval(pod, script):
-    return run(
-        [
-            "kubectl",
-            "-n",
-            NAMESPACE,
-            "exec",
-            pod,
-            "--",
-            "mongosh",
-            "--quiet",
-            *_mongo_tls_flags(),
-            "--eval",
-            script,
-        ]
-    )
+    base = ["kubectl", "-n", NAMESPACE, "exec", pod, "--",
+            "mongosh", "--quiet", *_mongo_tls_flags()]
+    res = run(base + ["--eval", script])
+    # Adaptive auth: a deploy stage may have enabled auth, so a plain rs.conf()
+    # fails "requires authentication". Retry once with live admin credentials.
+    out = ((res.stderr or "") + (res.stdout or "")).lower()
+    if res.returncode != 0 and (
+        "requires authentication" in out or "not authorized" in out
+        or "unauthorized" in out or "authentication failed" in out
+    ):
+        af = _admin_auth_flags()
+        if af:
+            res = run(base + af + ["--eval", script])
+    return res
 
 
 def mongo_json(pod, script, label, errors):
