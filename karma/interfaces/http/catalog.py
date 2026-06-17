@@ -342,8 +342,12 @@ def get_run_detail(runs_dir: Path, run_id: str) -> dict[str, Any]:
         "oracle_verdict": s.get("oracle_verdict"),
         "error": s.get("error"),
     } for s in raw_stages]
+    _rel = str(run_dir.parent.relative_to(runs_dir))
     detail: dict[str, Any] = {
         "run_id": run_id,
+        # The run's folder (e.g. "long-examples"), so the Results breadcrumb can
+        # show Results / <folder> / <run> with the folder clickable. "" = top level.
+        "dir": "" if _rel == "." else _rel,
         "status": meta.get("status", "unknown"),
         "config": config,
         "stages": stages,
