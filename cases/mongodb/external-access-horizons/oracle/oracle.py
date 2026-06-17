@@ -137,12 +137,14 @@ def mongo_json(pod, eval_str, label, errors, uri=None):
 def check_topology():
     errors = []
     pod = f"{CLUSTER_PREFIX}-0"
-    # Read rs.conf() via the member's own FQDN with directConnection=true to skip
-    # SDAM topology monitoring, which a bare localhost connection would start and
-    # which fails under a persisted requireTLS mode. Only the connection method
-    # changes; the horizon assertions below are unchanged.
-    local_uri = (f"mongodb://{pod}.{SERVICE_NAME}.{NAMESPACE}.svc.cluster.local:27017/"
-                 "?directConnection=true&serverSelectionTimeoutMS=4000&connectTimeoutMS=4000")
+    # Read rs.conf() exactly as the agent's proven working command does: connect to
+    # localhost (we exec INSIDE the member pod) with directConnection=true so mongosh
+    # skips SDAM topology monitoring, and use DEFAULT timeouts. An earlier attempt
+    # used a FQDN + short 4s serverSelection/connect timeouts, which under a loaded
+    # requireTLS cluster intermittently dropped the monitor connection
+    # ("MongoServerSelectionError: connection ... closed"); localhost + default
+    # timeouts (TLS still supplied as CLI flags by mongo_json) does not.
+    local_uri = "mongodb://localhost:27017/?directConnection=true"
     conf = mongo_json(pod, "JSON.stringify(rs.conf())", "rs.conf()", errors, uri=local_uri)
     if isinstance(conf, dict):
         members = conf.get("members", [])
