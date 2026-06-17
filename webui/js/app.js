@@ -115,6 +115,9 @@
         ? el("span", { class: "crumb-link", onClick: c.onClick }, c.label)
         : el("span", { class: "crumb-current" }, c.label));
     });
+    // Optional trailing content (a DOM node) -- e.g. a folder status summary
+    // shown alongside the breadcrumb path.
+    if (spec.suffix) host.appendChild(spec.suffix);
   };
 
   // --- Toast / status notifications (bottom-right) -------------------------

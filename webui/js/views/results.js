@@ -185,26 +185,7 @@
     // as the current location so a later jump returns here.
     KARMA.clearHistory();
     KARMA.currentLocation = () => KARMA.activate("results");
-    // Breadcrumb (top-left): at the top level the "Results" heading is the title,
-    // so no crumb path. When browsing a folder, show "Results / <folder…>" in the
-    // same top-left spot the run-detail view uses, so the path persists when you
-    // click a folder crumb from a run detail (instead of vanishing). Each ancestor
-    // segment is clickable; the current folder is the non-clickable tail; the back
-    // arrow steps up one folder.
-    if (runsFolder && sub === "runs") {
-      const goFolder = (folder) => () => { runsFolder = folder; sub = "runs"; render(); };
-      const crumbs = [{ label: "Results", onClick: goFolder("") }];
-      let acc = "";
-      const segs = runsFolder.split("/");
-      segs.forEach((seg, i) => {
-        acc = acc ? acc + "/" + seg : seg;
-        crumbs.push(i === segs.length - 1 ? { label: seg } : { label: seg, onClick: goFolder(acc) });
-      });
-      const parent = runsFolder.includes("/") ? runsFolder.slice(0, runsFolder.lastIndexOf("/")) : "";
-      KARMA.setBreadcrumb({ back: goFolder(parent), crumbs });
-    } else {
-      KARMA.setBreadcrumb(null);
-    }
+    setFolderCrumb();
     root.appendChild(el("h2", {}, "Results"));
     root.appendChild(el("p", { class: "field-help" },
       "Every run, live and historical. Click a run for its config, per-stage " +
@@ -247,8 +228,46 @@
     const d = r.dir || "";
     return d === folder || d.startsWith(folder ? folder + "/" : "");
   });
+  // Compact run-status summary for a folder: one badge per distinct status
+  // (e.g. "complete 4", "failed 1", "running 7") tallied over every run under the
+  // folder -- the status each run/case returns. Null when the folder has no runs.
+  function folderStatusSummary(folder) {
+    const runs = runsUnder(folder);
+    if (!runs.length) return null;
+    const counts = {};
+    for (const r of runs) {
+      const id = (r.status || "unknown");
+      counts[id] = (counts[id] || 0) + 1;
+    }
+    const wrap = el("span", { class: "folder-status" });
+    Object.keys(counts).sort().forEach((id) => {
+      const st = KARMA.labels.status(id);
+      wrap.appendChild(el("span", { class: "badge " + st.cls, title: st.text }, `${st.text} ${counts[id]}`));
+    });
+    return wrap;
+  }
+
+  // Set the top-left breadcrumb for the current runsFolder: "Results / <folder…>"
+  // plus the folder status summary. Shared by render() (folder-crumb-click path)
+  // and openRunsFolder() (folder-row-click path) so both stay in sync; cleared at
+  // the top level where the "Results" heading is the title.
+  function setFolderCrumb() {
+    if (!(runsFolder && sub === "runs")) { KARMA.setBreadcrumb(null); return; }
+    const goFolder = (folder) => () => { runsFolder = folder; sub = "runs"; render(); };
+    const crumbs = [{ label: "Results", onClick: goFolder("") }];
+    let acc = "";
+    const segs = runsFolder.split("/");
+    segs.forEach((seg, i) => {
+      acc = acc ? acc + "/" + seg : seg;
+      crumbs.push(i === segs.length - 1 ? { label: seg } : { label: seg, onClick: goFolder(acc) });
+    });
+    const parent = runsFolder.includes("/") ? runsFolder.slice(0, runsFolder.lastIndexOf("/")) : "";
+    KARMA.setBreadcrumb({ back: goFolder(parent), crumbs, suffix: folderStatusSummary(runsFolder) });
+  }
+
   function openRunsFolder(folder) {
     runsFolder = folder;
+    setFolderCrumb();
     const body = document.getElementById("runs-body");
     if (body) {
       renderRunRows(body);
@@ -287,15 +306,27 @@
       el("td", {}, el("button", { class: "btn secondary", onClick: open }, "Open")));
   }
 
-  // The in-page folder bar above the runs list is retired: the top-left
-  // breadcrumb (set in render()) now shows "Results / <folder…>" for the folder
-  // view, matching the run-detail view, so a second in-page path would be
-  // redundant. Keep the element hidden.
+  // Fill (or hide) the current-folder bar above the runs list. This in-page bar
+  // is kept ALONGSIDE the top-left breadcrumb (set in render()) -- both ways of
+  // showing the current folder are available.
   function renderRunsCrumbBar() {
     const bar = document.getElementById("runs-crumb-bar");
     if (!bar) return;
     clear(bar);
-    bar.style.display = "none";
+    if (!runsFolder) { bar.style.display = "none"; return; }
+    const parent = runsFolder.includes("/") ? runsFolder.slice(0, runsFolder.lastIndexOf("/")) : "";
+    const go = (folder) => () => openRunsFolder(folder);
+    bar.appendChild(el("span", { class: "crumb-link dir-up", title: "Up one folder", onClick: go(parent) }, "←"));
+    bar.appendChild(el("span", { class: "crumb-link", onClick: go("") }, "runs"));
+    let acc = "";
+    runsFolder.split("/").forEach((seg, i, segs) => {
+      acc = acc ? acc + "/" + seg : seg;
+      bar.appendChild(el("span", { class: "crumb-sep" }, "/"));
+      bar.appendChild(i === segs.length - 1
+        ? el("span", { class: "wf-crumb-current" }, seg)
+        : el("span", { class: "crumb-link", onClick: go(acc) }, seg));
+    });
+    bar.style.display = "";
   }
 
   // Render the tbody. With a search term, show a flat loose-matched result across
@@ -366,6 +397,10 @@
       host.appendChild(panel);
     }
     renderRunRows(body);
+    // Refresh the folder status summary now that allRuns is freshly fetched (the
+    // render()-time call may have run against a stale/empty cache), and keep it
+    // current as runs complete during the 3s auto-refresh.
+    setFolderCrumb();
     // Fade the list in on first build only (not on the 3s auto-refresh).
     if (firstBuild) KARMA.replayEnter(body, "fadeIn 0.3s ease both");
     // Auto-refresh while any run is still active so progress updates in place.
