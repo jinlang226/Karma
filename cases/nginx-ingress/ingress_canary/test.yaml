@@ -108,6 +108,43 @@ preconditionUnits:
       - command: "kubectl -n demo wait --for=condition=ready pod/{{params.curl_pod_name}} --timeout=5s"
         timeout_sec: 30
 
+  # Additive scenario fixture (composition safety): the stable + canary echo
+  # backends, the stable Ingress, and the (broken) canary Ingress the agent must
+  # repair are all fixtures. nginx_env_ready seeds them on its destructive
+  # fresh-build path, which is SKIPPED on an inherited cluster (the probe sees the
+  # curl-test pod from a prior nginx stage with DIFFERENT scenario resources), so
+  # the echo backends + Ingresses are absent and the oracle has no routing to
+  # test. Re-establish them additively when stable-echo is missing, reusing the
+  # build's resource files; also ensures curl-test. It never deletes a namespace
+  # or touches the shared ingress-nginx controller. Standalone stable-echo already
+  # exists so the probe matches and this unit skips -> byte-identical standalone
+  # behaviour.
+  - name: canary_scenario_fixture
+    on_probe_fail: skip
+    probe:
+      - command: "kubectl -n demo get deploy stable-echo"
+        timeout_sec: 10
+    apply:
+      - command: "kubectl -n demo apply -f cases/nginx-ingress/ingress_canary/resource/stable-echo.yaml"
+        sleep: 2
+      - command: "kubectl -n demo apply -f cases/nginx-ingress/ingress_canary/resource/canary-echo.yaml"
+        sleep: 2
+      - command: "/bin/sh -c 'kubectl -n demo rollout status deploy/stable-echo --timeout=60s || true'"
+        sleep: 1
+      - command: "/bin/sh -c 'kubectl -n demo rollout status deploy/canary-echo --timeout=60s || true'"
+        sleep: 1
+      - command: "kubectl -n demo apply -f cases/nginx-ingress/ingress_canary/resource/ingress-stable.yaml"
+        sleep: 1
+      - command: "kubectl -n demo apply -f cases/nginx-ingress/ingress_canary/resource/ingress-canary.yaml"
+        sleep: 1
+      - command: "/bin/sh -c 'kubectl -n demo get pod {{params.curl_pod_name}} >/dev/null 2>&1 || kubectl -n demo apply -f cases/nginx-ingress/ingress_canary/resource/curl-test.yaml'"
+        sleep: 1
+      - command: "/bin/sh -c 'kubectl -n demo wait --for=condition=Ready pod/{{params.curl_pod_name}} --timeout=120s || true'"
+        sleep: 1
+    verify:
+      - command: "/bin/sh -c 'kubectl -n demo get deploy stable-echo >/dev/null 2>&1; true'"
+        timeout_sec: 10
+
 oracle:
   verify:
     commands:
