@@ -193,27 +193,38 @@ def check_role():
     if c is None:
         return fail("Custom roles role check failed:", errors)
 
-    role = load_json(
-        c["admin_uri"],
-        f'JSON.stringify(db.getSiblingDB("admin").getRole("{REPORTING_ROLE}",{{showPrivileges:true}}))',
-        f"{REPORTING_ROLE} (admin)",
-        errors,
-    )
-    if role is None:
+    # Name-agnostic: the prompt asks to "restore the minimum access needed for
+    # reporting dashboards" without dictating a role name, so the agent is free to
+    # name the restored role anything (e.g. reportsRead). Inspect the roles the
+    # reporting-user ACTUALLY holds rather than a hardcoded REPORTING_ROLE name:
+    # at least one held role must grant find on reports, and NO held role may
+    # carry any privilege on raw. check_access independently proves the effective
+    # read/deny behaviour, so the security bar is unchanged -- only the unstated
+    # exact-name requirement is dropped.
+    user = load_json(c["admin_uri"], f'JSON.stringify(db.getUser("{REPORTING_USER}"))', REPORTING_USER, errors)
+    if not isinstance(user, dict):
+        return fail("Custom roles role check failed:", errors)
+
+    grants_reports = False
+    for r in user.get("roles", []):
+        rname, rdb = r.get("role"), r.get("db")
+        if not rname or not rdb:
+            continue
         role = load_json(
             c["admin_uri"],
-            f'JSON.stringify(db.getSiblingDB("{APP_DB}").getRole("{REPORTING_ROLE}",{{showPrivileges:true}}))',
-            f"{REPORTING_ROLE} ({APP_DB})",
-            errors,
+            f'JSON.stringify(db.getSiblingDB("{rdb}").getRole("{rname}",{{showPrivileges:true}}))',
+            f"{rname} ({rdb})",
+            [],
         )
-
-    if role is None:
-        errors.append(f"{REPORTING_ROLE} not found")
-    else:
-        if not role_has_reports_privileges(role):
-            errors.append(f"{REPORTING_ROLE} missing find on {APP_DB}.{REPORTS_COLLECTION}")
+        if not isinstance(role, dict):
+            continue
+        if role_has_reports_privileges(role):
+            grants_reports = True
         if role_touches_raw(role):
-            errors.append(f"{REPORTING_ROLE} must not grant access to {APP_DB}.{RAW_COLLECTION}")
+            errors.append(f"role {rname} held by {REPORTING_USER} must not grant access to {APP_DB}.{RAW_COLLECTION}")
+
+    if not grants_reports:
+        errors.append(f"{REPORTING_USER} has no role granting find on {APP_DB}.{REPORTS_COLLECTION}")
 
     return fail("Custom roles role check failed:", errors)
 
@@ -226,10 +237,17 @@ def check_bindings():
 
     user = load_json(c["admin_uri"], f'JSON.stringify(db.getUser("{REPORTING_USER}"))', REPORTING_USER, errors)
     if isinstance(user, dict):
-        if not user_has_role(user, REPORTING_ROLE):
-            errors.append(f"{REPORTING_USER} missing {REPORTING_ROLE}")
+        # The deprecated over-permissive role must be removed...
         if user_has_role(user, BAD_ROLE, APP_DB):
             errors.append(f"{REPORTING_USER} still has deprecated role {BAD_ROLE}")
+        # ...and the user must hold some replacement role (name-agnostic: the
+        # agent chooses the name; check_role validates that role's privileges).
+        replacement = [
+            r for r in user.get("roles", [])
+            if not (r.get("role") == BAD_ROLE and r.get("db") == APP_DB)
+        ]
+        if not replacement:
+            errors.append(f"{REPORTING_USER} has no replacement role granting reporting access")
 
     return fail("Custom roles bindings check failed:", errors)
 
