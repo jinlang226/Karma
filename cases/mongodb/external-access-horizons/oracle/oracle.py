@@ -61,36 +61,6 @@ def _mongo_tls_flags(probe_pod=None):
     return list(flags)
 
 
-def _mongo_tls_uri_params():
-    """The detected TLS settings as mongodb:// URI query params (tls=true&...).
-
-    A connection-string URI defaults to tls=false, and that default OVERRIDES a
-    command-line --tls flag -- so when we connect via a URI (the directConnection
-    rs.conf read), the TLS options must live IN the URI, or mongosh connects plain
-    and a persisted requireTLS server drops it ("connection <monitor> ... closed").
-    Translate the same options _mongo_tls_flags() detects into URI-param form.
-    """
-    flags = _mongo_tls_flags()
-    if not flags:
-        return ""
-    params = ["tls=true"]
-    i = 0
-    while i < len(flags):
-        f = flags[i]
-        if f == "--tlsAllowInvalidHostnames":
-            params.append("tlsAllowInvalidHostnames=true")
-        elif f == "--tlsAllowInvalidCertificates":
-            params.append("tlsAllowInvalidCertificates=true")
-        elif f == "--tlsCAFile":
-            i += 1
-            params.append("tlsCAFile=" + flags[i])
-        elif f == "--tlsCertificateKeyFile":
-            i += 1
-            params.append("tlsCertificateKeyFile=" + flags[i])
-        i += 1
-    return "&".join(params)
-
-
 def _resolve_expected_replicas():
     """Topology size to enforce.
 
@@ -139,16 +109,15 @@ def fail(prefix, errors):
 
 
 def mongo_json(pod, eval_str, label, errors, uri=None):
+    # TLS goes as CLI flags -- mongosh honors --tls/--tlsCAFile/--tlsCertificateKeyFile
+    # alongside a URI positional, but IGNORES file-path TLS options passed as URI query
+    # params, so a cluster left in mutual TLS by cert-rotation drops a URI-folded
+    # connection. Mirror the agent's working command: CLI TLS flags (incl. the client
+    # cert) + a URI carrying only directConnection/timeouts.
+    cmd = ["kubectl", "-n", NAMESPACE, "exec", pod, "--", "mongosh", "--quiet", *_mongo_tls_flags()]
     if uri:
-        # Fold TLS into the URI: a connection-string's default (tls=false) overrides
-        # a command-line --tls flag, so the detected TLS options must go in the URI.
-        tls_q = _mongo_tls_uri_params()
-        if tls_q:
-            uri += ("&" if "?" in uri else "?") + tls_q
-        cmd = ["kubectl", "-n", NAMESPACE, "exec", pod, "--", "mongosh", "--quiet", uri, "--eval", eval_str]
-    else:
-        cmd = ["kubectl", "-n", NAMESPACE, "exec", pod, "--", "mongosh", "--quiet",
-               *_mongo_tls_flags(), "--eval", eval_str]
+        cmd.append(uri)
+    cmd.extend(["--eval", eval_str])
     res = run(cmd)
     if res.returncode != 0:
         detail = res.stderr.strip() or res.stdout.strip() or f"exit {res.returncode}"
