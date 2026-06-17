@@ -178,7 +178,7 @@ def _resolve_expected_nodes(node_names, default=5):
             pass
 
     # Robust count: sum spec.replicas over ES StatefulSets that are actually
-    # running (readyReplicas > 0). Counts the base cluster + any scaled-up
+    # present (status.replicas > 0). Counts the base cluster + any scaled-up
     # nodeset WITHOUT the fragile node.name -> StatefulSet string mapping (which
     # breaks when a nodeset's node.name differs from its pod name). A torn-down
     # prior cluster's StatefulSet has readyReplicas 0 and is excluded. Still
@@ -197,8 +197,11 @@ def _resolve_expected_nodes(node_names, default=5):
             if "elasticsearch" not in " ".join(c.get("image", "") for c in containers):
                 continue
             replicas = spec.get("replicas")
-            ready = (sts.get("status", {}) or {}).get("readyReplicas") or 0
-            if isinstance(replicas, int) and ready > 0:
+            # Use status.replicas (pods that EXIST), not readyReplicas: a
+            # scaled-up nodeset whose pods joined the cluster but lack a passing
+            # STS readiness probe has readyReplicas 0 yet is genuinely live.
+            current = (sts.get("status", {}) or {}).get("replicas") or 0
+            if isinstance(replicas, int) and current > 0:
                 desired += replicas
         if desired > 0:
             return desired
