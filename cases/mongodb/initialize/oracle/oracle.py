@@ -42,7 +42,7 @@ def _admin_auth_flags():
                 pw = ""
         _ADMIN_PW = pw
     if _ADMIN_PW:
-        user = os.environ.get("BENCH_PARAM_ADMIN_USERNAME", "admin")
+        user = os.environ.get("BENCH_PARAM_ADMIN_USERNAME", "admin-user")
         return ["-u", user, "-p", _ADMIN_PW, "--authenticationDatabase", "admin"]
     return []
 
