@@ -224,9 +224,13 @@ def creds(errors):
     # against wherever the agent legitimately placed them; the role/permission
     # assertions are unchanged.
     def _uris(user, pw, conn_db):
+        # directConnection skips SDAM topology monitoring (via find_primary's
+        # db.hello), which a localhost connection would start and which fails
+        # under a persisted requireTLS mode.
+        suffix = "&directConnection=true&serverSelectionTimeoutMS=4000&connectTimeoutMS=4000"
         return [
-            f"mongodb://{user}:{pw}@localhost:27017/{conn_db}?authSource=admin",
-            f"mongodb://{user}:{pw}@localhost:27017/{conn_db}?authSource={APP_DB}",
+            f"mongodb://{user}:{pw}@localhost:27017/{conn_db}?authSource=admin{suffix}",
+            f"mongodb://{user}:{pw}@localhost:27017/{conn_db}?authSource={APP_DB}{suffix}",
         ]
     return {
         "admin_uri": _uris(ADMIN_USER, admin_pw, "admin"),

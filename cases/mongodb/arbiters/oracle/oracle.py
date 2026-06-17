@@ -100,8 +100,14 @@ def fail(prefix, errors):
 
 
 def mongo_eval(pod, script):
+    # Connect via the member's own FQDN with directConnection=true to skip SDAM
+    # topology monitoring, which a bare localhost connection would start and
+    # which fails under a persisted requireTLS mode. directConnection works on
+    # any single member for rs.conf()/rs.status() reads.
+    uri = (f"mongodb://{pod}.{DATA_SERVICE}.{NAMESPACE}.svc.cluster.local:27017/"
+           "?directConnection=true&serverSelectionTimeoutMS=4000&connectTimeoutMS=4000")
     base = ["kubectl", "-n", NAMESPACE, "exec", pod, "--",
-            "mongosh", "--quiet", *_mongo_tls_flags()]
+            "mongosh", "--quiet", *_mongo_tls_flags(), uri]
     res = run(base + ["--eval", script])
     # Adaptive auth: a deploy stage may have enabled auth, so a plain rs.conf()
     # fails "requires authentication". Retry once with live admin credentials.
