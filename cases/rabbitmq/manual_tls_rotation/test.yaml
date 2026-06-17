@@ -25,6 +25,9 @@ prompt: |
   - The leaf certificate is rotated and valid for at least
     {{params.min_rotated_leaf_validity_days}} days.
 
+  The CA private key needed to re-sign the leaf under the same CA is available
+  in the {{params.cluster_prefix}}-tls-ca secret (key ca.key).
+
   Cluster context:
     Namespace: ${BENCH_NAMESPACE}
     kubectl -n ${BENCH_NAMESPACE} get pods
@@ -130,11 +133,39 @@ preconditionUnits:
         sleep: 1
       - command: "/bin/sh -c 'kubectl -n ${BENCH_NAMESPACE} create secret generic {{params.cluster_prefix}}-tls --from-file=ca.crt=/tmp/rmq-tls-certs/ca.crt --from-file=tls.crt=/tmp/rmq-tls-certs/tls.crt --from-file=tls.key=/tmp/rmq-tls-certs/tls.key --dry-run=client -o yaml | kubectl -n ${BENCH_NAMESPACE} apply -f -'"
         sleep: 1
+      # Durably persist the CA private key so the agent can always re-sign the
+      # leaf under the SAME CA. gen-tls-material.sh produces ca.key only inside
+      # the ephemeral toolbox; without this secret an inherited path (toolbox
+      # gone) leaves ca.key unrecoverable and the same-CA rotation un-passable.
+      - command: "/bin/sh -c 'kubectl -n ${BENCH_NAMESPACE} create secret generic {{params.cluster_prefix}}-tls-ca --from-file=ca.key=/tmp/rmq-tls-certs/ca.key --dry-run=client -o yaml | kubectl -n ${BENCH_NAMESPACE} apply -f -'"
+        sleep: 1
       - command: "/bin/sh -c 'ca_fp=$(openssl x509 -noout -fingerprint -sha256 -in /tmp/rmq-tls-certs/ca.crt | sed \"s/.*=//\"); leaf_fp=$(openssl x509 -noout -fingerprint -sha256 -in /tmp/rmq-tls-certs/tls.crt | sed \"s/.*=//\"); kubectl -n ${BENCH_NAMESPACE} create configmap {{params.cluster_prefix}}-tls-old --from-literal=ca_fingerprint_sha256=\"$ca_fp\" --from-literal=leaf_fingerprint_sha256=\"$leaf_fp\" --dry-run=client -o yaml | kubectl -n ${BENCH_NAMESPACE} apply -f -'"
         sleep: 1
     verify:
       - command: "python3 cases/rabbitmq/manual_tls_rotation/setup_precondition_check.py --namespace ${BENCH_NAMESPACE} --baseline-max-leaf-validity-days {{params.baseline_max_leaf_validity_days}} --tls-material-only"
         timeout_sec: 60
+
+  - name: tls_ca_key_ready
+    # Additive net guaranteeing the CA private key is durably available so the
+    # agent can re-sign the leaf under the SAME CA the baseline used. Standalone,
+    # tls_material_ready's apply already created the {{params.cluster_prefix}}-tls-ca
+    # secret, so the probe below skips. On an INHERITED re-entry tls_material_ready
+    # is skipped; if a prior stage's openssl-toolbox still holds /tmp/certs/ca.key
+    # we recover it into the durable secret here. RabbitMQ uses emptyDir storage,
+    # so this NEVER restarts a pod or re-bootstraps broker state -- it only writes
+    # a Secret. If ca.key is genuinely unrecoverable (toolbox gone AND secret
+    # absent) the apply can only no-op; that is an acceptable residual.
+    on_probe_fail: skip
+    probe:
+      - command: "kubectl -n ${BENCH_NAMESPACE} get secret {{params.cluster_prefix}}-tls-ca"
+        timeout_sec: 10
+    apply:
+      - command: "/bin/sh -c 'if kubectl -n ${BENCH_NAMESPACE} get pod openssl-toolbox >/dev/null 2>&1 && kubectl -n ${BENCH_NAMESPACE} exec openssl-toolbox -- test -f /tmp/certs/ca.key 2>/dev/null; then rm -rf /tmp/rmq-tls-ca; kubectl -n ${BENCH_NAMESPACE} cp openssl-toolbox:/tmp/certs/ca.key /tmp/rmq-tls-ca/ca.key && kubectl -n ${BENCH_NAMESPACE} create secret generic {{params.cluster_prefix}}-tls-ca --from-file=ca.key=/tmp/rmq-tls-ca/ca.key --dry-run=client -o yaml | kubectl -n ${BENCH_NAMESPACE} apply -f -; else echo \"ca.key not recoverable (toolbox gone); leaving durable secret as-is\"; fi'"
+        timeout_sec: 60
+        sleep: 1
+    verify:
+      - command: "/bin/sh -c true"
+        timeout_sec: 5
 
   - name: rabbitmq_statefulset_present
     on_probe_fail: skip
