@@ -101,6 +101,13 @@
   KARMA.setBreadcrumb = function (spec) {
     const host = document.getElementById("breadcrumb");
     if (!host) return;
+    // Animate the breadcrumb only when the PATH changes (a navigation), not when
+    // it is rebuilt with the same path -- e.g. the runs list's 3s auto-refresh
+    // re-sets it to update the folder status counts; animating that would make it
+    // pulse repeatedly.
+    const sig = spec ? (spec.crumbs || []).map((c) => c.label).join(" / ") : "";
+    const changed = sig !== host.dataset.crumbSig;
+    host.dataset.crumbSig = sig;
     clear(host);
     if (!spec) return;
     if (spec.back || navStack.length) {
@@ -118,6 +125,7 @@
     // Optional trailing content (a DOM node) -- e.g. a folder status summary
     // shown alongside the breadcrumb path.
     if (spec.suffix) host.appendChild(spec.suffix);
+    if (changed) KARMA.replayEnter(host, "fadeIn 0.25s ease both");
   };
 
   // --- Toast / status notifications (bottom-right) -------------------------
