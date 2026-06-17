@@ -137,15 +137,17 @@ def mongo_json(pod, eval_str, label, errors, uri=None):
 def check_topology():
     errors = []
     pod = f"{CLUSTER_PREFIX}-0"
-    # Read rs.conf() exactly as the agent's proven working command does: connect to
-    # localhost (we exec INSIDE the member pod) with directConnection=true so mongosh
-    # skips SDAM topology monitoring, and use DEFAULT timeouts. An earlier attempt
-    # used a FQDN + short 4s serverSelection/connect timeouts, which under a loaded
-    # requireTLS cluster intermittently dropped the monitor connection
-    # ("MongoServerSelectionError: connection ... closed"); localhost + default
-    # timeouts (TLS still supplied as CLI flags by mongo_json) does not.
-    local_uri = "mongodb://localhost:27017/?directConnection=true"
-    conf = mongo_json(pod, "JSON.stringify(rs.conf())", "rs.conf()", errors, uri=local_uri)
+    # Read rs.conf() with NO connection URI -- exactly the agent's proven working
+    # command: `mongosh --tls --tlsCAFile <ca> --tlsAllowInvalidHostnames --eval
+    # 'rs.conf()'`, which connects to the local mongod and lets the normal driver
+    # topology resolve. A previous attempt forced
+    # `mongodb://localhost:27017/?directConnection=true`; once this case configures
+    # split-horizon, the directConnection single-node monitor deterministically
+    # dropped ("MongoServerSelectionError: connection <monitor> to 127.0.0.1:27017
+    # closed") -- verified across the sonnet and Opus marathon runs, where the
+    # agent's no-URI command succeeded against the very same cluster. Dropping the
+    # URI mirrors that command and reads the same rs.conf() the agent verified.
+    conf = mongo_json(pod, "JSON.stringify(rs.conf())", "rs.conf()", errors)
     if isinstance(conf, dict):
         members = conf.get("members", [])
         if len(members) != EXPECTED_REPLICAS:
