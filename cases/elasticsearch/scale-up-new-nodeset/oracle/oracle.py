@@ -166,24 +166,19 @@ def _resolve_expected_nodes(node_names, default=5):
     explicit override. Falls back to ``default`` when no live StatefulSets can
     be resolved (e.g. _cat/nodes failed or returned empty).
     """
-    val = os.environ.get("BENCH_PARAM_EXPECTED_NODES")
-    if val is None or not str(val).strip():
-        val = os.environ.get("BENCH_PARAM_EXPECTED_NODE_COUNT")
-    if val is None or not str(val).strip():
-        val = os.environ.get("EXPECTED_NODE_COUNT")
-    if val is not None and str(val).strip():
-        try:
-            return int(val)
-        except ValueError:
-            pass
-
-    # Robust count: sum spec.replicas over ES StatefulSets that are actually
-    # present (status.replicas > 0). Counts the base cluster + any scaled-up
-    # nodeset WITHOUT the fragile node.name -> StatefulSet string mapping (which
-    # breaks when a nodeset's node.name differs from its pod name). A torn-down
-    # prior cluster's StatefulSet has readyReplicas 0 and is excluded. Still
-    # strict: a node that failed to join leaves its STS ready>0 but short, so the
-    # spec-replica sum exceeds the live node count and the check still fails.
+    # Derive from the LIVE cluster FIRST (workflow-agnostic + composition-aware):
+    # sum spec.replicas over the ES StatefulSets that are an active part of the
+    # cluster -- the base cluster PLUS any nodeset a PRIOR stage added to the same
+    # cluster (e.g. a transform nodeset in a transform->scale workflow). A static
+    # EXPECTED_NODES param is a standalone-baseline assumption (e.g. "3 original +
+    # 2 new = 5") that wrongly ignores such inherited nodesets and overcounts is
+    # avoided by excluding torn-down StatefulSets (deletionTimestamp); so the
+    # param is demoted to a FALLBACK below, used only when the live cluster cannot
+    # be resolved. Counting DESIRED spec.replicas (not the live node count) keeps
+    # it strict: a node that failed to join leaves its STS replicas>0 but absent
+    # from _cat/nodes, so EXPECTED stays above the actual count and the check
+    # still fails. The allocation-attribute and shard-relocation checks further
+    # catch a no-op agent that leaves the cluster's nodeset topology unchanged.
     res = run(["kubectl", "-n", NAMESPACE, "get", "sts", "-o", "json"])
     if res.returncode == 0:
         try:
@@ -197,19 +192,23 @@ def _resolve_expected_nodes(node_names, default=5):
             if "elasticsearch" not in " ".join(c.get("image", "") for c in containers):
                 continue
             replicas = spec.get("replicas")
-            # Use status.replicas (pods that EXIST), not readyReplicas: a
-            # scaled-up nodeset whose pods joined the cluster but lack a passing
-            # STS readiness probe has readyReplicas 0 yet is genuinely live.
-            # Count an ES StatefulSet's DESIRED replicas when it is an active part
-            # of the cluster: spec.replicas > 0 and not being torn down. Gating on
-            # status.replicas undercounts a freshly scaled-up nodeset whose status
-            # lags -- its pods have joined the cluster but status.replicas is still
-            # 0 -- which wrongly made EXPECTED < the live node count.
             being_deleted = (sts.get("metadata", {}) or {}).get("deletionTimestamp") is not None
             if isinstance(replicas, int) and replicas > 0 and not being_deleted:
                 desired += replicas
         if desired > 0:
             return desired
+
+    # Fallbacks (live cluster unresolvable): explicit param, then the default.
+    val = os.environ.get("BENCH_PARAM_EXPECTED_NODES")
+    if val is None or not str(val).strip():
+        val = os.environ.get("BENCH_PARAM_EXPECTED_NODE_COUNT")
+    if val is None or not str(val).strip():
+        val = os.environ.get("EXPECTED_NODE_COUNT")
+    if val is not None and str(val).strip():
+        try:
+            return int(val)
+        except ValueError:
+            pass
 
     return default
 
