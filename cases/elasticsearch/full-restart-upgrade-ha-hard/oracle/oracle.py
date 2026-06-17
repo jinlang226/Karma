@@ -162,16 +162,15 @@ def _resolve_expected_nodes(node_names, default=3):
     Using DESIRED spec.replicas (not the live count) keeps the check strict: a
     node that FAILED to rejoin after the restart leaves its StatefulSet "live"
     (siblings are up) but absent from ``_cat/nodes``, so EXPECTED stays above the
-    actual count -- no masking. Param override is honored FIRST; falls back to
-    ``default`` when no live StatefulSets resolve (e.g. _cat/nodes failed/empty).
+    actual count -- no masking. The LIVE cluster is derived FIRST; the param is a
+    FALLBACK used only when no live StatefulSets resolve (e.g. _cat/nodes empty).
     """
-    for key in ("BENCH_PARAM_EXPECTED_NODES", "BENCH_PARAM_EXPECTED_NODE_COUNT"):
-        val = os.environ.get(key)
-        if val is not None and str(val).strip():
-            try:
-                return int(val)
-            except ValueError:
-                pass
+    # Derive from the LIVE cluster FIRST (workflow-agnostic + composition-aware):
+    # sum spec.replicas over the active ES StatefulSets -- the base cluster PLUS
+    # any nodeset a PRIOR stage added to the same cluster (e.g. an inherited
+    # transform nodeset). A static EXPECTED_NODES param encodes a standalone
+    # baseline that wrongly ignores such inherited nodesets, so it is demoted to a
+    # FALLBACK below, used only when the live cluster cannot be resolved.
     # Robust count: sum spec.replicas over ES StatefulSets that are actually
     # present (status.replicas > 0). Counts the base cluster + any scaled-up
     # nodeset WITHOUT the fragile node.name -> StatefulSet string mapping (which
@@ -205,6 +204,15 @@ def _resolve_expected_nodes(node_names, default=3):
                 desired += replicas
         if desired > 0:
             return desired
+
+    # Fallbacks (live cluster unresolvable): explicit param, then the default.
+    for key in ("BENCH_PARAM_EXPECTED_NODES", "BENCH_PARAM_EXPECTED_NODE_COUNT"):
+        val = os.environ.get(key)
+        if val is not None and str(val).strip():
+            try:
+                return int(val)
+            except ValueError:
+                pass
     return default
 
 
