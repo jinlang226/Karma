@@ -5,6 +5,7 @@ import json
 import os
 import subprocess
 import sys
+import time
 
 
 NAMESPACE = os.environ.get("BENCH_NAMESPACE", "mongodb")
@@ -97,6 +98,37 @@ def fail(prefix, errors):
     return 0
 
 
+def _is_auth_error(res):
+    out = ((res.stderr or "") + (res.stdout or "")).lower()
+    return (
+        "requires authentication" in out or "not authorized" in out
+        or "unauthorized" in out or "authentication failed" in out
+    )
+
+
+def _run_read(cmd):
+    # Retry the READ. The replica set is often still settling when the oracle
+    # runs -- a prior stage rolling-restarts the members right before submitting
+    # -- and under a loaded requireTLS cluster the mongosh monitor connection can
+    # drop mid-read ("connection <monitor> ... closed"). Those are TRANSIENT
+    # transport failures that clear within seconds, so retry before giving up.
+    # This never masks a wrong value: a successful read returns the real output
+    # and the caller's assertions still fail on any mismatch. When the cluster is
+    # quiet the first attempt succeeds and it returns immediately (no sleeps). An
+    # auth-denied error is NOT transient, so return immediately to let the
+    # caller's admin-credential fallback run without burning the retry budget.
+    res = None
+    for attempt in range(5):
+        res = run(cmd)
+        if res.returncode == 0 and (res.stdout or "").strip():
+            return res
+        if _is_auth_error(res):
+            return res
+        if attempt < 4:
+            time.sleep(3)
+    return res
+
+
 def mongo_eval(pod, script):
     # Connect via the member's own FQDN with directConnection=true to skip SDAM
     # topology monitoring, which a bare localhost connection would start and
@@ -106,7 +138,7 @@ def mongo_eval(pod, script):
            "?directConnection=true")
     base = ["kubectl", "-n", NAMESPACE, "exec", pod, "--",
             "mongosh", "--quiet", *_mongo_tls_flags(), uri]
-    res = run(base + ["--eval", script])
+    res = _run_read(base + ["--eval", script])
     # Adaptive auth: a deploy stage may have enabled auth, so a plain rs.conf()
     # fails "requires authentication". Retry once with live admin credentials.
     out = ((res.stderr or "") + (res.stdout or "")).lower()
@@ -116,7 +148,7 @@ def mongo_eval(pod, script):
     ):
         af = _admin_auth_flags()
         if af:
-            res = run(base + af + ["--eval", script])
+            res = _run_read(base + af + ["--eval", script])
     return res
 
 

@@ -5,6 +5,7 @@ import json
 import os
 import subprocess
 import sys
+import time
 
 
 NAMESPACE = os.environ.get("BENCH_NAMESPACE", "mongodb")
@@ -129,22 +130,36 @@ def get_secret_value(secret_name, key, errors):
 
 
 def run_mongo(pod, uri, eval_str):
-    return run(
-        [
-            "kubectl",
-            "-n",
-            NAMESPACE,
-            "exec",
-            pod,
-            "--",
-            "mongosh",
-            "--quiet",
-            *_mongo_tls_flags(),
-            uri,
-            "--eval",
-            eval_str,
-        ]
-    )
+    # Retry the READ. The replica set is often still settling when the oracle
+    # runs -- a prior stage rolling-restarts the members right before submitting
+    # -- and under a loaded requireTLS cluster the mongosh monitor connection can
+    # drop mid-read ("connection <monitor> ... closed"). Those are TRANSIENT
+    # transport failures that clear within seconds, so retry before giving up.
+    # This never masks a wrong value: a successful read returns the real output
+    # and the caller's assertions still fail on any mismatch. When the cluster is
+    # quiet the first attempt succeeds and it returns immediately (no sleeps).
+    cmd = [
+        "kubectl",
+        "-n",
+        NAMESPACE,
+        "exec",
+        pod,
+        "--",
+        "mongosh",
+        "--quiet",
+        *_mongo_tls_flags(),
+        uri,
+        "--eval",
+        eval_str,
+    ]
+    res = None
+    for attempt in range(5):
+        res = run(cmd)
+        if res.returncode == 0 and (res.stdout or "").strip():
+            return res
+        if attempt < 4:
+            time.sleep(3)
+    return res
 
 
 def load_json(pod, uri, eval_str, label, errors):
