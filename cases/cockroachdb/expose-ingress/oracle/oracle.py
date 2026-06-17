@@ -9,7 +9,10 @@ import sys
 
 
 UI_HOST = os.environ.get("BENCH_PARAM_UI_HOST", "crdb-ui.example.com")
-INGRESS_HTTP_URL = "http://ingress-nginx-controller.ingress-nginx.svc/"
+# The prompt requires the DB Console to be reachable over HTTPS (TLS required),
+# so verify the HTTPS endpoint. -k allows the self-signed cert; the Host header
+# routes the request to the UI ingress. A plain-HTTP-only solution will fail.
+INGRESS_HTTPS_URL = "https://ingress-nginx-controller.ingress-nginx.svc/"
 SQL_HOST = "ingress-nginx-controller.ingress-nginx.svc"
 SQL_PORT = os.environ.get("BENCH_PARAM_SQL_PORT", "26257")
 
@@ -56,13 +59,14 @@ def check_ui(errors):
         "--",
         "curl",
         "-sS",
+        "-k",
         "-o",
         "/dev/null",
         "-w",
         "%{http_code}",
         "-H",
         f"Host: {UI_HOST}",
-        INGRESS_HTTP_URL,
+        INGRESS_HTTPS_URL,
     ]
     result = run(cmd)
     if result.returncode != 0:

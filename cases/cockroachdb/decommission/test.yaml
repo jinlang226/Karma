@@ -99,7 +99,33 @@ preconditionUnits:
       - command: "python3 cases/cockroachdb/decommission/scripts/seed_data.py"
         sleep: 2
     verify:
-      - command: "kubectl -n cockroachdb exec crdb-cluster-0 -- ./cockroach sql --insecure -e 'SELECT 1;' 2>/dev/null"
+      - command: "/bin/sh -c 'flag=--insecure; kubectl -n cockroachdb exec crdb-cluster-0 -- ls /cockroach/cockroach-certs/ca.crt >/dev/null 2>&1 && flag=--certs-dir=/cockroach/cockroach-certs; kubectl -n cockroachdb exec crdb-cluster-0 -- ./cockroach sql $flag -e \"SELECT 1;\" 2>/dev/null'"
+        timeout_sec: 15
+
+  # Additive seed fixture (composition safety): the oracle requires the
+  # bench.decom_data table to remain readable with >= 3 rows (it runs
+  # SELECT count(*) FROM bench.decom_data). crdb_env_ready seeds it (via
+  # scripts/seed_data.py) on its destructive fresh-build path, which is SKIPPED on
+  # an inherited cluster (the probe sees pods Running), so the table is absent and
+  # the oracle fails. Re-establish JUST the table + its 3 rows additively when
+  # missing. Unlike seed_data.py this does NOT do replica relocation/pinning (that
+  # needs the 5-node topology the standalone build creates; on an inherited
+  # smaller cluster RELOCATE would error) -- the oracle's replica/decommission
+  # checks adapt to the live topology, only the row-readability check needs the
+  # table. Mode-aware (secure vs insecure) like the oracle. Never deletes the
+  # namespace or touches the cluster. Standalone the table already exists so the
+  # probe matches and this unit skips -> byte-identical standalone behaviour.
+  - name: crdb_decom_seed
+    on_probe_fail: skip
+    probe:
+      - command: "/bin/sh -c 'flag=--insecure; kubectl -n cockroachdb exec crdb-cluster-0 -- ls /cockroach/cockroach-certs/ca.crt >/dev/null 2>&1 && flag=--certs-dir=/cockroach/cockroach-certs; kubectl -n cockroachdb exec crdb-cluster-0 -- ./cockroach sql $flag -e \"SELECT count(*) FROM bench.decom_data;\" 2>/dev/null'"
+        timeout_sec: 15
+    apply:
+      - command: "/bin/sh -c 'flag=--insecure; kubectl -n cockroachdb exec crdb-cluster-0 -- ls /cockroach/cockroach-certs/ca.crt >/dev/null 2>&1 && flag=--certs-dir=/cockroach/cockroach-certs; kubectl -n cockroachdb exec crdb-cluster-0 -- ./cockroach sql $flag -e \"CREATE DATABASE IF NOT EXISTS bench; CREATE TABLE IF NOT EXISTS bench.decom_data (id INT PRIMARY KEY, payload STRING); UPSERT INTO bench.decom_data VALUES (1, '\\''alpha'\\''), (2, '\\''beta'\\''), (3, '\\''gamma'\\'');\"'"
+        timeout_sec: 120
+        sleep: 2
+    verify:
+      - command: "/bin/sh -c 'flag=--insecure; kubectl -n cockroachdb exec crdb-cluster-0 -- ls /cockroach/cockroach-certs/ca.crt >/dev/null 2>&1 && flag=--certs-dir=/cockroach/cockroach-certs; kubectl -n cockroachdb exec crdb-cluster-0 -- ./cockroach sql $flag -e \"SELECT count(*) FROM bench.decom_data;\" >/dev/null 2>&1; true'"
         timeout_sec: 15
 
 oracle:
