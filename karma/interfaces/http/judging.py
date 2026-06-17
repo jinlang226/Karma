@@ -290,14 +290,25 @@ def list_judge_batches(runs_dir: Path) -> list[dict[str, Any]]:
         judged = 0
         scores: list[float] = []
         for rd in run_dirs:
-            stage_scores: list[float] = []
-            for jp in (rd / "stages").glob("*/judge.json"):
-                jd = catalog._read_json(jp)
-                if jd and isinstance(jd.get("score"), (int, float)):
-                    stage_scores.append(float(jd["score"]))
-            if stage_scores:
+            # A run is judged if it has a run-level judge.json (the canonical
+            # source the runs list + detail prefer) OR, as a legacy fallback, any
+            # per-stage judge.json. Checking only the per-stage files made
+            # judged_count always 0 for run-level-judged runs.
+            score: float | None = None
+            run_judge = catalog._read_json(rd / "judge.json")
+            if run_judge and isinstance(run_judge.get("score"), (int, float)):
+                score = float(run_judge["score"])
+            else:
+                stage_scores: list[float] = []
+                for jp in (rd / "stages").glob("*/judge.json"):
+                    jd = catalog._read_json(jp)
+                    if jd and isinstance(jd.get("score"), (int, float)):
+                        stage_scores.append(float(jd["score"]))
+                if stage_scores:
+                    score = sum(stage_scores) / len(stage_scores)
+            if score is not None:
                 judged += 1
-                scores.append(sum(stage_scores) / len(stage_scores))
+                scores.append(score)
         result.append({
             "batch_dir": str(child),
             "name": child.name,

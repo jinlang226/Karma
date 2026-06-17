@@ -117,7 +117,14 @@
     root = container;
     sub = "runs";
     if (pendingRun) { const id = pendingRun; pendingRun = null; renderDetail(id); }
-    else render();
+    else {
+      // Re-entering Results from another tab lands on the homepage (top-level
+      // folder list), not the sub-folder/detail last viewed. Reset the browse
+      // state; a deep-link (pendingRun) above is the only thing that skips this.
+      runsFolder = "";
+      runsFilter = "";
+      render();
+    }
   }
 
   function stopTimers() { if (refreshTimer) { clearTimeout(refreshTimer); refreshTimer = null; } }
@@ -357,7 +364,22 @@
     KARMA.currentLocation = () => KARMA.showRun(runId);
     const np = KARMA.labels.runName(runId);
     const title = np.app + (np.name ? " · " + np.name : "");
-    KARMA.setBreadcrumb({ back: render, crumbs: [{ label: "Results", onClick: render }, { label: title }] });
+    // Breadcrumb: Results / <folder…> / <run>, with Results and each folder
+    // segment clickable (drilling the runs list into that folder). The folder
+    // comes from the cached runs list (and is refreshed from d.dir after fetch).
+    const goFolder = (folder) => () => { runsFolder = folder; sub = "runs"; render(); };
+    const buildCrumb = (dir) => {
+      const crumbs = [{ label: "Results", onClick: goFolder("") }];
+      let acc = "";
+      (dir ? dir.split("/") : []).forEach((seg) => {
+        acc = acc ? acc + "/" + seg : seg;
+        const f = acc;
+        crumbs.push({ label: seg, onClick: goFolder(f) });
+      });
+      crumbs.push({ label: title });
+      KARMA.setBreadcrumb({ back: goFolder(dir || ""), crumbs });
+    };
+    buildCrumb(((allRuns.find((r) => r.run_id === runId) || {}).dir) || "");
     const scoreSlot = el("div", { class: "detail-score" });
     root.appendChild(el("div", { class: "detail-head" },
       el("div", {},
@@ -373,6 +395,9 @@
     loading.remove();
     try {
     const cfg = d.config || {};
+    // Refresh the breadcrumb folder from the authoritative detail (covers a
+    // deep-linked run where the cached runs list was empty at first render).
+    if (d.dir) buildCrumb(d.dir);
 
     // Test score (mean judge score) top-right beside the heading, larger than it.
     if (d.judge_score != null) {
