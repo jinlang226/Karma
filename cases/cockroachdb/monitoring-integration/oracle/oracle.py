@@ -19,6 +19,28 @@ def run(cmd):
     return subprocess.run(cmd, text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
 
 
+def fetch_metrics(host, port, path):
+    """Fetch the CockroachDB metrics endpoint, scheme-adaptively.
+
+    Standalone the cluster is `--insecure` and serves :8080 over plain HTTP. But
+    in a workflow this stage can inherit a SECURE cluster (e.g. after
+    certificate-rotation / generate-cert), which serves :8080 over HTTPS only and
+    307-redirects a plain-HTTP request to https (whose body has no metrics). Try
+    HTTPS first with -k (self-signed) and -L (follow redirects), then fall back to
+    HTTP, and return whichever yields real metrics output. Workflow-agnostic.
+    """
+    for scheme, extra in (("https", ["-k", "-L"]), ("http", [])):
+        cmd = [
+            "kubectl", "-n", "cockroachdb", "exec", "curl-test", "--",
+            "curl", "-fsS", *extra, f"{scheme}://{host}:{port}{path}",
+        ]
+        result = run(cmd)
+        if result.returncode == 0 and "sys_uptime" in result.stdout:
+            return result, ""
+    # Neither scheme produced metrics; surface the last attempt's error.
+    return None, (result.stderr.strip() or "Metrics endpoint unreachable")
+
+
 def parse_targets(payload):
     data = payload.get("data", {})
     return data.get("activeTargets", [])
@@ -100,20 +122,9 @@ def main():
                 f"No active Prometheus target scraping {METRICS_PATH} on port {METRICS_PORT}"
             )
 
-    cmd = [
-        "kubectl",
-        "-n",
-        "cockroachdb",
-        "exec",
-        "curl-test",
-        "--",
-        "curl",
-        "-fsS",
-        f"http://crdb-cluster-public:{METRICS_PORT}{METRICS_PATH}",
-    ]
-    result = run(cmd)
-    if result.returncode != 0:
-        errors.append(f"Metrics endpoint unreachable: {result.stderr.strip()}")
+    result, fetch_err = fetch_metrics("crdb-cluster-public", METRICS_PORT, METRICS_PATH)
+    if result is None:
+        errors.append(f"Metrics endpoint unreachable: {fetch_err}")
     elif "sys_uptime" not in result.stdout:
         errors.append("Metrics output missing sys_uptime")
 
