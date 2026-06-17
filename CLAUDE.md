@@ -177,6 +177,15 @@ writes `runs/<id>/judge.json` + `judge.log`).
 - `codex` — real; works in **local** sandbox; **docker** mounts
   `~/.codex/auth.json` via `--agent-auth-path/--agent-auth-dest` (or set
   `OPENAI_API_KEY`). (CLI v0.139, model gpt-5.5.)
+- `copilot` — real; GitHub Copilot CLI (`@github/copilot`). **local** sandbox =
+  host `copilot` subprocess (auth via host `copilot`/`gh` login). **docker** needs
+  `GITHUB_TOKEN` in the env. Runs `copilot --prompt … --allow-all` (full-auto
+  tools); model via `KARMA_COPILOT_AGENT_MODEL`.
+- `api` — real; a self-contained OpenAI-compatible chat-completions agentic loop
+  (`karma/agents/api/run_agent.py`, stdlib only — no CLI). Defaults to **DeepSeek**
+  (`KARMA_API_BASE_URL=https://api.deepseek.com`, `DEEPSEEK_API_KEY`/`KARMA_API_KEY`,
+  `KARMA_API_MODEL=deepseek-chat`); point at OpenAI/any compatible endpoint via
+  those env vars. Exposes a single `bash` tool to the model.
 - `cli_runner`, `react` — **empty scaffolds**: their `entrypoint.sh` calls a
   `run_agent.py` that does not exist. Useful only as a cheap no-LLM precondition
   check (the agent dies, but setup runs first). Plug in `run_agent.py` to use.
