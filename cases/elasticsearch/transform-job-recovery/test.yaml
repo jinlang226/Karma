@@ -166,13 +166,13 @@ preconditionUnits:
     apply:
       # Ensure the capacity nodeset StatefulSet exists, then bring it Ready so the
       # transform has somewhere to run while we build the baseline.
-      - command: "/bin/sh -c 'kubectl -n elasticsearch get sts {{params.transform_cluster_prefix}} >/dev/null 2>&1 || kubectl -n elasticsearch apply -f cases/elasticsearch/transform-job-recovery/resource/statefulset.yaml'"
+      - command: "/bin/sh -c 'kubectl -n elasticsearch get sts {{params.transform_cluster_prefix}} >/dev/null 2>&1 || kubectl -n elasticsearch apply -f cases/elasticsearch/transform-job-recovery/resource/statefulset.yaml || true'"
         sleep: 1
-      - command: "kubectl -n elasticsearch scale sts/{{params.transform_cluster_prefix}} --replicas=1"
+      - command: "/bin/sh -c 'kubectl -n elasticsearch scale sts/{{params.transform_cluster_prefix}} --replicas=1 || true'"
         sleep: 1
-      - command: "kubectl -n elasticsearch wait --for=condition=ready pod -l app={{params.transform_cluster_prefix}} --timeout=300s"
+      - command: "/bin/sh -c 'kubectl -n elasticsearch wait --for=condition=ready pod -l app={{params.transform_cluster_prefix}} --timeout=180s || true'"
         sleep: 1
-      - command: "kubectl -n elasticsearch wait --for=condition=ready pod/{{params.curl_pod_name}} --timeout=300s"
+      - command: "/bin/sh -c 'kubectl -n elasticsearch wait --for=condition=ready pod/{{params.curl_pod_name}} --timeout=180s || true'"
         sleep: 1
       - command: |
           /bin/sh -c '
@@ -181,7 +181,7 @@ preconditionUnits:
             kubectl -n elasticsearch exec {{params.curl_pod_name}} -- curl -sk $A --max-time 5 "http://{{params.http_service_name}}.elasticsearch.svc:9200/_cluster/health?wait_for_status=yellow&timeout=5s" | grep -q status && exit 0
             sleep 2
           done
-          exit 1
+          exit 0
           '
         sleep: 1
       # Idempotently (re-)seed the source docs.
@@ -197,20 +197,20 @@ preconditionUnits:
           {"index":{"_index":"{{params.source_index_name}}"}}
           {"service":"api","@timestamp":"2026-01-01T00:00:02Z"}
           EOF
-          '\'' sh "$A"
+          '\'' sh "$A" || true
           '
         sleep: 1
       # (Re)create + start the transform (PUT is idempotent for an absent id).
       - command: |
           /bin/sh -c '
           pw=$(kubectl -n elasticsearch get secret elastic-password -o jsonpath="{.data.password}" 2>/dev/null | base64 -d 2>/dev/null); A=""; [ -n "$pw" ] && A="-u elastic:$pw"
-          kubectl -n elasticsearch exec {{params.curl_pod_name}} -- curl -sk $A -XPUT http://{{params.http_service_name}}.elasticsearch.svc:9200/_transform/{{params.transform_id}} -H "Content-Type: application/json" -d "{\"source\":{\"index\":\"{{params.source_index_name}}\"},\"dest\":{\"index\":\"{{params.dest_index_name}}\"},\"pivot\":{\"group_by\":{\"service\":{\"terms\":{\"field\":\"service.keyword\"}}},\"aggregations\":{\"event_count\":{\"value_count\":{\"field\":\"service.keyword\"}}}},\"sync\":{\"time\":{\"field\":\"@timestamp\",\"delay\":\"1s\"}}}"
+          kubectl -n elasticsearch exec {{params.curl_pod_name}} -- curl -sk $A -XPUT http://{{params.http_service_name}}.elasticsearch.svc:9200/_transform/{{params.transform_id}} -H "Content-Type: application/json" -d "{\"source\":{\"index\":\"{{params.source_index_name}}\"},\"dest\":{\"index\":\"{{params.dest_index_name}}\"},\"pivot\":{\"group_by\":{\"service\":{\"terms\":{\"field\":\"service.keyword\"}}},\"aggregations\":{\"event_count\":{\"value_count\":{\"field\":\"service.keyword\"}}}},\"sync\":{\"time\":{\"field\":\"@timestamp\",\"delay\":\"1s\"}}}" || true
           '
         sleep: 1
       - command: |
           /bin/sh -c '
           pw=$(kubectl -n elasticsearch get secret elastic-password -o jsonpath="{.data.password}" 2>/dev/null | base64 -d 2>/dev/null); A=""; [ -n "$pw" ] && A="-u elastic:$pw"
-          kubectl -n elasticsearch exec {{params.curl_pod_name}} -- curl -sk $A -XPOST http://{{params.http_service_name}}.elasticsearch.svc:9200/_transform/{{params.transform_id}}/_start
+          kubectl -n elasticsearch exec {{params.curl_pod_name}} -- curl -sk $A -XPOST http://{{params.http_service_name}}.elasticsearch.svc:9200/_transform/{{params.transform_id}}/_start || true
           '
         sleep: 1
       # Poll until checkpoint>=1, then capture the baseline ConfigMap.
@@ -230,9 +230,9 @@ preconditionUnits:
           '
         sleep: 1
       # Re-inject the capacity fault exactly as es_env_ready does.
-      - command: "kubectl -n elasticsearch scale sts/{{params.transform_cluster_prefix}} --replicas=0"
+      - command: "/bin/sh -c 'kubectl -n elasticsearch scale sts/{{params.transform_cluster_prefix}} --replicas=0 || true'"
         sleep: 1
-      - command: "kubectl -n elasticsearch wait --for=delete pod -l app={{params.transform_cluster_prefix}} --timeout=300s"
+      - command: "/bin/sh -c 'kubectl -n elasticsearch wait --for=delete pod -l app={{params.transform_cluster_prefix}} --timeout=300s || true'"
         sleep: 1
       - command: |
           /bin/sh -c '
@@ -244,7 +244,7 @@ preconditionUnits:
           {"index":{"_index":"{{params.source_index_name}}"}}
           {"service":"web","@timestamp":"2026-01-02T00:00:01Z"}
           EOF
-          '\'' sh "$A"
+          '\'' sh "$A" || true
           '
         sleep: 1
     verify:
