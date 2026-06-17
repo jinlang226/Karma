@@ -239,7 +239,7 @@ def check_version():
 
     # directConnection skips SDAM topology monitoring, which a localhost
     # connection would start and which fails under a persisted requireTLS mode.
-    admin_uri = f"mongodb://{ADMIN_USERNAME}:{admin_pw}@localhost:27017/admin?directConnection=true&serverSelectionTimeoutMS=4000&connectTimeoutMS=4000"
+    admin_uri = f"mongodb://{ADMIN_USERNAME}:{admin_pw}@localhost:27017/admin?directConnection=true"
     primary = find_primary(admin_uri, errors)
 
     version = load_json(primary, admin_uri, "JSON.stringify(db.version())", "db.version()", errors)
@@ -272,7 +272,7 @@ def check_topology():
         return fail("Version upgrade topology check failed:", errors)
 
     # directConnection skips SDAM topology monitoring (see check_version).
-    admin_uri = f"mongodb://{ADMIN_USERNAME}:{admin_pw}@localhost:27017/admin?directConnection=true&serverSelectionTimeoutMS=4000&connectTimeoutMS=4000"
+    admin_uri = f"mongodb://{ADMIN_USERNAME}:{admin_pw}@localhost:27017/admin?directConnection=true"
     primary = find_primary(admin_uri, errors)
     status = load_json(primary, admin_uri, "JSON.stringify(rs.status())", "rs.status()", errors)
     if isinstance(status, dict):
@@ -298,7 +298,7 @@ def check_data():
         return fail("Version upgrade data check failed:", errors)
 
     # directConnection skips SDAM topology monitoring (see check_version).
-    admin_uri = f"mongodb://{ADMIN_USERNAME}:{admin_pw}@localhost:27017/admin?directConnection=true&serverSelectionTimeoutMS=4000&connectTimeoutMS=4000"
+    admin_uri = f"mongodb://{ADMIN_USERNAME}:{admin_pw}@localhost:27017/admin?directConnection=true"
     primary = find_primary(admin_uri, errors)
 
     count = load_json(

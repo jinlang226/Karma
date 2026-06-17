@@ -227,7 +227,7 @@ def creds(errors):
         # directConnection skips SDAM topology monitoring (via find_primary's
         # db.hello), which a localhost connection would start and which fails
         # under a persisted requireTLS mode.
-        suffix = "&directConnection=true&serverSelectionTimeoutMS=4000&connectTimeoutMS=4000"
+        suffix = "&directConnection=true"
         return [
             f"mongodb://{user}:{pw}@localhost:27017/{conn_db}?authSource=admin{suffix}",
             f"mongodb://{user}:{pw}@localhost:27017/{conn_db}?authSource={APP_DB}{suffix}",

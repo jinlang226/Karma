@@ -255,7 +255,7 @@ def check_topology():
         return fail("Readiness probe tuning topology check failed:", errors)
     # directConnection skips SDAM topology monitoring, which a localhost
     # connection would start and which fails under a persisted requireTLS mode.
-    admin_uri = f"mongodb://{ADMIN_USER}:{admin_pw}@localhost:27017/admin?directConnection=true&serverSelectionTimeoutMS=4000&connectTimeoutMS=4000"
+    admin_uri = f"mongodb://{ADMIN_USER}:{admin_pw}@localhost:27017/admin?directConnection=true"
     primary = _find_primary(admin_uri, errors)
     status = load_json(primary, admin_uri, "JSON.stringify(rs.status())", "rs.status()", errors)
     if isinstance(status, dict):
@@ -280,7 +280,7 @@ def check_health_auth():
         return fail("Readiness probe tuning health-auth check failed:", errors)
 
     # directConnection skips SDAM topology monitoring (see check_topology).
-    uri = f"mongodb://{HEALTH_USER}:{health_pw}@localhost:27017/admin?directConnection=true&serverSelectionTimeoutMS=4000&connectTimeoutMS=4000"
+    uri = f"mongodb://{HEALTH_USER}:{health_pw}@localhost:27017/admin?directConnection=true"
     for i in range(EXPECTED_REPLICAS):
         pod = f"{POD_PREFIX}{i}"
         res = run_mongo(pod, uri, "db.hello().ok")

@@ -17,7 +17,7 @@ TLS_CERT_SECRET = os.environ.get("BENCH_PARAM_TLS_CERT_SECRET_NAME", "mongodb-tl
 OLD_CONFIGMAP = os.environ.get("BENCH_PARAM_OLD_TLS_CONFIGMAP_NAME", "mongodb-tls-old")
 MIN_VALID_DAYS = int(os.environ.get("BENCH_PARAM_TARGET_VALIDITY_MIN_DAYS", "300"))
 MAX_VALID_DAYS = int(os.environ.get("BENCH_PARAM_TARGET_VALIDITY_MAX_DAYS", "400"))
-TLS_URI = f"mongodb://{CLUSTER_PREFIX}-0.{SERVICE_NAME}.{NAMESPACE}.svc.cluster.local:27017/?directConnection=true&serverSelectionTimeoutMS=4000&connectTimeoutMS=4000"
+TLS_URI = "mongodb://localhost:27017/?directConnection=true"
 
 
 def run(cmd, input_data=None, text=True):

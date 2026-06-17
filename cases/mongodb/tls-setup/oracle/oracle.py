@@ -11,7 +11,7 @@ POD = f"{CLUSTER_PREFIX}-0"
 APP_DB = os.environ.get("BENCH_PARAM_APP_DATABASE", "app")
 APP_COLLECTION = os.environ.get("BENCH_PARAM_APP_COLLECTION", "test")
 SEED_DOCS = int(os.environ.get("BENCH_PARAM_SEED_DOCS", "3"))
-TLS_URI = f"mongodb://{POD}.mongo.{NAMESPACE}.svc.cluster.local:27017/?directConnection=true&serverSelectionTimeoutMS=4000&connectTimeoutMS=4000"
+TLS_URI = "mongodb://localhost:27017/?directConnection=true"
 
 
 def run(cmd):
