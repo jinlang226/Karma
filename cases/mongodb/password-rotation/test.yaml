@@ -149,6 +149,29 @@ preconditionUnits:
           /bin/sh -c 'kubectl -n mongodb get secret {{params.reporting_secret_name}} >/dev/null 2>&1; true'
         timeout_sec: 30
 
+  # Additive scenario-secret fixture (composition safety): standalone the build's
+  # secrets.yaml creates app-user-password-old (the pre-rotation reference the
+  # oracle reads to confirm the password CHANGED) and app-user-password-next (the
+  # rotation target). On an INHERITED cluster the build is skipped, and the
+  # reporting_user_fixture above also skips (its reporting-user already exists
+  # from an earlier stage), so these two secrets are never created -> oracle
+  # fails "app-user-password-old not found". Ensure them additively when absent:
+  # -old captures the app-user's CURRENT (live pre-rotation) password; -next is
+  # the scenario target. Never touches the cluster/data; probe skips when present.
+  - name: app_rotation_secrets_fixture
+    on_probe_fail: skip
+    probe:
+      - command: "kubectl -n mongodb get secret app-user-password-old"
+        timeout_sec: 15
+    apply:
+      - command: "/bin/sh -c 'op=$(kubectl -n mongodb get secret {{params.app_secret_name}} -o jsonpath=\"{.data.password}\" 2>/dev/null | base64 -d 2>/dev/null); op=${op:-appuser123password}; kubectl -n mongodb create secret generic app-user-password-old --from-literal=password=\"$op\" --dry-run=client -o yaml | kubectl apply -f -'"
+        sleep: 1
+      - command: "/bin/sh -c 'kubectl -n mongodb get secret {{params.app_next_secret_name}} >/dev/null 2>&1 || kubectl -n mongodb create secret generic {{params.app_next_secret_name}} --from-literal=password=newAppUserPassword456 --dry-run=client -o yaml | kubectl apply -f -'"
+        sleep: 1
+    verify:
+      - command: "/bin/sh -c 'kubectl -n mongodb get secret app-user-password-old >/dev/null 2>&1; true'"
+        timeout_sec: 10
+
 oracle:
   verify:
     commands:
