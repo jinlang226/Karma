@@ -88,6 +88,43 @@ preconditionUnits:
       - command: "kubectl -n elasticsearch get pods 2>/dev/null | grep -c Running"
         timeout_sec: 10
 
+  # Additive ingress-infra fixture (composition safety): the prompt states the
+  # ingress-nginx controller is ALREADY installed and the oracle execs the
+  # curl-test pod to reach the ES HTTP API over HTTPS through ingress
+  # (ingress-nginx-controller.{{params.ingress_namespace}}.svc). es_env_ready
+  # installs the controller + creates curl-test on its destructive fresh-build
+  # path, which is SKIPPED on an inherited ES cluster (the probe sees pods
+  # Running), so the controller and curl-test are absent -> the agent has no
+  # ingress to configure and the oracle's HTTPS check fails. Re-establish them
+  # additively when the controller is missing: install ingress-nginx (same command
+  # the build uses) and apply curl-test. The agent's task (create the Ingress +
+  # TLS) is unchanged. Never deletes a namespace or touches the ES StatefulSet.
+  # Standalone the controller already exists so the probe matches and this unit
+  # skips -> byte-identical standalone behaviour.
+  - name: es_ingress_infra
+    on_probe_fail: skip
+    probe:
+      - command: "kubectl -n {{params.ingress_namespace}} get deploy {{params.ingress_controller_deployment}}"
+        timeout_sec: 10
+    apply:
+      - command: "/bin/sh -c 'kubectl create namespace {{params.ingress_namespace}} --dry-run=client -o yaml | kubectl apply -f -'"
+        sleep: 0
+      - command: "kubectl apply -f https://raw.githubusercontent.com/kubernetes/ingress-nginx/main/deploy/static/provider/kind/deploy.yaml"
+        sleep: 90
+      - command: "/bin/sh -c 'kubectl -n {{params.ingress_namespace}} rollout status deploy/{{params.ingress_controller_deployment}} --timeout=120s || true'"
+        sleep: 2
+      - command: "/bin/sh -c 'kubectl -n {{params.ingress_namespace}} patch deployment {{params.ingress_controller_deployment}} --type=json -p \"[{\\\"op\\\":\\\"add\\\",\\\"path\\\":\\\"/spec/template/spec/containers/0/args/-\\\",\\\"value\\\":\\\"--watch-ingress-without-class=false\\\"}]\" || true'"
+        sleep: 1
+      - command: "/bin/sh -c 'kubectl -n {{params.ingress_namespace}} rollout status deploy/{{params.ingress_controller_deployment}} --timeout=120s || true'"
+        sleep: 2
+      - command: "/bin/sh -c 'kubectl -n elasticsearch get pod curl-test >/dev/null 2>&1 || kubectl -n elasticsearch apply -f cases/elasticsearch/secure-http-ingress/resource/curl-test.yaml'"
+        sleep: 2
+      - command: "/bin/sh -c 'kubectl -n elasticsearch wait --for=condition=Ready pod/curl-test --timeout=120s || true'"
+        sleep: 1
+    verify:
+      - command: "/bin/sh -c 'kubectl -n {{params.ingress_namespace}} get deploy {{params.ingress_controller_deployment}} >/dev/null 2>&1; true'"
+        timeout_sec: 10
+
 oracle:
   verify:
     commands:

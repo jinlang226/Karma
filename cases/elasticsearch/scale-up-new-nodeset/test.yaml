@@ -72,6 +72,30 @@ preconditionUnits:
       - command: "kubectl -n elasticsearch get pods 2>/dev/null | grep -c Running"
         timeout_sec: 10
 
+  # Additive seed fixture (composition safety): the oracle requires the
+  # {{params.index_name}} index, whose shards must relocate onto the new nodes the
+  # agent adds. es_env_ready seeds the index on its destructive fresh-build path,
+  # which is SKIPPED on an inherited cluster (the probe sees pods Running), so the
+  # index is absent and the oracle fails. Re-establish it additively when missing:
+  # create the index + 3 docs. Unlike the build this does NOT set
+  # index.routing.allocation.require.tier -- on an inherited cluster the original
+  # nodes may not carry that attribute, which would leave the shards unassigned;
+  # leaving allocation default lets the shards live on the existing nodes so the
+  # agent can relocate them onto the new nodeset (the task). It never deletes the
+  # namespace or touches the StatefulSet. Standalone the index already exists so
+  # the probe matches and this unit skips -> byte-identical standalone behaviour.
+  - name: nodeset_seed_fixture
+    on_probe_fail: skip
+    probe:
+      - command: "/bin/sh -c 'kubectl -n elasticsearch exec curl-test -- curl -s --max-time 5 \"http://{{params.http_service_name}}.elasticsearch.svc:9200/{{params.index_name}}/_count\" 2>/dev/null | grep -q \"\\\"count\\\"\"'"
+        timeout_sec: 20
+    apply:
+      - command: "/bin/sh -c 'kubectl -n elasticsearch exec curl-test -- curl -s -XPUT \"http://{{params.http_service_name}}.elasticsearch.svc:9200/{{params.index_name}}\" -H \"Content-Type: application/json\" -d \"{\\\"settings\\\":{\\\"number_of_shards\\\":3,\\\"number_of_replicas\\\":1}}\" >/dev/null 2>&1; kubectl -n elasticsearch exec curl-test -- curl -s -XPOST \"http://{{params.http_service_name}}.elasticsearch.svc:9200/{{params.index_name}}/_doc/1\" -H \"Content-Type: application/json\" -d \"{\\\"msg\\\":\\\"alpha\\\"}\" >/dev/null 2>&1; kubectl -n elasticsearch exec curl-test -- curl -s -XPOST \"http://{{params.http_service_name}}.elasticsearch.svc:9200/{{params.index_name}}/_doc/2\" -H \"Content-Type: application/json\" -d \"{\\\"msg\\\":\\\"beta\\\"}\" >/dev/null 2>&1; kubectl -n elasticsearch exec curl-test -- curl -s -XPOST \"http://{{params.http_service_name}}.elasticsearch.svc:9200/{{params.index_name}}/_doc/3\" -H \"Content-Type: application/json\" -d \"{\\\"msg\\\":\\\"gamma\\\"}\" >/dev/null 2>&1; true'"
+        sleep: 2
+    verify:
+      - command: "/bin/sh -c 'kubectl -n elasticsearch exec curl-test -- curl -s --max-time 5 \"http://{{params.http_service_name}}.elasticsearch.svc:9200/{{params.index_name}}/_count\" >/dev/null 2>&1; true'"
+        timeout_sec: 20
+
 oracle:
   verify:
     commands:
