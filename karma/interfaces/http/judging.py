@@ -110,27 +110,40 @@ def _judge_all_streaming(
         sorted(catalog._find_run_dirs(runs_dir), key=lambda p: p.name)
         if runs_dir.exists() else []
     )
-    total = len(run_dirs)
-    results: dict[str, Any] = {}
-    for i, rd in enumerate(run_dirs, start=1):
+
+    # Pre-filter to the runs that actually need judging. The progress counter
+    # (index/total) must reflect REAL work, not crawl through the already-scored
+    # majority: with e.g. 147/151 runs already scored, emitting per-run progress
+    # for every skip made the button read "47/151" -- which looks like "47 judged
+    # of 151" when only one run was being judged. Skips are tallied, not streamed.
+    worklist: list[Path] = []
+    already_scored = 0
+    not_judgeable = 0
+    for rd in run_dirs:
         state = (catalog._read_json(rd / "workflow_state.json")
                  or catalog._read_json(rd / "run.json") or {})
         status = str(state.get("status") or "").strip().lower()
         # Only judge runs with a complete outcome. Skip interrupted / unknown /
         # absent / in-progress runs -- they have nothing to score.
         if status not in ("complete", "failed", "error", "passed", "cancelled"):
-            hub.publish(job_id, {
-                "type": "judge_progress", "job_id": job_id, "run_id": rd.name,
-                "index": i, "total": total,
-                "message": f"skipped (not judgeable: {status or 'unknown'})",
-            })
+            not_judgeable += 1
             continue
         if _run_has_score(rd):
-            hub.publish(job_id, {
-                "type": "judge_progress", "job_id": job_id, "run_id": rd.name,
-                "index": i, "total": total, "message": "skipped (already scored)",
-            })
+            already_scored += 1
             continue
+        worklist.append(rd)
+
+    total = len(worklist)
+    # Announce the scan up front so the UI can frame the work ("Judging N of M;
+    # K already scored") instead of inferring it from a crawling counter.
+    hub.publish(job_id, {
+        "type": "judge_scan", "job_id": job_id, "to_judge": total,
+        "already_scored": already_scored, "not_judgeable": not_judgeable,
+        "total_runs": len(run_dirs),
+    })
+
+    results: dict[str, Any] = {}
+    for i, rd in enumerate(worklist, start=1):
         try:
             res = score_run(rd, judge_model=judge_model, dry_run=dry_run)
             results[rd.name] = {"score": res.get("score"), "summary": res.get("summary")}
@@ -144,7 +157,11 @@ def _judge_all_streaming(
                 "type": "judge_progress", "job_id": job_id, "run_id": rd.name,
                 "index": i, "total": total, "message": f"error: {exc}",
             })
-    return {"target_type": "all", "count": len(results), "runs": results}
+    return {
+        "target_type": "all", "count": len(results), "runs": results,
+        "already_scored": already_scored, "not_judgeable": not_judgeable,
+        "total_runs": len(run_dirs),
+    }
 
 
 def _judge_batch_streaming(

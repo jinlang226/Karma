@@ -144,11 +144,24 @@
     btn.textContent = "Judging…";
     try {
       const { job_id } = await api.post("/api/judge/start", { target_type: "all" });
-      KARMA.toast("Judging all finished runs…", "info");
       api.stream(`/api/judge/jobs/${job_id}/stream`, {
         statusPath: `/api/judge/jobs/${job_id}`,
         onEvent: (ev) => {
-          if (ev.type === "judge_progress" && ev.index && ev.total) {
+          if (ev.type === "judge_scan") {
+            // The backend pre-filtered to the runs that actually need judging.
+            // Frame the work up front so the counter isn't mistaken for a
+            // "judged of total" tally crawling through already-scored runs.
+            if (!ev.to_judge) {
+              btn.textContent = "Judging…";
+              const scored = ev.already_scored || 0;
+              KARMA.toast(`All ${scored} finished runs already judged — nothing to do.`, "info");
+            } else {
+              btn.textContent = `Judging 0/${ev.to_judge}…`;
+              KARMA.toast(
+                `Judging ${ev.to_judge} unjudged run${ev.to_judge === 1 ? "" : "s"}` +
+                ` (${ev.already_scored || 0} already scored).`, "info");
+            }
+          } else if (ev.type === "judge_progress" && ev.index && ev.total) {
             btn.textContent = `Judging ${ev.index}/${ev.total}…`;
           } else if (ev.type === "judge_complete") {
             KARMA.toast("Judge all " + (ev.status || "complete"), ev.status === "error" ? "error" : "success");
