@@ -274,6 +274,7 @@ def _launch_docker(
     # (e.g. ~/.codex/auth.json) are mounted via extra_mounts / --agent-auth-path.
     for _k in ("CLAUDE_CODE_OAUTH_TOKEN", "ANTHROPIC_API_KEY", "OPENAI_API_KEY",
                "CODEX_API_KEY", "CODEX_MODEL", "KARMA_CLAUDE_AGENT_MODEL",
+               "KARMA_CLAUDE_AGENT_EFFORT",
                "GITHUB_TOKEN", "KARMA_COPILOT_AGENT_MODEL",
                "DEEPSEEK_API_KEY", "KARMA_API_KEY", "KARMA_API_BASE_URL",
                "KARMA_API_MODEL", "KARMA_API_MAX_STEPS"):
