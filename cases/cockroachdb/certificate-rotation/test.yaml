@@ -124,16 +124,27 @@ preconditionUnits:
         sleep: 1
       - command: "/bin/sh -c 'kubectl -n cockroachdb create secret generic {{params.cert_secret_name}} --from-file=ca.crt=/tmp/crdb-old-certs/ca.crt --from-file=node.crt=/tmp/crdb-old-certs/node.crt --from-file=node.key=/tmp/crdb-old-certs/node.key --from-file=client.root.crt=/tmp/crdb-old-certs/client.root.crt --from-file=client.root.key=/tmp/crdb-old-certs/client.root.key --dry-run=client -o yaml | kubectl apply -f -'"
         sleep: 1
-      # Cycle the pods so they remount the re-keyed secret. Parallel management +
-      # all-at-once delete = every node comes back trusting the same new CA. PVCs
-      # (cockroach-data) are untouched, so cluster ID, node IDs, and data persist.
-      - command: "/bin/sh -c 'kubectl -n cockroachdb delete pod -l app.kubernetes.io/name=cockroachdb --grace-period=30'"
-        timeout_sec: 200
+      # Cycle the pods so they remount the re-keyed secret. Scale to 0 FIRST so
+      # every old-CA pod is gone before any new-CA pod starts -- a delete/rolling
+      # restart leaves old-cert and new-cert pods coexisting briefly, and their
+      # inter-node TLS handshake fails, which can stall the cluster from reforming
+      # (the rollout then times out and errors the stage). PVCs (cockroach-data)
+      # are untouched, so cluster ID, node IDs, and data persist across the cycle.
+      - command: "/bin/sh -c 'kubectl -n cockroachdb scale statefulset/crdb-cluster --replicas=0 || true'"
+        timeout_sec: 60
+        sleep: 2
+      - command: "/bin/sh -c 'kubectl -n cockroachdb wait --for=delete pod -l app.kubernetes.io/name=cockroachdb --timeout=150s || true'"
+        timeout_sec: 180
+        sleep: 3
+      - command: "/bin/sh -c 'kubectl -n cockroachdb scale statefulset/crdb-cluster --replicas=3 || true'"
+        timeout_sec: 60
         sleep: 5
-      - command: "kubectl -n cockroachdb rollout status statefulset/crdb-cluster --timeout=300s"
+      # rollout status can lag on readiness probes while the DB is already serving,
+      # so it is best-effort; the SELECT 1 loop below is the real readiness gate.
+      - command: "/bin/sh -c 'kubectl -n cockroachdb rollout status statefulset/crdb-cluster --timeout=420s || true'"
         timeout_sec: 600
         sleep: 5
-      - command: "/bin/sh -c 'for i in $(seq 1 30); do kubectl -n cockroachdb exec crdb-cluster-0 -- ./cockroach sql --certs-dir=/cockroach/cockroach-certs --host=crdb-cluster-0.crdb-cluster.cockroachdb.svc.cluster.local -e \"SELECT 1;\" && exit 0; sleep 4; done; exit 1'"
+      - command: "/bin/sh -c 'for i in $(seq 1 45); do kubectl -n cockroachdb exec crdb-cluster-0 -- ./cockroach sql --certs-dir=/cockroach/cockroach-certs --host=crdb-cluster-0.crdb-cluster.cockroachdb.svc.cluster.local -e \"SELECT 1;\" && exit 0; sleep 4; done; exit 1'"
         timeout_sec: 300
         sleep: 2
       - command: "/bin/sh -c 'fingerprint=$(openssl x509 -noout -fingerprint -sha256 -in /tmp/crdb-old-certs/node.crt | sed \"s/.*=//\"); ca_fingerprint=$(openssl x509 -noout -fingerprint -sha256 -in /tmp/crdb-old-certs/ca.crt | sed \"s/.*=//\"); not_after=$(openssl x509 -noout -enddate -in /tmp/crdb-old-certs/node.crt | sed \"s/notAfter=//\"); kubectl -n cockroachdb create configmap {{params.old_cert_configmap_name}} --from-literal=fingerprint=\"$fingerprint\" --from-literal=ca_fingerprint=\"$ca_fingerprint\" --from-literal=not_after=\"$not_after\" --dry-run=client -o yaml | kubectl apply -f -'"
