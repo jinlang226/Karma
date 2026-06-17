@@ -3,6 +3,7 @@ import argparse
 import os
 import subprocess
 import sys
+import time
 
 
 NAMESPACE = os.environ.get("BENCH_NAMESPACE", "mongodb")
@@ -48,13 +49,35 @@ def tls_base_cmd(eval_str):
     ]
 
 
+def run_tls(eval_str):
+    # Retry the READ. The replica set is often still settling when the oracle
+    # runs -- the TLS setup rolling-restarts the members right before submitting
+    # -- and under a loaded requireTLS cluster the mongosh monitor connection can
+    # drop mid-read ("connection <monitor> ... closed"). Those are TRANSIENT
+    # transport failures that clear within seconds, so retry before giving up.
+    # This never masks a wrong value: a successful read returns the real output
+    # and the caller's assertions still fail on any mismatch. When the cluster is
+    # quiet the first attempt succeeds and it returns immediately (no sleeps).
+    # (Only the POSITIVE TLS reads use this; check_plain_blocked, which expects a
+    # failure, calls run() directly so it is never retried.)
+    cmd = tls_base_cmd(eval_str)
+    res = None
+    for attempt in range(5):
+        res = run(cmd)
+        if res.returncode == 0 and (res.stdout or "").strip():
+            return res
+        if attempt < 4:
+            time.sleep(3)
+    return res
+
+
 def check_tls_ok():
     errors = []
-    ping = run(tls_base_cmd("db.adminCommand({ping:1}).ok"))
+    ping = run_tls("db.adminCommand({ping:1}).ok")
     if ping.returncode != 0:
         errors.append(f"TLS ping failed: {ping.stderr.strip() or ping.stdout.strip()}")
 
-    status = run(tls_base_cmd("rs.status().ok"))
+    status = run_tls("rs.status().ok")
     if status.returncode != 0:
         errors.append(f"TLS rs.status failed: {status.stderr.strip() or status.stdout.strip()}")
     elif (status.stdout or "").strip() != "1":
@@ -65,11 +88,9 @@ def check_tls_ok():
 
 def check_data():
     errors = []
-    count = run(
-        tls_base_cmd(
-            f'db.getMongo().setReadPref("secondaryPreferred");'
-            f'db.getSiblingDB("{APP_DB}").{APP_COLLECTION}.countDocuments({{}})'
-        )
+    count = run_tls(
+        f'db.getMongo().setReadPref("secondaryPreferred");'
+        f'db.getSiblingDB("{APP_DB}").{APP_COLLECTION}.countDocuments({{}})'
     )
     if count.returncode != 0:
         errors.append(f"TLS data count failed: {count.stderr.strip() or count.stdout.strip()}")
