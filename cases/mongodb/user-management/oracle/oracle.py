@@ -268,31 +268,56 @@ def check_role():
     return 0
 
 
+def _user_roles(c, username):
+    """Return (found, roles) for `username`, looking in BOTH possible auth homes.
+
+    The task never dictates the authentication database, and this oracle already
+    treats users created in admin and in APP_DB as equally valid (see creds()'s
+    dual-authSource URIs and check_access). check_bindings previously did
+    getUser() on the admin connection only, so an agent that correctly created the
+    user under APP_DB (authSource=APP_DB) was rejected here even though its
+    effective access is right. Merge the roles from wherever the user is defined;
+    check_access remains the effective gate, so a genuinely broken solution
+    (wrong password / missing access) still fails.
+    """
+    found = False
+    roles = []
+    for dbn in ("admin", APP_DB):
+        u = load_json(
+            c["admin_uri"],
+            f'JSON.stringify(db.getSiblingDB("{dbn}").getUser("{username}"))',
+            f"{username} ({dbn})",
+            [],
+        )
+        if isinstance(u, dict):
+            found = True
+            roles.extend(u.get("roles", []))
+    return found, roles
+
+
 def check_bindings():
     errors = []
     c = creds(errors)
     if errors:
         return fail("User management bindings check failed:", errors)
 
-    role = load_json(
-        c["admin_uri"],
-        f'JSON.stringify(db.getSiblingDB("admin").getRole("{REPORTING_ROLE}",{{showPrivileges:true}}))',
-        f"{REPORTING_ROLE} (admin)",
-        [],
-    )
-    role_db = "admin" if role is not None else APP_DB
+    app_found, app_roles = _user_roles(c, APP_USER)
+    ro_found, ro_roles = _user_roles(c, READONLY_USER)
 
-    app_user = load_json(c["admin_uri"], f'JSON.stringify(db.getUser("{APP_USER}"))', APP_USER, errors)
-    ro_user = load_json(c["admin_uri"], f'JSON.stringify(db.getUser("{READONLY_USER}"))', READONLY_USER, errors)
+    if app_found:
+        if not user_has_role({"roles": app_roles}, "readWrite", APP_DB):
+            errors.append(f"{APP_USER} missing readWrite on {APP_DB}")
+    else:
+        errors.append(f"{APP_USER} not found")
 
-    if isinstance(app_user, dict):
-      if not user_has_role(app_user, "readWrite", APP_DB):
-          errors.append(f"{APP_USER} missing readWrite on {APP_DB}")
-    if isinstance(ro_user, dict):
-      if not user_has_role(ro_user, "read", APP_DB):
-          errors.append(f"{READONLY_USER} missing read on {APP_DB}")
-      if not user_has_role(ro_user, REPORTING_ROLE, role_db):
-          errors.append(f"{READONLY_USER} missing {REPORTING_ROLE}")
+    if ro_found:
+        if not user_has_role({"roles": ro_roles}, "read", APP_DB):
+            errors.append(f"{READONLY_USER} missing read on {APP_DB}")
+        # Name-stated role (prompt names {{reporting_role_name}}); accept the
+        # binding regardless of which db the role is defined in -- check_role
+        # validates that role's privileges separately.
+        if not user_has_role({"roles": ro_roles}, REPORTING_ROLE):
+            errors.append(f"{READONLY_USER} missing {REPORTING_ROLE}")
 
     return fail("User management bindings check failed:", errors)
 
