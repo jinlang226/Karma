@@ -174,14 +174,30 @@ def _resolve_expected_nodes(node_names, default=3):
                 return int(val)
             except ValueError:
                 pass
-    live_names = _live_sts_names(node_names)
-    if live_names:
-        replicas_by_name = _list_es_statefulset_replicas()
-        desired = sum(
-            replicas_by_name[n]
-            for n in live_names
-            if isinstance(replicas_by_name.get(n), int)
-        )
+    # Robust count: sum spec.replicas over ES StatefulSets that are actually
+    # running (readyReplicas > 0). Counts the base cluster + any scaled-up
+    # nodeset WITHOUT the fragile node.name -> StatefulSet string mapping (which
+    # breaks when a nodeset's node.name differs from its pod name -- the cause of
+    # "Expected 3 nodes, got 5"). A torn-down prior cluster's StatefulSet has
+    # readyReplicas 0 and is excluded. Still strict: a node that failed to join
+    # leaves its STS ready>0 but short, so the spec-replica sum exceeds the live
+    # node count and the check still fails.
+    res = run(["kubectl", "-n", NAMESPACE, "get", "sts", "-o", "json"])
+    if res.returncode == 0:
+        try:
+            items = json.loads(res.stdout).get("items", [])
+        except Exception:
+            items = []
+        desired = 0
+        for sts in items:
+            spec = sts.get("spec", {}) or {}
+            containers = spec.get("template", {}).get("spec", {}).get("containers", []) or []
+            if "elasticsearch" not in " ".join(c.get("image", "") for c in containers):
+                continue
+            replicas = spec.get("replicas")
+            ready = (sts.get("status", {}) or {}).get("readyReplicas") or 0
+            if isinstance(replicas, int) and ready > 0:
+                desired += replicas
         if desired > 0:
             return desired
     return default
