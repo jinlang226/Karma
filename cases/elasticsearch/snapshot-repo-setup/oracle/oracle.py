@@ -425,13 +425,17 @@ def main():
 
     # A multi-node ES cluster can flap at the edge of readiness under load: a
     # node briefly fails its HTTP readiness probe / drops from the cluster during
-    # GC or shard recovery even though it is stably green. A single snapshot can
-    # catch that transient and report a false node-count miss. So verify the
-    # STABLE converged state: re-evaluate for up to ~75s and pass on the first
-    # clean snapshot. This does not loosen the N-node/green/snapshot/keystore
-    # requirements -- a genuinely degraded cluster fails every attempt.
+    # GC or shard recovery even though it is stably green; and on a busy cluster a
+    # kubectl exec/curl can transiently fail to reach an otherwise-healthy pod
+    # ("unable to upgrade connection" / empty response). A single snapshot can
+    # catch that transient and report a false miss. So verify the STABLE converged
+    # state: re-evaluate for up to ~120s and pass on the first clean snapshot. The
+    # window is wider here than in lighter cases because composed runs inherit a
+    # larger cluster (extra nodesets) that takes longer to settle. This does not
+    # loosen the N-node/green/snapshot/keystore requirements -- a genuinely
+    # degraded cluster fails every attempt.
     import time
-    deadline = time.monotonic() + 75
+    deadline = time.monotonic() + 120
     errors = evaluate()
     while errors and time.monotonic() < deadline:
         time.sleep(8)
