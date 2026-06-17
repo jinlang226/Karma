@@ -186,7 +186,18 @@ def _resolve_expected_nodes(node_names, default=5):
         except Exception:
             items = []
         desired = 0
+        # Restrict the sum to the StatefulSets that BACK the live cluster's nodes
+        # (the names _cat/nodes returned). The persisted namespace can hold MULTIPLE
+        # ES clusters -- a prior stage may have deployed a differently-named one
+        # (e.g. deploy-core's es-nodes) alongside this case's es-cluster -- and
+        # summing every ES StatefulSet overcounts versus the single cluster the
+        # oracle queries. When the live set is unknown (no nodes resolved) fall back
+        # to summing all (the health check has already failed in that case).
+        live = _live_sts_names(node_names)
         for sts in items:
+            name = (sts.get("metadata", {}) or {}).get("name")
+            if live and name not in live:
+                continue
             spec = sts.get("spec", {}) or {}
             containers = spec.get("template", {}).get("spec", {}).get("containers", []) or []
             if "elasticsearch" not in " ".join(c.get("image", "") for c in containers):
