@@ -86,6 +86,39 @@ preconditionUnits:
       - command: "kubectl -n mongodb get pods 2>/dev/null | grep -c Running"
         timeout_sec: 10
 
+  # Self-contained Prometheus stack (composition safety): the prompt states Prometheus
+  # is ALREADY running in the monitoring namespace and "currently scrapes only itself";
+  # the agent only reconfigures it to scrape mongodb. mongo_env_ready seeds the
+  # monitoring namespace + Prometheus rbac/config/deployment/service on its destructive
+  # build path, which is SKIPPED on an inherited cluster, so the oracle's
+  # prometheus_request(/-/ready) fails with no Prometheus to reach. Re-establish the
+  # Prometheus stack (and the curl helper) additively when its pod is absent. Never
+  # deletes any namespace. Standalone it already exists so the probe matches and this
+  # unit skips (byte-identical standalone behaviour).
+  - name: prometheus_stack_fixture
+    on_probe_fail: skip
+    probe:
+      - command: "kubectl -n monitoring get pod -l app=prometheus 2>/dev/null | grep -c Running"
+        timeout_sec: 10
+    apply:
+      - command: "/bin/sh -c 'kubectl create namespace monitoring --dry-run=client -o yaml | kubectl apply -f -'"
+        sleep: 1
+      - command: "kubectl -n monitoring apply -f cases/mongodb/monitoring-integration/resource/prometheus-rbac.yaml"
+        sleep: 1
+      - command: "kubectl -n monitoring apply -f cases/mongodb/monitoring-integration/resource/prometheus-config.yaml"
+        sleep: 1
+      - command: "kubectl -n monitoring apply -f cases/mongodb/monitoring-integration/resource/prometheus-deployment.yaml"
+        sleep: 1
+      - command: "kubectl -n monitoring apply -f cases/mongodb/monitoring-integration/resource/prometheus-service.yaml"
+        sleep: 2
+      - command: "/bin/sh -c 'kubectl -n mongodb get pod {{params.curl_pod_name}} >/dev/null 2>&1 || kubectl -n mongodb apply -f cases/mongodb/monitoring-integration/resource/curl-test.yaml'"
+        sleep: 1
+      - command: "kubectl -n monitoring wait --for=condition=ready pod -l app=prometheus --timeout=300s"
+        sleep: 1
+    verify:
+      - command: "/bin/sh -c 'kubectl -n monitoring get pod -l app=prometheus >/dev/null 2>&1; true'"
+        timeout_sec: 10
+
 oracle:
   verify:
     commands:
