@@ -4,7 +4,6 @@ import json
 import os
 import subprocess
 import sys
-import time
 
 
 NAMESPACE = os.environ.get("BENCH_NAMESPACE", "mongodb")
@@ -53,17 +52,6 @@ def _mongo_tls_flags(probe_pod=None):
             break
     if ca_path:
         flags = ["--tls", "--tlsAllowInvalidHostnames", "--tlsAllowInvalidCertificates", "--tlsCAFile", ca_path]
-        # Present a client cert ONLY if a genuine client key-pair is mounted. The
-        # tls-setup / certificate-rotation stages configure the server with
-        # `net.tls.allowConnectionsWithoutCertificates`, so a client cert is NOT
-        # required -- and presenting the wrong file as one makes the server close
-        # the connection mid-handshake ("connection <monitor> ... closed"),
-        # failing every rs.conf() read. Ground truth: the agent's own working
-        # command (verified across sonnet + Opus runs) connects with just
-        # `--tls --tlsCAFile <ca> --tlsAllowInvalidHostnames` and NO client cert.
-        # NOTE: do NOT fall back to /etc/mongo-cert/server.pem -- that is the
-        # SERVER key-pair, not a client cert, and offering it as --tlsCertificateKeyFile
-        # is exactly what broke the read.
         for client_pem in ("/etc/tls/client.pem", "/etc/mongo-ca/client.pem"):
             cprobe = run(["kubectl", "-n", NAMESPACE, "exec", pod, "--", "/bin/sh", "-c", "test -f " + client_pem])
             if cprobe.returncode == 0:
@@ -120,7 +108,7 @@ def fail(prefix, errors):
     return 0
 
 
-def mongo_json(pod, eval_str, label, errors, uri=None, retries=6, interval=4):
+def mongo_json(pod, eval_str, label, errors, uri=None):
     # TLS goes as CLI flags -- mongosh honors --tls/--tlsCAFile/--tlsCertificateKeyFile
     # alongside a URI positional, but IGNORES file-path TLS options passed as URI query
     # params, so a cluster left in mutual TLS by cert-rotation drops a URI-folded
@@ -130,33 +118,20 @@ def mongo_json(pod, eval_str, label, errors, uri=None, retries=6, interval=4):
     if uri:
         cmd.append(uri)
     cmd.extend(["--eval", eval_str])
-    # Retry the READ. The replica set is often still settling when the oracle
-    # runs -- a horizons/cert task rolling-restarts the members right before
-    # submitting -- and under a loaded requireTLS cluster the mongosh monitor
-    # connection can drop mid-read ("connection <monitor> ... closed"). Those are
-    # TRANSIENT transport failures that clear within seconds, so retry before
-    # giving up. This never masks a wrong value: a successful read returns the
-    # real rs.conf() and the caller's assertions still fail on any mismatch.
-    # Standalone (the read succeeds on the first try) it returns immediately, so
-    # behaviour is identical when the cluster is quiet.
-    detail = None
-    for attempt in range(retries):
-        res = run(cmd)
-        if res.returncode == 0:
-            raw = (res.stdout or "").strip()
-            if raw:
-                try:
-                    return json.loads(raw)
-                except json.JSONDecodeError:
-                    detail = f"Unable to parse {label} JSON output"
-            else:
-                detail = f"{label} returned empty output"
-        else:
-            detail = res.stderr.strip() or res.stdout.strip() or f"exit {res.returncode}"
-        if attempt < retries - 1:
-            time.sleep(interval)
-    errors.append(f"{label} failed: {detail}")
-    return None
+    res = run(cmd)
+    if res.returncode != 0:
+        detail = res.stderr.strip() or res.stdout.strip() or f"exit {res.returncode}"
+        errors.append(f"{label} failed: {detail}")
+        return None
+    raw = (res.stdout or "").strip()
+    if not raw:
+        errors.append(f"{label} returned empty output")
+        return None
+    try:
+        return json.loads(raw)
+    except json.JSONDecodeError:
+        errors.append(f"Unable to parse {label} JSON output")
+        return None
 
 
 def check_topology():
@@ -235,32 +210,22 @@ def check_connectivity():
     )
     uri = f"mongodb://{hosts}/admin?replicaSet={REPLICA_SET_NAME}"
 
-    # Same transient-transport retry as mongo_json: connecting THROUGH the
-    # external NodePorts right after a rolling restart can race the members
-    # settling / the external routing coming up. Retry the connect before
-    # failing; a genuine connectivity break still fails after the budget.
-    res = None
-    for attempt in range(6):
-        res = run(
-            [
-                "kubectl",
-                "-n",
-                NAMESPACE,
-                "exec",
-                CLIENT_POD_NAME,
-                "--",
-                "mongosh",
-                "--quiet",
-                *_mongo_tls_flags(),
-                uri,
-                "--eval",
-                "JSON.stringify(db.hello())",
-            ]
-        )
-        if res.returncode == 0 and (res.stdout or "").strip():
-            break
-        if attempt < 5:
-            time.sleep(4)
+    res = run(
+        [
+            "kubectl",
+            "-n",
+            NAMESPACE,
+            "exec",
+            CLIENT_POD_NAME,
+            "--",
+            "mongosh",
+            "--quiet",
+            *_mongo_tls_flags(),
+            uri,
+            "--eval",
+            "JSON.stringify(db.hello())",
+        ]
+    )
     if res.returncode != 0:
         detail = res.stderr.strip() or res.stdout.strip() or f"exit {res.returncode}"
         errors.append(f"mongo-client connectivity failed: {detail}")
