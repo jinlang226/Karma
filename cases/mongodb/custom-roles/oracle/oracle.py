@@ -58,7 +58,7 @@ def _mongo_tls_flags(probe_pod=None):
             break
     if ca_path:
         flags = ["--tls", "--tlsAllowInvalidHostnames", "--tlsAllowInvalidCertificates", "--tlsCAFile", ca_path]
-        for client_pem in ("/etc/tls/client.pem", "/etc/mongo-ca/client.pem"):
+        for client_pem in ("/etc/tls/client.pem", "/etc/mongo-ca/client.pem", "/etc/mongo-cert/server.pem"):
             cprobe = run(["kubectl", "-n", NAMESPACE, "exec", pod, "--", "/bin/sh", "-c", "test -f " + client_pem])
             if cprobe.returncode == 0:
                 flags += ["--tlsCertificateKeyFile", client_pem]
