@@ -169,10 +169,10 @@ def credentials(errors):
         # directConnection skips SDAM topology monitoring (via find_primary's
         # db.hello), which a localhost connection would start and which fails
         # under a persisted requireTLS mode.
-        "admin_uri": f"mongodb://{ADMIN_USER}:{admin_pw}@localhost:27017/admin?directConnection=true&serverSelectionTimeoutMS=4000&connectTimeoutMS=4000",
-        "app_new_uri": f"mongodb://{APP_USER}:{app_next_pw}@localhost:27017/{APP_DB}?authSource=admin&directConnection=true&serverSelectionTimeoutMS=4000&connectTimeoutMS=4000",
-        "app_old_uri": f"mongodb://{APP_USER}:{app_old_pw}@localhost:27017/{APP_DB}?authSource=admin&directConnection=true&serverSelectionTimeoutMS=4000&connectTimeoutMS=4000",
-        "rep_uri": f"mongodb://{REPORTING_USER}:{rep_pw}@localhost:27017/{APP_DB}?authSource=admin&directConnection=true&serverSelectionTimeoutMS=4000&connectTimeoutMS=4000",
+        "admin_uri": f"mongodb://{ADMIN_USER}:{admin_pw}@localhost:27017/admin?directConnection=true",
+        "app_new_uri": f"mongodb://{APP_USER}:{app_next_pw}@localhost:27017/{APP_DB}?authSource=admin&directConnection=true",
+        "app_old_uri": f"mongodb://{APP_USER}:{app_old_pw}@localhost:27017/{APP_DB}?authSource=admin&directConnection=true",
+        "rep_uri": f"mongodb://{REPORTING_USER}:{rep_pw}@localhost:27017/{APP_DB}?authSource=admin&directConnection=true",
     }
 
 

@@ -103,7 +103,7 @@ def mongo_eval(pod, script):
     # which fails under a persisted requireTLS mode. directConnection works on
     # any single member for rs.conf()/rs.status() reads.
     uri = (f"mongodb://{pod}.{SERVICE_NAME}.{NAMESPACE}.svc.cluster.local:27017/"
-           "?directConnection=true&serverSelectionTimeoutMS=4000&connectTimeoutMS=4000")
+           "?directConnection=true")
     base = ["kubectl", "-n", NAMESPACE, "exec", pod, "--",
             "mongosh", "--quiet", *_mongo_tls_flags(), uri]
     res = run(base + ["--eval", script])

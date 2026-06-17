@@ -185,8 +185,8 @@ def credentials(errors):
         # directConnection skips SDAM topology monitoring (via find_primary's
         # db.hello), which a localhost connection would start and which fails
         # under a persisted requireTLS mode.
-        "admin_uri": f"mongodb://{ADMIN_USER}:{admin_pw}@localhost:27017/admin?directConnection=true&serverSelectionTimeoutMS=4000&connectTimeoutMS=4000",
-        "reporting_uri": f"mongodb://{REPORTING_USER}:{reporting_pw}@localhost:27017/{APP_DB}?authSource=admin&directConnection=true&serverSelectionTimeoutMS=4000&connectTimeoutMS=4000",
+        "admin_uri": f"mongodb://{ADMIN_USER}:{admin_pw}@localhost:27017/admin?directConnection=true",
+        "reporting_uri": f"mongodb://{REPORTING_USER}:{reporting_pw}@localhost:27017/{APP_DB}?authSource=admin&directConnection=true",
     }
 
 

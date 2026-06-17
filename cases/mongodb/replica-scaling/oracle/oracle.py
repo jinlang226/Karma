@@ -192,7 +192,7 @@ def check_topology():
         return fail("MongoDB replica-scaling topology check failed:", errors)
     # directConnection skips SDAM topology monitoring, which a localhost
     # connection would start and which fails under a persisted requireTLS mode.
-    uri = f"mongodb://{ADMIN_USERNAME}:{admin_pw}@localhost:27017/admin?directConnection=true&serverSelectionTimeoutMS=4000&connectTimeoutMS=4000"
+    uri = f"mongodb://{ADMIN_USERNAME}:{admin_pw}@localhost:27017/admin?directConnection=true"
     primary = find_primary(uri, errors)
 
     conf = mongo_json(primary, uri, "JSON.stringify(rs.conf())", "rs.conf()", errors)
@@ -229,7 +229,7 @@ def check_data():
     if errors:
         return fail("MongoDB replica-scaling data check failed:", errors)
     # directConnection skips SDAM topology monitoring (see check_topology).
-    uri = f"mongodb://{ADMIN_USERNAME}:{admin_pw}@localhost:27017/admin?directConnection=true&serverSelectionTimeoutMS=4000&connectTimeoutMS=4000"
+    uri = f"mongodb://{ADMIN_USERNAME}:{admin_pw}@localhost:27017/admin?directConnection=true"
     primary = find_primary(uri, errors)
 
     res = mongo_eval(

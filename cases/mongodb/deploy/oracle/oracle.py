@@ -258,7 +258,7 @@ def check_topology():
         return fail("MongoDB deploy topology check failed:", errors)
     # directConnection skips SDAM topology monitoring, which a localhost
     # connection would start and which fails under a persisted requireTLS mode.
-    admin_uri = f"mongodb://{ADMIN_USER}:{admin_pw}@localhost:27017/admin?directConnection=true&serverSelectionTimeoutMS=4000&connectTimeoutMS=4000"
+    admin_uri = f"mongodb://{ADMIN_USER}:{admin_pw}@localhost:27017/admin?directConnection=true"
     primary_pod = find_primary(admin_uri, errors)
     status = load_json(primary_pod, admin_uri, "JSON.stringify(rs.status())", "rs.status()", errors)
     if isinstance(status, dict):
@@ -285,7 +285,7 @@ def check_auth():
         return fail("MongoDB deploy auth check failed:", errors)
 
     # directConnection skips SDAM topology monitoring (see check_topology).
-    admin_uri = f"mongodb://{ADMIN_USER}:{admin_pw}@localhost:27017/admin?directConnection=true&serverSelectionTimeoutMS=4000&connectTimeoutMS=4000"
+    admin_uri = f"mongodb://{ADMIN_USER}:{admin_pw}@localhost:27017/admin?directConnection=true"
     primary_pod = find_primary(admin_uri, errors)
 
     unauth = run(
@@ -325,7 +325,7 @@ def check_auth():
     app_status = None
     for _auth_db in (APP_DATABASE, "admin"):
         # directConnection skips SDAM topology monitoring (see check_topology).
-        uri = f"mongodb://{APP_USER}:{app_pw}@localhost:27017/{APP_DATABASE}?authSource={_auth_db}&directConnection=true&serverSelectionTimeoutMS=4000&connectTimeoutMS=4000"
+        uri = f"mongodb://{APP_USER}:{app_pw}@localhost:27017/{APP_DATABASE}?authSource={_auth_db}&directConnection=true"
         st = load_json(
             primary_pod, uri,
             "JSON.stringify(db.runCommand({connectionStatus:1}))",
