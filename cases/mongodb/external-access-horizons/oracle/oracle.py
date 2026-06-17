@@ -53,7 +53,18 @@ def _mongo_tls_flags(probe_pod=None):
             break
     if ca_path:
         flags = ["--tls", "--tlsAllowInvalidHostnames", "--tlsAllowInvalidCertificates", "--tlsCAFile", ca_path]
-        for client_pem in ("/etc/tls/client.pem", "/etc/mongo-ca/client.pem", "/etc/mongo-cert/server.pem"):
+        # Present a client cert ONLY if a genuine client key-pair is mounted. The
+        # tls-setup / certificate-rotation stages configure the server with
+        # `net.tls.allowConnectionsWithoutCertificates`, so a client cert is NOT
+        # required -- and presenting the wrong file as one makes the server close
+        # the connection mid-handshake ("connection <monitor> ... closed"),
+        # failing every rs.conf() read. Ground truth: the agent's own working
+        # command (verified across sonnet + Opus runs) connects with just
+        # `--tls --tlsCAFile <ca> --tlsAllowInvalidHostnames` and NO client cert.
+        # NOTE: do NOT fall back to /etc/mongo-cert/server.pem -- that is the
+        # SERVER key-pair, not a client cert, and offering it as --tlsCertificateKeyFile
+        # is exactly what broke the read.
+        for client_pem in ("/etc/tls/client.pem", "/etc/mongo-ca/client.pem"):
             cprobe = run(["kubectl", "-n", NAMESPACE, "exec", pod, "--", "/bin/sh", "-c", "test -f " + client_pem])
             if cprobe.returncode == 0:
                 flags += ["--tlsCertificateKeyFile", client_pem]
