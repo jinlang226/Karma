@@ -31,6 +31,14 @@ SUBMIT_FILE="submit.txt"
 TMP_FILE=".submit.partial"
 STREAM_FILE=".agent.stream.jsonl"
 MODEL="${KARMA_CLAUDE_AGENT_MODEL:-sonnet}"
+# Optional reasoning effort (low|medium|high|xhigh|max). Empty -> omit the flag
+# so the CLI keeps its own default; set KARMA_CLAUDE_AGENT_EFFORT to pair an
+# effort level with the model (e.g. MODEL=opus + EFFORT=low).
+EFFORT="${KARMA_CLAUDE_AGENT_EFFORT:-}"
+EFFORT_ARGS=()
+if [ -n "$EFFORT" ]; then
+  EFFORT_ARGS=(--effort "$EFFORT")
+fi
 
 # Stream the full event log to stdout (-> agent.log) in REAL TIME via tee, and
 # also to a temp file for parsing. Real-time matters: when KARMA times out and
@@ -38,6 +46,7 @@ MODEL="${KARMA_CLAUDE_AGENT_MODEL:-sonnet}"
 # runs you most want to debug), instead of being lost.
 claude --print --verbose --output-format stream-json \
   --model "$MODEL" \
+  "${EFFORT_ARGS[@]}" \
   --dangerously-skip-permissions \
   "$(cat "$PROMPT_FILE")" \
   2>&1 | tee "$STREAM_FILE"
