@@ -199,7 +199,9 @@ def check_topology():
     admin_pw = get_secret_value(ADMIN_SECRET, "password", errors)
     if errors:
         return fail("Health-check recovery topology check failed:", errors)
-    admin_uri = f"mongodb://{ADMIN_USER}:{admin_pw}@localhost:27017/admin"
+    # directConnection skips SDAM topology monitoring, which a localhost
+    # connection would start and which fails under a persisted requireTLS mode.
+    admin_uri = f"mongodb://{ADMIN_USER}:{admin_pw}@localhost:27017/admin?directConnection=true&serverSelectionTimeoutMS=4000&connectTimeoutMS=4000"
     primary = _find_primary(admin_uri, errors)
     status = load_json(primary, admin_uri, "JSON.stringify(rs.status())", "rs.status()", errors)
     if isinstance(status, dict):
@@ -236,7 +238,8 @@ def check_health_auth():
         except json.JSONDecodeError:
             errors.append(f"failed to parse configmap {OVERRIDE_CONFIGMAP} JSON")
 
-    uri = f"mongodb://{HEALTH_USER}:{health_pw}@localhost:27017/admin"
+    # directConnection skips SDAM topology monitoring (see check_topology).
+    uri = f"mongodb://{HEALTH_USER}:{health_pw}@localhost:27017/admin?directConnection=true&serverSelectionTimeoutMS=4000&connectTimeoutMS=4000"
     for i in range(EXPECTED_REPLICAS):
         pod = f"{POD_PREFIX}{i}"
         res = run_mongo(pod, uri, "db.hello().ok")

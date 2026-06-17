@@ -131,7 +131,13 @@ def mongo_json(pod, eval_str, label, errors, uri=None):
 def check_topology():
     errors = []
     pod = f"{CLUSTER_PREFIX}-0"
-    conf = mongo_json(pod, "JSON.stringify(rs.conf())", "rs.conf()", errors)
+    # Read rs.conf() via the member's own FQDN with directConnection=true to skip
+    # SDAM topology monitoring, which a bare localhost connection would start and
+    # which fails under a persisted requireTLS mode. Only the connection method
+    # changes; the horizon assertions below are unchanged.
+    local_uri = (f"mongodb://{pod}.{SERVICE_NAME}.{NAMESPACE}.svc.cluster.local:27017/"
+                 "?directConnection=true&serverSelectionTimeoutMS=4000&connectTimeoutMS=4000")
+    conf = mongo_json(pod, "JSON.stringify(rs.conf())", "rs.conf()", errors, uri=local_uri)
     if isinstance(conf, dict):
         members = conf.get("members", [])
         if len(members) != EXPECTED_REPLICAS:
@@ -149,9 +155,13 @@ def check_topology():
             idx = expected_hosts[host]
             expected_horizon = f"{EXTERNAL_HOST_PREFIX}-{idx + 1}:{NODEPORT_START + idx}"
             horizons = member.get("horizons") or {}
-            actual_horizon = horizons.get("horizon1")
-            if actual_horizon != expected_horizon:
-                errors.append(f"{host} horizon1 expected {expected_horizon}, got {actual_horizon}")
+            # Split-horizon: the horizon KEY name is client-chosen and arbitrary
+            # (the prompt never dictates one); mongod selects a horizon by the
+            # incoming connection's hostname, not by the label. So verify the
+            # expected external endpoint is advertised under SOME horizon,
+            # regardless of its key name.
+            if expected_horizon not in horizons.values():
+                errors.append(f"{host} expected horizon {expected_horizon}, got {dict(horizons)}")
 
     return fail("External access horizons topology check failed:", errors)
 
