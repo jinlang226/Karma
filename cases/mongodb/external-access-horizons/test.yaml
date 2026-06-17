@@ -119,6 +119,54 @@ preconditionUnits:
       - command: "kubectl -n mongodb get pods 2>/dev/null | grep -c Running"
         timeout_sec: 10
 
+  # Self-contained external access (composition safety): the prompt states the NodePort
+  # services + client pod ALREADY exist ("Do not change the NodePort services"); the
+  # agent only configures split-horizon rs.conf. mongo_env_ready seeds those on its
+  # destructive build path, which is SKIPPED on an inherited cluster, so the
+  # mongo-external-* services and the client pod are absent -> the oracle's service
+  # check fails and the agent has no endpoints to advertise. Re-establish them
+  # additively when the services are missing: apply the NodePort services and recreate
+  # the node-IP-mapped client pod. Never deletes the namespace or the running cluster.
+  # Standalone they already exist so the probe matches and this unit skips.
+  - name: external_access_fixture
+    on_probe_fail: skip
+    probe:
+      - command: "kubectl -n mongodb get svc mongo-external-1"
+        timeout_sec: 10
+    apply:
+      - command: "kubectl -n mongodb apply -f cases/mongodb/external-access-horizons/resource/services.yaml"
+        sleep: 2
+      - command: |
+          node_ip=$(kubectl get nodes -o jsonpath='{range .items[*]}{.metadata.name}{" "}{range .status.addresses[?(@.type=="InternalIP")]}{.address}{"\n"}{end}{end}' | awk '$1 !~ /control-plane|master/ {print $2; exit}')
+          if [ -z "$node_ip" ]; then
+            node_ip=$(kubectl get nodes -o jsonpath='{.items[0].status.addresses[?(@.type=="InternalIP")].address}')
+          fi
+          if [ -z "$node_ip" ]; then
+            exit 0
+          fi
+          kubectl -n mongodb get pod {{params.client_pod_name}} >/dev/null 2>&1 || cat <<EOF | kubectl -n mongodb apply -f -
+          apiVersion: v1
+          kind: Pod
+          metadata:
+            name: {{params.client_pod_name}}
+          spec:
+            restartPolicy: Never
+            hostAliases:
+            - ip: "$node_ip"
+              hostnames:
+              - {{params.external_host_prefix}}-1
+              - {{params.external_host_prefix}}-2
+              - {{params.external_host_prefix}}-3
+            containers:
+            - name: mongosh
+              image: {{params.mongo_client_image}}
+              command: ["sleep", "3600"]
+          EOF
+        sleep: 2
+    verify:
+      - command: "/bin/sh -c 'kubectl -n mongodb get svc mongo-external-1 >/dev/null 2>&1; true'"
+        timeout_sec: 10
+
 oracle:
   verify:
     commands:
