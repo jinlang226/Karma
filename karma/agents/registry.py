@@ -41,6 +41,18 @@ _REGISTRY: dict[str, dict[str, Any]] = {
         "entrypoint": "entrypoint.sh",
         "description": "OpenAI Codex CLI agent (docker sandbox; mount ~/.codex/auth.json).",
     },
+    "copilot": {
+        "folder": _AGENTS_DIR / "copilot",
+        "dockerfile": _AGENTS_DIR / "copilot" / "Dockerfile",
+        "entrypoint": "entrypoint.sh",
+        "description": "GitHub Copilot CLI agent (auth via host login or GITHUB_TOKEN).",
+    },
+    "api": {
+        "folder": _AGENTS_DIR / "api",
+        "dockerfile": _AGENTS_DIR / "api" / "Dockerfile",
+        "entrypoint": "entrypoint.sh",
+        "description": "OpenAI-compatible API agent (DeepSeek by default; env-configurable).",
+    },
 }
 
 
