@@ -82,23 +82,19 @@ def check_ui(errors):
 
 
 def check_sql(errors):
-    cmd = [
-        "kubectl",
-        "-n",
-        "cockroachdb",
-        "exec",
-        "crdb-cluster-0",
-        "--",
-        "./cockroach",
-        "sql",
-        conn_flag(),
-        "--host",
-        SQL_HOST,
-        "--port",
-        SQL_PORT,
-        "-e",
-        "SELECT 1;",
-    ]
+    base = ["kubectl", "-n", "cockroachdb", "exec", "crdb-cluster-0", "--", "./cockroach", "sql"]
+    if conn_flag() == "--insecure":
+        cmd = base + ["--insecure", "--host", SQL_HOST, "--port", SQL_PORT, "-e", "SELECT 1;"]
+    else:
+        # Secure cluster (inherited from certificate-rotation etc.): connect through
+        # the ingress with sslmode=require. This verifies SQL routes through the
+        # ingress over TLS and authenticates with the client cert, WITHOUT verifying
+        # the server cert's hostname -- a DB node cert is never valid for the ingress
+        # proxy's name, so --certs-dir (which forces verify-full) always fails here.
+        url = (f"postgresql://root@{SQL_HOST}:{SQL_PORT}/?sslmode=require"
+               "&sslcert=/cockroach/cockroach-certs/client.root.crt"
+               "&sslkey=/cockroach/cockroach-certs/client.root.key")
+        cmd = base + ["--url", url, "-e", "SELECT 1;"]
     result = run(cmd)
     if result.returncode != 0:
         msg = result.stderr.strip() or result.stdout.strip()
