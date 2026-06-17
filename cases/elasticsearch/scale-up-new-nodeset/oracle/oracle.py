@@ -200,8 +200,13 @@ def _resolve_expected_nodes(node_names, default=5):
             # Use status.replicas (pods that EXIST), not readyReplicas: a
             # scaled-up nodeset whose pods joined the cluster but lack a passing
             # STS readiness probe has readyReplicas 0 yet is genuinely live.
-            current = (sts.get("status", {}) or {}).get("replicas") or 0
-            if isinstance(replicas, int) and current > 0:
+            # Count an ES StatefulSet's DESIRED replicas when it is an active part
+            # of the cluster: spec.replicas > 0 and not being torn down. Gating on
+            # status.replicas undercounts a freshly scaled-up nodeset whose status
+            # lags -- its pods have joined the cluster but status.replicas is still
+            # 0 -- which wrongly made EXPECTED < the live node count.
+            being_deleted = (sts.get("metadata", {}) or {}).get("deletionTimestamp") is not None
+            if isinstance(replicas, int) and replicas > 0 and not being_deleted:
                 desired += replicas
         if desired > 0:
             return desired
