@@ -151,14 +151,30 @@ preconditionUnits:
       - command: "/bin/sh -c 'set -e; pods=$(kubectl -n ${BENCH_NAMESPACE} get pods -l app=${BENCH_PARAM_CLUSTER_PREFIX} -o jsonpath=\"{.items[*].metadata.name}\"); [ -n \"$pods\" ]; for p in $pods; do kubectl -n ${BENCH_NAMESPACE} exec $p -- rabbitmqctl eval \"application:which_applications().\" 2>/dev/null | grep -q rabbitmq_prometheus; done'"
         timeout_sec: 60
 
+  # Skip-gate (was an error-gate): probe-pass means the "monitoring not yet
+  # configured" baseline holds; probe-fail means it does NOT, so the apply must
+  # RE-ESTABLISH it. An error-gate failed immediately without ever running apply,
+  # which broke composition: when manual_monitoring re-runs as a later workflow
+  # stage a prior identical stage already pointed Prometheus at rabbitmq (>= 3
+  # active targets), so the agent would have nothing to do and the baseline never
+  # held. The apply resets this case's OWN prometheus-config back to its base
+  # scrape config (no rabbitmq job) and restarts Prometheus so the rabbitmq
+  # targets drop below 3 -> baseline restored for the agent to re-configure.
+  # Standalone (config already base) it re-applies the same configmap and is a
+  # harmless restart -> identical behaviour. Resets only this case's own
+  # monitoring artifact, never inherited cluster state.
   - name: monitoring_baseline_ready
-    on_probe_fail: error
+    on_probe_fail: skip
     probe:
       - command: "python3 cases/rabbitmq/manual_monitoring/setup_precondition_check.py --namespace ${BENCH_NAMESPACE} --min-ready 3"
         timeout_sec: 40
     apply:
-      - command: "/bin/sh -c true"
-        timeout_sec: 5
+      - command: "envsubst '$BENCH_NAMESPACE $BENCH_NS_SOURCE $BENCH_NS_TARGET $BENCH_PARAM_CLUSTER_PREFIX $BENCH_PARAM_BLUE_CLUSTER_PREFIX $BENCH_PARAM_GREEN_CLUSTER_PREFIX $BENCH_PARAM_FROM_VERSION' < cases/rabbitmq/manual_monitoring/resource/prometheus.yaml | kubectl -n ${BENCH_NAMESPACE} apply -f -"
+        sleep: 1
+      - command: "kubectl -n ${BENCH_NAMESPACE} rollout restart deploy/prometheus"
+        sleep: 2
+      - command: "kubectl -n ${BENCH_NAMESPACE} rollout status deploy/prometheus --timeout=120s"
+        sleep: 1
     verify:
       - command: "python3 cases/rabbitmq/manual_monitoring/setup_precondition_check.py --namespace ${BENCH_NAMESPACE} --min-ready 3"
         timeout_sec: 40
