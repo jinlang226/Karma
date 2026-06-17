@@ -83,6 +83,35 @@ preconditionUnits:
       - command: "kubectl -n elasticsearch get pods 2>/dev/null | grep -c Running"
         timeout_sec: 10
 
+  # Additive seed fixture (composition safety): the oracle requires at least 5
+  # docs in the {{params.index_name}} index on the prod cluster (it reads
+  # /{{params.index_name}}/_count). es_env_ready seeds them via the
+  # {{params.log_writer_job}} Job on its destructive fresh-build path, which is
+  # SKIPPED on an inherited cluster (the probe sees pods Running), so the log data
+  # is absent and the oracle fails. Re-establish it additively when the index is
+  # short: the seed goes through the always-correct search-direct service (which
+  # the Job targets) so the docs land on the prod cluster regardless of the
+  # search-http drift the agent must repair. The probe counts via search-direct
+  # (the stable path), so it is independent of the agent's fix. Re-runs the Job
+  # (delete + re-apply) only when docs are missing; never deletes the namespace or
+  # touches the services/clusters. Standalone the docs already exist so the probe
+  # matches and this unit skips -> byte-identical standalone behaviour.
+  - name: log_data_fixture
+    on_probe_fail: skip
+    probe:
+      - command: "/bin/sh -c 'n=$(kubectl -n elasticsearch exec {{params.curl_pod_name}} -- curl -s --max-time 5 \"http://search-direct:9200/{{params.index_name}}/_count\" 2>/dev/null | sed -n \"s/.*\\\"count\\\":[ ]*\\([0-9]*\\).*/\\1/p\"); [ \"${n:-0}\" -ge 5 ]'"
+        timeout_sec: 20
+    apply:
+      - command: "kubectl -n elasticsearch delete job {{params.log_writer_job}} --ignore-not-found=true"
+        sleep: 1
+      - command: "kubectl -n elasticsearch apply -f cases/elasticsearch/internal-http-service-drift/resource/log-writer.yaml"
+        sleep: 1
+      - command: "/bin/sh -c 'kubectl -n elasticsearch wait --for=condition=complete job/{{params.log_writer_job}} --timeout=200s || true'"
+        sleep: 1
+    verify:
+      - command: "/bin/sh -c 'kubectl -n elasticsearch exec {{params.curl_pod_name}} -- curl -s --max-time 5 \"http://search-direct:9200/{{params.index_name}}/_count\" >/dev/null 2>&1; true'"
+        timeout_sec: 20
+
 oracle:
   verify:
     commands:
