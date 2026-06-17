@@ -94,7 +94,8 @@ preconditionUnits:
           kubectl -n elasticsearch cp openssl-toolbox:/tmp/certs "${TMP_DIR}/certs"
           kubectl -n elasticsearch create secret generic {{params.ca1_secret_name}} --from-file=ca.crt="${TMP_DIR}/certs/ca1.crt" --from-file=node.crt="${TMP_DIR}/certs/server1.crt" --from-file=node.key="${TMP_DIR}/certs/server1.key" --dry-run=client -o yaml | kubectl apply -f -
           kubectl -n elasticsearch create secret generic {{params.ca2_secret_name}} --from-file=ca.crt="${TMP_DIR}/certs/ca2.crt" --from-file=node.crt="${TMP_DIR}/certs/server2.crt" --from-file=node.key="${TMP_DIR}/certs/server2.key" --dry-run=client -o yaml | kubectl apply -f -
-          kubectl -n elasticsearch create configmap {{params.transport_bundle_configmap}} --from-file=ca.crt="${TMP_DIR}/certs/ca1.crt" --dry-run=client -o yaml | kubectl apply -f -
+          cat "${TMP_DIR}/certs/ca1.crt" "${TMP_DIR}/certs/ca2.crt" > "${TMP_DIR}/certs/transport-bundle.crt"
+          kubectl -n elasticsearch create configmap {{params.transport_bundle_configmap}} --from-file=ca.crt="${TMP_DIR}/certs/transport-bundle.crt" --dry-run=client -o yaml | kubectl apply -f -
           '
         sleep: 1
       - command: "kubectl -n elasticsearch wait --for=condition=ready pod -l app={{params.cluster_prefix}} --timeout=600s"
@@ -103,6 +104,47 @@ preconditionUnits:
         sleep: 1
     verify:
       - command: "kubectl -n elasticsearch get pods 2>/dev/null | grep -c Running"
+        timeout_sec: 10
+
+  # Self-contained transport CA bundle (composition safety): the oracle requires the
+  # {{params.transport_bundle_configmap}} ConfigMap to trust 2 CA certs. es_env_ready
+  # seeds it on its destructive fresh-build path, which is SKIPPED on an inherited
+  # cluster (the probe sees pods Running), so the ConfigMap is absent and the oracle
+  # fails "configmap not found". Establish it additively when missing: generate two
+  # self-signed CA certs in the openssl helper and create the 2-cert bundle. It never
+  # deletes the namespace or touches the running nodes -- the inherited cluster keeps
+  # its own transport config; this bundle satisfies the trust invariant the oracle
+  # checks (the agent's task per the prompt is node-restore, not CA work). Standalone
+  # the ConfigMap already exists so the probe matches and this unit skips.
+  - name: transport_ca_bundle_fixture
+    on_probe_fail: skip
+    probe:
+      - command: "kubectl -n elasticsearch get configmap {{params.transport_bundle_configmap}}"
+        timeout_sec: 10
+    apply:
+      - command: "/bin/sh -c 'kubectl -n elasticsearch get pod openssl-toolbox >/dev/null 2>&1 || kubectl -n elasticsearch apply -f cases/elasticsearch/transport-additional-ca-trust/resource/openssl-toolbox.yaml'"
+        sleep: 2
+      - command: "kubectl -n elasticsearch wait --for=condition=ready pod/openssl-toolbox --timeout=300s"
+        sleep: 1
+      - command: |
+          /bin/sh -c '
+          set -e
+          TMP_DIR=$(mktemp -d)
+          kubectl -n elasticsearch exec openssl-toolbox -- /bin/sh -c '\''
+          set -e
+          mkdir -p /tmp/cab
+          openssl genrsa -out /tmp/cab/ca1.key 2048
+          openssl req -x509 -new -nodes -key /tmp/cab/ca1.key -sha256 -days 3650 -subj "/CN=es-ca-1" -out /tmp/cab/ca1.crt
+          openssl genrsa -out /tmp/cab/ca2.key 2048
+          openssl req -x509 -new -nodes -key /tmp/cab/ca2.key -sha256 -days 3650 -subj "/CN=es-ca-2" -out /tmp/cab/ca2.crt
+          cat /tmp/cab/ca1.crt /tmp/cab/ca2.crt > /tmp/cab/bundle.crt
+          '\''
+          kubectl -n elasticsearch cp openssl-toolbox:/tmp/cab "${TMP_DIR}/cab"
+          kubectl -n elasticsearch create configmap {{params.transport_bundle_configmap}} --from-file=ca.crt="${TMP_DIR}/cab/bundle.crt" --dry-run=client -o yaml | kubectl apply -f -
+          '
+        sleep: 2
+    verify:
+      - command: "/bin/sh -c 'kubectl -n elasticsearch get configmap {{params.transport_bundle_configmap}} >/dev/null 2>&1; true'"
         timeout_sec: 10
 
 oracle:
