@@ -1,5 +1,3 @@
-# AGENT.md
-
 ## Purpose
 This repo expects **self-checks** after changes that affect runtime behavior (orchestration, runner/workflow logic, test YAMLs, judge pipeline). The goal is to catch regressions early and ensure the repo state is actually runnable.
 
