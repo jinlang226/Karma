@@ -121,7 +121,13 @@ def main():
             errors.append(f"Elasticsearch health not yellow/green: {es_health.get('status')}")
 
     ingress_health = curl_json(
-        [
+        # Authenticate the ingress HTTPS query too: when this case inherits a
+        # cluster an earlier stage secured (e.g. file-realm enabling security), an
+        # unauthenticated query THROUGH the ingress returns 401 even though the
+        # ingress routes correctly. es_auth is [] on a standalone unsecured cluster,
+        # so this stays a no-op there. (The plain-HTTP check below must NOT auth --
+        # it asserts HTTP is blocked at the ingress.)
+        es_auth + [
             "-k",
             "-H",
             f"Host: {INGRESS_HOST}",
