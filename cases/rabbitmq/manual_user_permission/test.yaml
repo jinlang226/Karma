@@ -197,14 +197,27 @@ preconditionUnits:
       - command: "kubectl -n ${BENCH_NAMESPACE} wait --for=condition=ready pod -l app=curl-test --timeout=3s"
         timeout_sec: 10
 
+  # Skip-gate (was an error-gate): probe-pass means the broken baseline already
+  # holds; probe-fail means it does NOT, so the apply must ESTABLISH it. An
+  # error-gate failed straight away without ever running apply, which broke
+  # composition: when this break-then-fix case re-runs on an inherited cluster a
+  # prior identical stage left app-client/ops-client HEALTHY (the agent fixed the
+  # permissions). The setup-job above re-broke the RabbitMQ permissions, but a
+  # long-lived client pod keeps its working connection and never crashes on its
+  # own, so the baseline never converged. The apply now restarts both client
+  # deployments so they reconnect against the now-broken permissions and crash
+  # into the broken baseline; verify (24x5s) waits for that to settle. Standalone
+  # (clients freshly rolled out against already-broken perms) the probe already
+  # sees them not-ready and skips the restart -> identical behaviour. Additive:
+  # touches only THIS case's own client deployments.
   - name: user_permission_baseline_ready
-    on_probe_fail: error
+    on_probe_fail: skip
     probe:
       - command: "python3 cases/rabbitmq/manual_user_permission/setup_precondition_check.py --namespace ${BENCH_NAMESPACE} --min-ready 3"
         timeout_sec: 40
     apply:
-      - command: "/bin/sh -c true"
-        timeout_sec: 5
+      - command: "kubectl -n ${BENCH_NAMESPACE} rollout restart deploy/app-client deploy/ops-client"
+        sleep: 3
     verify:
       - command: "python3 cases/rabbitmq/manual_user_permission/setup_precondition_check.py --namespace ${BENCH_NAMESPACE} --min-ready 3"
         timeout_sec: 40
