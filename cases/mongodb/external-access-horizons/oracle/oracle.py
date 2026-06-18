@@ -53,7 +53,15 @@ def _mongo_tls_flags(probe_pod=None):
             break
     if ca_path:
         flags = ["--tls", "--tlsAllowInvalidHostnames", "--tlsAllowInvalidCertificates", "--tlsCAFile", ca_path]
-        for client_pem in ("/etc/tls/client.pem", "/etc/mongo-ca/client.pem"):
+        # Mutual TLS: when cert-rotation/tls-setup leaves the cluster in requireTLS
+        # with client-cert verification, mongosh MUST present a client keypair or the
+        # server drops the monitor connection ("connection <monitor> ... closed"). The
+        # agent's proven working command presents /etc/mongo-cert/server.pem (the
+        # keypair mounted into the mongo pods), so probe it FIRST -- it is the cert the
+        # live cluster actually accepts. Fall back to the dedicated client.pem paths a
+        # different setup might mount. Gated by test -f, so standalone (no cert) is
+        # untouched and the check stays workflow-agnostic.
+        for client_pem in ("/etc/mongo-cert/server.pem", "/etc/tls/client.pem", "/etc/mongo-ca/client.pem"):
             cprobe = run(["kubectl", "-n", NAMESPACE, "exec", pod, "--", "/bin/sh", "-c", "test -f " + client_pem])
             if cprobe.returncode == 0:
                 flags += ["--tlsCertificateKeyFile", client_pem]
