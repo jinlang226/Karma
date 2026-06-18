@@ -20,7 +20,7 @@ def run(cmd):
     return subprocess.run(cmd, text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
 
 
-_TLS_FLAGS_CACHE = None
+_TLS_FLAGS_CACHE = {}
 
 
 def _mongo_tls_flags(probe_pod=None):
@@ -35,11 +35,15 @@ def _mongo_tls_flags(probe_pod=None):
     returns [] -> identical plain behaviour. It only adds transport flags; every
     real check still runs and still fails when its condition is unmet.
     """
-    global _TLS_FLAGS_CACHE
-    if _TLS_FLAGS_CACHE is not None:
-        return list(_TLS_FLAGS_CACHE)
-    flags = []
+    # Cache PER POD: different pods mount different certs. The mongo-rs members
+    # carry /etc/mongo-cert/server.pem (the client cert the cluster accepts), but
+    # the mongo-client pod does NOT -- reusing the members' cached flags for the
+    # connectivity check (which execs in mongo-client) yields
+    # "ENOENT ... /etc/mongo-cert/server.pem". Probe each pod for its OWN mounts.
     pod = probe_pod or f"{CLUSTER_PREFIX}-0"
+    if pod in _TLS_FLAGS_CACHE:
+        return list(_TLS_FLAGS_CACHE[pod])
+    flags = []
     ca_path = None
     for cand in (
         "/etc/tls/ca.crt",
@@ -66,7 +70,7 @@ def _mongo_tls_flags(probe_pod=None):
             if cprobe.returncode == 0:
                 flags += ["--tlsCertificateKeyFile", client_pem]
                 break
-    _TLS_FLAGS_CACHE = flags
+    _TLS_FLAGS_CACHE[pod] = flags
     return list(flags)
 
 
@@ -123,7 +127,7 @@ def mongo_json(pod, eval_str, label, errors, uri=None):
     # params, so a cluster left in mutual TLS by cert-rotation drops a URI-folded
     # connection. Mirror the agent's working command: CLI TLS flags (incl. the client
     # cert) + a URI carrying only directConnection/timeouts.
-    cmd = ["kubectl", "-n", NAMESPACE, "exec", pod, "--", "mongosh", "--quiet", *_mongo_tls_flags()]
+    cmd = ["kubectl", "-n", NAMESPACE, "exec", pod, "--", "mongosh", "--quiet", *_mongo_tls_flags(pod)]
     if uri:
         cmd.append(uri)
     cmd.extend(["--eval", eval_str])
@@ -249,7 +253,7 @@ def check_connectivity():
             "--",
             "mongosh",
             "--quiet",
-            *_mongo_tls_flags(),
+            *_mongo_tls_flags(CLIENT_POD_NAME),
             uri,
             "--eval",
             "JSON.stringify(db.hello())",
