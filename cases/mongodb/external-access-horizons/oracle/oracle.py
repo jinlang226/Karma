@@ -4,6 +4,7 @@ import json
 import os
 import subprocess
 import sys
+import time
 
 
 NAMESPACE = os.environ.get("BENCH_NAMESPACE", "mongodb")
@@ -118,20 +119,34 @@ def mongo_json(pod, eval_str, label, errors, uri=None):
     if uri:
         cmd.append(uri)
     cmd.extend(["--eval", eval_str])
-    res = run(cmd)
-    if res.returncode != 0:
-        detail = res.stderr.strip() or res.stdout.strip() or f"exit {res.returncode}"
-        errors.append(f"{label} failed: {detail}")
-        return None
-    raw = (res.stdout or "").strip()
-    if not raw:
-        errors.append(f"{label} returned empty output")
-        return None
-    try:
-        return json.loads(raw)
-    except json.JSONDecodeError:
-        errors.append(f"Unable to parse {label} JSON output")
-        return None
+    # Targeted retry on the rs.conf() read. Even with the agent's exact no-URI
+    # command, this read on a deep requireTLS cluster (after horizons +
+    # cert-rotation + 7 prior stages) intermittently drops the mongosh monitor
+    # connection ("MongoServerSelectionError: connection <monitor> ... closed").
+    # Measured over the marathon: it failed ~2/3 of runs INCLUDING on an idle node
+    # (so it is an inherent transient, not neighbour contention). Retry a few
+    # times before giving up. This never masks a wrong value -- a successful read
+    # returns the real rs.conf() and the caller's assertions still fail on a
+    # mismatch; standalone (the read succeeds first try) it returns immediately, so
+    # behaviour is identical when the cluster is healthy. (Scoped to this oracle.)
+    detail = None
+    for _attempt in range(4):
+        res = run(cmd)
+        if res.returncode == 0:
+            raw = (res.stdout or "").strip()
+            if raw:
+                try:
+                    return json.loads(raw)
+                except json.JSONDecodeError:
+                    detail = f"Unable to parse {label} JSON output"
+            else:
+                detail = f"{label} returned empty output"
+        else:
+            detail = res.stderr.strip() or res.stdout.strip() or f"exit {res.returncode}"
+        if _attempt < 3:
+            time.sleep(4)
+    errors.append(f"{label} failed: {detail}")
+    return None
 
 
 def check_topology():
