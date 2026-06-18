@@ -1,0 +1,13 @@
+All checks pass. Here's a summary of what was done:
+
+**Root cause:** The file realm secrets (`es-file-realm-aggregate` with ops-user, `user-provided-file-realm` with report-user) existed but were never mounted on the Elasticsearch pods — the StatefulSet used an emptyDir volume + init container that only wrote the `elastic` user.
+
+**Fix applied in three steps:**
+
+1. **Merged secrets** — concatenated report-user's `users` and `users_roles` entries into `es-file-realm-aggregate`, so the aggregate now contains both ops-user and report-user with their bcrypt hashes.
+
+2. **Patched the StatefulSet** — changed the `es-users` volume from an emptyDir (with a broken init container that wrote invalid entries) to a secret volume backed by `es-file-realm-aggregate`. This triggered a rolling restart that reloaded the file realm with both users.
+
+3. **Created the `read` role** — Elasticsearch 8.x has no built-in role named `read` (it's only an index privilege name). Created it via the security API granting `read` + `view_index_metadata` on all indices. Also seeded the `app-data` index since it hadn't been created.
+
+**Result:** All 3 nodes running (green cluster), `ops-user` authenticates as superuser, `report-user` authenticates and reads the `app-data` index — existing `elastic` user unaffected.

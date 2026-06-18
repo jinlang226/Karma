@@ -1,0 +1,18 @@
+Both routing paths work correctly. Here's a summary of what was done and why it was tricky:
+
+---
+
+**Root cause:** A decoy Ingress (`canary-alt`) was already in the namespace with `nginx.ingress.kubernetes.io/canary: "true"` pointing to the `stable-echo` Service. The nginx ingress controller marks any Service used as a canary backend with `noServer: true`, which prevents that Service from simultaneously serving as a *primary* backend on another hostname. Using `stable-echo` directly as the primary for `canary.example.com` caused it to be dropped.
+
+**What was created:**
+
+1. **`stable-echo` Deployment + Service** — returns `"stable"`
+2. **`canary-echo` Deployment + Service** — returns `"canary"`
+3. **`stable-echo-primary` Service** — identical selector to `stable-echo`; used as the primary backend to sidestep the `noServer: true` conflict caused by the decoy
+4. **`canary-stable` Ingress** — primary Ingress for `canary.example.com`, routes to `stable-echo-primary`
+5. **`canary-canary` Ingress** — canary Ingress with annotations:
+   - `nginx.ingress.kubernetes.io/canary: "true"`
+   - `nginx.ingress.kubernetes.io/canary-by-header: "X-Canary"`
+   - `nginx.ingress.kubernetes.io/canary-by-header-value: "always"`
+
+   Routes to `canary-echo` when the header matches.

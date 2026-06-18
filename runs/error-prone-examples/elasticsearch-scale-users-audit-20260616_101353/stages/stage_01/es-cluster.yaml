@@ -1,0 +1,148 @@
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: es-config
+  namespace: elasticsearch
+data:
+  elasticsearch.yml: |
+    cluster.name: es-cluster
+    node.name: ${HOSTNAME}
+    network.host: 0.0.0.0
+    discovery.seed_hosts:
+      - es-0.es-headless.elasticsearch.svc.cluster.local
+      - es-1.es-headless.elasticsearch.svc.cluster.local
+      - es-2.es-headless.elasticsearch.svc.cluster.local
+    cluster.initial_master_nodes:
+      - es-0
+      - es-1
+      - es-2
+    xpack.security.enabled: true
+    xpack.security.http.ssl:
+      enabled: true
+      key: /usr/share/elasticsearch/config/certs/tls.key
+      certificate: /usr/share/elasticsearch/config/certs/tls.crt
+      certificate_authorities:
+        - /usr/share/elasticsearch/config/certs/ca.crt
+    xpack.security.transport.ssl:
+      enabled: true
+      verification_mode: certificate
+      key: /usr/share/elasticsearch/config/certs/tls.key
+      certificate: /usr/share/elasticsearch/config/certs/tls.crt
+      certificate_authorities:
+        - /usr/share/elasticsearch/config/certs/ca.crt
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: es-headless
+  namespace: elasticsearch
+spec:
+  clusterIP: None
+  selector:
+    app: elasticsearch
+  ports:
+    - name: http
+      port: 9200
+      targetPort: 9200
+    - name: transport
+      port: 9300
+      targetPort: 9300
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: es-http
+  namespace: elasticsearch
+spec:
+  selector:
+    app: elasticsearch
+  ports:
+    - name: https
+      port: 9200
+      targetPort: 9200
+---
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: es-pdb
+  namespace: elasticsearch
+spec:
+  maxUnavailable: 1
+  selector:
+    matchLabels:
+      app: elasticsearch
+---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: es
+  namespace: elasticsearch
+spec:
+  serviceName: es-headless
+  replicas: 3
+  podManagementPolicy: Parallel
+  selector:
+    matchLabels:
+      app: elasticsearch
+  template:
+    metadata:
+      labels:
+        app: elasticsearch
+    spec:
+      securityContext:
+        fsGroup: 1000
+        runAsUser: 1000
+      containers:
+        - name: elasticsearch
+          image: docker.elastic.co/elasticsearch/elasticsearch:8.11.1
+          ports:
+            - containerPort: 9200
+              name: http
+            - containerPort: 9300
+              name: transport
+          env:
+            - name: ELASTIC_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: elastic-password
+                  key: password
+            - name: ES_JAVA_OPTS
+              value: "-Xms512m -Xmx512m"
+          volumeMounts:
+            - name: es-config
+              mountPath: /usr/share/elasticsearch/config/elasticsearch.yml
+              subPath: elasticsearch.yml
+            - name: es-certs
+              mountPath: /usr/share/elasticsearch/config/certs
+              readOnly: true
+            - name: es-data
+              mountPath: /usr/share/elasticsearch/data
+          readinessProbe:
+            exec:
+              command:
+                - bash
+                - -c
+                - |
+                  curl -sf --cacert /usr/share/elasticsearch/config/certs/ca.crt \
+                    -u "elastic:${ELASTIC_PASSWORD}" \
+                    https://localhost:9200/ > /dev/null
+            initialDelaySeconds: 30
+            periodSeconds: 10
+            timeoutSeconds: 10
+            failureThreshold: 12
+          resources:
+            requests:
+              memory: "1Gi"
+              cpu: "500m"
+            limits:
+              memory: "2Gi"
+      volumes:
+        - name: es-config
+          configMap:
+            name: es-config
+        - name: es-certs
+          secret:
+            secretName: es-http-tls
+        - name: es-data
+          emptyDir: {}

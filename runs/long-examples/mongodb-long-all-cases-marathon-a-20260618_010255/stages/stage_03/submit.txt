@@ -1,0 +1,13 @@
+Done. Elections are now stable.
+
+## What was wrong
+The replica set `rs0` was initiated with **only two voting members**, both data-bearing (`mongo-rs-0`, `mongo-rs-1`). An even vote count with no tie-breaker makes elections unstable: a tie can't be resolved, and losing either member drops the set below a majority (no primary). A `mongo-arb-0` pod was running but had never been added to the config.
+
+## Fix applied
+1. **`setDefaultRWConcern` → `{w:1}`** — modern MongoDB blocks reconfiguring into a Primary-Secondary-Arbiter (PSA) topology unless a cluster-wide default write concern is set explicitly (otherwise the implicit default would silently change). `w:1` is the right choice for PSA, since `majority` writes would stall whenever a data-bearing node is down.
+2. **`rs.addArb("mongo-arb-0.mongo-arb.mongodb.svc.cluster.local:27017")`** — added the existing arbiter pod as a **voting, non-data-bearing** member.
+
+## Result
+- 3 voting members (odd quorum) → stable elections with a tie-breaker.
+- The arbiter holds **no data**, so storage cost is unchanged — no data-bearing member was added.
+- App data is intact: `app.test` still has its 3 documents, and the primary/secondary were untouched.

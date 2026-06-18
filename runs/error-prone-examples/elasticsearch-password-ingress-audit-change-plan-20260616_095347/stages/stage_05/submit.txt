@@ -1,0 +1,22 @@
+The ConfigMap `change-plan` has been created with a 14 KB plan. The live cluster is completely unchanged.
+
+Here's a summary of what was found and documented:
+
+---
+
+**Current cluster state (observed, not changed):**
+- 3-node StatefulSet, all on **Elasticsearch 8.11.1**, JDK 21.0.1, 512 MiB heap, 1 Gi container limit
+- One index `test-index` — 1 shard, 1 replica, tier preference `data_content`
+- No custom cluster settings, no custom ILM policies, no snapshot repository
+- **Critical gap:** `xpack.security.enabled: false` — security was disabled after initial deployment. The TLS secret (`es-http-tls`) and certs still exist, but the cluster accepts plaintext HTTP. The Ingress enforces HTTPS externally but traffic inside the cluster is unencrypted.
+- `elastic-password-next` secret exists alongside `elastic-password` — a password rotation is in an incomplete state
+- `cluster.initial_master_nodes` is still set (should be removed after bootstrap)
+
+**Migration plan covers (in priority order):**
+1. Resolve the in-flight password rotation (decide keep/abort `elastic-password-next`)
+2. Re-enable `xpack.security` + TLS (restore the original intended config using existing `es-http-tls` secret)
+3. Remove `cluster.initial_master_nodes` from elasticsearch.yml
+4. Increase container memory limit to 2 Gi (OS memory is at 94–95%)
+5. Configure a snapshot repository and take a pre-upgrade snapshot
+6. Rolling image upgrade 8.11.1 → 8.12.x with shard allocation disabled during the window
+7. Post-upgrade: ILM for test-index, CPU limits, tighten auto-create-index

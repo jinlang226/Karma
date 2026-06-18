@@ -1,0 +1,33 @@
+All three jobs completed successfully. Here's the summary:
+
+---
+
+## Results
+
+### Step 1 — Diagnosis
+No configuration bugs were found preventing jobs from running. The cluster (master + worker) came up cleanly, and all three job YAMLs were correctly configured to run `--master local[2]` (self-contained, no cluster submission required).
+
+### Step 2 — Baseline (no optimization)
+- **Strategy:** Skewed shuffle join — `product_id` repartition sends 50% of orders to 5 hot-product partitions
+- **Elapsed: 27.8s**
+- The uneven partition sizes create stragglers (one task holds up the whole stage)
+
+### Step 3 — Broadcast Join Optimization
+- **Strategy:** Broadcasts the small `products` table (100 rows) to every executor, eliminating the shuffle entirely
+- **Elapsed: 14.8s** — **47% faster** than baseline
+- `spark.sql.autoBroadcastJoinThreshold=10MB` ensures the products table is broadcast
+
+### Step 4 — AQE (Adaptive Query Execution) Optimization
+- **Strategy:** Spark detects skewed partitions at runtime and auto-splits them
+- **Elapsed: 18.79s** — **33% faster** than baseline
+- Configured with `skewJoin.enabled=true` and a very low threshold to force detection
+
+### Performance Comparison
+
+| Strategy | Elapsed | Improvement |
+|---|---|---|
+| Baseline (no optimization) | 27.8s | — |
+| **Broadcast join** | **14.8s** | **47% faster** |
+| AQE skew join | 18.79s | 33% faster |
+
+**Winner: Broadcast join** — for a small dimension table like `products` (100 rows), eliminating the shuffle entirely outperforms AQE's runtime partition splitting. AQE is more useful when the dimension table is too large to broadcast.

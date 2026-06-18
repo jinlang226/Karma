@@ -1,0 +1,21 @@
+Both goals are achieved:
+
+**Test 1 — Insecure access rejected:** `ERROR: node is running secure mode, SSL connection required` (exit 1)
+
+**Test 2 — Secure access succeeds:** Returns `1` as expected (exit 0)
+
+Here's a summary of what was done:
+
+1. **Generated TLS certificates** in the `openssl-toolbox` pod:
+   - CA certificate (`ca.crt` / `ca.key`)
+   - Node certificate (`node.crt` / `node.key`) with SANs covering all 3 pod DNS names, the headless service, the public service, and `localhost`/`127.0.0.1`
+   - Client root certificate (`client.root.crt` / `client.root.key`) with `CN=root`
+
+2. **Created Kubernetes secrets** — `cockroachdb-node-certs` containing all 5 files (both node and client.root certs so that exec-based SQL connections work).
+
+3. **Patched the StatefulSet** to:
+   - Replace `--insecure` with `--certs-dir=/cockroach/cockroach-certs` in the start command
+   - Mount the `cockroachdb-node-certs` secret at `/cockroach/cockroach-certs` (mode `0400`)
+   - Switch liveness/readiness probes from `HTTP` to `HTTPS` scheme
+
+4. **Restarted all pods simultaneously** (rather than rolling) to avoid a split-brain state where some nodes were secure and others were still insecure.

@@ -1,0 +1,23 @@
+Deployed a 3-node Elasticsearch 8.11.1 cluster in the elasticsearch namespace using native Kubernetes resources.
+
+Actions taken:
+1. Generated TLS certificates (CA + server cert with proper SANs) using OpenSSL locally.
+2. Created secrets: es-http-tls (tls.crt, tls.key, ca.crt) and elastic-password (password=elasticpass).
+3. Deleted the pre-existing wrong ES 7.17.9 deployment (StatefulSet, ConfigMap, Services).
+4. Created ConfigMap es-config with elasticsearch.yml configuring:
+   - 3-node cluster discovery via headless service DNS
+   - xpack.security.enabled=true with HTTP TLS using es-http-tls secret
+   - Transport TLS using the same cert
+5. Created headless Service es-cluster (port 9300) for inter-node transport.
+6. Created ClusterIP Service es-http (port 9200) for HTTPS access.
+7. Created StatefulSet es-cluster with 3 replicas using image 8.11.1:
+   - init containers: fix-permissions + set-elastic-password (file realm)
+   - ELASTIC_PASSWORD env var from secret for bootstrap
+   - TLS cert volume mount from es-http-tls secret
+   - HTTPS readiness probe
+
+Verification:
+- All 3 pods are Ready (kubectl wait succeeded)
+- Cluster health: yellow (3 nodes, all joined)
+- Write test: POST /test-index/_doc/1 -> result=created
+- Read test: GET /test-index/_doc/1 -> found=true

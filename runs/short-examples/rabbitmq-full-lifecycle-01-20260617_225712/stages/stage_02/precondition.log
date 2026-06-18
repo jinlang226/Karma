@@ -1,0 +1,88 @@
+[precondition:rabbitmq_secrets_ready:preconditionUnits[0] 'rabbitmq_secrets_ready':probe] $ /bin/sh -c 'set -e; kubectl -n ${BENCH_NAMESPACE} get secret rabbitmq-erlang-cookie >/dev/null; kubectl -n ${BENCH_NAMESPACE} get secret rabbitmq-admin >/dev/null; kubectl -n ${BENCH_NAMESPACE} get secret rabbitmq-app >/dev/null; kubectl -n ${BENCH_NAMESPACE} get secret rabbitmq-ops >/dev/null'
+Error from server (NotFound): secrets "rabbitmq-ops" not found
+
+[precondition:rabbitmq_secrets_ready:preconditionUnits[0] 'rabbitmq_secrets_ready':apply] $ /bin/sh -c 'kubectl -n ${BENCH_NAMESPACE} create secret generic rabbitmq-erlang-cookie --from-literal=cookie=supersecretcookie --dry-run=client -o yaml | kubectl apply -f -'
+secret/rabbitmq-erlang-cookie unchanged
+
+[precondition:rabbitmq_secrets_ready:preconditionUnits[0] 'rabbitmq_secrets_ready':apply] $ /bin/sh -c 'kubectl -n ${BENCH_NAMESPACE} create secret generic rabbitmq-admin --from-literal=username=admin --from-literal=password=adminpass --dry-run=client -o yaml | kubectl apply -f -'
+secret/rabbitmq-admin unchanged
+
+[precondition:rabbitmq_secrets_ready:preconditionUnits[0] 'rabbitmq_secrets_ready':apply] $ /bin/sh -c 'kubectl -n ${BENCH_NAMESPACE} create secret generic rabbitmq-app --from-literal=username=app-user --from-literal=password=apppass --dry-run=client -o yaml | kubectl apply -f -'
+secret/rabbitmq-app unchanged
+
+[precondition:rabbitmq_secrets_ready:preconditionUnits[0] 'rabbitmq_secrets_ready':apply] $ /bin/sh -c 'kubectl -n ${BENCH_NAMESPACE} create secret generic rabbitmq-ops --from-literal=username=ops-user --from-literal=password=opspass --dry-run=client -o yaml | kubectl apply -f -'
+secret/rabbitmq-ops created
+
+[precondition:rabbitmq_secrets_ready:preconditionUnits[0] 'rabbitmq_secrets_ready':verify] $ /bin/sh -c 'set -e; kubectl -n ${BENCH_NAMESPACE} get secret rabbitmq-erlang-cookie >/dev/null; kubectl -n ${BENCH_NAMESPACE} get secret rabbitmq-admin >/dev/null; kubectl -n ${BENCH_NAMESPACE} get secret rabbitmq-app >/dev/null; kubectl -n ${BENCH_NAMESPACE} get secret rabbitmq-ops >/dev/null'
+
+[precondition:rbac_ready:preconditionUnits[1] 'rbac_ready':probe] $ kubectl -n ${BENCH_NAMESPACE} get sa rabbitmq
+NAME       SECRETS   AGE
+rabbitmq   0         3m52s
+
+[precondition:config_ready:preconditionUnits[2] 'config_ready':probe] $ kubectl -n ${BENCH_NAMESPACE} get configmap rabbitmq-config
+NAME              DATA   AGE
+rabbitmq-config   2      3m49s
+
+[precondition:services_ready:preconditionUnits[3] 'services_ready':probe] $ /bin/sh -c 'set -e; kubectl -n ${BENCH_NAMESPACE} get svc rabbitmq >/dev/null; kubectl -n ${BENCH_NAMESPACE} get svc rabbitmq-headless >/dev/null'
+
+[precondition:rabbitmq_statefulset_present:preconditionUnits[4] 'rabbitmq_statefulset_present':probe] $ kubectl -n ${BENCH_NAMESPACE} get sts rabbitmq
+NAME       READY   AGE
+rabbitmq   3/3     3m44s
+
+[precondition:rabbitmq_cluster_ready:preconditionUnits[5] 'rabbitmq_cluster_ready':probe] $ /bin/sh -c 'set -e; [ "$(kubectl -n ${BENCH_NAMESPACE} get sts rabbitmq -o jsonpath="{.status.readyReplicas}")" = "3" ]'
+
+[precondition:setup_job_completed:preconditionUnits[6] 'setup_job_completed':probe] $ python3 cases/rabbitmq/manual_user_permission/setup_precondition_check.py --namespace ${BENCH_NAMESPACE} --bootstrap-only
+setup-precondition-check: failed
+ - missing vhost /ops
+ - missing user ops-user
+ - ops-queue missing from /ops
+ - app-user configure permission on /app is not intentionally broken (value='.*')
+ - ops-user mis-grant on /app is not planted
+ - failed to inspect /ops permissions for ops-user: Command '['kubectl', '-n', 'karma-rabbitmq-long-full-lifecycle-01-e9eab7db-cluster-a', 'exec', 'rabbitmq-0', '--', 'rabbitmqctl', '-q', 'list_permissions', '-p', '/ops']' returned non-zero exit status 65.
+
+[precondition:setup_job_completed:preconditionUnits[6] 'setup_job_completed':apply] $ kubectl -n ${BENCH_NAMESPACE} delete job rabbitmq-setup --ignore-not-found=true
+job.batch "rabbitmq-setup" deleted from karma-rabbitmq-long-full-lifecycle-01-e9eab7db-cluster-a namespace
+
+[precondition:setup_job_completed:preconditionUnits[6] 'setup_job_completed':apply] $ envsubst '$BENCH_NAMESPACE $BENCH_NS_SOURCE $BENCH_NS_TARGET $BENCH_PARAM_CLUSTER_PREFIX $BENCH_PARAM_BLUE_CLUSTER_PREFIX $BENCH_PARAM_GREEN_CLUSTER_PREFIX $BENCH_PARAM_FROM_VERSION' < cases/rabbitmq/manual_user_permission/resource/setup-job.yaml | kubectl -n ${BENCH_NAMESPACE} apply -f -
+job.batch/rabbitmq-setup created
+
+[precondition:setup_job_completed:preconditionUnits[6] 'setup_job_completed':apply] $ kubectl -n ${BENCH_NAMESPACE} wait --for=condition=complete job/rabbitmq-setup --timeout=300s
+job.batch/rabbitmq-setup condition met
+
+[precondition:setup_job_completed:preconditionUnits[6] 'setup_job_completed':verify] $ python3 cases/rabbitmq/manual_user_permission/setup_precondition_check.py --namespace ${BENCH_NAMESPACE} --bootstrap-only
+setup-precondition-check: ok
+
+[precondition:app_client_deployed:preconditionUnits[7] 'app_client_deployed':probe] $ kubectl -n ${BENCH_NAMESPACE} get deploy app-client
+Error from server (NotFound): deployments.apps "app-client" not found
+
+[precondition:app_client_deployed:preconditionUnits[7] 'app_client_deployed':apply] $ envsubst '$BENCH_NAMESPACE $BENCH_NS_SOURCE $BENCH_NS_TARGET $BENCH_PARAM_CLUSTER_PREFIX $BENCH_PARAM_BLUE_CLUSTER_PREFIX $BENCH_PARAM_GREEN_CLUSTER_PREFIX $BENCH_PARAM_FROM_VERSION' < cases/rabbitmq/manual_user_permission/resource/app-client.yaml | kubectl -n ${BENCH_NAMESPACE} apply -f -
+deployment.apps/app-client created
+
+[precondition:app_client_deployed:preconditionUnits[7] 'app_client_deployed':verify] $ kubectl -n ${BENCH_NAMESPACE} get deploy app-client
+NAME         READY   UP-TO-DATE   AVAILABLE   AGE
+app-client   0/1     1            0           3s
+
+[precondition:ops_client_deployed:preconditionUnits[8] 'ops_client_deployed':probe] $ kubectl -n ${BENCH_NAMESPACE} get deploy ops-client
+Error from server (NotFound): deployments.apps "ops-client" not found
+
+[precondition:ops_client_deployed:preconditionUnits[8] 'ops_client_deployed':apply] $ envsubst '$BENCH_NAMESPACE $BENCH_NS_SOURCE $BENCH_NS_TARGET $BENCH_PARAM_CLUSTER_PREFIX $BENCH_PARAM_BLUE_CLUSTER_PREFIX $BENCH_PARAM_GREEN_CLUSTER_PREFIX $BENCH_PARAM_FROM_VERSION' < cases/rabbitmq/manual_user_permission/resource/ops-client.yaml | kubectl -n ${BENCH_NAMESPACE} apply -f -
+deployment.apps/ops-client created
+
+[precondition:ops_client_deployed:preconditionUnits[8] 'ops_client_deployed':verify] $ kubectl -n ${BENCH_NAMESPACE} get deploy ops-client
+NAME         READY   UP-TO-DATE   AVAILABLE   AGE
+ops-client   0/1     1            0           2s
+
+[precondition:curl_test_ready:preconditionUnits[9] 'curl_test_ready':probe] $ kubectl -n ${BENCH_NAMESPACE} wait --for=condition=ready pod -l app=curl-test --timeout=3s
+pod/curl-test condition met
+
+[precondition:user_permission_baseline_ready:preconditionUnits[10] 'user_permission_baseline_ready':probe] $ python3 cases/rabbitmq/manual_user_permission/setup_precondition_check.py --namespace ${BENCH_NAMESPACE} --min-ready 3
+setup-precondition-check: failed
+ - app=ops-client: unexpectedly healthy
+
+[precondition:user_permission_baseline_ready:preconditionUnits[10] 'user_permission_baseline_ready':apply] $ kubectl -n ${BENCH_NAMESPACE} rollout restart deploy/app-client deploy/ops-client
+deployment.apps/app-client restarted
+deployment.apps/ops-client restarted
+
+[precondition:user_permission_baseline_ready:preconditionUnits[10] 'user_permission_baseline_ready':verify] $ python3 cases/rabbitmq/manual_user_permission/setup_precondition_check.py --namespace ${BENCH_NAMESPACE} --min-ready 3
+setup-precondition-check: ok
+
