@@ -117,7 +117,14 @@
     root = container;
     sub = "runs";
     if (pendingRun) { const id = pendingRun; pendingRun = null; renderDetail(id); }
-    else render();
+    else {
+      // Re-entering Results from another tab lands on the homepage (top-level
+      // folder list), not the sub-folder/detail last viewed. Reset the browse
+      // state; a deep-link (pendingRun) above is the only thing that skips this.
+      runsFolder = "";
+      runsFilter = "";
+      render();
+    }
   }
 
   function stopTimers() { if (refreshTimer) { clearTimeout(refreshTimer); refreshTimer = null; } }
@@ -137,11 +144,24 @@
     btn.textContent = "Judging…";
     try {
       const { job_id } = await api.post("/api/judge/start", { target_type: "all" });
-      KARMA.toast("Judging all finished runs…", "info");
       api.stream(`/api/judge/jobs/${job_id}/stream`, {
         statusPath: `/api/judge/jobs/${job_id}`,
         onEvent: (ev) => {
-          if (ev.type === "judge_progress" && ev.index && ev.total) {
+          if (ev.type === "judge_scan") {
+            // The backend pre-filtered to the runs that actually need judging.
+            // Frame the work up front so the counter isn't mistaken for a
+            // "judged of total" tally crawling through already-scored runs.
+            if (!ev.to_judge) {
+              btn.textContent = "Judging…";
+              const scored = ev.already_scored || 0;
+              KARMA.toast(`All ${scored} finished runs already judged — nothing to do.`, "info");
+            } else {
+              btn.textContent = `Judging 0/${ev.to_judge}…`;
+              KARMA.toast(
+                `Judging ${ev.to_judge} unjudged run${ev.to_judge === 1 ? "" : "s"}` +
+                ` (${ev.already_scored || 0} already scored).`, "info");
+            }
+          } else if (ev.type === "judge_progress" && ev.index && ev.total) {
             btn.textContent = `Judging ${ev.index}/${ev.total}…`;
           } else if (ev.type === "judge_complete") {
             KARMA.toast("Judge all " + (ev.status || "complete"), ev.status === "error" ? "error" : "success");
@@ -165,7 +185,7 @@
     // as the current location so a later jump returns here.
     KARMA.clearHistory();
     KARMA.currentLocation = () => KARMA.activate("results");
-    KARMA.setBreadcrumb(null);
+    setFolderCrumb();
     root.appendChild(el("h2", {}, "Results"));
     root.appendChild(el("p", { class: "field-help" },
       "Every run, live and historical. Click a run for its config, per-stage " +
@@ -208,8 +228,46 @@
     const d = r.dir || "";
     return d === folder || d.startsWith(folder ? folder + "/" : "");
   });
+  // Compact run-status summary for a folder: one badge per distinct status
+  // (e.g. "complete 4", "failed 1", "running 7") tallied over every run under the
+  // folder -- the status each run/case returns. Null when the folder has no runs.
+  function folderStatusSummary(folder) {
+    const runs = runsUnder(folder);
+    if (!runs.length) return null;
+    const counts = {};
+    for (const r of runs) {
+      const id = (r.status || "unknown");
+      counts[id] = (counts[id] || 0) + 1;
+    }
+    const wrap = el("span", { class: "folder-status" });
+    Object.keys(counts).sort().forEach((id) => {
+      const st = KARMA.labels.status(id);
+      wrap.appendChild(el("span", { class: "badge " + st.cls, title: st.text }, `${st.text} ${counts[id]}`));
+    });
+    return wrap;
+  }
+
+  // Set the top-left breadcrumb for the current runsFolder: "Results / <folder…>"
+  // plus the folder status summary. Shared by render() (folder-crumb-click path)
+  // and openRunsFolder() (folder-row-click path) so both stay in sync; cleared at
+  // the top level where the "Results" heading is the title.
+  function setFolderCrumb() {
+    if (!(runsFolder && sub === "runs")) { KARMA.setBreadcrumb(null); return; }
+    const goFolder = (folder) => () => { runsFolder = folder; sub = "runs"; render(); };
+    const crumbs = [{ label: "Results", onClick: goFolder("") }];
+    let acc = "";
+    const segs = runsFolder.split("/");
+    segs.forEach((seg, i) => {
+      acc = acc ? acc + "/" + seg : seg;
+      crumbs.push(i === segs.length - 1 ? { label: seg } : { label: seg, onClick: goFolder(acc) });
+    });
+    const parent = runsFolder.includes("/") ? runsFolder.slice(0, runsFolder.lastIndexOf("/")) : "";
+    KARMA.setBreadcrumb({ back: goFolder(parent), crumbs, suffix: folderStatusSummary(runsFolder) });
+  }
+
   function openRunsFolder(folder) {
     runsFolder = folder;
+    setFolderCrumb();
     const body = document.getElementById("runs-body");
     if (body) {
       renderRunRows(body);
@@ -248,7 +306,9 @@
       el("td", {}, el("button", { class: "btn secondary", onClick: open }, "Open")));
   }
 
-  // Fill (or hide) the current-folder bar above the runs list.
+  // Fill (or hide) the current-folder bar above the runs list. This in-page bar
+  // is kept ALONGSIDE the top-left breadcrumb (set in render()) -- both ways of
+  // showing the current folder are available.
   function renderRunsCrumbBar() {
     const bar = document.getElementById("runs-crumb-bar");
     if (!bar) return;
@@ -337,6 +397,10 @@
       host.appendChild(panel);
     }
     renderRunRows(body);
+    // Refresh the folder status summary now that allRuns is freshly fetched (the
+    // render()-time call may have run against a stale/empty cache), and keep it
+    // current as runs complete during the 3s auto-refresh.
+    setFolderCrumb();
     // Fade the list in on first build only (not on the 3s auto-refresh).
     if (firstBuild) KARMA.replayEnter(body, "fadeIn 0.3s ease both");
     // Auto-refresh while any run is still active so progress updates in place.
@@ -357,7 +421,22 @@
     KARMA.currentLocation = () => KARMA.showRun(runId);
     const np = KARMA.labels.runName(runId);
     const title = np.app + (np.name ? " · " + np.name : "");
-    KARMA.setBreadcrumb({ back: render, crumbs: [{ label: "Results", onClick: render }, { label: title }] });
+    // Breadcrumb: Results / <folder…> / <run>, with Results and each folder
+    // segment clickable (drilling the runs list into that folder). The folder
+    // comes from the cached runs list (and is refreshed from d.dir after fetch).
+    const goFolder = (folder) => () => { runsFolder = folder; sub = "runs"; render(); };
+    const buildCrumb = (dir) => {
+      const crumbs = [{ label: "Results", onClick: goFolder("") }];
+      let acc = "";
+      (dir ? dir.split("/") : []).forEach((seg) => {
+        acc = acc ? acc + "/" + seg : seg;
+        const f = acc;
+        crumbs.push({ label: seg, onClick: goFolder(f) });
+      });
+      crumbs.push({ label: title });
+      KARMA.setBreadcrumb({ back: goFolder(dir || ""), crumbs });
+    };
+    buildCrumb(((allRuns.find((r) => r.run_id === runId) || {}).dir) || "");
     const scoreSlot = el("div", { class: "detail-score" });
     root.appendChild(el("div", { class: "detail-head" },
       el("div", {},
@@ -373,6 +452,9 @@
     loading.remove();
     try {
     const cfg = d.config || {};
+    // Refresh the breadcrumb folder from the authoritative detail (covers a
+    // deep-linked run where the cached runs list was empty at first render).
+    if (d.dir) buildCrumb(d.dir);
 
     // Test score (mean judge score) top-right beside the heading, larger than it.
     if (d.judge_score != null) {

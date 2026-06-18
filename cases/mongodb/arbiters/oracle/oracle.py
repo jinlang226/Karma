@@ -81,7 +81,7 @@ def _mongo_tls_flags(probe_pod=None):
             ca_path = cand
             break
     if ca_path:
-        flags = ["--tls", "--tlsAllowInvalidHostnames", "--tlsCAFile", ca_path]
+        flags = ["--tls", "--tlsAllowInvalidHostnames", "--tlsAllowInvalidCertificates", "--tlsCAFile", ca_path]
         for client_pem in ("/etc/tls/client.pem", "/etc/mongo-ca/client.pem"):
             cprobe = run(["kubectl", "-n", NAMESPACE, "exec", pod, "--", "/bin/sh", "-c", "test -f " + client_pem])
             if cprobe.returncode == 0:
@@ -100,8 +100,14 @@ def fail(prefix, errors):
 
 
 def mongo_eval(pod, script):
+    # Connect via the member's own FQDN with directConnection=true to skip SDAM
+    # topology monitoring, which a bare localhost connection would start and
+    # which fails under a persisted requireTLS mode. directConnection works on
+    # any single member for rs.conf()/rs.status() reads.
+    uri = (f"mongodb://{pod}.{DATA_SERVICE}.{NAMESPACE}.svc.cluster.local:27017/"
+           "?directConnection=true")
     base = ["kubectl", "-n", NAMESPACE, "exec", pod, "--",
-            "mongosh", "--quiet", *_mongo_tls_flags()]
+            "mongosh", "--quiet", *_mongo_tls_flags(), uri]
     res = run(base + ["--eval", script])
     # Adaptive auth: a deploy stage may have enabled auth, so a plain rs.conf()
     # fails "requires authentication". Retry once with live admin credentials.

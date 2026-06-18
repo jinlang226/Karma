@@ -1,0 +1,22 @@
+[precondition:es_env_ready:preconditionUnits[0] 'es_env_ready':probe] $ kubectl -n elasticsearch get pods 2>/dev/null | grep -c Running
+7
+
+[precondition:capture_http_cert_baseline:preconditionUnits[1] 'capture_http_cert_baseline':probe] $ kubectl -n elasticsearch get configmap es-http-old
+Error from server (NotFound): configmaps "es-http-old" not found
+
+[precondition:capture_http_cert_baseline:preconditionUnits[1] 'capture_http_cert_baseline':apply] $ /bin/sh -c '
+set -e
+T=$(mktemp -d)
+kubectl -n elasticsearch get secret es-http-tls -o jsonpath="{.data.ca\.crt}" | base64 -d > "$T/ca.crt"
+kubectl -n elasticsearch get secret es-http-tls -o jsonpath="{.data.tls\.crt}" | base64 -d > "$T/tls.crt"
+kubectl -n elasticsearch create configmap es-http-ca --from-file=ca.crt="$T/ca.crt" --dry-run=client -o yaml | kubectl apply -f -
+CA_FP=$(openssl x509 -noout -fingerprint -sha256 -in "$T/ca.crt" | cut -d= -f2)
+LEAF_FP=$(openssl x509 -noout -fingerprint -sha256 -in "$T/tls.crt" | cut -d= -f2)
+kubectl -n elasticsearch create configmap es-http-old --from-file=ca.crt="$T/ca.crt" --from-literal=ca_fingerprint_sha256="$CA_FP" --from-literal=leaf_fingerprint_sha256="$LEAF_FP" --dry-run=client -o yaml | kubectl apply -f -
+'
+
+configmap/es-http-ca created
+configmap/es-http-old created
+
+[precondition:capture_http_cert_baseline:preconditionUnits[1] 'capture_http_cert_baseline':verify] $ kubectl -n elasticsearch get configmap es-http-old -o jsonpath='{.data.ca_fingerprint_sha256}'
+E8:EA:51:D8:21:8C:4B:6E:76:DA:BA:6B:9B:49:17:81:AC:E3:D7:4F:02:43:CB:47:CA:C0:41:95:EA:0F:9C:AB

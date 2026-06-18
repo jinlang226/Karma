@@ -1,0 +1,23 @@
+All steps completed successfully. Here's the summary.
+
+## Diagnosis & Results
+
+**Cluster/job health:** The Spark master, worker, and all three jobs deployed and ran cleanly. The Spark master came up healthy (`elected leader! New state: ALIVE`), the worker registered, and the baseline job ran to completion in local-executor mode — so no blocking config bugs remained at runtime; the deployment converged once pods finished pulling/starting.
+
+**The data skew (confirmed):** All three runs measured the same input distribution — `skew_ratio=44.0x`, `max_partition=11579` vs `min_partition=263` rows. The 5 hot products concentrate orders into a few partitions, creating stragglers.
+
+**Performance comparison:**
+
+| Strategy | Optimization | Elapsed | Speedup vs baseline |
+|----------|-------------|---------|---------------------|
+| baseline | none (skewed shuffle join) | **26.48s** | 1.0× |
+| broadcast | broadcast small products table → no shuffle/skew | **13.7s** | **~1.9× faster** |
+| aqe | adaptive skew-join auto-splits hot partitions | **14.3s** | **~1.85× faster** |
+
+All three jobs report `Complete 1/1`.
+
+**Why each optimization wins:**
+- **Broadcast join** ships the small `products` table (100 rows) to every executor, eliminating the shuffle on the skewed `product_id` key entirely — fastest here.
+- **AQE skew join** keeps the shuffle but detects the oversized hot partitions at runtime and splits them into balanced sub-tasks, removing the straggler — nearly identical gain without needing to know the table is small.
+
+**Success criteria — all met:** baseline completed showing slow/skewed performance; both optimization strategies applied and completed; each demonstrates a clear ~1.9× improvement over baseline.

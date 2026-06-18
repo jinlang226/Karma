@@ -64,9 +64,9 @@ preconditionUnits:
         sleep: 1
       - command: "kubectl create namespace elasticsearch"
         sleep: 1
-      - command: "kubectl -n elasticsearch apply -f cases/elasticsearch/file-realm-user-roles-merge/resource/file-realm-gen.yaml"
+      - command: "/bin/sh -c 'kubectl -n elasticsearch get pod file-realm-gen >/dev/null 2>&1 || kubectl -n elasticsearch apply -f cases/elasticsearch/file-realm-user-roles-merge/resource/file-realm-gen.yaml'"
         sleep: 1
-      - command: "kubectl -n elasticsearch apply -f cases/elasticsearch/file-realm-user-roles-merge/resource/openssl-toolbox.yaml"
+      - command: "/bin/sh -c 'kubectl -n elasticsearch get pod openssl-toolbox >/dev/null 2>&1 || kubectl -n elasticsearch apply -f cases/elasticsearch/file-realm-user-roles-merge/resource/openssl-toolbox.yaml'"
         sleep: 1
       - command: "kubectl -n elasticsearch wait --for=condition=ready pod/file-realm-gen --timeout=300s"
         sleep: 1
@@ -197,6 +197,32 @@ preconditionUnits:
           kubectl -n elasticsearch cp file-realm-gen:/tmp/report "${TMP_DIR}/report"
           kubectl -n elasticsearch create secret generic {{params.aggregate_secret_name}} --from-file=users="${TMP_DIR}/ops/users" --from-file=users_roles="${TMP_DIR}/ops/users_roles" --from-file=roles.yml="${TMP_DIR}/ops/roles.yml" --dry-run=client -o yaml | kubectl apply -f -
           kubectl -n elasticsearch create secret generic {{params.provided_secret_name}} --from-file=users="${TMP_DIR}/report/users" --from-file=users_roles="${TMP_DIR}/report/users_roles" --from-file=roles.yml="${TMP_DIR}/report/roles.yml" --dry-run=client -o yaml | kubectl apply -f - || true
+          '
+        sleep: 1
+      # Seed the app-data index that report-user reads (composition safety): the
+      # standalone es_env_ready apply seeds it (via curl-test + ops_user), but on an
+      # INHERITED cluster that apply is probe-skipped, so app-data is absent and the
+      # oracle's report-user read fails even after a correct merge. Recreate it
+      # ADDITIVELY here: deploy the curl helper if missing, wait for ops_user to go
+      # live (the file realm reloads the aggregate secret created just above), then
+      # PUT the index + a doc. Idempotent and data-only -- it never touches cluster
+      # or security state, so it is workflow-agnostic.
+      - command: "/bin/sh -c 'kubectl -n elasticsearch get pod curl-test >/dev/null 2>&1 || kubectl -n elasticsearch apply -f cases/elasticsearch/file-realm-user-roles-merge/resource/curl-test.yaml'"
+        sleep: 1
+      - command: "/bin/sh -c 'kubectl -n elasticsearch wait --for=condition=ready pod/curl-test --timeout=300s || true'"
+        sleep: 1
+      - command: |
+          /bin/sh -c '
+          for i in $(seq 1 60); do
+            code=$(kubectl -n elasticsearch exec curl-test -- curl -s -k -o /dev/null -w "%{http_code}" -u {{params.ops_user}}:{{params.ops_password}} --max-time 5 "https://{{params.http_service_name}}.elasticsearch.svc:9200/_cluster/health" 2>/dev/null || echo 000)
+            if [ "$code" = "200" ]; then
+              kubectl -n elasticsearch exec curl-test -- curl -s -k -u {{params.ops_user}}:{{params.ops_password}} -XPUT "https://{{params.http_service_name}}.elasticsearch.svc:9200/{{params.seed_index_name}}" -H "Content-Type: application/json" -d "{\"settings\":{\"number_of_shards\":1,\"number_of_replicas\":1}}" || true
+              kubectl -n elasticsearch exec curl-test -- curl -s -k -u {{params.ops_user}}:{{params.ops_password}} -XPOST "https://{{params.http_service_name}}.elasticsearch.svc:9200/{{params.seed_index_name}}/_doc?refresh=true" -H "Content-Type: application/json" -d "{\"msg\":\"seed\"}" || true
+              exit 0
+            fi
+            sleep 2
+          done
+          exit 0
           '
         sleep: 1
     verify:

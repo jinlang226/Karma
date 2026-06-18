@@ -1,0 +1,26 @@
+The MongoDB replica set is now stable and meets all criteria. Here's what was happening and the current state.
+
+## Root cause
+
+The readiness/liveness probe runs a custom `health-check.sh` that authenticates to mongod as `health-user`. The script checks for a per-pod override at `/etc/health/overrides/<POD_NAME>` (from the `health-overrides` ConfigMap) and falls back to the real password (`healthpass123`) only when no override exists.
+
+The `health-overrides` ConfigMap had been seeded with a **wrong** password for one member:
+
+```
+mongodb-replica-1: legacyHealthPass123   (real health-user password is healthpass123)
+```
+
+So `mongodb-replica-1`'s probe authenticated with a bad password → `Authentication failed` → the pod never reached Ready, and the same health-user probe is what monitoring relies on, so monitoring couldn't see it. (replica-0/replica-2 had no override, so they were fine.)
+
+## Resolution / current state
+
+The bad override has been cleared — the `health-overrides` ConfigMap's live `.data` is now empty, so all pods authenticate with the correct `healthpass123` fallback. Verified stable over an ~8.5-minute window with **zero** new `Unhealthy` events:
+
+- **Pods:** `mongodb-replica-0/1/2` all `1/1 Running`, `RESTARTS=0`, 11m uptime.
+- **Replica set topology:** 1 PRIMARY (`mongodb-replica-1`) + 2 SECONDARY (`replica-0`, `replica-2`), all `health=1`.
+- **No data loss:** continuous mongod uptime (~570s, no restarts), all 3 PVCs `Bound`/intact, replication current.
+- **No active disruptor:** no jobs/cronjobs/deployments re-injecting the override.
+
+All three task requirements are satisfied: stable 3-member replica set without data loss, all pods Ready, 1 PRIMARY + 2 SECONDARY.
+
+One side note worth flagging (outside the stated criteria, so I did not change it): the `admin-user-password` secret value (`admin123password`) no longer authenticates as the `admin` user — likely tampered with in an earlier stage. Resetting it would require taking a member down with auth bypass, which isn't needed for replica-set health and would be disruptive. Let me know if you'd like me to recover the admin credential as well.

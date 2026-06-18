@@ -166,6 +166,50 @@ def _resolve_expected_nodes(node_names, default=5):
     explicit override. Falls back to ``default`` when no live StatefulSets can
     be resolved (e.g. _cat/nodes failed or returned empty).
     """
+    # Derive from the LIVE cluster FIRST (workflow-agnostic + composition-aware):
+    # sum spec.replicas over the ES StatefulSets that are an active part of the
+    # cluster -- the base cluster PLUS any nodeset a PRIOR stage added to the same
+    # cluster (e.g. a transform nodeset in a transform->scale workflow). A static
+    # EXPECTED_NODES param is a standalone-baseline assumption (e.g. "3 original +
+    # 2 new = 5") that wrongly ignores such inherited nodesets and overcounts is
+    # avoided by excluding torn-down StatefulSets (deletionTimestamp); so the
+    # param is demoted to a FALLBACK below, used only when the live cluster cannot
+    # be resolved. Counting DESIRED spec.replicas (not the live node count) keeps
+    # it strict: a node that failed to join leaves its STS replicas>0 but absent
+    # from _cat/nodes, so EXPECTED stays above the actual count and the check
+    # still fails. The allocation-attribute and shard-relocation checks further
+    # catch a no-op agent that leaves the cluster's nodeset topology unchanged.
+    res = run(["kubectl", "-n", NAMESPACE, "get", "sts", "-o", "json"])
+    if res.returncode == 0:
+        try:
+            items = json.loads(res.stdout).get("items", [])
+        except Exception:
+            items = []
+        desired = 0
+        # Restrict the sum to the StatefulSets that BACK the live cluster's nodes
+        # (the names _cat/nodes returned). The persisted namespace can hold MULTIPLE
+        # ES clusters -- a prior stage may have deployed a differently-named one
+        # (e.g. deploy-core's es-nodes) alongside this case's es-cluster -- and
+        # summing every ES StatefulSet overcounts versus the single cluster the
+        # oracle queries. When the live set is unknown (no nodes resolved) fall back
+        # to summing all (the health check has already failed in that case).
+        live = _live_sts_names(node_names)
+        for sts in items:
+            name = (sts.get("metadata", {}) or {}).get("name")
+            if live and name not in live:
+                continue
+            spec = sts.get("spec", {}) or {}
+            containers = spec.get("template", {}).get("spec", {}).get("containers", []) or []
+            if "elasticsearch" not in " ".join(c.get("image", "") for c in containers):
+                continue
+            replicas = spec.get("replicas")
+            being_deleted = (sts.get("metadata", {}) or {}).get("deletionTimestamp") is not None
+            if isinstance(replicas, int) and replicas > 0 and not being_deleted:
+                desired += replicas
+        if desired > 0:
+            return desired
+
+    # Fallbacks (live cluster unresolvable): explicit param, then the default.
     val = os.environ.get("BENCH_PARAM_EXPECTED_NODES")
     if val is None or not str(val).strip():
         val = os.environ.get("BENCH_PARAM_EXPECTED_NODE_COUNT")
@@ -176,35 +220,6 @@ def _resolve_expected_nodes(node_names, default=5):
             return int(val)
         except ValueError:
             pass
-
-    # Robust count: sum spec.replicas over ES StatefulSets that are actually
-    # present (status.replicas > 0). Counts the base cluster + any scaled-up
-    # nodeset WITHOUT the fragile node.name -> StatefulSet string mapping (which
-    # breaks when a nodeset's node.name differs from its pod name). A torn-down
-    # prior cluster's StatefulSet has readyReplicas 0 and is excluded. Still
-    # strict: a node that failed to join leaves its STS ready>0 but short, so the
-    # spec-replica sum exceeds the live node count and the check still fails.
-    res = run(["kubectl", "-n", NAMESPACE, "get", "sts", "-o", "json"])
-    if res.returncode == 0:
-        try:
-            items = json.loads(res.stdout).get("items", [])
-        except Exception:
-            items = []
-        desired = 0
-        for sts in items:
-            spec = sts.get("spec", {}) or {}
-            containers = spec.get("template", {}).get("spec", {}).get("containers", []) or []
-            if "elasticsearch" not in " ".join(c.get("image", "") for c in containers):
-                continue
-            replicas = spec.get("replicas")
-            # Use status.replicas (pods that EXIST), not readyReplicas: a
-            # scaled-up nodeset whose pods joined the cluster but lack a passing
-            # STS readiness probe has readyReplicas 0 yet is genuinely live.
-            current = (sts.get("status", {}) or {}).get("replicas") or 0
-            if isinstance(replicas, int) and current > 0:
-                desired += replicas
-        if desired > 0:
-            return desired
 
     return default
 

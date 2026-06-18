@@ -149,10 +149,17 @@ def main():
             raw = raw[:-4]
         try:
             new_not_after = datetime.strptime(raw, "%b %d %H:%M:%S %Y").replace(tzinfo=timezone.utc)
-            if old_not_after:
-                delta_days = (new_not_after - old_not_after).days
-                if delta_days < 300:
-                    errors.append(f"New certificate validity too short (delta {delta_days} days)")
+            # "about 1 year" per the prompt: require the NEW cert valid for at
+            # least ~10 months FROM NOW (absolute), NOT merely outliving the OLD
+            # cert. Standalone the old leaf is deliberately 2 days (gen-old-certs.sh)
+            # so a relative check happened to work; but when this case is chained
+            # after a stage that installed multi-year certs (e.g. generate-cert),
+            # the inherited old cert is long-lived, so "new must outlive old by
+            # 300d" wrongly failed a correct ~1-year rotation. The forward-looking
+            # floor still rejects a too-short cert in both standalone and composed.
+            days_from_now = (new_not_after - datetime.now(timezone.utc)).days
+            if days_from_now < 300:
+                errors.append(f"New certificate validity too short ({days_from_now} days from now)")
         except ValueError:
             errors.append(f"Unable to parse new not_after: {new_na_result.stdout.strip()}")
 

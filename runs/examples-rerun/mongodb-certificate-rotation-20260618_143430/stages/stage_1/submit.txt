@@ -1,0 +1,22 @@
+The certificate rotation is complete and verified. Summary:
+
+## Done — MongoDB server certificates rotated with zero downtime
+
+**What was wrong:** The server cert in `mongodb-tls-cert` (CN=`mongo-rs`) expired **Jun 20 2026** — only 2 days out.
+
+**What I did:**
+1. **Generated a new server cert** in the `openssl-toolbox` pod, signed by the **existing CA** (extracted from `mongodb-tls-ca`). Preserved everything the clients/replica-set depend on:
+   - CN = `mongo-rs`, same issuer `mongo-ca`
+   - Identical 8 SANs (localhost, service DNS, and all three `mongo-rs-{0,1,2}` pod FQDNs)
+   - Same keyUsage / extendedKeyUsage (serverAuth + clientAuth — needed for intra-RS mutual TLS)
+   - **Validity ~1 year** (Jun 18 2026 → Jun 18 2027)
+   - `openssl verify` against the CA: OK; key/cert modulus match confirmed
+2. **Updated the `mongodb-tls-cert` secret** (same `server.pem` key, cert-then-key order matching the original).
+3. **Rolling-restarted the StatefulSet** one pod at a time (readiness-gated), so quorum of the 3-member replica set was never lost — the primary stepped down cleanly when its turn came.
+
+**Verification:**
+- All three pods now serve the new cert (`notAfter=Jun 18 2027`) on the live TLS port.
+- Replica set healthy: 3 members, one PRIMARY + two SECONDARY, all `health=1`.
+- **CA trust unchanged** — `mongodb-tls-ca` untouched (fingerprint `2C:56:94:…:5B:4D`, still expiring 2036).
+
+No downtime, no CA change, new certs valid for one year.

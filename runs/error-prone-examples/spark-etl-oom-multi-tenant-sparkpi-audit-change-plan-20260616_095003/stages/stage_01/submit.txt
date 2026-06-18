@@ -1,0 +1,27 @@
+The ETL pipeline completed successfully. Here's a complete summary of the diagnosis and fix:
+
+---
+
+## Root Cause
+
+**Severe data skew in Stage 3 (GROUP BY user_id):**
+- `user_id=999` holds **50,000 of 100,000 records** (~50%)
+- **Skew ratio: 500x** (average per user: 100 records; hot key: 50,000)
+- Original executor memory of **256MB** was far too small — all 50,000 records for `user_id 999` got assigned to a single task/partition, exhausting the executor heap → `OutOfMemoryError`
+
+## Fix Applied (Options B + C combined)
+
+The fix in `etl-job.yaml` addresses both the memory ceiling and the skew distribution:
+
+| Setting | Before | After |
+|---|---|---|
+| `spark.executor.memory` | `256m` | `1g` |
+| `spark.sql.adaptive.enabled` | not set | `true` |
+| `spark.sql.adaptive.skewJoin.enabled` | not set | `true` |
+
+- **Increased executor memory to 1g** gives headroom for the hot partition
+- **AQE + skewJoin splitting** automatically detects the skewed partition and splits it into smaller sub-tasks so no single executor gets overwhelmed
+
+## Result
+
+The ETL job completed successfully in 114 seconds (`COMPLETIONS: 1/1`, exit code 0), with `spark_etl_pipeline_verified` printed at the end.

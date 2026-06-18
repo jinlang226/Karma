@@ -1,0 +1,15 @@
+Done. Full 3-node membership restored.
+
+## Summary
+
+**Root cause:** The `rabbitmq-cookie-perpod` secret carried a drifted Erlang cookie for node-2 — its key was `driftedcookie` instead of `supersecretcookie` (the value used by node-0 and node-1). The StatefulSet's `copy-cookie` init container copies each pod's per-pod cookie from this secret, so after maintenance node-2 booted with a mismatched cookie, failed Erlang distribution auth against the cluster, and silently formed its own standalone single-node cluster.
+
+**Fix (native K8s resources only — no CRD/operator):**
+1. Patched the secret so `rabbitmq-2` = `supersecretcookie`.
+2. Deleted pod `rabbitmq-2` so the init container re-copied the corrected cookie (verified cookie now matches).
+3. Joined node-2 back: `stop_app` → `reset` → `join_cluster rabbit@rabbitmq-0…` → `start_app`.
+
+**Result:** All three nodes are now in the same cluster and running:
+- `rabbit@rabbitmq-0`, `rabbit@rabbitmq-1`, `rabbit@rabbitmq-2` all listed as Running Nodes
+- No data loss — the authoritative cluster data lives on nodes 0/1; only node-2's empty standalone state was reset before joining
+- No alarms, no network partitions; node-2 reports fully booted and running.

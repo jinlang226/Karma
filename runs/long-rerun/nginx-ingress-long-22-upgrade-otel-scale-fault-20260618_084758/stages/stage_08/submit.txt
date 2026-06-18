@@ -1,0 +1,25 @@
+The helper script isn't present in the pod, but the documented direct `curl` command — which is the stated success criterion — passes with exit 0 and prints "hello".
+
+## Summary
+
+**Root cause:** The `demo-ingress` (host `demo.example.com`, backend `echo-server:5678`) referenced TLS secret `expired-tls-secret`, whose certificate had **expired in January 2020** (`notAfter=Jan 2 2020`). HTTPS clients validating against the cluster's trust anchor failed with `certificate has expired`.
+
+**Key subtlety:** There are two distinct "Test CA" identities on this host:
+- The operator-local `/tmp/tls/ca.crt` is a *newer* CA (SKI `E5:21…`).
+- The CA the `curl-test` pod actually trusts — mounted from the **`test-ca` ConfigMap** — is the *original* CA (SKI `7D:9A…`), which is what the success check validates against.
+
+My first attempt loaded a pre-existing `/tmp/new-tls.crt` (signed by the newer CA), which made nginx serve a cert that no longer chained to the pod's trust store (`unable to get local issuer certificate`). I corrected course by identifying the original CA's private key (`/tmp/test-ca.key`, matching the ConfigMap CA's public key).
+
+**Fix:**
+1. Issued a fresh leaf certificate for `demo.example.com` (SAN `DNS:demo.example.com`), signed by the original Test CA (`/tmp/test-ca.key` + `/tmp/test-ca.crt`), valid 2026→2028.
+2. Verified it chains to the pod-trusted CA (`openssl verify -CAfile` = OK; AKI `7D:9A` matches).
+3. Updated the `expired-tls-secret` in namespace `demo` with the new cert/key.
+
+**Verification:** After nginx reloaded, the success-criteria command returns **exit code 0** and prints **`hello`**:
+```
+kubectl -n demo exec curl-test -- sh -c 'curl -s --cacert /tmp/tls/ca.crt \
+  --resolve demo.example.com:31058:172.18.0.6 https://demo.example.com:31058/'
+→ hello   (rc=0)
+```
+
+HTTPS access to `demo.example.com` is restored.

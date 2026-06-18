@@ -1,0 +1,19 @@
+Done. The wiring is fixed and verified.
+
+## What was wrong
+Prometheus's config (`prometheus-config` ConfigMap) only scraped itself — there was no scrape job for RabbitMQ. The RabbitMQ side was already correct: the `rabbitmq_prometheus` plugin was enabled and `/metrics` was serving on port 15692 from all 3 pods (verified directly).
+
+A second subtlety: the native `rabbitmq_prometheus` plugin **does not export a `rabbitmq_up` metric** (that name comes from the third-party `rabbitmq-exporter`). Since the task forbids third-party controllers/exporters, I synthesized it with a Prometheus recording rule instead.
+
+## What I changed
+Updated only the `prometheus-config` ConfigMap (native K8s resource), then restarted the Prometheus Deployment:
+
+- Added a `rabbitmq` scrape job with 3 static targets — the per-pod headless DNS names (`rabbitmq-{0,1,2}.rabbitmq-headless.<ns>.svc.cluster.local:15692`), so each pod is a distinct target.
+- Added a `rules.yml` (mounted alongside `prometheus.yml`) with a recording rule: `rabbitmq_up = up{job="rabbitmq"}`.
+
+No CRDs, operators, or third-party controllers used.
+
+## Verification
+- **Targets:** all 3 `rabbitmq` targets report `health: up` in `/api/v1/targets`.
+- **`rabbitmq_up`:** the query returns exactly 3 samples (one per pod instance), all value `1`.
+- **RabbitMQ health:** StatefulSet `3/3`, all 3 pods `Running` with 0 restarts.

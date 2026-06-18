@@ -130,6 +130,81 @@ preconditionUnits:
       - command: "kubectl -n mongodb get pods 2>/dev/null | grep -c Running"
         timeout_sec: 10
 
+  - name: admin_user_fixture
+    # Composition self-sufficiency: this case authenticates as the `admin-user`
+    # created at deploy. On an inherited cluster a no-auth/other predecessor may
+    # not have created it, and a live user's password is unrecoverable -> the
+    # oracle's (and the user fixtures') admin auth fails through no agent fault.
+    # Bring our own additively: if admin-user already authenticates, skip; else
+    # ensure the secret and create the user. No restart, no data touched,
+    # idempotent -> never regresses a cluster where admin already works.
+    on_probe_fail: skip
+    probe:
+      - command: |
+          /bin/sh -c '
+          t=""; for cca in /etc/tls/ca.crt /etc/mongo-ca/ca.crt; do kubectl -n mongodb exec mongodb-replica-0 -- ls $cca >/dev/null 2>&1 && { t="--tls --tlsAllowInvalidHostnames --tlsAllowInvalidCertificates --tlsCAFile $cca"; break; }; done
+          pw=$(kubectl -n mongodb get secret admin-user-password -o jsonpath="{.data.password}" 2>/dev/null | base64 -d 2>/dev/null)
+          [ -n "$pw" ] || exit 1
+          kubectl -n mongodb exec mongodb-replica-0 -- mongosh --quiet $t "mongodb://{{params.admin_username}}:$pw@localhost:27017/admin" --eval "db.runCommand({ping:1}).ok" 2>/dev/null | grep -q 1
+          '
+        timeout_sec: 30
+    apply:
+      # Ensure the admin secret (idempotent: create only if missing).
+      - command: "/bin/sh -c 'kubectl -n mongodb get secret admin-user-password >/dev/null 2>&1 || kubectl -n mongodb create secret generic admin-user-password --from-literal=password=admin123password'"
+        sleep: 1
+      # Ensure the admin-user MongoDB user. On a no-auth inherited cluster this
+      # runs unauthenticated and succeeds; where it already exists it errors and
+      # the `|| true` keeps it a no-op. Never drops or alters existing users/data.
+      - command: |
+          /bin/sh -c '
+          t=""; for cca in /etc/tls/ca.crt /etc/mongo-ca/ca.crt; do kubectl -n mongodb exec mongodb-replica-0 -- ls $cca >/dev/null 2>&1 && { t="--tls --tlsAllowInvalidHostnames --tlsAllowInvalidCertificates --tlsCAFile $cca"; break; }; done
+          kubectl -n mongodb exec mongodb-replica-0 -- mongosh --quiet $t --eval "db.getSiblingDB(\"admin\").createUser({user:\"{{params.admin_username}}\",pwd:\"admin123password\",roles:[{role:\"root\",db:\"admin\"}]})" 2>/dev/null || true
+          '
+        sleep: 2
+    verify:
+      - command: "/bin/sh -c 'kubectl -n mongodb get secret admin-user-password >/dev/null 2>&1 && echo ok'"
+        timeout_sec: 15
+
+  - name: health_user_fixture
+    # Composition self-sufficiency (mirrors admin_user_fixture): the oracle reads
+    # the `health-user-password` secret and authenticates as the `health-user`
+    # monitoring user. Both come from mongo_env_ready (secrets.yaml + createUser),
+    # whose destructive apply is SKIPPED on an inherited cluster -> the secret/user
+    # are absent and the oracle fails "secret health-user-password not found"
+    # through no agent fault (the prompt only asks to fix the readiness probe).
+    # Bring our own additively: if health-user already authenticates, skip; else
+    # ensure the secret and create the user (authenticated as admin, which the
+    # prior fixture guarantees). Idempotent; no restart, no data touched. Runs
+    # AFTER admin_user_fixture so admin creds exist for the createUser.
+    on_probe_fail: skip
+    probe:
+      - command: |
+          /bin/sh -c '
+          t=""; for cca in /etc/tls/ca.crt /etc/mongo-ca/ca.crt; do kubectl -n mongodb exec mongodb-replica-0 -- ls $cca >/dev/null 2>&1 && { t="--tls --tlsAllowInvalidHostnames --tlsAllowInvalidCertificates --tlsCAFile $cca"; break; }; done
+          pw=$(kubectl -n mongodb get secret health-user-password -o jsonpath="{.data.password}" 2>/dev/null | base64 -d 2>/dev/null)
+          [ -n "$pw" ] || exit 1
+          kubectl -n mongodb exec mongodb-replica-0 -- mongosh --quiet $t "mongodb://{{params.health_username}}:$pw@localhost:27017/admin" --eval "db.runCommand({ping:1}).ok" 2>/dev/null | grep -q 1
+          '
+        timeout_sec: 30
+    apply:
+      # Ensure the health secret (idempotent: create only if missing).
+      - command: "/bin/sh -c 'kubectl -n mongodb get secret health-user-password >/dev/null 2>&1 || kubectl -n mongodb create secret generic health-user-password --from-literal=password=healthpass123'"
+        sleep: 1
+      # Ensure the health-user MongoDB user, authenticated as admin. Where it
+      # already exists the createUser errors and `|| true` keeps it a no-op. Never
+      # drops or alters existing users/data.
+      - command: |
+          /bin/sh -c '
+          t=""; for cca in /etc/tls/ca.crt /etc/mongo-ca/ca.crt; do kubectl -n mongodb exec mongodb-replica-0 -- ls $cca >/dev/null 2>&1 && { t="--tls --tlsAllowInvalidHostnames --tlsAllowInvalidCertificates --tlsCAFile $cca"; break; }; done
+          ap=$(kubectl -n mongodb get secret admin-user-password -o jsonpath="{.data.password}" 2>/dev/null | base64 -d 2>/dev/null)
+          au=""; [ -n "$ap" ] && au="-u {{params.admin_username}} -p $ap --authenticationDatabase admin"
+          kubectl -n mongodb exec mongodb-replica-0 -- mongosh --quiet $t $au --eval "db.getSiblingDB(\"admin\").createUser({user:\"{{params.health_username}}\",pwd:\"healthpass123\",roles:[{role:\"clusterMonitor\",db:\"admin\"}]})" 2>/dev/null || true
+          '
+        sleep: 2
+    verify:
+      - command: "/bin/sh -c 'kubectl -n mongodb get secret health-user-password >/dev/null 2>&1 && echo ok'"
+        timeout_sec: 15
+
 oracle:
   verify:
     commands:

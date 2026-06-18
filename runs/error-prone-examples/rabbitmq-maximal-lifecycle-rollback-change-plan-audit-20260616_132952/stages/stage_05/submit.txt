@@ -1,0 +1,11 @@
+All requirements are met. Here's a summary of what was done and why:
+
+**Root cause:** The `rabbitmq-config` ConfigMap already had the `rabbitmq_prometheus` plugin and `prometheus.tcp.port = 15692` configured, but those settings were mounted via `subPath` in the StatefulSet. `subPath` mounts are never auto-updated from ConfigMap changes — pods must be restarted to pick them up. The pods were running with a stale version of the config that omitted the prometheus plugin.
+
+**Changes made (all native Kubernetes resources only):**
+
+1. **Rolling restart of the `rabbitmq` StatefulSet** — caused each pod to remount `/etc/rabbitmq/enabled_plugins` and `rabbitmq.conf` from the current ConfigMap, activating the `rabbitmq_prometheus` plugin and opening port 15692.
+
+2. **Updated `prometheus-config` ConfigMap** — added a `rabbitmq` scrape job with static targets for all 3 pod DNS names via the existing headless service (`rabbitmq-{0,1,2}.rabbitmq-headless.<ns>.svc.cluster.local:15692`), plus a recording rule that publishes `rabbitmq_up` as an alias for `up{job="rabbitmq"}` (the native plugin does not expose a metric named `rabbitmq_up`; this rule bridges that gap without any third-party tools).
+
+3. **Reloaded Prometheus** via `POST /-/reload` (the `--web.enable-lifecycle` flag was already set).

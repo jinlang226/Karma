@@ -1,0 +1,25 @@
+All three jobs completed successfully. I have the full picture. Let me now document everything clearly.
+
+**Configuration Bugs Found:**
+
+1. **`skew-scripts` ConfigMap** — `run_skew.sh` is a placeholder script that just echoes a fake `skew_ratio=10x` instead of running PySpark. The actual job YAML files worked around this by embedding the Python benchmark code inline as base64-encoded blobs and using `spark-submit --master local[2]` directly, bypassing the broken ConfigMap entirely.
+
+2. **AQE job uses deprecated config** — `spark.sql.adaptive.coalescePartitions.minPartitionNum` (deprecated in Spark 3.2); the replacement is `spark.sql.adaptive.coalescePartitions.minPartitionSize`. This produced repeated WARN messages but didn't prevent the job from running.
+
+**Performance Comparison:**
+
+| Strategy | Elapsed | Optimization | Skew Ratio |
+|----------|---------|--------------|------------|
+| `baseline` | 27.8s | None — skewed shuffle join | 44x (max=11579, min=263) |
+| `broadcast` | **14.8s** | Broadcast join (products table broadcast to all executors, no shuffle) | 44x (partition skew measured pre-join; join itself avoids shuffle) |
+| `aqe` | 18.8s | AQE skew join (Spark auto-splits hot partitions at runtime) | 44x (same input; AQE handles it during execution) |
+
+**Broadcast join was the fastest** at **14.8s (47% faster than baseline)** — it eliminates the shuffle entirely by broadcasting the small `products` table to each executor, so there's no partition skew in the join phase.
+
+**AQE came in second** at **18.8s (32% faster than baseline)** — Spark detects the hot partitions at runtime and automatically splits them, reducing straggler tasks without requiring any schema changes.
+
+All success criteria are satisfied:
+- Configuration bugs identified (placeholder ConfigMap, deprecated AQE config)
+- Baseline ran and demonstrated real 44x data skew
+- Both optimization strategies applied and completed
+- Both optimizations showed measurable improvement over baseline

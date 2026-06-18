@@ -1,0 +1,19 @@
+## Done — HTTPS access restored
+
+**Diagnosis:** The `demo-ingress` for `demo.example.com` referenced TLS secret `expired-tls-secret`, whose leaf certificate was **expired** (`notBefore=Jan 1 2020`, `notAfter=Jan 2 2020`). The backend (`echo-server`) was healthy; only the cert was the problem. The CA itself (`CN=Test CA`) was valid and unchanged — so the fix was to issue a fresh leaf cert signed by the **same CA**, leaving the trust anchor (`/tmp/tls/ca.crt`) intact.
+
+**Fix:**
+1. Located the CA private key (`/tmp/test-ca.key`) and confirmed its public key + Subject Key Identifier matched the CA mounted in the `curl-test` pod and the expired cert's Authority Key Identifier.
+2. Generated a new 2048-bit key and CSR carrying SAN `demo.example.com` (per `leaf.cnf`), and signed a valid leaf cert (`notBefore=Jun 18 2026`, `notAfter=Sep 20 2028`) with the same CA. `openssl verify` against the CA: OK.
+3. Updated the `expired-tls-secret` `kubernetes.io/tls` secret in-place with the renewed cert/key.
+
+**Verification (the success criteria):**
+```
+curl --cacert /tmp/tls/ca.crt --resolve demo.example.com:32191:172.18.0.3 \
+  https://demo.example.com:32191/
+→ HTTP 200, body "hello", EXIT=0
+```
+
+I also repopulated `/tmp/ingress_env`, which had an empty `INGRESS_NODE_IP` (now `172.18.0.3`, port `32191`), so the documented test commands work as-is.
+
+The CA was left unchanged; only the leaf certificate in the TLS secret was renewed.

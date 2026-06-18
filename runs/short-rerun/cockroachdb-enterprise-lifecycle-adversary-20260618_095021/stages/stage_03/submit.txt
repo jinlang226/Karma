@@ -1,0 +1,13 @@
+TLS is now enabled on the CockroachDB cluster. Both goal conditions verified:
+
+1. **Insecure access rejected** — `cockroach sql --insecure` returns `ERROR: node is running secure mode, SSL connection required`.
+2. **Secure access succeeds** — `cockroach sql --certs-dir=/cockroach/cockroach-certs -e "SELECT 1;"` returns `1`.
+
+What I did:
+- **Generated certs** (CA, node cert with all cluster/service SANs, and client `root` cert) using the cockroach binary in a helper pod.
+- **Created secret `crdb-node-certs`** holding `ca.crt`, `node.crt`, `node.key`, plus `client.root.crt`/`client.root.key` (so in-pod root SQL works), mounted with `defaultMode: 0400` to satisfy CockroachDB's key-permission check.
+- **Patched the StatefulSet**: dropped `--insecure`, added `--certs-dir=/cockroach/cockroach-certs`, and mounted the cert secret at that path.
+- **Restarted all 3 pods simultaneously** (not a one-at-a-time rollout — secure nodes refuse to peer with insecure ones, which would deadlock the cluster mid-rollout).
+- The cluster's existing data (PVCs) is retained; only the transport/auth mode changed.
+
+All three nodes are Running/Ready in secure mode, and the helper pod was removed.

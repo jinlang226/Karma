@@ -1,0 +1,27 @@
+HTTP CA + leaf certificate rotation complete (no CRDs / ECK used).
+
+What was done:
+- Generated a NEW self-signed CA (CN=es-ca) and a NEW leaf cert (CN=es-http) signed
+  by it, both valid for 365 days (~1 year). Leaf SANs preserved exactly:
+  localhost, *.elasticsearch.svc, *.elasticsearch.svc.cluster.local.
+
+Rotation strategy (minimal downtime, the es-http-tls secret backs BOTH HTTP and
+transport SSL for the `es` and `es-data` statefulsets):
+  Phase 1: patched secret es-http-tls ca.crt -> bundle(old CA + new CA) and waited
+           for the secret volume to propagate to all 5 pods. ES hot-reloads the
+           certificate_authorities file, so every node trusted both CAs before any
+           leaf change — no transport SSL break during the rollout.
+  Phase 2: patched tls.crt/tls.key -> new leaf, then rolling-restarted es-data and
+           es one pod at a time (cluster stayed green throughout).
+  Phase 3: trimmed ca.crt back to the new CA only (all leaves are new).
+
+Client trust:
+- Updated configmap es-http-ca to the new CA (ca.crt) for clients.
+- Verified a FULL TLS handshake (curl --cacert newCA, no -k) to
+  https://es-http.elasticsearch.svc:9200 -> http=200, ssl_verify_result=0.
+
+Final state:
+- Cluster health: green, 5 nodes, 100% active shards.
+- Served leaf issuer=CN=es-ca, notAfter=Jun 18 2027 (new fingerprint).
+- New CA SHA256: BC:16:90:DA:2C:77:42:A5:44:B5:FB:DD:3D:C3:38:8B:4D:D4:E6:C0:2A:1F:69:8C:DE:A6:81:8F:A0:5A:C7:D4
+  (differs from baseline old CA E8:EA:51:...:9C:AB).

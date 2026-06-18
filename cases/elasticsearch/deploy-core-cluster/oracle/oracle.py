@@ -79,15 +79,16 @@ def _resolve_expected_nodes(default=3):
     The env PERSISTS across stages; the expected count is the DESIRED topology
     (sum of spec.replicas over every ES StatefulSet), not a live Ready-pod count.
     A Ready-pod count both undercounts a scaled-up cluster and MASKS a node that
-    failed to come up (fewer ready -> lower expectation -> false pass).
+    failed to come up (fewer ready -> lower expectation -> false pass). The LIVE
+    cluster is derived FIRST; the param is a FALLBACK used only when no live
+    StatefulSets resolve.
     """
-    for key in ("BENCH_PARAM_EXPECTED_NODES", "BENCH_PARAM_EXPECTED_NODE_COUNT"):
-        val = os.environ.get(key)
-        if val is not None and str(val).strip():
-            try:
-                return int(val)
-            except ValueError:
-                pass
+    # Derive from the LIVE cluster FIRST (workflow-agnostic + composition-aware):
+    # sum spec.replicas over the active ES StatefulSets -- the base cluster PLUS
+    # any nodeset a PRIOR stage added to the same cluster (e.g. an inherited
+    # transform nodeset). A static EXPECTED_NODES param encodes a standalone
+    # baseline that wrongly ignores such inherited nodesets, so it is demoted to a
+    # FALLBACK below, used only when the live cluster cannot be resolved.
     # Robust count: sum spec.replicas over ES StatefulSets that are actually
     # present (status.replicas > 0). Counts the base cluster + any scaled-up
     # nodeset WITHOUT the fragile node.name -> StatefulSet string mapping (which
@@ -111,11 +112,25 @@ def _resolve_expected_nodes(default=3):
             # Use status.replicas (pods that EXIST), not readyReplicas: a
             # scaled-up nodeset whose pods joined the cluster but lack a passing
             # STS readiness probe has readyReplicas 0 yet is genuinely live.
-            current = (sts.get("status", {}) or {}).get("replicas") or 0
-            if isinstance(replicas, int) and current > 0:
+            # Count an ES StatefulSet's DESIRED replicas when it is an active part
+            # of the cluster: spec.replicas > 0 and not being torn down. Gating on
+            # status.replicas undercounts a freshly scaled-up nodeset whose status
+            # lags -- its pods have joined the cluster but status.replicas is still
+            # 0 -- which wrongly made EXPECTED < the live node count.
+            being_deleted = (sts.get("metadata", {}) or {}).get("deletionTimestamp") is not None
+            if isinstance(replicas, int) and replicas > 0 and not being_deleted:
                 desired += replicas
         if desired > 0:
             return desired
+
+    # Fallbacks (live cluster unresolvable): explicit param, then the default.
+    for key in ("BENCH_PARAM_EXPECTED_NODES", "BENCH_PARAM_EXPECTED_NODE_COUNT"):
+        val = os.environ.get(key)
+        if val is not None and str(val).strip():
+            try:
+                return int(val)
+            except ValueError:
+                pass
     return default
 
 

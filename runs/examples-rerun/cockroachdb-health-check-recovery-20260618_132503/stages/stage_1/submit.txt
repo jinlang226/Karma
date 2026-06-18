@@ -1,0 +1,18 @@
+Cluster health fully restored. All verification checks pass.
+
+## Summary
+
+**Root cause:** The StatefulSet's container startup command contained an injected fault — a conditional that special-cased `crdb-cluster-1` to bind its HTTP server to `127.0.0.1:8080` instead of `0.0.0.0:8080`:
+
+```bash
+if [ "$POD_NAME" = "crdb-cluster-1" ]; then HTTP_ADDR="127.0.0.1:8080"; else HTTP_ADDR="0.0.0.0:8080"; fi
+```
+
+The HTTP server hosts the health endpoints (`/health`, `/health?ready=1`). Because the kubelet probes the **pod IP** (not localhost), every probe against pod-1 got `connection refused`. The readiness probe pulled it from the Service, and the liveness probe repeatedly killed it (`Container db failed liveness probe, will be restarted`) — a crash loop that prevented it from ever rejoining (4+ restarts). The cluster's logs showed lost quorum / liveness-heartbeat timeouts as a consequence.
+
+**Fix:** Patched the StatefulSet command to always use `--http-addr=0.0.0.0:8080` for every pod, then force-deleted the stuck pod so the rollout adopted the corrected spec.
+
+**Verification (all pass):**
+- `kubectl get pods` → all three `1/1 Running`, no longer restarting
+- `cockroach node status` → all 3 nodes `is_live=true`, `is_available=true`
+- `cockroach sql -e "SELECT 1;"` → succeeds

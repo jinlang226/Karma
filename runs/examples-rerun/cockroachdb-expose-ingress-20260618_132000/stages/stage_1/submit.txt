@@ -1,0 +1,18 @@
+Both paths are verified working. Here's the summary.
+
+## Done — both endpoints are live and verified
+
+**DB Console — `https://crdb-ui.example.com` (TLS)**
+- The CockroachDB cluster runs with `--insecure`, so the Console backend is plain HTTP on port 8080. TLS is therefore terminated at the ingress.
+- Created TLS secret `crdb-ui-tls` (self-signed cert, CN/SAN `crdb-ui.example.com`) in the `cockroachdb` namespace.
+- Created Ingress `crdb-ui` (class `nginx`, `backend-protocol: HTTP`) routing `crdb-ui.example.com` → `crdb-cluster-public:8080`.
+- ✅ Verified: `curl -k https://crdb-ui.example.com/` through the controller returns **HTTP 200**.
+
+**SQL — TCP port 26257 via ingress-nginx**
+- SQL is the PostgreSQL TCP wire protocol, not HTTP, so it can't use an Ingress object. Used ingress-nginx's TCP passthrough instead:
+  - ConfigMap `ingress-nginx/tcp-services`: `"26257": "cockroachdb/crdb-cluster-public:26257"`.
+  - Added `--tcp-services-configmap=$(POD_NAMESPACE)/tcp-services` to the controller args.
+  - Added containerPort `26257` to the controller pod and port `26257` to the `ingress-nginx-controller` Service.
+- ✅ Verified: controller listens on `0.0.0.0:26257`, and a real `cockroach sql` query against `ingress-nginx-controller:26257` returned `sql-via-ingress-ok`.
+
+**Note on external access:** the `ingress-nginx-controller` LoadBalancer shows `EXTERNAL-IP: <pending>` (no cloud LB / MetalLB in this cluster), and `--publish-status-address=localhost`, so the Ingress has no external address. Inside/at the cluster everything is reachable via the controller Service (NodePorts 32274/32277 for 80/443). For real external use you'd point `crdb-ui.example.com` DNS at the controller's ingress IP and add a node-level path for 26257 — but the ingress configuration itself is complete and proven functional.

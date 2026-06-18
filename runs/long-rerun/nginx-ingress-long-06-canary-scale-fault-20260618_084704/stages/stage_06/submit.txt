@@ -1,0 +1,17 @@
+The helper script isn't present in the pod (the oracle injects it at validation time), but the direct curl — which is the stated success criterion — passes cleanly.
+
+## Summary
+
+**Root cause:** The `demo-ingress` Ingress for `demo.example.com` (TLS) referenced secret `expired-tls-secret`, which held a certificate that expired in **January 2020** (`notBefore=Jan 1 2020 / notAfter=Jan 2 2020`). HTTPS clients validating against the cluster's "Test CA" rejected it with certificate validation errors.
+
+**Fix:**
+1. Confirmed the backend (`echo-server`, port 5678) was healthy and returns `hello`.
+2. Located the matching CA private key (`/tmp/test-ca.key`, modulus-verified against the in-cluster `Test CA`).
+3. Issued a fresh certificate for `CN=demo.example.com` with `SAN=DNS:demo.example.com`, signed by Test CA, valid until 2028 — verified with `openssl verify` against the cluster CA.
+4. Updated the `expired-tls-secret` TLS secret with the new cert/key; nginx-ingress reloaded it.
+
+**Verification:**
+- `curl --cacert ca.crt https://demo.example.com:30175/` → HTTP **200**, body `hello`, **exit 0**.
+- Backend re-checked at finish: `echo-server` Deployment **1/1 ready**, endpoint `10.244.0.23:5678` present (no scaled-to-zero condition).
+
+HTTPS access is restored.

@@ -131,6 +131,14 @@ preconditionUnits:
       - command: "/bin/sh -c 'set -e; [ \"$(kubectl -n ${BENCH_NS_SOURCE} get sts {{params.blue_cluster_prefix}} -o jsonpath=\"{.status.readyReplicas}\")\" = \"3\" ]'"
         timeout_sec: 20
     apply:
+      # Composition-tolerance: an inherited StatefulSet from an earlier workflow stage
+      # may differ in immutable fields (serviceName/selector/volumeClaimTemplates), which
+      # makes `kubectl apply` fail with "Forbidden: updates to statefulset spec ... are
+      # forbidden". Orphan-delete the existing STS first so it can be recreated --
+      # --cascade=orphan PRESERVES the running pods and the data-* PVCs (and their data),
+      # so this is additive and never wipes inherited broker state.
+      - command: "kubectl -n ${BENCH_NS_SOURCE} delete statefulset {{params.blue_cluster_prefix}} --cascade=orphan --ignore-not-found=true"
+        sleep: 1
       - command: "envsubst '$BENCH_NAMESPACE $BENCH_NS_SOURCE $BENCH_NS_TARGET $BENCH_PARAM_CLUSTER_PREFIX $BENCH_PARAM_BLUE_CLUSTER_PREFIX $BENCH_PARAM_GREEN_CLUSTER_PREFIX $BENCH_PARAM_FROM_VERSION' < cases/rabbitmq/blue_green_migration/resource/statefulset-source.yaml | kubectl -n ${BENCH_NS_SOURCE} apply -f -"
         sleep: 1
       - command: "kubectl -n ${BENCH_NS_SOURCE} rollout status statefulset/{{params.blue_cluster_prefix}} --timeout=600s"
@@ -145,6 +153,10 @@ preconditionUnits:
       - command: "/bin/sh -c 'set -e; [ \"$(kubectl -n ${BENCH_NS_TARGET} get sts {{params.green_cluster_prefix}} -o jsonpath=\"{.status.readyReplicas}\")\" = \"3\" ]'"
         timeout_sec: 20
     apply:
+      # Composition-tolerance: orphan-delete an inherited StatefulSet (immutable-field
+      # mismatch) before re-apply; --cascade=orphan preserves running pods + data-* PVCs.
+      - command: "kubectl -n ${BENCH_NS_TARGET} delete statefulset {{params.green_cluster_prefix}} --cascade=orphan --ignore-not-found=true"
+        sleep: 1
       - command: "envsubst '$BENCH_NAMESPACE $BENCH_NS_SOURCE $BENCH_NS_TARGET $BENCH_PARAM_CLUSTER_PREFIX $BENCH_PARAM_BLUE_CLUSTER_PREFIX $BENCH_PARAM_GREEN_CLUSTER_PREFIX $BENCH_PARAM_FROM_VERSION' < cases/rabbitmq/blue_green_migration/resource/statefulset-target.yaml | kubectl -n ${BENCH_NS_TARGET} apply -f -"
         sleep: 1
       - command: "kubectl -n ${BENCH_NS_TARGET} rollout status statefulset/{{params.green_cluster_prefix}} --timeout=600s"

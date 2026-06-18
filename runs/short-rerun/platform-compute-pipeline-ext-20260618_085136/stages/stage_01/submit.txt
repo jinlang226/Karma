@@ -1,0 +1,29 @@
+## Summary
+
+The Ray cluster is deployed and verified. The authoritative oracle passes cleanly:
+
+```
+service/ray-head exposes port 6379
+deployment/ray-head ready replicas 1
+deployment/ray-worker ready replicas 2
+ray reports 3 nodes          # 1 head + 2 workers, all Alive
+ray deploy_cluster verified
+```
+
+What I did:
+- Applied `ray-head.yaml`, `ray-head-service.yaml`, and `ray-worker.yaml` into the `ray` namespace.
+- Waited for both rollouts: `ray-head` (1/1) and `ray-worker` (2/2) are Ready; worker runs the required **2 replicas**.
+- `ray-client` left untouched (still the original `sleep infinity` pod, Running).
+
+**Pods:**
+```
+ray-client                    1/1 Running
+ray-head-5c586c8fd6-hg2pb     1/1 Running
+ray-worker-7d7d685797-ccrtd   1/1 Running
+ray-worker-7d7d685797-m6lc9   1/1 Running
+```
+
+### One caveat on the suggested validation command
+The exact one-liner `ray.init(address='ray-head:6379')` run *from the ray-client pod* does **not** print "ok" — and this is a structural Ray limitation, not a deployment defect. With a bare GCS address, `ray.init` runs in connect-only mode and requires a `node_ip_address` from a local raylet. The client pod isn't a Ray node (no raylet, no `MY_POD_IP`), so it fails with `node_ip_address.json … hasn't started`; supplying the IP manually then fails with `ConnectionError` because a Ray driver must be co-located with a raylet. A non-node pod cannot act as a driver over port 6379 (that requires the Ray Client server on 10001, or making the client a cluster node).
+
+The cluster itself is fully functional and correctly sized — confirmed by the oracle connecting from the head pod and seeing all 3 live nodes. I did **not** turn `ray-client` into a cluster node to force the literal command, since that would contradict the "keep ray-client unchanged" requirement. The deployment meets the objective success criteria (both deployments ready, cluster healthy with the right node count).

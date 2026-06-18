@@ -1,0 +1,34 @@
+The ETL pipeline completed successfully. Here's the full diagnostic summary:
+
+---
+
+## Root Cause Analysis
+
+**Stage 3 OOM is caused by extreme data skew on `user_id`:**
+
+| Metric | Value |
+|--------|-------|
+| Total records | 100,000 |
+| Distinct user_ids | 1,000 |
+| Hot key | `user_id = 999` |
+| Hot key records | 50,000 (50% of all data) |
+| **Skew ratio** | **500x** (threshold is 10x) |
+
+When Stage 3 does `GROUP BY user_id`, all 50,000 records for `user_id=999` land on a single executor partition. With 256MB executor memory, that single task OOMs.
+
+## Fix Applied (Option C: AQE + increased memory)
+
+The `etl-job.yaml` was updated with:
+```yaml
+--conf spark.executor.memory=1g          # raised from 256m to 1g
+--conf spark.sql.adaptive.enabled=true   # enables Adaptive Query Execution
+--conf spark.sql.adaptive.skewJoin.enabled=true  # AQE splits skewed partitions
+```
+
+AQE detects skewed partitions at runtime and automatically splits them into sub-partitions, distributing the `user_id=999` load across multiple tasks instead of one overwhelmed executor.
+
+## Outcome
+
+- **Job status:** `Complete 1/1` in 2m34s
+- **Final log line:** `spark_etl_pipeline_verified`
+- No OOM errors, no retries

@@ -81,6 +81,27 @@ preconditionUnits:
       - command: "kubectl -n elasticsearch get pods 2>/dev/null | grep -c Running"
         timeout_sec: 10
 
+  # Additive seed fixture (composition safety): the oracle requires the
+  # {{params.index_name}} index to remain readable (it checks /{{params.index_name}}/_count).
+  # es_env_ready seeds it on its destructive fresh-build path, which is SKIPPED on
+  # an inherited cluster (the probe sees pods Running), so the index is absent and
+  # the oracle fails. Re-establish it additively when missing: create the index
+  # (1 shard, 1 replica, as the build does) + 1 doc. It never deletes the
+  # namespace, scales the StatefulSet, or touches the cluster config the agent
+  # repairs. Standalone the index already exists so the probe matches and this
+  # unit skips -> byte-identical standalone behaviour.
+  - name: seed_hosts_index_fixture
+    on_probe_fail: skip
+    probe:
+      - command: "/bin/sh -c 'pw=$(kubectl -n elasticsearch get secret elastic-password -o jsonpath=\"{.data.password}\" 2>/dev/null | base64 -d 2>/dev/null); A=\"\"; [ -n \"$pw\" ] && A=\"-u elastic:$pw\"; kubectl -n elasticsearch exec {{params.curl_pod_name}} -- curl -sk $A --max-time 5 \"http://{{params.http_service_name}}.elasticsearch.svc:9200/{{params.index_name}}/_count\" 2>/dev/null | grep -q \"\\\"count\\\"\"'"
+        timeout_sec: 20
+    apply:
+      - command: "/bin/sh -c 'pw=$(kubectl -n elasticsearch get secret elastic-password -o jsonpath=\"{.data.password}\" 2>/dev/null | base64 -d 2>/dev/null); A=\"\"; [ -n \"$pw\" ] && A=\"-u elastic:$pw\"; kubectl -n elasticsearch exec {{params.curl_pod_name}} -- curl -sk $A -XPUT \"http://{{params.http_service_name}}.elasticsearch.svc:9200/{{params.index_name}}\" -H \"Content-Type: application/json\" -d \"{\\\"settings\\\":{\\\"number_of_shards\\\":1,\\\"number_of_replicas\\\":1}}\" >/dev/null 2>&1; kubectl -n elasticsearch exec {{params.curl_pod_name}} -- curl -sk $A -XPOST \"http://{{params.http_service_name}}.elasticsearch.svc:9200/{{params.index_name}}/_doc\" -H \"Content-Type: application/json\" -d \"{\\\"msg\\\":\\\"seed\\\"}\" >/dev/null 2>&1; true'"
+        sleep: 2
+    verify:
+      - command: "/bin/sh -c 'pw=$(kubectl -n elasticsearch get secret elastic-password -o jsonpath=\"{.data.password}\" 2>/dev/null | base64 -d 2>/dev/null); A=\"\"; [ -n \"$pw\" ] && A=\"-u elastic:$pw\"; kubectl -n elasticsearch exec {{params.curl_pod_name}} -- curl -sk $A --max-time 5 \"http://{{params.http_service_name}}.elasticsearch.svc:9200/{{params.index_name}}/_count\" >/dev/null 2>&1; true'"
+        timeout_sec: 20
+
 oracle:
   verify:
     commands:

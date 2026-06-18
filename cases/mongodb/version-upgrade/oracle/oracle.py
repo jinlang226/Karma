@@ -55,7 +55,7 @@ def _mongo_tls_flags(probe_pod=None):
             ca_path = cand
             break
     if ca_path:
-        flags = ["--tls", "--tlsAllowInvalidHostnames", "--tlsCAFile", ca_path]
+        flags = ["--tls", "--tlsAllowInvalidHostnames", "--tlsAllowInvalidCertificates", "--tlsCAFile", ca_path]
         for client_pem in ("/etc/tls/client.pem", "/etc/mongo-ca/client.pem"):
             cprobe = run(["kubectl", "-n", NAMESPACE, "exec", pod, "--", "/bin/sh", "-c", "test -f " + client_pem])
             if cprobe.returncode == 0:
@@ -237,7 +237,9 @@ def check_version():
     if admin_pw is None:
         return fail("Version upgrade version check failed:", errors)
 
-    admin_uri = f"mongodb://{ADMIN_USERNAME}:{admin_pw}@localhost:27017/admin"
+    # directConnection skips SDAM topology monitoring, which a localhost
+    # connection would start and which fails under a persisted requireTLS mode.
+    admin_uri = f"mongodb://{ADMIN_USERNAME}:{admin_pw}@localhost:27017/admin?directConnection=true"
     primary = find_primary(admin_uri, errors)
 
     version = load_json(primary, admin_uri, "JSON.stringify(db.version())", "db.version()", errors)
@@ -269,7 +271,8 @@ def check_topology():
     if admin_pw is None:
         return fail("Version upgrade topology check failed:", errors)
 
-    admin_uri = f"mongodb://{ADMIN_USERNAME}:{admin_pw}@localhost:27017/admin"
+    # directConnection skips SDAM topology monitoring (see check_version).
+    admin_uri = f"mongodb://{ADMIN_USERNAME}:{admin_pw}@localhost:27017/admin?directConnection=true"
     primary = find_primary(admin_uri, errors)
     status = load_json(primary, admin_uri, "JSON.stringify(rs.status())", "rs.status()", errors)
     if isinstance(status, dict):
@@ -294,7 +297,8 @@ def check_data():
     if admin_pw is None:
         return fail("Version upgrade data check failed:", errors)
 
-    admin_uri = f"mongodb://{ADMIN_USERNAME}:{admin_pw}@localhost:27017/admin"
+    # directConnection skips SDAM topology monitoring (see check_version).
+    admin_uri = f"mongodb://{ADMIN_USERNAME}:{admin_pw}@localhost:27017/admin?directConnection=true"
     primary = find_primary(admin_uri, errors)
 
     count = load_json(

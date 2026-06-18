@@ -54,7 +54,7 @@ def _mongo_tls_flags(probe_pod=None):
             ca_path = cand
             break
     if ca_path:
-        flags = ["--tls", "--tlsAllowInvalidHostnames", "--tlsCAFile", ca_path]
+        flags = ["--tls", "--tlsAllowInvalidHostnames", "--tlsAllowInvalidCertificates", "--tlsCAFile", ca_path]
         for client_pem in ("/etc/tls/client.pem", "/etc/mongo-ca/client.pem"):
             cprobe = run(["kubectl", "-n", NAMESPACE, "exec", pod, "--", "/bin/sh", "-c", "test -f " + client_pem])
             if cprobe.returncode == 0:
@@ -253,7 +253,9 @@ def check_topology():
     admin_pw = get_secret_value(ADMIN_SECRET, "password", errors)
     if errors:
         return fail("StatefulSet customization topology check failed:", errors)
-    admin_uri = f"mongodb://{ADMIN_USER}:{admin_pw}@localhost:27017/admin"
+    # directConnection skips SDAM topology monitoring, which a localhost
+    # connection would start and which fails under a persisted requireTLS mode.
+    admin_uri = f"mongodb://{ADMIN_USER}:{admin_pw}@localhost:27017/admin?directConnection=true"
     primary = _find_primary(admin_uri, errors)
     status = load_json(primary, admin_uri, "JSON.stringify(rs.status())", "rs.status()", errors)
     if isinstance(status, dict):

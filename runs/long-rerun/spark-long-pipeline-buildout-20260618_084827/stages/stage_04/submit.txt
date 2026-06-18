@@ -1,0 +1,21 @@
+Pipeline fixed and verified. Summary:
+
+## Root Cause
+- **Stage 3 failure**: The `spark-submit` job ran with `spark.executor.memory=256m` (268,435,456 bytes), which is **below Spark 3.5's hard minimum of 471,859,200 bytes**. Spark refused to initialize the SparkContext → `[INVALID_EXECUTOR_MEMORY]` error, manifesting as the Stage 3 OOM failure.
+- **Data skew (the underlying reason memory matters)**: From `skew_info.txt` and the diagnostic server:
+  - `total_records=100000`, `distinct_user_ids=1000`
+  - `hot_user_id=999` holds `50000` records (~50% of all data)
+  - **skew_ratio = 500x** (far exceeds the 10x threshold). The `GROUP BY user_id` aggregation in Stage 3 piles ~half the dataset onto one key, blowing the tiny 256m heap.
+
+## Fix Applied (`etl-job.yaml`)
+- Raised `spark.executor.memory` `256m → 512m` (safely above the ~450MB minimum, fits the pod limit).
+- Enabled **AQE skew handling**: `spark.sql.adaptive.enabled=true` + `spark.sql.adaptive.skewJoin.enabled=true` (directly mitigates the 500x hot-key skew).
+- Bumped the pod memory limit `1Gi → 2Gi` to give the JVM headroom.
+
+Then deleted the failed job, re-applied, and polled to completion.
+
+## Verification
+- `kubectl get job etl-job` → **STATUS: Complete (1/1)**, condition `SuccessCriteriaMet`.
+- Job logs end with the success marker: **`spark_etl_pipeline_verified`**.
+
+All four success criteria met: OOM identified, skew diagnosed (user_id 999, 500x), fix applied (memory + AQE), and the ETL job completed successfully.

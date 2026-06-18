@@ -1,0 +1,24 @@
+Both goal conditions are met. TLS is now enabled on the CockroachDB cluster.
+
+## Summary
+
+The `cockroachdb` cluster was running in insecure mode and is now secured with TLS.
+
+**What I did:**
+
+1. **Generated certificates** using the `cockroach cert` tooling inside `crdb-cluster-0`:
+   - CA cert (`ca.crt`)
+   - Node cert/key with SANs covering all pod, headless, and public service DNS names (`*.crdb-cluster.cockroachdb.svc.cluster.local`, `crdb-cluster-public`, `localhost`, etc.)
+   - Root client cert/key (`client.root.crt/key`)
+
+2. **Stored them** in a Kubernetes secret `crdb-certs`, mounted into the StatefulSet at `/cockroach/cockroach-certs` with `defaultMode: 0400` (CockroachDB rejects world/group-readable key files).
+
+3. **Patched the StatefulSet** to:
+   - Replace `--insecure` with `--certs-dir=/cockroach/cockroach-certs` in the start command
+   - Switch the liveness/readiness probe scheme from `HTTP` → `HTTPS` (the admin/health endpoint serves TLS in secure mode, so probes would otherwise fail)
+
+4. **Rolled the pods.** The rolling update stalled mid-way (a secure pod-2 couldn't form quorum with the still-insecure pods 0/1 — a known insecure→secure transition deadlock), so I deleted pods 0 and 1 to bring them onto the secure revision. All 3 pods then formed a healthy secure cluster.
+
+**Verification:**
+- Insecure access is **rejected**: `node is running secure mode, SSL connection required`
+- Secure access **succeeds**: `SELECT 1;` returns `1` via `--certs-dir=/cockroach/cockroach-certs`

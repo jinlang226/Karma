@@ -55,7 +55,7 @@ def _mongo_tls_flags(probe_pod=None):
             ca_path = cand
             break
     if ca_path:
-        flags = ["--tls", "--tlsAllowInvalidHostnames", "--tlsCAFile", ca_path]
+        flags = ["--tls", "--tlsAllowInvalidHostnames", "--tlsAllowInvalidCertificates", "--tlsCAFile", ca_path]
         for client_pem in ("/etc/tls/client.pem", "/etc/mongo-ca/client.pem"):
             cprobe = run(["kubectl", "-n", NAMESPACE, "exec", pod, "--", "/bin/sh", "-c", "test -f " + client_pem])
             if cprobe.returncode == 0:
@@ -190,7 +190,9 @@ def check_topology():
     admin_pw = get_secret(ADMIN_SECRET, "password", errors)
     if errors:
         return fail("MongoDB replica-scaling topology check failed:", errors)
-    uri = f"mongodb://{ADMIN_USERNAME}:{admin_pw}@localhost:27017/admin"
+    # directConnection skips SDAM topology monitoring, which a localhost
+    # connection would start and which fails under a persisted requireTLS mode.
+    uri = f"mongodb://{ADMIN_USERNAME}:{admin_pw}@localhost:27017/admin?directConnection=true"
     primary = find_primary(uri, errors)
 
     conf = mongo_json(primary, uri, "JSON.stringify(rs.conf())", "rs.conf()", errors)
@@ -226,7 +228,8 @@ def check_data():
     admin_pw = get_secret(ADMIN_SECRET, "password", errors)
     if errors:
         return fail("MongoDB replica-scaling data check failed:", errors)
-    uri = f"mongodb://{ADMIN_USERNAME}:{admin_pw}@localhost:27017/admin"
+    # directConnection skips SDAM topology monitoring (see check_topology).
+    uri = f"mongodb://{ADMIN_USERNAME}:{admin_pw}@localhost:27017/admin?directConnection=true"
     primary = find_primary(uri, errors)
 
     res = mongo_eval(

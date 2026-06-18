@@ -1,0 +1,18 @@
+The cluster is restored. 
+
+## Summary
+
+**Diagnosis:** The `elasticsearch` namespace held two StatefulSets:
+- `es-alpha` — the intended 3-node production cluster.
+- `es-beta` — a separate 1-node StatefulSet whose ConfigMap (`es-beta-config`) was misconfigured with `cluster.name: es-alpha` and `discovery.seed_hosts` pointing at es-alpha. As a result `es-beta-0` joined `es-alpha` as a **4th, master-eligible node**.
+
+So the cluster was not in its expected clean 3-node state, and the extra master-eligible node created split-brain risk. (No NetworkPolicies were present; the issue was purely the rogue node.)
+
+**Fix:** Scaled `es-beta` down to 0 replicas, removing the misconfigured node from the `es-alpha` cluster. This is minimal and reversible — `es-beta` couldn't function as its own cluster anyway (its config lacked `cluster.initial_master_nodes`), confirming it was never meant to be a standalone cluster. No operators or CRDs were touched.
+
+**Verified end state — `es-alpha` cluster:**
+- `status: green`
+- `number_of_nodes: 3` / `number_of_data_nodes: 3` (es-alpha-0/1/2)
+- `active_shards_percent: 100.0`, `unassigned_shards: 0`
+
+The replica that had lived on es-beta-0 was automatically reallocated to the three remaining nodes, bringing the cluster back to green.

@@ -65,7 +65,11 @@
     demo: "Tiny example tasks for trying KARMA end to end.",
   };
 
-  const AGENTS = { cli_runner: "CLI Runner", react: "ReAct" };
+  const AGENTS = {
+    cli_runner: "CLI Runner", react: "ReAct",
+    claude_code: "Claude Code", codex: "Codex",
+    copilot: "GitHub Copilot", api: "API (DeepSeek)",
+  };
 
   const PROMPT_MODES = {
     progressive: "Progressive",

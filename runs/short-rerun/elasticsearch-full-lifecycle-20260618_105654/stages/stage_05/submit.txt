@@ -1,0 +1,24 @@
+Added two new Elasticsearch data nodes and relocated app-data shards onto them.
+
+What I did:
+1. Created a SEPARATE StatefulSet `es-data-new` (replicas=2) joining the existing
+   `es-cluster` cluster, with its own headless Service `es-data-new` and a ConfigMap
+   `es-config-new`. The new nodes reuse the cluster's TLS (es-http-tls) and file-realm
+   (es-file-realm-aggregate) secrets, set discovery.seed_hosts to es-cluster-0/1/2,
+   run as node.roles [data, ingest] (non-master, so master quorum is unchanged), and
+   carry the allocation attribute `node.attr.zone: new`. The original 3 nodes have no
+   zone attribute, so the new nodeset is distinguished.
+2. Set `index.routing.allocation.require.zone=new` on app-data; its shards relocated
+   onto es-data-new-0/1.
+3. The original es-cluster pods were stuck NotReady because their baked
+   ELASTIC_PASSWORD env was stale versus the current `elastic-password` secret
+   (readiness probe got 401). Ran `kubectl rollout restart statefulset/es-cluster`
+   (replicas unchanged at 3) so they re-read the current secret and became Ready,
+   restoring the es-http service endpoints. No operators/CRDs installed.
+
+Verification (via es-http through curl-test):
+1. Cluster health: green, number_of_nodes=5.
+2. app-data shards (shard 0 p + r) STARTED on es-data-new-1 / es-data-new-0 — outside
+   the original 3.
+3. New nodes carry node.attr zone=new; original nodes have no zone attribute.
+4. es-cluster StatefulSet still at 3 replicas.

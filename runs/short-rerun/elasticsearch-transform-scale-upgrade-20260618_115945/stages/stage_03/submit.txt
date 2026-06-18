@@ -1,0 +1,18 @@
+All verification criteria are satisfied:
+
+| # | Requirement | Result |
+|---|---|---|
+| 1 | Cluster health yellow/green with 5 nodes | ✅ **green**, 5 nodes |
+| 2 | app-data shards on nodes outside original 3 | ✅ all 6 shards on `es-extra-0`/`es-extra-1` |
+| 3 | New nodes have a different allocation attribute | ✅ `node.attr.zone=zoneb` (originals have none) |
+| 4 | `es-cluster` StatefulSet remains at 3 replicas | ✅ untouched at 3 |
+
+## What I did
+
+The live 3-node cluster was the `es` StatefulSet (es-0/1/2), reachable over HTTPS at `es-http:9200`. The `es-cluster`/`es-transform` StatefulSets were crashlooping distractors I deliberately left alone (and verification #4 explicitly forbids scaling `es-cluster`).
+
+1. **Added 2 data nodes** via a new StatefulSet `es-extra` (2 replicas) that joins the same cluster — same image (8.11.1), certs (`es-http-tls`), password, and `discovery.seed_hosts: ["es-transport"]` + `app: elasticsearch` label so the headless service discovers them. They use a separate configmap `es-config-extra` adding **`node.attr.zone: zoneb`**, giving them a distinct allocation attribute from the original nodes (which have no zone attr).
+2. **Created and seeded the `app-data` index** — the precondition had failed to create it (it used plain `http` against this TLS-only cluster), so the index was missing. I created it with `index.routing.allocation.require.zone: zoneb`, forcing all primaries and replicas onto the two new nodes.
+3. **Verified**: green health, 5 nodes, all app-data shards on the new nodes, no impact to `es-cluster`.
+
+No operators or CRDs were used.

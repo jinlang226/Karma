@@ -1,0 +1,17 @@
+Done. The replica set is now stable.
+
+## What was wrong
+The probes weren't intrinsically misconfigured — they call `/usr/local/bin/health-check.sh`, which authenticates to MongoDB as `health-user`. The script reads a per-pod password override from the `health-overrides` ConfigMap before falling back to the real secret. That ConfigMap contained a **stale override for `mongodb-replica-1`** (`legacyHealthPass123`) while the actual `health-user` password is `healthpass123`. So pod-1's readiness/liveness probes hit `Authentication failed` and flapped, while pods 0 and 2 (no override) were healthy.
+
+## Fix
+Removed the stale `mongodb-replica-1` entry from the `health-overrides` ConfigMap so the probe falls back to the correct password. No probe disabling, no auth changes, no operators/CRDs.
+
+## Verification
+- ConfigMap override file disappeared from pod-1 (~10s sync); `health-check.sh` returns `PROBE OK`.
+- All 3 pods `1/1 Running`, no new `Unhealthy` events after the fix (the events shown are stale, 3m+ old, from before the change).
+- Replica set topology:
+  - `mongodb-replica-1` → **PRIMARY**
+  - `mongodb-replica-0` → **SECONDARY**
+  - `mongodb-replica-2` → **SECONDARY**
+
+Auth remains enabled throughout.

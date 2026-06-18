@@ -1,0 +1,16 @@
+The task is complete and verified. 
+
+## Summary
+
+**Root cause:** The "transform capacity change" was a config regression — the `es-transform-config` ConfigMap had `node.roles: [ ingest ]`, with the **`transform` role removed**, and the `es-transform` StatefulSet was scaled to `0`. With no transform-capable node in the cluster, the aggregation transform could not run (Elasticsearch reported *"found no transform nodes"*), so the aggregated view (`app-events-rollup`) went stale.
+
+**Remediation (capacity restored before restarting the job, per constraints):**
+1. **Restored transform capacity first** — patched `es-transform-config` to `node.roles: [ transform, remote_cluster_client ]` and scaled `es-transform` back to 1 replica. The node rejoined the cluster with role `rt` (transform + remote_cluster_client).
+2. **Created and started the transform** via the transform APIs (`PUT`/`POST _transform/events-by-service/_start`) — both `acknowledged: true`. No CRDs/ECK used; destination index untouched (it was newly built by the transform).
+
+**Verification — goal met:**
+- Transform `state: started`, running on node `es-transform-0`.
+- **Checkpoint advanced to `1`** (was `0` per the `transform-checkpoint` fixture), with `changes_last_detected_at` updating.
+- Destination index `app-events-rollup` is now populated with fresh aggregates: `api → 3`, `web → 2` (5 source docs processed, 2 indexed).
+
+The aggregated view is live again and processing continues via the sync configuration.

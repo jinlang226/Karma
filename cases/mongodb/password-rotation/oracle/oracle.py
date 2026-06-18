@@ -59,7 +59,7 @@ def _mongo_tls_flags(probe_pod=None):
             ca_path = cand
             break
     if ca_path:
-        flags = ["--tls", "--tlsAllowInvalidHostnames", "--tlsCAFile", ca_path]
+        flags = ["--tls", "--tlsAllowInvalidHostnames", "--tlsAllowInvalidCertificates", "--tlsCAFile", ca_path]
         for client_pem in ("/etc/tls/client.pem", "/etc/mongo-ca/client.pem"):
             cprobe = run(["kubectl", "-n", NAMESPACE, "exec", pod, "--", "/bin/sh", "-c", "test -f " + client_pem])
             if cprobe.returncode == 0:
@@ -166,10 +166,13 @@ def credentials(errors):
         "app_old_pw": app_old_pw,
         "app_next_pw": app_next_pw,
         "rep_pw": rep_pw,
-        "admin_uri": f"mongodb://{ADMIN_USER}:{admin_pw}@localhost:27017/admin",
-        "app_new_uri": f"mongodb://{APP_USER}:{app_next_pw}@localhost:27017/{APP_DB}?authSource=admin",
-        "app_old_uri": f"mongodb://{APP_USER}:{app_old_pw}@localhost:27017/{APP_DB}?authSource=admin",
-        "rep_uri": f"mongodb://{REPORTING_USER}:{rep_pw}@localhost:27017/{APP_DB}?authSource=admin",
+        # directConnection skips SDAM topology monitoring (via find_primary's
+        # db.hello), which a localhost connection would start and which fails
+        # under a persisted requireTLS mode.
+        "admin_uri": f"mongodb://{ADMIN_USER}:{admin_pw}@localhost:27017/admin?directConnection=true",
+        "app_new_uri": f"mongodb://{APP_USER}:{app_next_pw}@localhost:27017/{APP_DB}?authSource=admin&directConnection=true",
+        "app_old_uri": f"mongodb://{APP_USER}:{app_old_pw}@localhost:27017/{APP_DB}?authSource=admin&directConnection=true",
+        "rep_uri": f"mongodb://{REPORTING_USER}:{rep_pw}@localhost:27017/{APP_DB}?authSource=admin&directConnection=true",
     }
 
 

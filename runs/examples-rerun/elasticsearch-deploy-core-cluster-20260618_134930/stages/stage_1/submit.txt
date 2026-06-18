@@ -1,0 +1,23 @@
+Deployment is complete and verified.
+
+## Summary
+
+A 3-node Elasticsearch 8.11.1 cluster is deployed in the `elasticsearch` namespace using only native Kubernetes resources (no CRDs/operators).
+
+**Resources created** (`es.yaml`):
+- **StatefulSet `es`** — 3 replicas (es-0/1/2), all `1/1 Ready`, image `docker.elastic.co/elasticsearch/elasticsearch:8.11.1`, each with a 2Gi PVC.
+- **Service `es-http`** (ClusterIP) — HTTPS on port 9200, the entrypoint for clients.
+- **Service `es-discovery`** (headless) — transport/9300 for node discovery.
+- **ConfigMap `es-config`** — `elasticsearch.yml` with security + HTTP TLS (from `es-http-tls`) + transport TLS enabled.
+- **PodDisruptionBudget `es-pdb`** — `minAvailable: 2`.
+- Used the existing `elastic-password` secret to set the `elastic` user password.
+
+**Verification:**
+- Cluster health via `https://es-http:9200`: **green, 3 nodes, 3 data nodes**.
+- **Write**: indexed a doc → `"result":"created"`.
+- **Read**: GET returned the doc; search matched it.
+- **Replica allocation**: a 1-replica index reached `green` (primary + replica on separate nodes), confirming genuine multi-node operation.
+
+**Key gotcha hit and fixed:** the initial StatefulSet used the default `OrderedReady` pod management, which deadlocked — es-0 couldn't pass its readiness probe (needs cluster quorum) so es-1/es-2 never started. Recreating the StatefulSet with `podManagementPolicy: Parallel` let all three boot together, form quorum, and elect a master.
+
+Goal met: all nodes Ready, reachable over HTTPS through `es-http`, reads and writes succeed.

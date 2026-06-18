@@ -269,11 +269,15 @@ def _launch_docker(
     for k, v in env_vars.items():
         docker_cmd += ["-e", f"{k}={v}"]
     # Forward agent auth from the host so the in-container CLI can authenticate
-    # (Claude: CLAUDE_CODE_OAUTH_TOKEN / ANTHROPIC_API_KEY; Codex/OpenAI: keys).
-    # File-based creds (e.g. ~/.codex/auth.json) are mounted via extra_mounts /
-    # --agent-auth-path instead.
+    # (Claude: CLAUDE_CODE_OAUTH_TOKEN / ANTHROPIC_API_KEY; Codex/OpenAI: keys;
+    # Copilot: GITHUB_TOKEN; api: KARMA_API_*/DEEPSEEK_API_KEY). File-based creds
+    # (e.g. ~/.codex/auth.json) are mounted via extra_mounts / --agent-auth-path.
     for _k in ("CLAUDE_CODE_OAUTH_TOKEN", "ANTHROPIC_API_KEY", "OPENAI_API_KEY",
-               "CODEX_API_KEY", "CODEX_MODEL", "KARMA_CLAUDE_AGENT_MODEL"):
+               "CODEX_API_KEY", "CODEX_MODEL", "KARMA_CLAUDE_AGENT_MODEL",
+               "KARMA_CLAUDE_AGENT_EFFORT",
+               "GITHUB_TOKEN", "KARMA_COPILOT_AGENT_MODEL",
+               "DEEPSEEK_API_KEY", "KARMA_API_KEY", "KARMA_API_BASE_URL",
+               "KARMA_API_MODEL", "KARMA_API_MAX_STEPS"):
         _v = os.environ.get(_k)
         if _v:
             docker_cmd += ["-e", f"{_k}={_v}"]

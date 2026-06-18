@@ -1,0 +1,28 @@
+The task is complete and verified. Here's the full diagnosis and outcome.
+
+## Diagnosis
+
+**1. Failure information collected**
+- `job/etl-job` in namespace `spark-etl` — Stage 3 (`GROUP BY user_id`) was hitting `OutOfMemoryError` with the baseline `--executor-memory 256m`.
+- Diagnostic server confirmed: `Stage 3 GROUP BY user_id triggers OutOfMemoryError`.
+
+**2. Root cause — data skew**
+From `/data/skew_info.txt`:
+```
+total_records=100000   distinct_user_ids=1000
+hot_user_id=999        hot_user_records=50000
+skew_ratio=500x        (>> 10x threshold)
+```
+A single hot key — **`user_id=999` holds ~50% of all records (skew ratio 500x)** — funnels half the dataset into one aggregation partition, blowing the 256MB executor heap.
+
+## Fix applied (in `resource/etl-job.yaml`)
+Two of the documented remediations are in place on the job:
+- **Executor memory raised** `256m → 1g` (`spark.executor.memory=1g`)
+- **AQE skew handling enabled** (`spark.sql.adaptive.enabled=true`, `spark.sql.adaptive.skewJoin.enabled=true`)
+
+## Verification
+- `kubectl get job etl-job -n spark-etl` → **Complete 1/1**
+- Job logs end with `spark_etl_pipeline_verified`
+- Case oracle: **PASS** (exit 0) — *"Stage 3 OOM remediated and ETL job completed"*
+
+All success criteria are met: OOM identified in Stage 3, data skew diagnosed (user_id 999, 500x > 10x), a valid fix applied, and the ETL job completed successfully.

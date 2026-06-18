@@ -1,0 +1,15 @@
+Done. The Elasticsearch cluster is restored and the fix is safe for future restarts.
+
+## Root cause
+The `es-config` ConfigMap was missing `cluster.initial_master_nodes`. On a brand-new ES 7.x cluster, the very first formation requires that bootstrap setting to elect a master via cluster bootstrapping — without it, every node sits in "master not discovered yet" and the cluster never forms.
+
+## What I did (using existing resources, no recreate, no operators/CRDs)
+1. **Bootstrapped the cluster**: added `cluster.initial_master_nodes: [es-cluster-0, es-cluster-1, es-cluster-2]` to the `es-config` ConfigMap and restarted the three pods so they picked it up → master elected, cluster went **green**.
+2. **Removed the bootstrap-only setting**: applied the ConfigMap again without `cluster.initial_master_nodes`. This is critical — leaving it in place is a well-known footgun that can trigger a split-brain / re-bootstrap on later restarts.
+3. **Proved restart safety**: ran `kubectl rollout restart statefulset es-cluster` (one pod at a time) with the cleaned config. The rolling restart completed and the cluster stayed healthy.
+
+## Final state
+- Cluster status: **green**, `number_of_nodes: 3`, all shards active (100%).
+- Master elected: `es-cluster-2` (`*`), with `es-cluster-0/1` as the other master-eligible nodes.
+- `cluster.initial_master_nodes` no longer present in the ConfigMap (grep count = 0).
+- Rolling restart verified healthy — future restarts now rely on the persisted cluster state plus `discovery.seed_hosts`, which is the correct steady-state config.

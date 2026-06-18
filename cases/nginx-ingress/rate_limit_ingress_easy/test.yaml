@@ -102,13 +102,47 @@ preconditionUnits:
         sleep: 1
       - command: "kubectl -n demo apply -f cases/nginx-ingress/rate_limit_ingress_easy/resource/ingress-health.yaml"
         sleep: 1
-      - command: "kubectl -n demo apply -f cases/nginx-ingress/rate_limit_ingress_easy/resource/curl-test.yaml"
+      - command: "/bin/sh -c 'kubectl -n demo get pod curl-test >/dev/null 2>&1 || kubectl -n demo apply -f cases/nginx-ingress/rate_limit_ingress_easy/resource/curl-test.yaml'"
         sleep: 1
       - command: "kubectl -n demo wait --for=condition=Ready pod/{{params.curl_pod_name}} --timeout=180s"
         sleep: 1
     verify:
       - command: "kubectl -n demo wait --for=condition=ready pod/{{params.curl_pod_name}} --timeout=5s"
         timeout_sec: 30
+
+  # Additive scenario fixture (composition safety): the scenario backend (the
+  # rate-echo deployment) and the two pre-existing Ingresses ({{params.api_path}}
+  # and {{params.health_path}}) are fixtures the agent does NOT create -- the task
+  # is only to ADD a rate limit to {{params.api_path}}. nginx_env_ready seeds them
+  # on its destructive fresh-build path, which is SKIPPED on an inherited cluster
+  # (the probe sees the curl-test pod from a prior nginx stage with DIFFERENT
+  # scenario resources), so rate-echo + the two Ingresses are absent and the
+  # oracle has nothing to test. Re-establish them additively when rate-echo is
+  # missing, reusing the build's resource files; also ensures curl-test. It never
+  # deletes a namespace or touches the shared ingress-nginx controller. Standalone
+  # rate-echo already exists so the probe matches and this unit skips ->
+  # byte-identical standalone behaviour.
+  - name: rate_limit_scenario_fixture
+    on_probe_fail: skip
+    probe:
+      - command: "kubectl -n demo get deploy rate-echo"
+        timeout_sec: 10
+    apply:
+      - command: "kubectl -n demo apply -f cases/nginx-ingress/rate_limit_ingress_easy/resource/rate-echo.yaml"
+        sleep: 2
+      - command: "/bin/sh -c 'kubectl -n demo rollout status deploy/rate-echo --timeout=60s || true'"
+        sleep: 1
+      - command: "kubectl -n demo apply -f cases/nginx-ingress/rate_limit_ingress_easy/resource/ingress-api.yaml"
+        sleep: 1
+      - command: "kubectl -n demo apply -f cases/nginx-ingress/rate_limit_ingress_easy/resource/ingress-health.yaml"
+        sleep: 1
+      - command: "/bin/sh -c 'kubectl -n demo get pod {{params.curl_pod_name}} >/dev/null 2>&1 || kubectl -n demo apply -f cases/nginx-ingress/rate_limit_ingress_easy/resource/curl-test.yaml'"
+        sleep: 1
+      - command: "/bin/sh -c 'kubectl -n demo wait --for=condition=Ready pod/{{params.curl_pod_name}} --timeout=120s || true'"
+        sleep: 1
+    verify:
+      - command: "/bin/sh -c 'kubectl -n demo get deploy rate-echo >/dev/null 2>&1; true'"
+        timeout_sec: 10
 
 oracle:
   verify:

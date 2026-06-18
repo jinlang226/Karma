@@ -56,7 +56,10 @@ preconditionUnits:
         sleep: 2
       - command: "kubectl -n cockroachdb apply -f cases/cockroachdb/certificate-rotation/resource/services.yaml"
         sleep: 2
-      - command: "kubectl -n cockroachdb apply -f cases/cockroachdb/certificate-rotation/resource/openssl-toolbox.yaml"
+      # Reuse an existing openssl-toolbox if present (a prior stage may have made
+      # one; applying our Pod spec over it is rejected on immutable fields like
+      # restartPolicy). Both are openssl images, so gen-old-certs.sh runs in either.
+      - command: "/bin/sh -c 'kubectl -n cockroachdb get pod openssl-toolbox >/dev/null 2>&1 || kubectl -n cockroachdb apply -f cases/cockroachdb/certificate-rotation/resource/openssl-toolbox.yaml'"
         sleep: 2
       - command: "kubectl -n cockroachdb wait --for=condition=ready pod/openssl-toolbox --timeout=120s"
         timeout_sec: 600
@@ -87,27 +90,69 @@ preconditionUnits:
       - command: "kubectl -n cockroachdb get pods 2>/dev/null | grep -c Running"
         timeout_sec: 10
 
-  - name: capture_old_cert_baseline
-    # Snapshot the running cluster's CURRENT node/CA cert as the pre-rotation
-    # baseline the oracle compares against. This MUST run every stage, but the
-    # capture above lives inside crdb_env_ready's apply, which is SKIPPED when a
-    # cluster is inherited from a prior workflow stage (probe sees pods Running)
-    # -- leaving the ConfigMap absent and the oracle unable to verify rotation.
-    # So capture it here additively: when the baseline ConfigMap is missing, read
-    # the live mounted certs straight from the running pod and record their
-    # fingerprints/expiry. Workflow-agnostic and non-destructive -- it only reads
-    # certs and writes a ConfigMap, never mutating cluster state. The fingerprint
-    # / not_after formats match crdb_env_ready's capture so the oracle's
-    # old-vs-new comparison stays consistent across the standalone and inherited
-    # paths.
+  - name: establish_cert_baseline
+    # Establish the case's OWN known CA + pre-rotation leaf certs as the baseline
+    # the agent rotates from -- self-sufficiently, so this case runs identically
+    # standalone OR composed. Standalone, crdb_env_ready's apply already did this
+    # (and wrote the ConfigMap), so the probe below skips. On an INHERITED cluster
+    # crdb_env_ready is skipped, and the prior stage's CA private key lives nowhere
+    # reachable (a healthy cluster never stores ca.key -- the secret holds only
+    # ca.crt, pods mount only node.key/ca.crt), so the agent could NOT rotate
+    # "under the same CA". Rather than depend on an unrecoverable upstream key,
+    # BRING OUR OWN: regenerate the case CA (ca.key staged at /tmp/certs/ca.key in
+    # the toolbox -- exactly where the prompt promises it), install its node/client
+    # certs into the live cert secret, and restart the pods to load them. Data on
+    # the PVCs is preserved (only the pods cycle); the StatefulSet is
+    # podManagementPolicy=Parallel, so all nodes come back together with consistent
+    # certs (no mixed-CA window that would break inter-node TLS). Then capture the
+    # baseline ConfigMap. Additive and data-preserving: it re-keys TLS (this case's
+    # own domain) but never deletes the namespace or touches stored data. After it,
+    # the inherited cluster is in the SAME well-defined pre-rotation state as
+    # standalone with the CA key available, so a correct ~1y same-CA rotation
+    # passes regardless of what CA an upstream stage left.
     on_probe_fail: skip
     probe:
       - command: "kubectl -n cockroachdb get configmap {{params.old_cert_configmap_name}}"
         timeout_sec: 10
     apply:
-      - command: "/bin/sh -c 'rm -rf /tmp/crdb-old-certs; mkdir -p /tmp/crdb-old-certs; kubectl -n cockroachdb exec crdb-cluster-0 -- cat /cockroach/cockroach-certs/node.crt > /tmp/crdb-old-certs/node.crt; kubectl -n cockroachdb exec crdb-cluster-0 -- cat /cockroach/cockroach-certs/ca.crt > /tmp/crdb-old-certs/ca.crt'"
-        timeout_sec: 60
+      # Reuse an existing openssl-toolbox if present (a prior stage may have made
+      # one; applying our Pod spec over it is rejected on immutable fields like
+      # restartPolicy). Both are openssl images, so gen-old-certs.sh runs in either.
+      - command: "/bin/sh -c 'kubectl -n cockroachdb get pod openssl-toolbox >/dev/null 2>&1 || kubectl -n cockroachdb apply -f cases/cockroachdb/certificate-rotation/resource/openssl-toolbox.yaml'"
+        sleep: 2
+      - command: "kubectl -n cockroachdb wait --for=condition=ready pod/openssl-toolbox --timeout=120s"
+        timeout_sec: 600
+        sleep: 2
+      - command: "kubectl -n cockroachdb exec -i openssl-toolbox -- sh -s < cases/cockroachdb/certificate-rotation/resource/gen-old-certs.sh"
+        timeout_sec: 120
+        sleep: 2
+      - command: "/bin/sh -c 'rm -rf /tmp/crdb-old-certs; kubectl -n cockroachdb cp openssl-toolbox:/tmp/certs /tmp/crdb-old-certs'"
         sleep: 1
+      - command: "/bin/sh -c 'kubectl -n cockroachdb create secret generic {{params.cert_secret_name}} --from-file=ca.crt=/tmp/crdb-old-certs/ca.crt --from-file=node.crt=/tmp/crdb-old-certs/node.crt --from-file=node.key=/tmp/crdb-old-certs/node.key --from-file=client.root.crt=/tmp/crdb-old-certs/client.root.crt --from-file=client.root.key=/tmp/crdb-old-certs/client.root.key --dry-run=client -o yaml | kubectl apply -f -'"
+        sleep: 1
+      # Cycle the pods so they remount the re-keyed secret. Scale to 0 FIRST so
+      # every old-CA pod is gone before any new-CA pod starts -- a delete/rolling
+      # restart leaves old-cert and new-cert pods coexisting briefly, and their
+      # inter-node TLS handshake fails, which can stall the cluster from reforming
+      # (the rollout then times out and errors the stage). PVCs (cockroach-data)
+      # are untouched, so cluster ID, node IDs, and data persist across the cycle.
+      - command: "/bin/sh -c 'kubectl -n cockroachdb scale statefulset/crdb-cluster --replicas=0 || true'"
+        timeout_sec: 60
+        sleep: 2
+      - command: "/bin/sh -c 'kubectl -n cockroachdb wait --for=delete pod -l app.kubernetes.io/name=cockroachdb --timeout=150s || true'"
+        timeout_sec: 180
+        sleep: 3
+      - command: "/bin/sh -c 'kubectl -n cockroachdb scale statefulset/crdb-cluster --replicas=3 || true'"
+        timeout_sec: 60
+        sleep: 5
+      # rollout status can lag on readiness probes while the DB is already serving,
+      # so it is best-effort; the SELECT 1 loop below is the real readiness gate.
+      - command: "/bin/sh -c 'kubectl -n cockroachdb rollout status statefulset/crdb-cluster --timeout=420s || true'"
+        timeout_sec: 600
+        sleep: 5
+      - command: "/bin/sh -c 'for i in $(seq 1 45); do kubectl -n cockroachdb exec crdb-cluster-0 -- ./cockroach sql --certs-dir=/cockroach/cockroach-certs --host=crdb-cluster-0.crdb-cluster.cockroachdb.svc.cluster.local -e \"SELECT 1;\" && exit 0; sleep 4; done; exit 1'"
+        timeout_sec: 300
+        sleep: 2
       - command: "/bin/sh -c 'fingerprint=$(openssl x509 -noout -fingerprint -sha256 -in /tmp/crdb-old-certs/node.crt | sed \"s/.*=//\"); ca_fingerprint=$(openssl x509 -noout -fingerprint -sha256 -in /tmp/crdb-old-certs/ca.crt | sed \"s/.*=//\"); not_after=$(openssl x509 -noout -enddate -in /tmp/crdb-old-certs/node.crt | sed \"s/notAfter=//\"); kubectl -n cockroachdb create configmap {{params.old_cert_configmap_name}} --from-literal=fingerprint=\"$fingerprint\" --from-literal=ca_fingerprint=\"$ca_fingerprint\" --from-literal=not_after=\"$not_after\" --dry-run=client -o yaml | kubectl apply -f -'"
         sleep: 1
     verify:

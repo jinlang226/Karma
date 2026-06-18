@@ -1,0 +1,16 @@
+The audit is complete. The `config-audit` ConfigMap now exists in the `demo` namespace with a non-empty `findings.txt` (5,113 bytes), and I made **no changes** to any live resource — every action was a read (`get`/`logs`) except the single permitted ConfigMap creation.
+
+## Key findings documented
+
+**Controller deployment**
+- **[HIGH] Conflicting flags** — `--watch-ingress-without-class` is set twice: `=true` early, `=false` appended last. Last wins, so the effective value is `false`. Latent defect (harmless today only because every demo Ingress sets `ingressClassName: nginx`).
+- `--publish-status-address=localhost` (non-routable status address); `readOnlyRootFilesystem: false`; `automountServiceAccountToken: true`; hostPorts 80/443; `terminationGracePeriodSeconds: 0`; single replica (no HA). Baseline security context is otherwise sound (non-root, drop ALL caps, seccomp RuntimeDefault).
+
+**ConfigMap** — minimal: only `limit-req-status-code: "429"`.
+
+**Demo Ingresses**
+- **[HIGH] Broken canary** — `canary-alt` is a canary (`X-Canary=beta`) for host `canary-alt.example.com`, but no primary Ingress exists for that host. The controller logs this continuously (`cannot merge alternative backend … hostname canary-alt.example.com that does not exist`); the rule is silently dropped.
+- **[MED] Canary annotation conflict** — `canary-canary` uses `canary-by-header-value: always`, where `always` is a reserved keyword — contradictory/error-prone.
+- **[MED] Inconsistent rate limiting** — on `rate.example.com`, `rate-api` (`/api`) enforces 1 rps (429s confirmed in logs) while `rate-health` (`/health`) has no limit; the `rate-api-alt-easy` decoy exposes the same backend unthrottled.
+
+Two resources (`canary-alt`, `rate-api-alt-easy`) carry `benchmark.decoy=true` labels, and all referenced backends resolve to healthy endpoints.

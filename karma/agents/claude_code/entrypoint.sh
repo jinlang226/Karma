@@ -31,6 +31,29 @@ SUBMIT_FILE="submit.txt"
 TMP_FILE=".submit.partial"
 STREAM_FILE=".agent.stream.jsonl"
 MODEL="${KARMA_CLAUDE_AGENT_MODEL:-sonnet}"
+# Optional reasoning effort (low|medium|high|xhigh|max). Empty -> omit the flag
+# so the CLI keeps its own default; set KARMA_CLAUDE_AGENT_EFFORT to pair an
+# effort level with the model (e.g. MODEL=opus + EFFORT=low).
+EFFORT="${KARMA_CLAUDE_AGENT_EFFORT:-}"
+EFFORT_ARGS=()
+if [ -n "$EFFORT" ]; then
+  EFFORT_ARGS=(--effort "$EFFORT")
+fi
+
+# Harness contract appended as a SYSTEM prompt (kept out of the task prompt so
+# cases stay agent-agnostic). Without this, agentic models -- notably Opus --
+# offload waits to background tasks and END THEIR TURN expecting a scheduled
+# wakeup/re-invocation. KARMA runs `claude --print` ONE-SHOT: ending the turn
+# exits the process, no wakeup ever comes, and the task is abandoned half-done
+# (e.g. a TLS rolling restart left incomplete). Tell the model its real runtime.
+SYS_PROMPT="You are running in a single, non-interactive session (claude --print). \
+There are NO background tasks, scheduled wakeups, or re-invocations: when you end \
+your turn the process exits and your work stops permanently. If you start any \
+asynchronous operation (a rolling restart, a kubectl rollout, a wait for pods/jobs, \
+a background command), you MUST poll it to completion SYNCHRONOUSLY within this turn \
+(loop with sleep until it is done) -- do not hand it off and wait to be woken up. \
+Do not end your turn until the entire task is fully complete and you have verified \
+the end state."
 
 # Stream the full event log to stdout (-> agent.log) in REAL TIME via tee, and
 # also to a temp file for parsing. Real-time matters: when KARMA times out and
@@ -38,6 +61,8 @@ MODEL="${KARMA_CLAUDE_AGENT_MODEL:-sonnet}"
 # runs you most want to debug), instead of being lost.
 claude --print --verbose --output-format stream-json \
   --model "$MODEL" \
+  "${EFFORT_ARGS[@]}" \
+  --append-system-prompt "$SYS_PROMPT" \
   --dangerously-skip-permissions \
   "$(cat "$PROMPT_FILE")" \
   2>&1 | tee "$STREAM_FILE"

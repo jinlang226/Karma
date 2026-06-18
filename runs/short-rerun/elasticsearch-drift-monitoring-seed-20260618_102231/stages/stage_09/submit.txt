@@ -1,0 +1,18 @@
+All five Elasticsearch nodes — including the newly-instrumented `es-data-b-0` and `es-data-b-1` — are now reporting metrics into the monitoring cluster, and filebeat is shipping logs (acked counts in the sidecar logs). Task complete.
+
+## Summary
+
+**Root cause:** The drift was an under-instrumented statefulset. The `es` statefulset (pods `es-0/1/2`) had both monitoring sidecars and was shipping fine, but the `es-data-b` statefulset (`es-data-b-0/1`) was deployed with only the `elasticsearch` container — no Metricbeat, no Filebeat — so those nodes' metrics and logs never reached the monitoring cluster.
+
+**Fix:** Applied a strategic-merge patch to the `es-data-b` statefulset mirroring exactly what `es` already had (no CRDs, no operators):
+- Added the `metricbeat` sidecar (uses `metricbeat-config`, scrapes `localhost:9200`, ships to `monitoring-es-http.monitoring.svc:9200`).
+- Added the `filebeat` sidecar (uses `filebeat-config`, reads ES logs).
+- Added the shared `es-logs` emptyDir (mounted writable on the ES container, read-only on filebeat) plus the `metricbeat-config`, `filebeat-config`, and `es-http-certs` volumes.
+
+The existing shared ConfigMaps are pod-local (`localhost:9200` source), so they work unchanged on the new pods.
+
+**Verification:**
+- All 5 ES pods now run 3/3 containers (`elasticsearch` + `metricbeat` + `filebeat`).
+- Cluster health: **green**, 5 nodes — stayed healthy through the rolling update.
+- Monitoring indices (`.monitoring-es-8-mb`, `.ds-metricbeat-*`, `filebeat-8.11.1`) are growing, and recent `.monitoring-es-8-mb` docs include all five nodes: `es-0, es-1, es-2, es-data-b-0, es-data-b-1`.
+- The new sidecars' logs confirm active shipping (filebeat acked 457 events; metricbeat `node_stats` succeeding). The brief startup `connection refused` errors were transient while ES was still booting.

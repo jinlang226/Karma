@@ -1,0 +1,16 @@
+The audit is complete. The `config-audit` ConfigMap exists in the `elasticsearch` namespace with a non-empty `findings.txt` (5,874 bytes). The entire audit used read-only operations (authenticated HTTPS GETs and `kubectl get`); no live cluster setting, credential, or policy was changed.
+
+## What I found
+
+The task framing said the cluster was reachable over plain HTTP — it isn't. **HTTP/transport TLS is enabled and authentication is enforced**, so plain `http://...:9200` returned an empty reply. I authenticated over HTTPS using the `elastic-password` secret to complete the audit.
+
+**Headline findings:**
+
+- **CRITICAL — privilege escalation via file realm:** A file-realm user `ops-user` is mapped to the built-in `superuser` role (full cluster admin, `run_as:*`). File-realm users don't appear in the `_security/user` API, so this admin account is invisible to normal native-user audits.
+- **HIGH:** Weak/predictable `elastic` superuser password (`elasticpass`); security **audit logging is disabled**; **no Kubernetes NetworkPolicy** restricts access to ports 9200/9300.
+- **MEDIUM:** A `report-user` with cluster-wide read on all indices; basic license (no FLS/DLS, IP filtering, or operator privileges); IP filtering off.
+- **Operational:** Index `app-data` has a hard `index.routing.allocation.require.zone=new` pinning shards to the `es-new-*` nodes — an availability risk if those nodes go down.
+
+**Positives:** TLS on both HTTP and transport layers, authentication enforced, anonymous access disabled, certs valid through 2027, no outstanding API keys.
+
+The full severity-ranked report (CRITICAL/HIGH/MEDIUM/LOW + observed non-default config + method note) is in the ConfigMap for the security team.

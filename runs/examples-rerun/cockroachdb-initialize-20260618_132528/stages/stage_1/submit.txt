@@ -1,0 +1,25 @@
+The cluster is fully operational. Task complete.
+
+## Summary
+
+**Diagnosis:** The 3 CockroachDB pods were running with a correct `--join`/`--advertise-host` configuration (the headless service even has `publishNotReadyAddresses: true`, so peer DNS resolves before readiness). The "join/advertise errors" were transient — pods were still in `ContainerCreating` and DNS for peer pods hadn't resolved yet. Once all three were running, the logs showed the real blocker:
+
+```
+awaiting `cockroach init` or join with an already initialized node
+‹crdb-cluster-1...› is itself waiting for init, will retry
+```
+
+All nodes were reachable but **none was bootstrapped** — the cluster had simply never been initialized.
+
+**Fix (used existing resources / in-cluster tooling, no recreation):**
+```bash
+kubectl -n cockroachdb exec crdb-cluster-0 -- ./cockroach init --insecure --host=localhost:26257
+# → Cluster successfully initialized
+```
+
+**Verification:**
+- All 3 pods `1/1 Running` and pass the readiness probe (`/health?ready=1`).
+- `node status`: nodes 1, 2, 3 all `is_available=true`, `is_live=true`.
+- SQL accepts connections: `SELECT count(*) FROM crdb_internal.gossip_nodes WHERE is_live` → **3**, and `SHOW DATABASES` returns the system databases.
+
+Cluster is SQL-ready with 3 healthy nodes.

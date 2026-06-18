@@ -1,0 +1,34 @@
+Done. The CockroachDB cluster is now SQL-ready with all 3 nodes healthy.
+
+## Diagnosis
+
+The StatefulSet, services, and pod configuration were all **correct**:
+- `--join` list pointed at all three peer DNS names ✓
+- `--advertise-host` correctly used `$(POD_NAME).crdb-cluster...` ✓
+- Headless service had `publishNotReadyAddresses: true` (required so not-yet-ready pods are DNS-resolvable during cluster formation) ✓
+
+The "join/advertise connection refused" errors in the logs were **transient startup-ordering noise** — node 0 tried to reach nodes 1 and 2 before their listeners were up. Within a second they all reached each other and settled into:
+
+```
+"...is itself waiting for init, will retry"
+"awaiting `cockroach init` or join with an already initialized node"
+```
+
+That message is the real signal: a fresh CockroachDB cluster's nodes block, fully networked, until exactly one node receives a one-time bootstrap command. Nobody had run it, so the cluster never formed and pods stayed `0/1` (not ready → not SQL-serving).
+
+## Fix
+
+Ran the in-cluster bootstrap (the hint's "in-cluster tooling"):
+
+```bash
+kubectl -n cockroachdb exec crdb-cluster-0 -- ./cockroach init --insecure
+# Cluster successfully initialized
+```
+
+No resources were recreated or modified — only the missing initialization step was performed.
+
+## Verification
+
+- **3/3 pods** `1/1 Running`
+- `cockroach node status`: nodes 1, 2, 3 all `is_available=true`, `is_live=true`
+- SQL works: `gossip_nodes` reports **3 live_nodes**; `SHOW DATABASES` returns the standard `defaultdb`/`postgres`/`system` set.

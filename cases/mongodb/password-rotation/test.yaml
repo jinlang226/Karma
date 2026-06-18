@@ -101,6 +101,41 @@ preconditionUnits:
       - command: "kubectl -n mongodb get pods 2>/dev/null | grep -c Running"
         timeout_sec: 10
 
+  - name: admin_user_fixture
+    # Composition self-sufficiency: this case authenticates as the `admin-user`
+    # created at deploy. On an inherited cluster a no-auth/other predecessor may
+    # not have created it, and a live user's password is unrecoverable -> the
+    # oracle's (and the user fixtures') admin auth fails through no agent fault.
+    # Bring our own additively: if admin-user already authenticates, skip; else
+    # ensure the secret and create the user. No restart, no data touched,
+    # idempotent -> never regresses a cluster where admin already works.
+    on_probe_fail: skip
+    probe:
+      - command: |
+          /bin/sh -c '
+          t=""; for cca in /etc/tls/ca.crt /etc/mongo-ca/ca.crt; do kubectl -n mongodb exec mongodb-replica-0 -- ls $cca >/dev/null 2>&1 && { t="--tls --tlsAllowInvalidHostnames --tlsAllowInvalidCertificates --tlsCAFile $cca"; break; }; done
+          pw=$(kubectl -n mongodb get secret admin-user-password -o jsonpath="{.data.password}" 2>/dev/null | base64 -d 2>/dev/null)
+          [ -n "$pw" ] || exit 1
+          kubectl -n mongodb exec mongodb-replica-0 -- mongosh --quiet $t "mongodb://{{params.admin_username}}:$pw@localhost:27017/admin" --eval "db.runCommand({ping:1}).ok" 2>/dev/null | grep -q 1
+          '
+        timeout_sec: 30
+    apply:
+      # Ensure the admin secret (idempotent: create only if missing).
+      - command: "/bin/sh -c 'kubectl -n mongodb get secret admin-user-password >/dev/null 2>&1 || kubectl -n mongodb create secret generic admin-user-password --from-literal=password=admin123password'"
+        sleep: 1
+      # Ensure the admin-user MongoDB user. On a no-auth inherited cluster this
+      # runs unauthenticated and succeeds; where it already exists it errors and
+      # the `|| true` keeps it a no-op. Never drops or alters existing users/data.
+      - command: |
+          /bin/sh -c '
+          t=""; for cca in /etc/tls/ca.crt /etc/mongo-ca/ca.crt; do kubectl -n mongodb exec mongodb-replica-0 -- ls $cca >/dev/null 2>&1 && { t="--tls --tlsAllowInvalidHostnames --tlsAllowInvalidCertificates --tlsCAFile $cca"; break; }; done
+          kubectl -n mongodb exec mongodb-replica-0 -- mongosh --quiet $t --eval "db.getSiblingDB(\"admin\").createUser({user:\"{{params.admin_username}}\",pwd:\"admin123password\",roles:[{role:\"root\",db:\"admin\"}]})" 2>/dev/null || true
+          '
+        sleep: 2
+    verify:
+      - command: "/bin/sh -c 'kubectl -n mongodb get secret admin-user-password >/dev/null 2>&1 && echo ok'"
+        timeout_sec: 15
+
   # Additive data fixture (composition safety): the oracle requires >= 3 docs in
   # {{params.app_database}}.{{params.app_collection}}. When this case runs chained on an inherited cluster the
   # destructive `apply` above is skipped, so a prior stage may have left the
@@ -115,15 +150,15 @@ preconditionUnits:
     on_probe_fail: skip
     probe:
       - command: |
-          /bin/sh -c 'pw=$(kubectl -n mongodb get secret admin-user-password -o jsonpath="{.data.password}" 2>/dev/null | base64 -d 2>/dev/null); pw=${pw:-admin123password}; n=$(P=$(kubectl -n mongodb exec mongodb-replica-0 -- mongosh --quiet "mongodb://{{params.admin_username}}:$pw@localhost:27017/admin?directConnection=true" --eval '\''rs.hello().primary'\'' 2>/dev/null | cut -d. -f1); P=${P:-mongodb-replica-0}; kubectl -n mongodb exec "$P" -- mongosh --quiet "mongodb://{{params.admin_username}}:$pw@localhost:27017/admin" --eval '\''db.getSiblingDB("{{params.app_database}}").{{params.app_collection}}.countDocuments({})'\'' 2>/dev/null | tr -dc 0-9); [ "${n:-0}" -ge 3 ] && echo ok | grep -c ok'
+          /bin/sh -c 't=""; for cca in /etc/tls/ca.crt /etc/mongo-ca/ca.crt; do kubectl -n mongodb exec mongodb-replica-0 -- ls $cca >/dev/null 2>&1 && { t="--tls --tlsAllowInvalidHostnames --tlsAllowInvalidCertificates --tlsCAFile $cca"; break; }; done; pw=$(kubectl -n mongodb get secret admin-user-password -o jsonpath="{.data.password}" 2>/dev/null | base64 -d 2>/dev/null); pw=${pw:-admin123password}; n=$(P=""; for _pi in $(seq 1 30); do P=$(kubectl -n mongodb exec mongodb-replica-0 -- mongosh --quiet $t "mongodb://{{params.admin_username}}:$pw@localhost:27017/admin?directConnection=true" --eval '\''rs.hello().primary'\'' 2>/dev/null | cut -d. -f1); [ -n "$P" ] && break; sleep 2; done; P=${P:-mongodb-replica-0}; kubectl -n mongodb exec "$P" -- mongosh --quiet $t "mongodb://{{params.admin_username}}:$pw@localhost:27017/admin" --eval '\''db.getSiblingDB("{{params.app_database}}").{{params.app_collection}}.countDocuments({})'\'' 2>/dev/null | tr -dc 0-9); [ "${n:-0}" -ge 3 ] && echo ok | grep -c ok'
         timeout_sec: 30
     apply:
       - command: |
-          /bin/sh -c 'pw=$(kubectl -n mongodb get secret admin-user-password -o jsonpath="{.data.password}" 2>/dev/null | base64 -d 2>/dev/null); pw=${pw:-admin123password}; P=$(kubectl -n mongodb exec mongodb-replica-0 -- mongosh --quiet "mongodb://{{params.admin_username}}:$pw@localhost:27017/admin?directConnection=true" --eval '\''rs.hello().primary'\'' 2>/dev/null | cut -d. -f1); P=${P:-mongodb-replica-0}; kubectl -n mongodb exec "$P" -- mongosh --quiet "mongodb://{{params.admin_username}}:$pw@localhost:27017/admin" --eval '\''var c=db.getSiblingDB("{{params.app_database}}").{{params.app_collection}}; var need=3-c.countDocuments({}); var docs=[]; for(var i=0;i<need;i++){docs.push({seed:"fixture",ts:new Date()});} if(docs.length>0){c.insertMany(docs,{writeConcern:{w:1}});}'\'''
+          /bin/sh -c 'pw=$(kubectl -n mongodb get secret admin-user-password -o jsonpath="{.data.password}" 2>/dev/null | base64 -d 2>/dev/null); pw=${pw:-admin123password}; P=""; for _pi in $(seq 1 30); do P=$(kubectl -n mongodb exec mongodb-replica-0 -- mongosh --quiet "mongodb://{{params.admin_username}}:$pw@localhost:27017/admin?directConnection=true" --eval '\''rs.hello().primary'\'' 2>/dev/null | cut -d. -f1); [ -n "$P" ] && break; sleep 2; done; P=${P:-mongodb-replica-0}; kubectl -n mongodb exec "$P" -- mongosh --quiet "mongodb://{{params.admin_username}}:$pw@localhost:27017/admin" --eval '\''var c=db.getSiblingDB("{{params.app_database}}").{{params.app_collection}}; var need=3-c.countDocuments({}); var docs=[]; for(var i=0;i<need;i++){docs.push({seed:"fixture",ts:new Date()});} if(docs.length>0){c.insertMany(docs,{writeConcern:{w:1}});}'\'''
         sleep: 2
     verify:
       - command: |
-          /bin/sh -c 'pw=$(kubectl -n mongodb get secret admin-user-password -o jsonpath="{.data.password}" 2>/dev/null | base64 -d 2>/dev/null); pw=${pw:-admin123password}; n=$(P=$(kubectl -n mongodb exec mongodb-replica-0 -- mongosh --quiet "mongodb://{{params.admin_username}}:$pw@localhost:27017/admin?directConnection=true" --eval '\''rs.hello().primary'\'' 2>/dev/null | cut -d. -f1); P=${P:-mongodb-replica-0}; kubectl -n mongodb exec "$P" -- mongosh --quiet "mongodb://{{params.admin_username}}:$pw@localhost:27017/admin" --eval '\''db.getSiblingDB("{{params.app_database}}").{{params.app_collection}}.countDocuments({})'\'' 2>/dev/null | tr -dc 0-9); [ "${n:-0}" -ge 3 ]'
+          /bin/sh -c 't=""; for cca in /etc/tls/ca.crt /etc/mongo-ca/ca.crt; do kubectl -n mongodb exec mongodb-replica-0 -- ls $cca >/dev/null 2>&1 && { t="--tls --tlsAllowInvalidHostnames --tlsAllowInvalidCertificates --tlsCAFile $cca"; break; }; done; pw=$(kubectl -n mongodb get secret admin-user-password -o jsonpath="{.data.password}" 2>/dev/null | base64 -d 2>/dev/null); pw=${pw:-admin123password}; n=$(P=""; for _pi in $(seq 1 30); do P=$(kubectl -n mongodb exec mongodb-replica-0 -- mongosh --quiet $t "mongodb://{{params.admin_username}}:$pw@localhost:27017/admin?directConnection=true" --eval '\''rs.hello().primary'\'' 2>/dev/null | cut -d. -f1); [ -n "$P" ] && break; sleep 2; done; P=${P:-mongodb-replica-0}; kubectl -n mongodb exec "$P" -- mongosh --quiet $t "mongodb://{{params.admin_username}}:$pw@localhost:27017/admin" --eval '\''db.getSiblingDB("{{params.app_database}}").{{params.app_collection}}.countDocuments({})'\'' 2>/dev/null | tr -dc 0-9); [ "${n:-0}" -ge 3 ]'
         timeout_sec: 30
 
   # Additive credential fixture (composition safety): standalone the build creates
@@ -136,13 +171,13 @@ preconditionUnits:
     on_probe_fail: skip
     probe:
       - command: |
-          /bin/sh -c 'kubectl -n mongodb get secret {{params.reporting_secret_name}} >/dev/null 2>&1 || exit 1; pw=$(kubectl -n mongodb get secret {{params.admin_secret_name}} -o jsonpath="{.data.password}" 2>/dev/null | base64 -d 2>/dev/null); pw=${pw:-admin123password}; P=$(kubectl -n mongodb exec mongodb-replica-0 -- mongosh --quiet "mongodb://{{params.admin_username}}:$pw@localhost:27017/admin?directConnection=true" --eval '\''rs.hello().primary'\'' 2>/dev/null | cut -d. -f1); P=${P:-mongodb-replica-0}; kubectl -n mongodb exec "$P" -- mongosh --quiet "mongodb://{{params.admin_username}}:$pw@localhost:27017/admin" --eval '\''db.getSiblingDB("admin").getUser("{{params.reporting_username}}")?quit(0):quit(1)'\'' >/dev/null 2>&1'
+          /bin/sh -c 't=""; for cca in /etc/tls/ca.crt /etc/mongo-ca/ca.crt; do kubectl -n mongodb exec mongodb-replica-0 -- ls $cca >/dev/null 2>&1 && { t="--tls --tlsAllowInvalidHostnames --tlsAllowInvalidCertificates --tlsCAFile $cca"; break; }; done; kubectl -n mongodb get secret {{params.reporting_secret_name}} >/dev/null 2>&1 || exit 1; pw=$(kubectl -n mongodb get secret {{params.admin_secret_name}} -o jsonpath="{.data.password}" 2>/dev/null | base64 -d 2>/dev/null); pw=${pw:-admin123password}; P=""; for _pi in $(seq 1 30); do P=$(kubectl -n mongodb exec mongodb-replica-0 -- mongosh --quiet $t "mongodb://{{params.admin_username}}:$pw@localhost:27017/admin?directConnection=true" --eval '\''rs.hello().primary'\'' 2>/dev/null | cut -d. -f1); [ -n "$P" ] && break; sleep 2; done; P=${P:-mongodb-replica-0}; kubectl -n mongodb exec "$P" -- mongosh --quiet $t "mongodb://{{params.admin_username}}:$pw@localhost:27017/admin" --eval '\''db.getSiblingDB("admin").getUser("{{params.reporting_username}}")?quit(0):quit(1)'\'' >/dev/null 2>&1'
         timeout_sec: 30
     apply:
       - command: "kubectl -n mongodb apply -f cases/mongodb/password-rotation/resource/secrets.yaml"
         sleep: 1
       - command: |
-          /bin/sh -c 'pw=$(kubectl -n mongodb get secret {{params.admin_secret_name}} -o jsonpath="{.data.password}" 2>/dev/null | base64 -d 2>/dev/null); pw=${pw:-admin123password}; P=$(kubectl -n mongodb exec mongodb-replica-0 -- mongosh --quiet "mongodb://{{params.admin_username}}:$pw@localhost:27017/admin?directConnection=true" --eval '\''rs.hello().primary'\'' 2>/dev/null | cut -d. -f1); P=${P:-mongodb-replica-0}; kubectl -n mongodb exec "$P" -- mongosh --quiet "mongodb://{{params.admin_username}}:$pw@localhost:27017/admin" --eval '\''if(!db.getSiblingDB("admin").getUser("{{params.reporting_username}}")){db.getSiblingDB("admin").createUser({user:"{{params.reporting_username}}",pwd:"reporting123password",roles:[{role:"read",db:"{{params.app_database}}"}]});}'\'' 2>&1 || true'
+          /bin/sh -c 'pw=$(kubectl -n mongodb get secret {{params.admin_secret_name}} -o jsonpath="{.data.password}" 2>/dev/null | base64 -d 2>/dev/null); pw=${pw:-admin123password}; P=""; for _pi in $(seq 1 30); do P=$(kubectl -n mongodb exec mongodb-replica-0 -- mongosh --quiet "mongodb://{{params.admin_username}}:$pw@localhost:27017/admin?directConnection=true" --eval '\''rs.hello().primary'\'' 2>/dev/null | cut -d. -f1); [ -n "$P" ] && break; sleep 2; done; P=${P:-mongodb-replica-0}; kubectl -n mongodb exec "$P" -- mongosh --quiet "mongodb://{{params.admin_username}}:$pw@localhost:27017/admin" --eval '\''if(!db.getSiblingDB("admin").getUser("{{params.reporting_username}}")){db.getSiblingDB("admin").createUser({user:"{{params.reporting_username}}",pwd:"reporting123password",roles:[{role:"read",db:"{{params.app_database}}"}]});}'\'' 2>&1 || true'
         sleep: 2
     verify:
       - command: |

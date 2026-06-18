@@ -1,0 +1,29 @@
+Both success criteria are met. Here's what I found and verified.
+
+## State of the cluster
+
+Three Ingresses exist for `canary.example.com` in the `demo` namespace:
+
+| Ingress | Role | Backend | Canary config |
+|---|---|---|---|
+| `canary-stable` | main route | `stable-echo` | (none) — `/` and `/health` |
+| `canary-canary` | canary overlay | `canary-echo` | `canary: true`, `canary-by-header: X-Canary`, `canary-by-header-value: always` |
+| `canary-alt` | decoy (`benchmark.decoy=true`) | `stable-echo` on `canary-alt.example.com` | unrelated host |
+
+The `canary-canary` Ingress is correctly configured: it overlays the same host+path (`canary.example.com` `/`, `pathType: Exact`) as the stable Ingress, so nginx merges it as an alternative backend and steers requests by the `X-Canary` header.
+
+## Verification
+
+```
+no header        -> stable
+X-Canary: always -> canary
+X-Canary: nope   -> stable   (non-matching value ignored, falls through to stable)
+```
+
+Stable across 5 repeated trials, and the case oracle passes (`exit 0`).
+
+The `cannot merge alternative backend ... canary-alt.example.com` errors in the controller log come from the unrelated **decoy** Ingress (`canary-alt`, a misconfigured canary on a host with no main route) and have no bearing on the `canary.example.com` routing.
+
+## Note
+
+The prompt describes the canary Ingress as not routing header traffic, but in the current seeded state it is already configured correctly and both success criteria pass — header-based routing to the canary backend is working, non-header traffic goes to stable. I made **no changes** (Deployments and Services untouched, as required); none were needed. The task's success criteria are satisfied as-is.

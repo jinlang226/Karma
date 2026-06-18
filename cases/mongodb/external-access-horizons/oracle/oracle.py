@@ -4,6 +4,7 @@ import json
 import os
 import subprocess
 import sys
+import time
 
 
 NAMESPACE = os.environ.get("BENCH_NAMESPACE", "mongodb")
@@ -19,7 +20,7 @@ def run(cmd):
     return subprocess.run(cmd, text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
 
 
-_TLS_FLAGS_CACHE = None
+_TLS_FLAGS_CACHE = {}
 
 
 def _mongo_tls_flags(probe_pod=None):
@@ -34,11 +35,15 @@ def _mongo_tls_flags(probe_pod=None):
     returns [] -> identical plain behaviour. It only adds transport flags; every
     real check still runs and still fails when its condition is unmet.
     """
-    global _TLS_FLAGS_CACHE
-    if _TLS_FLAGS_CACHE is not None:
-        return list(_TLS_FLAGS_CACHE)
-    flags = []
+    # Cache PER POD: different pods mount different certs. The mongo-rs members
+    # carry /etc/mongo-cert/server.pem (the client cert the cluster accepts), but
+    # the mongo-client pod does NOT -- reusing the members' cached flags for the
+    # connectivity check (which execs in mongo-client) yields
+    # "ENOENT ... /etc/mongo-cert/server.pem". Probe each pod for its OWN mounts.
     pod = probe_pod or f"{CLUSTER_PREFIX}-0"
+    if pod in _TLS_FLAGS_CACHE:
+        return list(_TLS_FLAGS_CACHE[pod])
+    flags = []
     ca_path = None
     for cand in (
         "/etc/tls/ca.crt",
@@ -51,14 +56,23 @@ def _mongo_tls_flags(probe_pod=None):
             ca_path = cand
             break
     if ca_path:
-        flags = ["--tls", "--tlsAllowInvalidHostnames", "--tlsCAFile", ca_path]
-        for client_pem in ("/etc/tls/client.pem", "/etc/mongo-ca/client.pem"):
+        flags = ["--tls", "--tlsAllowInvalidHostnames", "--tlsAllowInvalidCertificates", "--tlsCAFile", ca_path]
+        # Mutual TLS: when cert-rotation/tls-setup leaves the cluster in requireTLS
+        # with client-cert verification, mongosh MUST present a client keypair or the
+        # server drops the monitor connection ("connection <monitor> ... closed"). The
+        # agent's proven working command presents /etc/mongo-cert/server.pem (the
+        # keypair mounted into the mongo pods), so probe it FIRST -- it is the cert the
+        # live cluster actually accepts. Fall back to the dedicated client.pem paths a
+        # different setup might mount. Gated by test -f, so standalone (no cert) is
+        # untouched and the check stays workflow-agnostic.
+        for client_pem in ("/etc/mongo-cert/server.pem", "/etc/tls/client.pem", "/etc/mongo-ca/client.pem"):
             cprobe = run(["kubectl", "-n", NAMESPACE, "exec", pod, "--", "/bin/sh", "-c", "test -f " + client_pem])
             if cprobe.returncode == 0:
                 flags += ["--tlsCertificateKeyFile", client_pem]
                 break
-    _TLS_FLAGS_CACHE = flags
+    _TLS_FLAGS_CACHE[pod] = flags
     return list(flags)
+
 
 def _resolve_expected_replicas():
     """Topology size to enforce.
@@ -108,10 +122,18 @@ def fail(prefix, errors):
 
 
 def mongo_json(pod, eval_str, label, errors, uri=None):
-    cmd = ["kubectl", "-n", NAMESPACE, "exec", pod, "--", "mongosh", "--quiet", *_mongo_tls_flags()]
+    # TLS goes as CLI flags -- mongosh honors --tls/--tlsCAFile/--tlsCertificateKeyFile
+    # alongside a URI positional, but IGNORES file-path TLS options passed as URI query
+    # params, so a cluster left in mutual TLS by cert-rotation drops a URI-folded
+    # connection. Mirror the agent's working command: CLI TLS flags (incl. the client
+    # cert) + a URI carrying only directConnection/timeouts.
+    cmd = ["kubectl", "-n", NAMESPACE, "exec", pod, "--", "mongosh", "--quiet", *_mongo_tls_flags(pod)]
     if uri:
         cmd.append(uri)
     cmd.extend(["--eval", eval_str])
+    # Single attempt. The retry/failover lives in the caller (check_topology),
+    # which tries DIFFERENT members -- a same-pod retry can't recover a wedged
+    # monitor connection.
     res = run(cmd)
     if res.returncode != 0:
         detail = res.stderr.strip() or res.stdout.strip() or f"exit {res.returncode}"
@@ -130,8 +152,33 @@ def mongo_json(pod, eval_str, label, errors, uri=None):
 
 def check_topology():
     errors = []
-    pod = f"{CLUSTER_PREFIX}-0"
-    conf = mongo_json(pod, "JSON.stringify(rs.conf())", "rs.conf()", errors)
+    # Read rs.conf() from the FIRST member that answers. rs.conf() is REPLICATED
+    # (identical on every member), so when one member's local mongosh monitor
+    # connection is wedged -- the intermittent "connection <monitor> to
+    # 127.0.0.1:27017 closed" seen on a deep requireTLS cluster, which SAME-pod
+    # retries cannot recover because the wedge persists for the whole oracle window
+    # -- another member answers. Try each member across a few rounds and use the
+    # first valid read. The command mirrors the agent's proven one (NO connection
+    # URI, CLI TLS flags only): a previous `directConnection=true` URI
+    # deterministically wedged the single-node monitor once split-horizon was set.
+    # Workflow-agnostic: the same replicated config is read regardless of how the
+    # cluster got here, and standalone the first member answers immediately.
+    conf = None
+    last_errors = ["rs.conf() unreadable from any replica-set member"]
+    member_pods = [f"{CLUSTER_PREFIX}-{i}" for i in range(EXPECTED_REPLICAS)]
+    for _round in range(3):
+        for member_pod in member_pods:
+            attempt_errors = []
+            c = mongo_json(member_pod, "JSON.stringify(rs.conf())", "rs.conf()", attempt_errors)
+            if isinstance(c, dict):
+                conf = c
+                break
+            last_errors = attempt_errors
+        if conf is not None:
+            break
+        time.sleep(3)
+    if conf is None:
+        errors.extend(last_errors)
     if isinstance(conf, dict):
         members = conf.get("members", [])
         if len(members) != EXPECTED_REPLICAS:
@@ -149,9 +196,13 @@ def check_topology():
             idx = expected_hosts[host]
             expected_horizon = f"{EXTERNAL_HOST_PREFIX}-{idx + 1}:{NODEPORT_START + idx}"
             horizons = member.get("horizons") or {}
-            actual_horizon = horizons.get("horizon1")
-            if actual_horizon != expected_horizon:
-                errors.append(f"{host} horizon1 expected {expected_horizon}, got {actual_horizon}")
+            # Split-horizon: the horizon KEY name is client-chosen and arbitrary
+            # (the prompt never dictates one); mongod selects a horizon by the
+            # incoming connection's hostname, not by the label. So verify the
+            # expected external endpoint is advertised under SOME horizon,
+            # regardless of its key name.
+            if expected_horizon not in horizons.values():
+                errors.append(f"{host} expected horizon {expected_horizon}, got {dict(horizons)}")
 
     return fail("External access horizons topology check failed:", errors)
 
@@ -202,7 +253,7 @@ def check_connectivity():
             "--",
             "mongosh",
             "--quiet",
-            *_mongo_tls_flags(),
+            *_mongo_tls_flags(CLIENT_POD_NAME),
             uri,
             "--eval",
             "JSON.stringify(db.hello())",
