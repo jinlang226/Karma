@@ -119,50 +119,54 @@ def mongo_json(pod, eval_str, label, errors, uri=None):
     if uri:
         cmd.append(uri)
     cmd.extend(["--eval", eval_str])
-    # Targeted retry on the rs.conf() read. Even with the agent's exact no-URI
-    # command, this read on a deep requireTLS cluster (after horizons +
-    # cert-rotation + 7 prior stages) intermittently drops the mongosh monitor
-    # connection ("MongoServerSelectionError: connection <monitor> ... closed").
-    # Measured over the marathon: it failed ~2/3 of runs INCLUDING on an idle node
-    # (so it is an inherent transient, not neighbour contention). Retry a few
-    # times before giving up. This never masks a wrong value -- a successful read
-    # returns the real rs.conf() and the caller's assertions still fail on a
-    # mismatch; standalone (the read succeeds first try) it returns immediately, so
-    # behaviour is identical when the cluster is healthy. (Scoped to this oracle.)
-    detail = None
-    for _attempt in range(4):
-        res = run(cmd)
-        if res.returncode == 0:
-            raw = (res.stdout or "").strip()
-            if raw:
-                try:
-                    return json.loads(raw)
-                except json.JSONDecodeError:
-                    detail = f"Unable to parse {label} JSON output"
-            else:
-                detail = f"{label} returned empty output"
-        else:
-            detail = res.stderr.strip() or res.stdout.strip() or f"exit {res.returncode}"
-        if _attempt < 3:
-            time.sleep(4)
-    errors.append(f"{label} failed: {detail}")
-    return None
+    # Single attempt. The retry/failover lives in the caller (check_topology),
+    # which tries DIFFERENT members -- a same-pod retry can't recover a wedged
+    # monitor connection.
+    res = run(cmd)
+    if res.returncode != 0:
+        detail = res.stderr.strip() or res.stdout.strip() or f"exit {res.returncode}"
+        errors.append(f"{label} failed: {detail}")
+        return None
+    raw = (res.stdout or "").strip()
+    if not raw:
+        errors.append(f"{label} returned empty output")
+        return None
+    try:
+        return json.loads(raw)
+    except json.JSONDecodeError:
+        errors.append(f"Unable to parse {label} JSON output")
+        return None
 
 
 def check_topology():
     errors = []
-    pod = f"{CLUSTER_PREFIX}-0"
-    # Read rs.conf() with NO connection URI -- exactly the agent's proven working
-    # command: `mongosh --tls --tlsCAFile <ca> --tlsAllowInvalidHostnames --eval
-    # 'rs.conf()'`, which connects to the local mongod and lets the normal driver
-    # topology resolve. A previous attempt forced
-    # `mongodb://localhost:27017/?directConnection=true`; once this case configures
-    # split-horizon, the directConnection single-node monitor deterministically
-    # dropped ("MongoServerSelectionError: connection <monitor> to 127.0.0.1:27017
-    # closed") -- verified across the sonnet and Opus marathon runs, where the
-    # agent's no-URI command succeeded against the very same cluster. Dropping the
-    # URI mirrors that command and reads the same rs.conf() the agent verified.
-    conf = mongo_json(pod, "JSON.stringify(rs.conf())", "rs.conf()", errors)
+    # Read rs.conf() from the FIRST member that answers. rs.conf() is REPLICATED
+    # (identical on every member), so when one member's local mongosh monitor
+    # connection is wedged -- the intermittent "connection <monitor> to
+    # 127.0.0.1:27017 closed" seen on a deep requireTLS cluster, which SAME-pod
+    # retries cannot recover because the wedge persists for the whole oracle window
+    # -- another member answers. Try each member across a few rounds and use the
+    # first valid read. The command mirrors the agent's proven one (NO connection
+    # URI, CLI TLS flags only): a previous `directConnection=true` URI
+    # deterministically wedged the single-node monitor once split-horizon was set.
+    # Workflow-agnostic: the same replicated config is read regardless of how the
+    # cluster got here, and standalone the first member answers immediately.
+    conf = None
+    last_errors = ["rs.conf() unreadable from any replica-set member"]
+    member_pods = [f"{CLUSTER_PREFIX}-{i}" for i in range(EXPECTED_REPLICAS)]
+    for _round in range(3):
+        for member_pod in member_pods:
+            attempt_errors = []
+            c = mongo_json(member_pod, "JSON.stringify(rs.conf())", "rs.conf()", attempt_errors)
+            if isinstance(c, dict):
+                conf = c
+                break
+            last_errors = attempt_errors
+        if conf is not None:
+            break
+        time.sleep(3)
+    if conf is None:
+        errors.extend(last_errors)
     if isinstance(conf, dict):
         members = conf.get("members", [])
         if len(members) != EXPECTED_REPLICAS:
