@@ -1,0 +1,26 @@
+Done. The job now connects to `ray-head:6379` and prints `pong` reliably (exit 0).
+
+## What was wrong
+The script used `ray://ray-head:10001` (the Ray Client port), but the `ray-head` Service only exposes **6379** (GCS) and **8265** (dashboard) — there is no `10001`, so the connection always failed.
+
+## What I changed
+The job lives in the `ray-job-script` ConfigMap (mounted read-only at `/opt/job.py` via `subPath`), so I updated the ConfigMap and recreated the `ray-client` pod to pick it up.
+
+The script now targets `ray-head:6379`. One subtlety: a driver talking to the GCS must run on a pod that's part of the cluster, so the script first attaches the pod as a Ray node, then connects:
+
+```python
+import socket, subprocess
+import ray
+
+node_ip = socket.gethostbyname(socket.gethostname())
+subprocess.run(["ray", "start", "--address=ray-head:6379",
+                "--node-ip-address={}".format(node_ip)],
+               check=False, capture_output=True)
+
+ray.init(address="ray-head:6379")
+print("pong")
+ray.shutdown()
+```
+
+## Verification
+`kubectl -n ray exec ray-client -- python /opt/job.py` → connects to `ray-head:6379`, prints `pong`, exits `0`. Confirmed idempotent on repeat runs.

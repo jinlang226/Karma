@@ -1,0 +1,22 @@
+Oracle passes. The reporting user's access is restored, existing access intact, and the cluster is healthy (green, 3 nodes). Done.
+
+## Summary
+
+The newly added reporting user (`report-user`) couldn't authenticate because of a **file-realm merge gap**.
+
+**Root cause:** The live Elasticsearch StatefulSet (`es-cluster`, ES 8.11.1) was not mounting the file-realm secret at all, and the new user lived in a *separate* secret that had never been merged into the realm the cluster reads:
+- `es-file-realm-aggregate` (the secret the cluster is meant to mount) contained only `ops-user` (superuser).
+- `user-provided-file-realm` held the new `report-user` (read), unmerged and unmounted.
+- The `read` role assigned to `report-user` wasn't defined anywhere (ES 8 has no built-in `read` role).
+
+**Fix (no operators/CRDs, native K8s only):**
+1. **Merged** the user-provided entries into `es-file-realm-aggregate` — `users` and `users_roles` now carry both `ops-user` and `report-user`, preserving the existing user.
+2. **Defined the `read` role** in the aggregate secret's `roles.yml` (read/monitor/view_index_metadata on indices), so the role mapping resolves.
+3. **Patched the StatefulSet** to mount the aggregate secret as `config/users`, `config/users_roles`, and `config/roles.yml`, then rolled it.
+4. Seeded the `app-data` index the reporting user reads.
+
+**Verified end state:**
+- `ops-user` → cluster health 200 (existing user unbroken)
+- `report-user` → `app-data/_count` returns `{"count":1}` (access restored)
+- Cluster status **green**, 3/3 nodes, rolling restart completed cleanly
+- Case oracle: `File realm merge verified` (exit 0)

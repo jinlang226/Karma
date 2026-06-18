@@ -1,0 +1,18 @@
+TLS certificate rotation complete and verified. Summary:
+
+## What I found
+- The running CockroachDB cluster (`crdb-cluster` StatefulSet, 3 nodes, v24.1.0) was mounting secret **`crdb-certs`**, which was signed by a **rogue CA** (`O=Cockroach, CN=Cockroach CA`) — *not* the legitimate CA in the openssl-toolbox pod.
+- The legitimate secret **`crdb-cluster-certs`** was signed by the real CA (`CN=CockroachDB CA`, matching `/tmp/certs/ca.crt`) but its node cert was **expiring in ~2 days** (Jun 20 2026).
+
+## What I did
+1. Generated a fresh **node cert** and **client root cert** signed by the legitimate toolbox CA (`/tmp/certs/ca.{key,crt}`) with `--lifetime=8760h` (~1 year), replicating the full SAN set.
+2. Updated the **`crdb-cluster-certs`** secret with the new node/client/ca material.
+3. Repointed the StatefulSet from the rogue `crdb-certs` back to the legitimate `crdb-cluster-certs`.
+4. Restarted all 3 pods together (avoiding a mixed-CA gossip window); cluster reformed cleanly from persistent storage.
+
+## Verification (all pass)
+1. **Secure SQL works** — `SELECT 1;` returns `1`; all 3 nodes report healthy.
+2. **Node cert rotated** — new fingerprint `7E:29:DD:C2:34:…:4F:22` (was `E5:C1:08:5C:…`).
+3. **~1-year validity** — `notAfter=Jun 18 15:24:35 2027 GMT`.
+
+The cluster now genuinely runs on the rotated, legitimately-CA-signed certificates valid for one year.

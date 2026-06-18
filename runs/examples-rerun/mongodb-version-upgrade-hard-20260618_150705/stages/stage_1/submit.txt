@@ -1,0 +1,21 @@
+The upgrade is complete and verified.
+
+## Summary
+
+Upgraded the MongoDB replica set in the `mongodb` namespace from **5.0.5 → 7.0.5** using the supported one-major-version-at-a-time path, with no operators/CRDs (only `kubectl` + `mongosh`).
+
+**Path followed** (MongoDB does not support skipping major versions):
+1. **5.0.5**, FCV 5.0 — starting state (3-member RS healthy, 1 data doc in `testdb.data`).
+2. Rolling-updated StatefulSet image to **mongo:6.0.5** → waited for rollout → set **FCV 6.0**.
+3. Rolling-updated image to **mongo:7.0.5** → waited for rollout → set **FCV 7.0** (with `confirm: true`, required in 7.0).
+
+The StatefulSet's `RollingUpdate` strategy restarts pods highest-ordinal-first, so the two secondaries were upgraded before the primary each step — the recommended rolling order. The primary stepped down cleanly each time (primary moved 0 → 2 → 1).
+
+**Final verified state:**
+- StatefulSet image: `mongo:7.0.5`; all 3 pods `1/1 Running`.
+- All members healthy: `replica-0 SECONDARY`, `replica-1 PRIMARY`, `replica-2 SECONDARY` (health 1).
+- `db.version()` = **7.0.5**, **FCV = 7.0** on the set.
+- Data preserved: original document intact (count = 1, byte-for-byte unchanged), confirmed readable on a secondary.
+- Writability confirmed: a `w:"majority"` insert+delete probe succeeded on the new primary.
+
+Note on auth: cluster uses keyFile + `--auth`; the admin user is `admin-user` (password in the `admin-user-password` secret) — discovered from the pod logs, used read-only for verification.

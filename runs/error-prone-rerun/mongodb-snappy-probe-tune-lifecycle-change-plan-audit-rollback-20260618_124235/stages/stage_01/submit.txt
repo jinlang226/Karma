@@ -1,0 +1,21 @@
+The observability and storage policy has been applied successfully across the entire replica set.
+
+## Summary
+
+I located the MongoDB configuration in the `mongod-config` ConfigMap (mounted into each pod via `mongod --config`), read the current values, applied the three required changes, and rolled them out safely.
+
+**Changes applied** (in the ConfigMap):
+
+| Setting | Before | After |
+|---|---|---|
+| `systemLog.verbosity` (logging level) | `1` | `2` (one level higher) |
+| `operationProfiling.slowOpThresholdMs` | `200` | `400` (2× current) |
+| `storage.wiredTiger.engineConfig.journalCompressor` | `zlib` | `snappy` (approved standard) |
+
+**How it was rolled out safely:**
+- Updated the ConfigMap, then ran `kubectl rollout restart` on the StatefulSet. Because config is mounted via `subPath`, a pod restart is required for members to re-read it.
+- The StatefulSet's `RollingUpdate` strategy restarted one member at a time (highest ordinal first), so a quorum (≥2 members) and an electable primary were maintained throughout — the primary failed over from `replica-0` to `replica-1` with no loss of availability.
+
+**Verification:** All three members (`replica-0/1/2`) report `verbosity=2`, `slowOpThresholdMs=400`, and `journalCompressor=snappy` via `getCmdLineOpts`, and runtime `logComponentVerbosity` is `2`. The replica set is healthy (1 PRIMARY, 2 SECONDARY) and a write+read round-trip succeeded, confirming data remains available. No operators or CRDs were used.
+
+Note on `journalCompressor`: this governs compression of newly written WiredTiger journal files going forward; existing journal data is unaffected — this is the expected, non-destructive behavior of the setting.

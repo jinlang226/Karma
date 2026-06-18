@@ -1,0 +1,26 @@
+MongoDB server TLS certificate rotation — completed without downtime.
+
+WHAT WAS DONE
+1. Extracted the existing CA cert+key from secret `mongodb-tls-ca` (CN=mongo-ca,
+   valid 2026..2036). The CA was left completely UNCHANGED (verified byte-identical
+   before and after).
+2. Generated a brand-new server private key and CSR, then signed a new server
+   certificate with the EXISTING CA, valid for 1 year (notBefore Jun 18 2026 →
+   notAfter Jun 18 2027). Preserved subject CN=mongo-rs and all original SANs
+   (localhost, mongo, mongo.mongodb[.svc[.cluster.local]], and the three
+   mongo-rs-{0,1,2}.mongo.mongodb.svc.cluster.local pod hostnames), plus
+   serverAuth/clientAuth EKU.
+3. Updated secret `mongodb-tls-cert` (key `server.pem` = new cert + new key).
+4. Rolled the StatefulSet `mongo-rs` one pod at a time (`kubectl rollout restart`
+   + `rollout status`) so the 3-member replica set stayed available throughout —
+   no downtime.
+
+VERIFICATION
+- CA secret (ca.crt and ca.key) byte-identical to pre-rotation: trust unchanged.
+- `openssl verify -CAfile ca.crt new-server.crt` → OK.
+- Live TLS handshake against all 3 replicas (s_client with the CA) →
+  "Verify return code: 0 (ok)", subject CN=mongo-rs, new 1-year validity.
+- Replica set healthy over TLS: mongo-rs-2 PRIMARY, mongo-rs-0/1 SECONDARY.
+
+The old server cert (expiring Jun 20 2026, ~2 days) has been replaced by a cert
+valid ~1 year, signed by the same CA, with zero service interruption.

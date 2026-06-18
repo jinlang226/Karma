@@ -1,0 +1,17 @@
+All requirements are met. Summary of what was wrong and the fix:
+
+## Diagnosis
+- RabbitMQ was already correctly exposing metrics — the `rabbitmq_prometheus` plugin was enabled and port **15692** (`/metrics`) was reachable on all 3 pods.
+- The only problem was Prometheus's config: it had **no scrape job for RabbitMQ** — it only scraped itself.
+
+## Fix (native resources only — just a ConfigMap + Deployment restart)
+1. **Added a `rabbitmq` scrape job** to the `prometheus-config` ConfigMap targeting the three pod FQDNs via the existing headless service:
+   - `rabbitmq-{0,1,2}.rabbitmq-headless.<ns>.svc.cluster.local:15692`
+2. **Added a recording rule** (`rabbitmq_up` = `up{job="rabbitmq"}`). The native RabbitMQ plugin (3.12) does **not** emit a `rabbitmq_up` metric, so I aliased Prometheus's synthetic per-target `up` metric to satisfy the `rabbitmq_up` requirement.
+3. Restarted the `prometheus` Deployment to load the new config/rules.
+
+## Verification
+- ✅ Metrics exposed on port 15692 `/metrics` on all pods.
+- ✅ Prometheus shows **3 RabbitMQ targets UP / 3**.
+- ✅ `rabbitmq_up` query returns **3 samples** (one per pod, value `1`).
+- ✅ RabbitMQ unchanged and healthy — all 3 pods `Running 1/1` (no restarts). Only the Prometheus ConfigMap was modified.

@@ -1,0 +1,18 @@
+Done.
+
+## Summary
+
+I inspected the live cluster, identified the non-default configuration, wrote a reviewable rollback script, and stored it as the `rollback-rehearsal` ConfigMap in the `demo` namespace — without touching any ingress-nginx resource.
+
+**What's non-default in this cluster:**
+- The `ingress-nginx-controller` Deployment has an extra controller arg appended: `--watch-ingress-without-class=false`. The vanilla baseline (the Deployment's `last-applied-configuration`) ends its arg list with `--watch-ingress-without-class=true` followed by `--publish-status-address=localhost`, with no trailing `=false` override.
+- The controller ConfigMap `data` is already empty (vanilla), no Ingress resources currently exist in `demo`, and the IngressClass is the standard `nginx`.
+
+**The rollback script (`rollback.sh`, 3591 bytes)** does, idempotently:
+1. JSON-patch the controller container's `args` back to the exact baseline list (dropping the appended `--watch-ingress-without-class=false`).
+2. Re-assert an empty `ingress-nginx-controller` ConfigMap to clear any reviewed-away tuning keys.
+3. Wait for the controller rollout, with a placeholder note for stripping per-Ingress annotations should class-less/annotated Ingresses exist at rollback time.
+
+**Constraints honored — live config unchanged:**
+- Controller Deployment still at `generation: 2`, still carrying both `--watch-ingress-without-class=true` and the non-default `=false` arg. Nothing was patched, scaled, deleted, or recreated.
+- The only mutation was creating the `rollback-rehearsal` ConfigMap in `demo`; the script was **not** executed.

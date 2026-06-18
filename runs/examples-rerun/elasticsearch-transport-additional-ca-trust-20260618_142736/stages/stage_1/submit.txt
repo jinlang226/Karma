@@ -1,0 +1,18 @@
+The cluster is healthy with 3 nodes (green). I also validated resilience by restarting the node that depends on the additional CA.
+
+## Summary
+
+**Current state: healthy 3-node Elasticsearch cluster, status `green`.**
+
+### What I found
+The cluster (`es-cluster`, ES 7.17.9) runs as a 3-replica StatefulSet with transport TLS (`xpack.security.transport.ssl.enabled: true`, verification mode `certificate`). The key design point of this scenario:
+
+- A `cert-selector` init container gives **es-cluster-0/1** transport node certs signed by **CA1**, while **es-cluster-2** gets a cert signed by **CA2** (the "additional" CA).
+- For all nodes to form one cluster, every node's transport trust store (`es-transport-ca-bundle` configMap, mounted at `config/transport-ca/ca.crt`) must trust **both** CAs. If CA2 were missing, es-cluster-2's transport handshake would be rejected and it couldn't join → a degraded 2-node cluster.
+
+### What I verified / did
+1. `_cluster/health` → `green`, `number_of_nodes: 3`, all shards active, no unassigned shards.
+2. The `es-transport-ca-bundle` configMap contains **both** `es-ca-1` and `es-ca-2` certificates, and confirmed all three running pods have the 2-cert bundle mounted on disk.
+3. **Validated durability** by deleting `es-cluster-2` (the CA2-dependent node). It came back with a fresh CA2-signed cert (new IP `10.244.0.106`) and rejoined cleanly — cluster stayed `green` at 3 nodes, proving the peers correctly trust the additional CA.
+
+No operators or CRDs were used. The trust bundle was already complete and the cluster is at a healthy, resilient 3-node `green` state.

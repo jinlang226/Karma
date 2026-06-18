@@ -1,0 +1,29 @@
+Done. The reporting user's access is restored and the oracle passes.
+
+## What was wrong
+
+The inherited Elasticsearch cluster (`es` StatefulSet, pods `es-0/1/2`) had **no file realm configured at all**. The precondition had created two file-realm secrets — `es-file-realm-aggregate` (containing only `ops-user`) and `user-provided-file-realm` (containing the new `report-user`) — but:
+1. No file realm was enabled in `elasticsearch.yml`.
+2. Neither secret was mounted into the pods.
+3. `report-user` wasn't merged into the aggregate secret.
+4. The `read` role assigned to `report-user` didn't exist (it's not a built-in ES role).
+5. The `app-data` index it needed to read hadn't been seeded.
+
+So *no* file-realm user could authenticate, and `report-user` specifically had a missing role and no target index.
+
+## What I did (additive, non-destructive)
+
+1. **Merged** `report-user` from `user-provided-file-realm` into `es-file-realm-aggregate` (`users` + `users_roles`), preserving `ops-user`.
+2. **Enabled the file realm** in the `es-config` ConfigMap (`xpack.security.authc.realms.file.file1` + kept `native.native1` so native users aren't broken).
+3. **Mounted** the aggregate secret's `users`/`users_roles`/`roles.yml` into the StatefulSet's config dir.
+4. **Defined the `read` role** (read on indices) via the native security API so `report-user`'s role resolves.
+5. **Seeded** the `app-data` index with its document.
+6. **Rolled** the StatefulSet (all 3 pods cleanly) to load the realm.
+
+## Verification
+- `ops-user` → authenticates via `file1` realm (superuser), cluster health = green.
+- `report-user` → authenticates via `file1` realm, successfully reads `app-data/_count` → `{"count":1}`.
+- `elastic` (reserved realm) still returns 200 — existing access intact.
+- Cluster: **green, 3/3 nodes**, pre-existing `karma-test` index untouched.
+- No operators/CRDs installed.
+- **Oracle: `File realm merge verified`, exit 0.**

@@ -1,0 +1,19 @@
+Both goal conditions are satisfied. TLS is now enabled on the CockroachDB cluster.
+
+## Summary
+
+The CockroachDB cluster (`crdb-cluster`, 3 replicas) in the `cockroachdb` namespace has been migrated from insecure to TLS-secured mode.
+
+**What I did:**
+
+1. **Generated certificates** — the advertised `openssl-toolbox` pod didn't exist, so I used the `cockroach cert` tooling inside an existing pod to create a CA, a node cert (with SANs covering `localhost`, `127.0.0.1`, the public service, and the wildcard StatefulSet DNS names), and a `root` client cert.
+
+2. **Created a secret** — bundled all five files (`ca.crt`, `node.crt`, `node.key`, `client.root.crt`, `client.root.key`) into the `crdb-certs` secret. The client root cert lives alongside the node certs so `sql --certs-dir=/cockroach/cockroach-certs` works directly.
+
+3. **Patched the StatefulSet** — replaced `--insecure` with `--certs-dir=/cockroach/cockroach-certs`, mounted the secret at that path with `defaultMode: 0400` (cockroach rejects world-readable keys), and switched the liveness/readiness probes from HTTP to **HTTPS** (the `:8080` health endpoint now serves TLS).
+
+4. **Restarted all pods simultaneously** — a rolling restart deadlocked because secure and insecure nodes can't complete a TLS handshake with each other (quorum loss). Deleting all three pods at once let them rejoin as a fully secure cluster. All 3 came back `1/1 Running`.
+
+**Verification:**
+- Insecure access is **rejected**: `ERROR: node is running secure mode, SSL connection required`
+- Secure access **succeeds**: `SELECT 1;` returns `1`

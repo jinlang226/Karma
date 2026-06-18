@@ -1,0 +1,13 @@
+Cluster reached **green**. Task complete.
+
+## Summary
+
+**Root cause:** The Elasticsearch 7.17.9 StatefulSet was a brand-new cluster (empty data dirs) configured with `discovery.seed_hosts` but **no `cluster.initial_master_nodes`**. ES 7.x refuses to bootstrap a fresh cluster without that setting, so no master was ever elected → endless "master not discovered yet", pods stuck `0/1`.
+
+**Fix (using existing resources, no operators/CRDs, no recreation):**
+1. Added `cluster.initial_master_nodes: [es-cluster-0, es-cluster-1, es-cluster-2]` to the existing `es-config` ConfigMap.
+2. Restarted the three pods → cluster bootstrapped, master elected, **green** with 3 nodes.
+3. **Removed** `cluster.initial_master_nodes` from the ConfigMap (it's bootstrap-only; leaving it in is a split-brain/re-bootstrap hazard on future restarts).
+4. Performed an ordered rolling restart (es-cluster-2 → 1 → 0), confirming the cluster re-elected a master and stayed healthy at each step **without** the bootstrap setting.
+
+**Final state:** `status: green`, 3 nodes, master `es-cluster-2` elected, all pods `1/1 Running`. The cluster now relies on its persisted cluster state for master election, so future restarts are safe.

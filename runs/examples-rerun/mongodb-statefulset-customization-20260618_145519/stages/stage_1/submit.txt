@@ -1,0 +1,24 @@
+The replica set is fully restored and stable.
+
+## What was wrong
+
+The StatefulSet pod template had been mutated in ways that broke the pods. A `pod-guard` init container enforces three invariants, and the template violated all of them, causing `Init:CrashLoopBackOff`:
+
+| Field | Broken value | Restored value |
+|---|---|---|
+| `monitoring` label | `disabled` | `enabled` |
+| `requests.memory` | `128Mi` | `512Mi` |
+| `limits.memory` | `256Mi` | `1Gi` |
+
+The `monitoring=disabled` label was also why monitoring couldn't see the pods.
+
+## What I did
+
+1. Restored the three guarded fields to match the StatefulSet's `last-applied-configuration`.
+2. **Mid-fix recovery:** my first patch used `--type=merge` (JSON merge), which replaced the entire `containers` array and silently dropped the container's `command`, `volumeMounts`, and `ports`. I caught this from `image: Required value` / `not running with --replSet` / missing-keyfile errors and restored each via strategic-merge patches: the `mongod --replSet … --auth --keyFile=…` command, the `/data/db` (PVC) + keyfile volume mounts, and the 27017 port.
+3. Rolled the StatefulSet and waited for full readiness.
+
+## Final state — all criteria met
+- **3/3 pods Ready** and Running, `monitoring=enabled`.
+- Replica set `mongodb-replica`: **1 PRIMARY** (`mongodb-replica-2`) + **2 SECONDARY** (`-0`, `-1`), all agreeing on the primary.
+- **No data loss:** PVCs were `Retain`/retained and remained bound throughout; the data-volume mount was restored before any pod started writing, and the existing replica-set config came back up on the preserved data.

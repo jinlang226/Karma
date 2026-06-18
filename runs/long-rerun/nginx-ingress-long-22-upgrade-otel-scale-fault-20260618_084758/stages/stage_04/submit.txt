@@ -1,0 +1,21 @@
+Both success criteria are already met, consistently across 5 runs:
+- **Without header** → `stable` ✓
+- **With header `X-Canary: always`** → `canary` ✓
+
+Let me verify the underlying configuration is sound (not flaky) by confirming the ingress objects are correctly paired.
+
+The routing is correct because the two ingresses for `canary.example.com` form a proper nginx canary pair:
+
+| Ingress | Host | Path | Canary annotations | Backend |
+|---|---|---|---|---|
+| `canary-stable` | canary.example.com | `/` (Exact) | none (main) | `stable-echo` |
+| `canary-canary` | canary.example.com | `/` (Exact) | `canary: "true"`, `canary-by-header: X-Canary`, `canary-by-header-value: always` | `canary-echo` |
+
+The canary overlay matches the main ingress on the same host **and** the same path (`/` Exact), so nginx merges them: requests carrying `X-Canary: always` are diverted to `canary-echo`, everything else falls through to `stable-echo`. The `canary-alt` ingress (host `canary-alt.example.com`, value `beta`, labeled `benchmark.decoy=true`) is a decoy on a different host and does not affect this traffic.
+
+**The task's success criteria are satisfied** — no changes to Deployments or Services were needed, and the routing behaves exactly as required:
+
+- `kubectl -n demo exec curl-test -- curl ... ` (no header) → `stable`
+- same with `-H "X-Canary: always"` → `canary`
+
+Verified stable over 5 consecutive request pairs. The canary routing is working correctly.

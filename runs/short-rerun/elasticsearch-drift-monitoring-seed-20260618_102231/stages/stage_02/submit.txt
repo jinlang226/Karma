@@ -1,0 +1,25 @@
+The oracle passes. The task is complete.
+
+## Summary
+
+Stack monitoring data flow is restored. The Elasticsearch StatefulSet was missing the monitoring sidecars, so no data reached the monitoring cluster.
+
+**What I did:**
+
+1. **Diagnosed** — the live `es` StatefulSet (label `app=elasticsearch`, HTTPS on 9200 with TLS) ran only the `elasticsearch` container; no Metricbeat/Filebeat sidecars existed, so the `monitoring` namespace received nothing.
+
+2. **Created two ConfigMaps** in the `elasticsearch` namespace:
+   - `metricbeat-config` — the elasticsearch x-pack module scraping `https://localhost:9200` (user `elastic`, password from the `elastic-password` secret, CA at `/etc/es-http/ca.crt`), output to `monitoring-es-http.monitoring.svc:9200`.
+   - `filebeat-config` — harvests ES logs from `/usr/share/elasticsearch/logs/*.log,*.json`, same monitoring output.
+
+3. **Patched the StatefulSet** (strategic merge) to add:
+   - `metricbeat` sidecar (mounts its config + the `es-http-tls` secret as the CA at `/etc/es-http`, `ELASTIC_PASSWORD` from secret).
+   - `filebeat` sidecar (mounts its config + a shared `es-logs` emptyDir).
+   - A shared `es-logs` emptyDir mounted into the ES container at `/usr/share/elasticsearch/logs` so Filebeat can read the logs.
+
+4. **Verified the rolling restart** completed cleanly — all 3 pods `3/3 Running`, cluster health **green**.
+
+**Result (oracle: `Stack monitoring sidecars verified`, exit 0):**
+- Every ES pod runs both a `metricbeat` and a `filebeat` sidecar.
+- Monitoring cluster now holds `.monitoring-es-8-mb` (metrics path, 10 docs) and `filebeat-8.11.1` (logs path, ~491 docs).
+- Elasticsearch remained healthy (green) throughout — no CRDs or operators used.

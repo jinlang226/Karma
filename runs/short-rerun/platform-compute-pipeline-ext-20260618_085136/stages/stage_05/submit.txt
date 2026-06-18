@@ -1,0 +1,18 @@
+Done. Both success criteria are met.
+
+**Final state:**
+- `ray-worker` deployment: **2/2 ready replicas**
+- Ray reports exactly **3 live nodes** (head `10.244.0.229` + workers `10.244.0.230`, `10.244.0.231`), all `Alive: True`, no pending/failures.
+
+**What I found and did:**
+
+The worker startup command in the current deployment was actually already valid:
+```
+ray start --address=ray-head:6379 --node-ip-address="${MY_POD_IP}" --num-cpus=1 --block
+```
+(no invalid flag present — a prior pass in this rerun had already removed it). The real blocker to the success criteria was a **dirty cluster state**:
+
+1. The worker deployment was scaled to **3 replicas** (would yield 4 live nodes, not 3). → I scaled it to **2**.
+2. Ray's head was reporting **7 "active" nodes** — stale GCS ghost entries left over from earlier crash-looped worker pods (some with reused pod IPs). These weren't aging out. → I did a `rollout restart` of `ray-head` to reset the GCS, then restarted the workers so they cleanly re-registered against the fresh head.
+
+After the rollout, only the head + 2 current workers are registered, giving the clean **3 live nodes / 2 ready worker replicas** the task requires. The old `Terminating`/`Error` pods are being garbage-collected by Kubernetes and don't appear in Ray's node list.

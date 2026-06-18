@@ -1,0 +1,14 @@
+Task complete. The replica set is healthy and stable.
+
+## Summary
+
+**Root cause:** The readiness probe (`health-check.sh`) authenticates as `health-user`. For each pod it first checks for a per-pod password override at `/etc/health/overrides/${POD_NAME}` (mounted from the `health-overrides` ConfigMap), falling back to the real password in the `health-user-password` secret (`healthpass123`).
+
+The `health-overrides` ConfigMap contained a **stale entry** for `mongodb-replica-1` set to `legacyHealthPass123`, which no longer matches the actual `health-user` password. So only pod-1 used the wrong password → `Authentication failed` → readiness probe failed → replica set degraded (2/3 Ready). Pods 0 and 2 had no override, so they used the correct secret password and stayed healthy.
+
+**Fix:** Removed the stale `mongodb-replica-1` key from the `health-overrides` ConfigMap (`kubectl patch ... --type=json -op remove`). Once kubelet synced the mounted volume (~40s), the override file disappeared and the probe fell back to the correct secret password. No pod restart or data touch was needed — the PVCs and replica set data were never disturbed.
+
+**Result:**
+- All 3 pods `1/1 Ready`, StatefulSet `3/3`.
+- Replica set: `mongodb-replica-0` = **PRIMARY**, `mongodb-replica-1` & `mongodb-replica-2` = **SECONDARY**.
+- No data loss (configuration-only change).

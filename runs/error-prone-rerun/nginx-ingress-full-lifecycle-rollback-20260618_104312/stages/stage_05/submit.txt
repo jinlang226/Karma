@@ -1,0 +1,27 @@
+HTTPS access is restored — the curl test now returns `hello` with exit code 0.
+
+## Diagnosis
+
+The Ingress `demo-ingress` (host `demo.example.com`) terminated TLS using secret `expired-tls-secret`, which contained a certificate that was **expired**:
+
+- `notBefore=Jan 1 2020`, `notAfter=Jan 2 2020` (CN=demo.example.com) — a 1-day cert that expired over 6 years ago.
+
+That caused the `SSL certificate problem` / verification failures (curl exit 60) for HTTPS clients.
+
+## Fix
+
+The validation CA mounted in the curl-test pod (`/tmp/tls/ca.crt`, CN=`Test CA`) is what clients trust, so the served cert had to be signed by *that* CA. I:
+
+1. Identified the in-cluster validation CA from the pod and matched its public key to the CA private key on the host (`/tmp/test-ca.key` / `/tmp/test-ca.crt`).
+2. Generated a fresh RSA key + certificate for `demo.example.com` (SAN `DNS:demo.example.com`, valid 2026→2028) signed by that CA, and confirmed `openssl verify` passes against the pod's CA.
+3. Replaced the contents of secret `demo/expired-tls-secret` with the new cert/key (`kubectl create secret tls ... --dry-run=client | kubectl apply`), so the Ingress definition didn't need to change.
+4. nginx-ingress hot-reloaded the secret; the curl validation now succeeds.
+
+Verification:
+```
+curl --cacert /tmp/tls/ca.crt --resolve demo.example.com:31430:172.18.0.5 \
+     https://demo.example.com:31430/
+→ hello   (exit 0)
+```
+
+Note: `/tmp/ingress_env` ships `INGRESS_NODE_IP=` empty; the working node IP is `172.18.0.5` (the control-plane node). The TLS fix itself is complete and verified.

@@ -1,0 +1,22 @@
+Done. The ETL pipeline is fixed and completing successfully.
+
+## Summary
+
+**1. Failure information collected**
+- `etl-job` pod was in `Error` state (`backoffLimit: 0`, so no retry).
+- Driver/executor logs showed the failure in Stage 3: `[INVALID_EXECUTOR_MEMORY] Executor memory 268435456 must be at least 471859200` — i.e. the configured **256MB executor memory is below Spark's ~450MB minimum**, which is what blew up the skewed Stage 3 aggregation.
+
+**2. Root cause diagnosed**
+- Diagnostic server + `/data/skew_info.txt` confirmed severe **data skew**: `total_records=100000`, `hot_user_id=999` holding `50000` records (~50%), **skew_ratio=500x** — far above the 10x threshold. The `GROUP BY user_id` in Stage 3 concentrates the hot key onto one task, and 256MB couldn't hold it.
+
+**3. Fix applied** (`cases/spark/spark_etl_skew_oom/resource/etl-job.yaml`)
+- Raised `spark.executor.memory` from `256m` → `1g` (Option B).
+- Additionally enabled AQE skew handling (`spark.sql.adaptive.enabled=true`, `spark.sql.adaptive.skewJoin.enabled=true`) (Option C).
+- Bumped the container memory limit `1Gi` → `2Gi` to give the 1g heap + JVM overhead headroom.
+
+**4. Re-ran the pipeline**
+- Deleted the failed job and re-applied the manifest.
+
+**5. Verified success**
+- Job status: `Complete  1/1` (42s).
+- Logs show Stage 3 finishing cleanly and the success marker `spark_etl_pipeline_verified`, with no OOM/error.

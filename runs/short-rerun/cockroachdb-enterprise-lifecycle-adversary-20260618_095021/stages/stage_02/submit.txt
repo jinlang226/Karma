@@ -1,0 +1,31 @@
+Done. The CockroachDB cluster is now fully operational.
+
+## Diagnosis
+
+The pods were running but stuck in the `0/1` (not ready) state, with logs showing:
+```
+no stores initialized
+awaiting `cockroach init` or join with an already initialized node
+... is itself waiting for init, will retry
+```
+
+The StatefulSet configuration was actually **correct** — `--advertise-host`, `--join` (all three peer FQDNs), the headless service `crdb-cluster`, and DNS resolution were all working. The early "connection refused" join errors were just normal startup races (each peer's RPC listener hadn't bound yet). By the time I inspected, the nodes had already found each other and reported "itself waiting for init."
+
+The real and only blocker: **no node had been bootstrapped**. A fresh CockroachDB cluster with a `--join` list never self-initializes — exactly one node must be told to bootstrap via `cockroach init`. Until then every node sits idle waiting, and readiness probes (`/health?ready=1`) fail, leaving the StatefulSet at `0/3`.
+
+## Fix
+
+Ran the one-time bootstrap from in-cluster tooling (no config changes, no recreation):
+```bash
+kubectl -n cockroachdb exec crdb-cluster-0 -- ./cockroach init --insecure \
+  --host=crdb-cluster-0.crdb-cluster.cockroachdb.svc.cluster.local:26257
+# → Cluster successfully initialized
+```
+
+## Verification
+
+- **Pods:** all `3/3` → `1/1 Running` ready.
+- **SQL-ready:** `SELECT now()` and `SHOW DATABASES` succeed (`defaultdb`, `postgres`, `system`).
+- **Cluster status:** `node status` shows all **3 nodes** with `is_available=true` and `is_live=true`.
+
+All constraints honored: existing resources reused, insecure mode, no CRDs/operators/Helm.

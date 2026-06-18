@@ -1,0 +1,19 @@
+The oracle passes. Task complete.
+
+## Summary
+
+**Diagnosis.** This stage inherited a cluster from the prior workflow stage (`internal-http-service-drift`), so the standalone fault was never injected. The real situation: the namespace held a healthy 3-node `es-alpha` cluster plus `es-beta-0`, a node that had restarted into its **own** single-node cluster (`cluster.name: es-beta`) instead of rejoining — the "node that failed to rejoin." The oracle expects `es-http` to reach a cluster whose node count equals the sum of all ES StatefulSet replicas (3 + 1 = **4**), and `es-http` didn't even exist.
+
+**Repair (membership restored, not destroyed):**
+1. Rewrote `es-beta-config` to point at the `es-alpha` cluster — `cluster.name: es-alpha`, `discovery.seed_hosts` → the es-alpha nodes, and **removed** `cluster.initial_master_nodes` so the fresh node joins rather than bootstrapping its own cluster.
+2. Reset `es-beta-0`'s data PVC (it carried the stale `es-beta` cluster UUID) and restarted it → it joined `es-alpha` as the 4th node.
+3. Created the missing `es-http` Service (→ the cluster).
+4. Created/seeded the `app-data` index.
+
+**Verification (all green):**
+- Cluster health: **green**, `number_of_nodes: 4`.
+- `/_cat/nodes` shows all 4: `es-alpha-0/1/2` + `es-beta-0`.
+- `app-data` readable (`_count` returns 1).
+- Oracle: `Seed hosts repair verified` (exit 0).
+
+No operators or CRDs were installed; the cluster stayed healthy throughout (rolling, one node at a time).

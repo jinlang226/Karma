@@ -1,0 +1,20 @@
+Done. The 3-node Elasticsearch cluster is deployed and verified.
+
+## Summary
+
+Deployed a 3-node Elasticsearch 8.11.1 cluster into the `elasticsearch` namespace using only native Kubernetes resources (no operators/CRDs).
+
+**Resources created** (`es-cluster.yaml`):
+- **ConfigMap `es-config`** — `elasticsearch.yml` with security enabled, HTTP+transport TLS, discovery via the headless service, and `cluster.initial_master_nodes: es-0,es-1,es-2`.
+- **Service `es-http`** (ClusterIP, 9200) — the HTTPS entrypoint.
+- **Service `es-transport`** (headless, 9300) — node discovery (`publishNotReadyAddresses` so peers find each other during bootstrap).
+- **StatefulSet `es`** — 3 replicas, image `docker.elastic.co/elasticsearch/elasticsearch:8.11.1`, mounting `es-http-tls` for certs and `elastic-password` as `ELASTIC_PASSWORD`, with an HTTPS readiness probe and per-node PVCs.
+- **PodDisruptionBudget `es-pdb`** — `minAvailable: 2`.
+
+**TLS:** HTTP and transport use the provided `es-http-tls` cert. Transport uses `verification_mode: certificate` since pod FQDNs (`es-0.es-transport...`) don't match the cert's single-label wildcard SAN; the `es-http` Service name matches `*.elasticsearch.svc.cluster.local`.
+
+**Key issue fixed:** the default ordered StatefulSet startup deadlocked — es-0 couldn't become Ready until a cluster formed, but the cluster needs es-1/es-2, which never start. Resolved with `podManagementPolicy: Parallel` so all three boot together and bootstrap.
+
+**Verification** (via the `es-http` Service over HTTPS):
+- Cluster health: **green**, 3 nodes / 3 data nodes, all pods `1/1 Ready`.
+- Write (`POST /karma-test/_doc/1`) → `created`; read back → `found: true` with correct source. (Test index cleaned up afterward.)

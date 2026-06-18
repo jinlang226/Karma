@@ -1,0 +1,25 @@
+HTTP CA and leaf certificates rotated successfully with the cluster staying available throughout.
+
+## What was done
+
+**1. Verified the credential first (per the reminder)**
+- The `elastic-password` Secret holds a clean 33-byte value `elasticpass-elastic-password-next` (no trailing newline/corruption). Elasticsearch accepts it via the exact `${ELASTIC_PASSWORD}` env var — `/_security/_authenticate` and `/_cluster/health` both return **200**. Credential confirmed good; no change needed.
+
+**2. Generated new certs (~1 year validity)**
+- New CA `CN=es-ca`, valid 365 days.
+- New leaf `CN=es-http` signed by the new CA, valid 365 days, preserving **all original SANs** (es-http service DNS names, `*.es-transport` transport names, localhost, 127.0.0.1) — important because the one cert serves both HTTP and transport TLS.
+
+**3. Rotated with minimal downtime**
+- Updated the `es-http-tls` Secret with the new `tls.crt`/`tls.key` and a **CA bundle (new + old)** for `ca.crt`. The bundle keeps node-to-node transport trust intact across the rollout, so no quorum loss.
+- Rolling-restarted the `es` StatefulSet (one pod at a time) to load the new material. Rollout completed cleanly; cluster never lost availability.
+
+**4. Ensured client trust of the new CA**
+- Updated the `es-http-ca` ConfigMap (client trust anchor) to the new CA.
+- End-to-end **CA-validated** test (not `-k`) against `https://es-http.elasticsearch.svc:9200` → **200**.
+
+## Final state
+- Cluster health: **green**, 3 nodes.
+- Served cert: new leaf, issuer `es-ca`, expires **2027-06-18** (~1 year).
+- Served chain verifies against the new CA; CA fingerprint changed from the baseline (`B7:35…` → `4C:75…`) confirming a genuine rotation.
+- Existing client (`auth-checker`) still authenticates — **200**.
+- No CRDs / ECK operator used.

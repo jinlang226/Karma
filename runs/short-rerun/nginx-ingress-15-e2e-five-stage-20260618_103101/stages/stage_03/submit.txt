@@ -1,0 +1,27 @@
+The configuration is correct and working. The end state satisfies both success criteria. Here's the summary:
+
+## Result
+
+Both success criteria are met and verified stable (5/5 consistent requests each):
+- **Without header** → `stable`
+- **With `X-Canary: always`** → `canary`
+
+## What was there
+
+Four Ingresses share `host: canary.example.com` concerns:
+
+| Ingress | Role | Backend | Canary annotations |
+|---|---|---|---|
+| `canary-stable` | main (no canary annotation) | `stable-echo` | — |
+| `canary-canary` | canary | `canary-echo` | `canary: true`, `canary-by-header: X-Canary`, `canary-by-header-value: always` |
+| `canary-alt` | decoy (different host `canary-alt.example.com`) | `stable-echo` | value `beta` |
+
+The `canary-canary` Ingress is correctly configured: NGINX's `canary-by-header: X-Canary` + `canary-by-header-value: always` means a request carrying `X-Canary: always` is routed to the canary backend (`canary-echo`), while requests without that header fall through to the main `canary-stable` Ingress → `stable-echo`.
+
+The controller access logs confirm the split routing — requests resolve to `[demo-stable-echo-80]` normally and to the alternative backend `[demo-canary-echo-80]` when the header is present.
+
+## What was wrong originally
+
+The canary backend (`canary-echo` Deployment/Service) had only just come up when the stage started — the controller log shows `cannot merge alternative backend ... that does not exist` errors during initialization. Once `canary-echo` became Ready and the controller reconciled, the existing canary Ingress annotations began routing correctly. No Deployment/Service was modified, and the Ingress annotations were already the correct ones for the requirement, so no changes were needed beyond confirming the reconciled, stable end state.
+
+The unrelated noise in the logs (`tls-legacy` SSL cert missing, `canary-alt` merge error) pertains to other decoy/benchmark resources and does not affect `canary.example.com` routing.

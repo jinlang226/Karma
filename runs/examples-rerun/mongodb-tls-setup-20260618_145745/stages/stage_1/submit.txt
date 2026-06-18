@@ -1,0 +1,23 @@
+TLS is now enabled on the MongoDB replica set. Done.
+
+## Summary
+
+**Certificates** — generated in the `openssl-toolbox` pod with `openssl`:
+- A self-signed **CA** (`ca.crt`)
+- A **server** cert/key bundled as `server.pem`, with SANs covering all replica-set DNS names (`mongo-rs-{0,1,2}.mongo.mongodb.svc.cluster.local`, the `mongo` service, `localhost`/`127.0.0.1`)
+- A **client** cert/key bundled as `client.pem`
+
+**Delivery** — bundled the three files into a Kubernetes Secret `mongo-tls` and mounted it read-only at `/etc/tls` in the `mongo-rs` StatefulSet pods.
+
+**TLS enablement** — patched the StatefulSet's `mongod` command (strategic-merge, after a first attempt with a JSON merge patch wrongly dropped the `image` field) to add:
+```
+--tlsMode requireTLS
+--tlsCertificateKeyFile /etc/tls/server.pem
+--tlsCAFile /etc/tls/ca.crt
+```
+The rolling update recreated all 3 pods; the replica set reconverged with one PRIMARY and two SECONDARYs over TLS.
+
+**Verification**
+- Files `ca.crt`, `server.pem`, `client.pem` present at `/etc/tls` in all three pods.
+- **Plain (non-TLS) connection fails** — `mongosh` without `--tls` gets the connection closed.
+- **TLS connection succeeds** — `mongosh --tls --tlsCAFile /etc/tls/ca.crt --tlsCertificateKeyFile /etc/tls/client.pem` pings `ok:1` and reports a healthy replica set.

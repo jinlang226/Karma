@@ -1,0 +1,23 @@
+The task is complete. The oracle passes (`File realm merge verified`, exit 0).
+
+## What was wrong
+
+The newly added reporting user (`report-user`) couldn't authenticate because of two gaps in the file-realm setup on the inherited Elasticsearch cluster (statefulsets `es` and `es-new`, 5 nodes):
+
+1. **The file realm wasn't mounted at all.** The `es-file-realm-aggregate` secret existed but neither statefulset mounted it into `config/users` / `users_roles` / `roles.yml` — so *no* file-realm user (not even the existing `ops-user`) could authenticate; only the reserved `elastic` user worked.
+2. **The new user's entry was never merged in.** `report-user` lived only in the separate `user-provided-file-realm` secret, not in the aggregate the cluster reads.
+3. **The `read` role didn't exist** in this ES 8.11 version, so even after authenticating, `report-user`'s reads were denied (`assigned roles [read] were not found`).
+
+## What I did
+
+- **Merged** `report-user` into `es-file-realm-aggregate` (`users` + `users_roles`), keeping `ops-user` intact.
+- **Defined the `read` role** in the secret's `roles.yml` (read privilege on all indices).
+- **Mounted the aggregate secret** into both `es` and `es-new` statefulsets via subPath (`users`, `users_roles`, `roles.yml`) and rolled them out.
+
+## Verification
+- `report-user` reads `app-data/_count` → `{"count":1,...}` ✅
+- `ops-user` cluster health → `green`, 5 nodes ✅
+- existing `elastic` user → still authenticates (200) ✅
+- Cluster healthy throughout (rolling restarts, no operators/CRDs installed).
+
+No existing users were broken, and the constraints (no operators/CRDs, keep cluster healthy) were respected.

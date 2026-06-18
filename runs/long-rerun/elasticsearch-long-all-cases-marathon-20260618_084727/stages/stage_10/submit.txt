@@ -1,0 +1,15 @@
+The oracle passes (`EXIT=0`). The task is complete.
+
+## Summary
+
+Snapshots were failing for several reasons, which I diagnosed and fixed:
+
+1. **Secure settings missing** — The S3 client credentials were not in any node's Elasticsearch keystore. I created the `es-secure-settings` Secret (the documented credential store) and added `s3.client.default.access_key` / `s3.client.default.secret_key` (`minioadmin`/`minioadmin`) to the keystore on **all 5 ES pods** (`es-0/1/2` + `es-new-0/1`), then called `_nodes/reload_secure_settings`. No credentials went into `elasticsearch.yml` or env vars.
+
+2. **No `minio` Service** — The MinIO Deployment had no Service, so `minio.elasticsearch.svc.cluster.local` didn't resolve (the original `minio-init` job had failed for this exact reason). I created a `minio` Service exposing ports 9000/9001.
+
+3. **Bucket `es-backups` never created** — Because of the DNS failure above, the init job's `mc mb` had failed. I re-ran `minio-init` (now that DNS works) and the bucket was created successfully.
+
+4. **Registered the repo and snapshotted** — Created the `minio-repo` S3 repository (bucket `es-backups`, endpoint `minio...:9000`, `path_style_access=true`, `protocol=http`) and took `snapshot-1` → state **SUCCESS** (3/3 shards).
+
+No pod restarts were needed — `reload_secure_settings` applied the keystore changes live. The case oracle confirms: keystore keys present on all nodes, no plaintext creds in the ConfigMap, 5/5 nodes green, and a SUCCESS snapshot in `minio-repo`.

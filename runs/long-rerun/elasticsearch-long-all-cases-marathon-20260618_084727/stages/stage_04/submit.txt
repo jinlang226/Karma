@@ -1,0 +1,19 @@
+The rotation is complete and verified. Summary of what I found and did:
+
+**Situation**
+- The live cluster runs Elasticsearch 8.11.1 over **HTTPS** (TLS enabled), with `elastic` as a reserved user (not file-realm). Its real password was `f96a0111…` (captured in the `elastic-password-prev` configmap).
+- An adversary had corrupted the `elastic-password` Secret to `CORRUPTED_BY_ADVERSARY` (but ES itself still held the real password).
+- The new target password (`elastic-password-next`) was `elasticpass-elastic-password-next`.
+
+**Actions**
+1. **Rotated the elastic password in ES** via the Security API (`POST /_security/user/elastic/_password`) using the still-valid current password → 200.
+2. **Updated the `elastic-password` Secret** to the new value (overwriting the adversary's corruption).
+3. **Restarted the `es` StatefulSet** — the es pods' own readiness probes authenticate with the password baked in at pod start, so they went NotReady after the rotation; restarting them made them re-read the new Secret and recover (rolling, one ordinal at a time).
+4. **Fixed and restarted `auth-checker`** — its readiness probe was hardcoded to `http://`, which can't work against this TLS cluster; patched it to `https` with `-k` and rolled it.
+
+**Verified end state**
+- New password → **200** ✓
+- Old password (`f96a0111…`) → **401** ✓
+- `elastic-password` Secret == `elastic-password-next` ✓ (re-checked for drift — clean)
+- `auth-checker` → **1/1 Ready**, `availableReplicas=1` ✓
+- `es-http` has all 3 endpoints; es pods 3/3 Ready ✓

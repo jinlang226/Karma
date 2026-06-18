@@ -1,0 +1,20 @@
+The TLS error confirms success: the client received CockroachDB's actual node certificate (valid for `127.0.0.1`) through the ingress — meaning the TCP proxy on port 26257 **forwarded the connection to the real SQL backend** and CockroachDB completed its side of the TLS handshake. The only failure is client-side hostname verification (the cert SAN doesn't include the ingress IP), which is expected and proves the proxy path is live.
+
+Both objectives are complete and verified.
+
+## Summary
+
+**1. DB Console at `https://crdb-ui.example.com` (TLS) — ✅**
+- The cluster runs in **secure mode**, so the console is served as **HTTPS** on port 8080.
+- Created a self-signed TLS secret `crdb-ui-tls` (CN/SAN `crdb-ui.example.com`) in the `cockroachdb` namespace.
+- Created Ingress `crdb-ui` (class `nginx`) routing the host to `crdb-cluster-public:8080`, with a `tls:` block referencing the secret and the key annotation `nginx.ingress.kubernetes.io/backend-protocol: "HTTPS"` (required because the backend speaks HTTPS, not plain HTTP).
+- Verified: request with `Host: crdb-ui.example.com` to the controller returns **HTTP 200** and the Cockroach Console page.
+
+**2. SQL exposed over TCP on port 26257 — ✅**
+- SQL is a raw TCP protocol, so it can't go through an HTTP Ingress object. Used ingress-nginx's native TCP passthrough:
+  - Created ConfigMap `ingress-nginx/tcp-services` mapping `26257 → cockroachdb/crdb-cluster-public:26257`.
+  - Patched the controller Deployment to add `--tcp-services-configmap=$(POD_NAMESPACE)/tcp-services` and a containerPort/hostPort `26257`.
+  - Patched the `ingress-nginx-controller` Service to expose port `26257`.
+- Verified: port 26257 accepts connections and a `cockroach sql` client received CockroachDB's TLS certificate through the proxy, confirming end-to-end forwarding to the SQL backend.
+
+Note: `crdb-ui.example.com` resolution and external reachability depend on DNS/`/etc/hosts` pointing at the ingress controller (its LoadBalancer EXTERNAL-IP is `<pending>` in this kind cluster; ports are also published via hostPort 80/443/26257 on the node).

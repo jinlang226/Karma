@@ -1,0 +1,20 @@
+TLS is now fully enabled and the oracle passes. Done.
+
+## What I did
+
+1. **Generated certificates** in the `openssl-toolbox` pod:
+   - A self-signed **CA** (`ca.crt`)
+   - A **server** cert (`server.pem` = key + cert) signed by the CA, with SANs for `mongo`, `localhost`, and the `mongo-rs-{0,1,2}.mongo.mongodb.svc.cluster.local` peer hostnames
+   - A **client** cert (`client.pem`) signed by the same CA (same `O=MongoDB` so it's accepted for cluster/client auth)
+
+2. **Created secret** `mongo-tls` holding `ca.crt`, `server.pem`, `client.pem`.
+
+3. **Patched the `mongo-rs` StatefulSet** to:
+   - Mount the secret read-only at `/etc/tls`
+   - Run mongod with `--tlsMode requireTLS --tlsCertificateKeyFile /etc/tls/server.pem --tlsCAFile /etc/tls/ca.crt --tlsAllowInvalidHostnames`
+   - Rolled out all 3 pods; the replica set re-formed over TLS (all peers Ready).
+
+## Verification (oracle passes, rc=0)
+- **Plain connection blocked** — `db.adminCommand({ping:1})` without TLS fails (socket closed by `requireTLS`).
+- **TLS connection succeeds** — connecting with `ca.crt` + `client.pem` returns `ping.ok=1` and `rs.status().ok=1` (server cert validates against the CA).
+- **Data intact** — seeded docs readable over TLS.

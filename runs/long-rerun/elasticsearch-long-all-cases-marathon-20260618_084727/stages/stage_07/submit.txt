@@ -1,0 +1,22 @@
+Task complete and verified.
+
+## Summary
+
+The Elasticsearch HTTP API is now reachable at `https://es.example.com` through ingress-nginx, with plain HTTP blocked.
+
+**What I found:**
+- The ES backend (`es-http` service, port 9200) speaks **HTTPS itself** (TLS-enabled X-Pack security) — plain HTTP to it fails, HTTPS returns a 401 auth challenge.
+- The `nginx` ingress class is provided by the controller in the `ingress-nginx` namespace.
+
+**What I did:**
+1. Generated a self-signed cert with SAN `DNS:es.example.com` and stored it as TLS secret `es-tls` in the `elasticsearch` namespace.
+2. Created Ingress `es-ingress` (`ingressClassName: nginx`) for host `es.example.com`, routing to `es-http:9200` with:
+   - `backend-protocol: HTTPS` — so nginx re-encrypts to the TLS-enabled ES backend (otherwise nginx would speak plaintext to a TLS port and fail).
+   - `force-ssl-redirect: "true"` — so plain HTTP does not reach the API.
+
+**Verification (tested against the controller ClusterIP with host resolution):**
+- `https://es.example.com/` → **401** (ES's own auth challenge — the request traversed ingress → backend successfully, served with the `CN=es.example.com` cert).
+- `http://es.example.com/` → **308** redirect; plain HTTP never reaches the backend.
+- All Elasticsearch pods (es-0/1/2, 3/3 statefulset) and the ingress controller remain Running/healthy.
+
+No operators or CRDs were installed; only a TLS secret and a standard Ingress resource were added.

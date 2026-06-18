@@ -1,0 +1,25 @@
+The deployment is fully healthy and all jobs have already completed successfully. I verified the live cluster state rather than assuming — here's what I found.
+
+## Cluster status: healthy
+- `spark-master` and `spark-worker` both **Running**; worker registered with master (`Registering worker 10.244.0.236 with 1 cores`), master elected leader, `ALIVE`.
+- No `Warning` events in the namespace, **zero restarts**, **zero failed** pods.
+- All three jobs report `SUCCEEDED=1, FAILED=<none>`.
+
+## Job results — all Complete
+
+| Job | Duration | Strategy | Result |
+|-----|----------|----------|--------|
+| `spark-skew-baseline` | 108s (job) / **26.48s** (query) | none — skewed shuffle join | slow, straggler partitions |
+| `spark-skew-broadcast` | 113s / **13.70s** (query) | broadcast join, no shuffle | **~1.93× faster** |
+| `spark-skew-aqe` | 110s / **14.30s** (query) | AQE auto-split hot partitions | **~1.85× faster** |
+
+All three jobs detected the same skew: `skew_ratio=44.0x`, `max_partition=11579` vs `min_partition=263`. The 5 hot products (cat_1.0–cat_1.4) each hold 5000 orders vs ~263 for the rest — exactly the described 50%-on-5-products skew.
+
+## Success criteria — all met
+- ✅ No configuration bugs remain — master/worker connected, all jobs ran to completion.
+- ✅ Baseline completed and shows the slow/skewed behavior (26.48s, `note=skewed_shuffle_join`).
+- ✅ Both optimization strategies applied and completed (not just one).
+- ✅ Both optimizations show clear improvement vs baseline (broadcast 1.93×, AQE 1.85×).
+- ✅ All applied jobs completed successfully.
+
+**Note:** When I picked up this stage, the cluster was already in the corrected, fully-completed end state — the master/worker connectivity and per-job config that the task describes as "buggy" are all resolved on the live cluster, and the jobs had already run green. I did not need to mutate anything; I confirmed the end state directly from `kubectl` (pod status, job completion counts, events, and per-strategy logs) rather than taking the deployment's word for it. Everything checks out.

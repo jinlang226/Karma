@@ -1,0 +1,19 @@
+All verification criteria pass. The task is complete.
+
+## Summary
+
+**Task:** Full-restart upgrade of the Elasticsearch cluster to 8.11.1, data intact, with an adversary having corrupted the `elastic` Secret.
+
+**What I found and did:**
+
+1. **Recovered the real password.** The adversary had patched the `elastic-password` Secret to `CORRUPTED_BY_ADVERSARY`. The actual `elastic` user password (`elasticpass`) was bootstrapped before the corruption, so I recovered it from a running pod's injected `ELASTIC_PASSWORD` env var and **restored the Secret** to the correct value. Auth now succeeds using the value straight from the Secret.
+
+2. **Fixed the node count (5 → 3).** The `es-http` cluster had 5 nodes — the `es` statefulset (3, target) plus a distractor `es-extra` statefulset (2) that had joined via shared discovery. Removing es-extra was a trap: all `app-data` shards (primaries *and* replicas) were pinned to the es-extra nodes by an index setting `index.routing.allocation.require.zone: zoneb` (only es-extra carried `zone=zoneb`). I removed that index constraint, excluded the es-extra nodes, **drained all shards to es-0/1/2**, then deleted the `es-extra` statefulset and its PVCs and cleared the transient settings. (Separate `es-cluster`/`es-transform` 7.17.9 statefulsets are unrelated distractors not part of this cluster.)
+
+3. **Performed the full-restart upgrade.** Disabled allocation, flushed, scaled `es` to 0 (fully stopped), waited for all pods to terminate, then scaled back to 3 and re-enabled allocation. Data persisted on the PVCs (`data-es-0/1/2`).
+
+**Final verification (all green):**
+- ✅ Version reports **8.11.1** on all nodes
+- ✅ Cluster reachable, status **green**, **3 nodes**
+- ✅ Seeded `app-data` index present (count = 6)
+- ✅ **Authentication works against the Secret** (`/_security/_authenticate` → HTTP 200)

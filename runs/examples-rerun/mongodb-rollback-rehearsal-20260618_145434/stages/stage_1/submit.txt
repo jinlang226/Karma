@@ -1,0 +1,22 @@
+Done. The `rollback-rehearsal` ConfigMap now exists in the `mongodb` namespace with a `rollback.sh` key, and the live cluster is untouched.
+
+**What I inspected**
+
+The replica set (3 members, all `Running`) has four non-default settings vs MongoDB 6.0 defaults — confirmed against both `mongod-config` and the live runtime (authenticating with the admin secret, since auth is enabled):
+
+| Setting | Current | Default |
+|---|---|---|
+| `systemLog.verbosity` | `1` | `0` |
+| `operationProfiling` | `slowOp` / `slowOpThresholdMs: 200` | off / `100` |
+| WiredTiger `journalCompressor` | `zlib` | `snappy` |
+| admin user | `admin-user` provisioned | none |
+
+**The stored `rollback.sh`** reverts all four, ordered for safety:
+1. Reset `logComponentVerbosity` to `0` (live, all members).
+2. Reset profiling to off / `slowms=100` (live, all members).
+3. Rewrite `mongod-config` with `journalCompressor: snappy`, `verbosity: 0`, and `operationProfiling` removed — preserving the auth/keyfile/replication baseline — then `rollout restart` + wait (journalCompressor is a startup option).
+4. Drop `admin-user` **last**, with an explicit warning that it locks out auth.
+
+It reads the password from the existing secret and is heavily commented as a review/rehearsal artifact, with a "do NOT run outside a change window" safety banner.
+
+**Verified not executed:** verbosity is still `1`, the ConfigMap still has `journalCompressor: zlib`, and `admin-user` still exists — the cluster is exactly as found.

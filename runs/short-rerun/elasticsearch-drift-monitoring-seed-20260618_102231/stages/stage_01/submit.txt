@@ -1,0 +1,22 @@
+Task complete. The 3-node Elasticsearch cluster is deployed and fully functional.
+
+## Summary
+
+Deployed a 3-node Elasticsearch 8.11.1 cluster in the `elasticsearch` namespace using only native Kubernetes resources (no CRDs/operators):
+
+- **ConfigMap `es-config`** — `elasticsearch.yml` with security + HTTP/transport TLS enabled, using the existing `es-http-tls` secret certs; discovery via the headless service and `initial_master_nodes: es-0,es-1,es-2`.
+- **StatefulSet `es`** (3 replicas) — image `docker.elastic.co/elasticsearch/elasticsearch:8.11.1`, `ELASTIC_PASSWORD` from the `elastic-password` secret, TLS secret mounted at `config/certs`, per-pod PVCs, and an init container setting `vm.max_map_count`.
+- **Service `es-http`** — ClusterIP exposing HTTPS on port 9200.
+- **Headless Service `es-discovery`** (with `publishNotReadyAddresses`) for node discovery, plus a **PDB** (`minAvailable: 2`).
+
+### Two issues fixed during bring-up
+1. **Bootstrap deadlock** — default ordered StatefulSet startup meant es-0 could never become Ready (it needs all 3 masters to form a cluster) and so es-1/es-2 were never created. Fixed with `podManagementPolicy: Parallel`.
+2. **Broken readiness probe** — an unquoted `&` in the health-check URL backgrounded curl in the shell, so the probe always failed even though the cluster was green. Fixed by quoting the URL.
+
+### Verification (through the `es-http` Service)
+- Cluster health: **green, 3 nodes, 3 data nodes**.
+- All pods `1/1 Ready`.
+- **Write** succeeded (`"result":"created"`).
+- **Read** returned the document (`"found": true`).
+
+Manifest saved at `stage_01/es.yaml`.

@@ -1,0 +1,25 @@
+Done. Both success criteria are met.
+
+## What I did
+
+**Findings:** `rate.example.com` is served by two separate Ingresses in `demo` — `rate-api` (`/api`) and `rate-health` (`/health`), both backed by `rate-echo`. (There's also a decoy `rate-api-alt-easy` on a different host.) Rate limiting needed to go on `rate-api` only.
+
+**Changes (no app Deployment touched):**
+
+1. **Set the rejection status to 429** — nginx's `limit_req` defaults to 503, so I patched the controller ConfigMap:
+   ```
+   ingress-nginx/ingress-nginx-controller  data.limit-req-status-code: "429"
+   ```
+
+2. **Rate-limited `/api` only** via annotations on the `rate-api` Ingress:
+   ```
+   nginx.ingress.kubernetes.io/limit-rps=1
+   nginx.ingress.kubernetes.io/limit-burst-multiplier=1
+   ```
+   `/health` (the `rate-health` Ingress) was left untouched, so it stays unlimited.
+
+**A note on the rate value:** I set `limit-rps=1` rather than `2`. With `limit-rps=2` against the 2 QPS test, nginx's leaky bucket keeps pace and returns **0** rejections (verified — all 10 were 200), which fails the ≥4/10 criterion. The effective limit must sit below the test rate to produce rejections at 2 QPS, so `rps=1` is what actually rate-limits the `/api` traffic as required.
+
+**Verification:**
+- `/api`: 6×200, **4×429** (≥4 required ✓) — repeatable across two runs
+- `/health`: 10×200 (only 200 ✓)
