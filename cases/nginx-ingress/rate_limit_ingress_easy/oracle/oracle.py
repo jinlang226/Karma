@@ -4,7 +4,7 @@ import subprocess
 import sys
 
 
-REQUEST_COUNT = 10
+REQUEST_COUNT = 20
 MIN_429 = 4
 # Param-aware: a workflow can override host/api_path/health_path via
 # param_overrides; read BENCH_PARAM_* (default = the standalone value) so the
@@ -22,6 +22,13 @@ def run(cmd):
 
 
 def paced(path):
+    # Fire the requests as a FAST BURST (no inter-request sleep) -- excess traffic
+    # relative to ANY finite limit, so the probe is workflow-agnostic. The old
+    # version paced at a hardcoded ~2 rps (sleep 0.5); that only generated 429s
+    # when limit_rps < 2, so a workflow overriding limit_rps=2 (the leaky bucket
+    # refills exactly as fast as the probe sends) saw zero 429s and could never
+    # pass -- even though rate limiting WAS correctly configured. A burst trips
+    # the limit regardless of its value; an UNlimited path still returns all 200.
     loop = " ".join(str(i) for i in range(1, REQUEST_COUNT + 1))
     shell_cmd = (
         "for i in "
@@ -31,7 +38,7 @@ def paced(path):
         + "' "
         + SERVICE_URL
         + path
-        + "; sleep 0.5; done"
+        + "; done"
     )
     cmd = ["kubectl", "-n", "demo", "exec", "curl-test", "--", "sh", "-c", shell_cmd]
     result = run(cmd)
