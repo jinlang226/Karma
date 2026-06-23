@@ -65,23 +65,25 @@ class ProxyHandle:
     def is_ready(self) -> bool:
         """Return ``True`` when the proxy is running and accepting connections.
 
-        Non-blocking. Checks the process status then probes the port.
+        Non-blocking. Checks the process status, then probes the **data port**
+        the agent actually uses -- NOT the control port. The control server runs
+        in a daemon thread (see ``proxy.main``); if its bind loses a port race it
+        dies while the data proxy keeps serving, so gating readiness on the
+        control ``/health`` alone falsely reported "did not become ready". The
+        data port is the only thing the agent needs.
         """
         if self._proc.poll() is not None:
             return False
-        if self._control_port:
-            try:
-                url = f"http://127.0.0.1:{self._control_port}/health"
-                with urllib.request.urlopen(url, timeout=1) as resp:
-                    return resp.status == 200
-            except Exception:
-                return False
-        # Fall back to checking if the proxy port is open
         try:
             with socket.create_connection(("127.0.0.1", self._port), timeout=1):
                 return True
         except OSError:
             return False
+
+    def is_alive(self) -> bool:
+        """True while the proxy subprocess is still running (used by readiness to
+        fail fast when the child exits early, e.g. on a port-bind race)."""
+        return self._proc.poll() is None
 
     def teardown(self) -> None:
         """Terminate the proxy subprocess and wait for it to exit.
@@ -113,6 +115,7 @@ def launch_proxy(
     readiness_timeout_sec: int = 15,
     env: dict[str, str] | None = None,
     bind_host: str = "127.0.0.1",
+    max_attempts: int = 4,
 ) -> ProxyHandle:
     """Launch the kubectl proxy daemon on a random available port.
 
@@ -143,28 +146,14 @@ def launch_proxy(
     # (stages/<id>/stages/<id>/...) and silently empties evidence + metrics.
     log_path = run_dir / "kubectl_log.jsonl"
 
-    proxy_port = find_free_port()
-    control_port = find_free_port()
-
-    # Derive the upstream URL from KUBECONFIG or default.
+    # Derive the upstream URL + auth once; only the ports change per attempt.
     upstream_url = _get_upstream_url(env)
-
     merged_env = {**os.environ, **(env or {})}
-    cmd = [
-        sys.executable, "-m", "karma.transport.k8s.proxy",
-        "--upstream-url", upstream_url,
-        "--log-path", str(log_path),
-        "--port", str(proxy_port),
-        "--control-port", str(control_port),
-        "--bind-host", bind_host,
-    ]
-    # The agent talks to the proxy over plain HTTP without credentials, so the
-    # proxy must authenticate to the real API server on the agent's behalf.
-    # Extract the caller's auth from KUBECONFIG and hand it to the proxy.
     auth = _get_upstream_auth(env)
+    auth_args: list[str] = []
     if auth.get("client_cert_file") and auth.get("client_key_file"):
-        cmd += ["--client-cert", auth["client_cert_file"],
-                "--client-key", auth["client_key_file"]]
+        auth_args += ["--client-cert", auth["client_cert_file"],
+                      "--client-key", auth["client_key_file"]]
     elif auth.get("client_cert_data") and auth.get("client_key_data"):
         cert_path = run_dir / "proxy-client.crt"
         key_path = run_dir / "proxy-client.key"
@@ -174,21 +163,44 @@ def launch_proxy(
             os.chmod(key_path, 0o600)
         except Exception:
             pass
-        cmd += ["--client-cert", str(cert_path), "--client-key", str(key_path)]
+        auth_args += ["--client-cert", str(cert_path), "--client-key", str(key_path)]
     if auth.get("token"):
-        cmd += ["--token", auth["token"]]
-    proc = subprocess.Popen(
-        cmd, env=merged_env, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True
-    )
+        auth_args += ["--token", auth["token"]]
 
-    try:
-        (run_dir / "proxy.pid").write_text(str(proc.pid))
-    except Exception:
-        pass
-
-    handle = ProxyHandle(proc, proxy_port, run_dir=run_dir, control_port=control_port)
-    wait_for_readiness(handle, timeout_sec=readiness_timeout_sec)
-    return handle
+    # find_free_port() picks a free port but the child binds it a moment later;
+    # if another process grabs it in that gap the child dies with
+    # ``OSError: [Errno 48] Address already in use`` (data port) or its control
+    # thread dies (control port). Both are transient port races, so retry with
+    # freshly-picked ports rather than failing the whole stage.
+    last_err: Exception | None = None
+    for _attempt in range(max(1, max_attempts)):
+        proxy_port = find_free_port()
+        control_port = find_free_port()
+        cmd = [
+            sys.executable, "-m", "karma.transport.k8s.proxy",
+            "--upstream-url", upstream_url,
+            "--log-path", str(log_path),
+            "--port", str(proxy_port),
+            "--control-port", str(control_port),
+            "--bind-host", bind_host,
+            *auth_args,
+        ]
+        proc = subprocess.Popen(
+            cmd, env=merged_env, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True
+        )
+        handle = ProxyHandle(proc, proxy_port, run_dir=run_dir, control_port=control_port)
+        try:
+            wait_for_readiness(handle, timeout_sec=readiness_timeout_sec)
+        except RuntimeError as exc:
+            last_err = exc
+            handle.teardown()  # reap the dead/failed child before retrying
+            continue
+        try:
+            (run_dir / "proxy.pid").write_text(str(proc.pid))
+        except Exception:
+            pass
+        return handle
+    raise last_err or RuntimeError("kubectl proxy failed to start")
 
 
 def _get_upstream_auth(env: dict[str, str] | None) -> dict[str, str]:
@@ -314,6 +326,14 @@ def wait_for_readiness(
     while time.monotonic() < deadline:
         if proxy_handle.is_ready():
             return
+        # If the child already exited (e.g. data-port bind race -> EADDRINUSE),
+        # stop waiting immediately so the caller can retry with a fresh port
+        # instead of polling a dead process for the full timeout.
+        if not proxy_handle.is_alive():
+            raise RuntimeError(
+                f"kubectl proxy exited before becoming ready "
+                f"(port {proxy_handle.port})"
+            )
         time.sleep(interval)
         interval = min(interval * 1.5, 1.0)
     raise RuntimeError(
