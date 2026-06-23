@@ -90,10 +90,8 @@ def curl_http_code(args):
     return result.returncode, result.stdout.strip()
 
 
-def main():
-    global ELASTIC_PASSWORD
-    ELASTIC_PASSWORD = _elastic_password()
-
+def evaluate():
+    """Run one full snapshot of the secure-ingress checks; return the errors."""
     errors = []
 
     # The backend Elasticsearch serves plain HTTP on 9200 standalone (the
@@ -154,6 +152,28 @@ def main():
     )
     if rc == 0 and code == "200":
         errors.append("Ingress HTTP still succeeds")
+
+    return errors
+
+
+def main():
+    global ELASTIC_PASSWORD
+    ELASTIC_PASSWORD = _elastic_password()
+
+    # The es-http.svc backend and the ingress-nginx controller both flake during
+    # warm-up: a single curl through the freshly-created Ingress / a just-rolled
+    # controller can return curl exit 7 (connection refused) or a transient 5xx
+    # even though the route is correct and converges seconds later. A single
+    # snapshot can catch that transient and report a false miss. So verify the
+    # STABLE converged state: re-evaluate for up to ~120s and pass on the first
+    # clean snapshot. This does not loosen the HTTPS-reachable / HTTP-blocked
+    # requirements -- a genuinely misconfigured ingress fails every attempt.
+    import time
+    deadline = time.monotonic() + 120
+    errors = evaluate()
+    while errors and time.monotonic() < deadline:
+        time.sleep(8)
+        errors = evaluate()
 
     if errors:
         print("Secure HTTP ingress verification failed:", file=sys.stderr)

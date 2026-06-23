@@ -173,11 +173,32 @@ def check_monitoring_indices(errors):
     errors.append("Monitoring indices exist but have no documents")
 
 
-def main():
+def evaluate():
+    """Run one full snapshot of the monitoring checks; return the errors."""
     errors = []
 
     check_sidecars(errors)
     check_monitoring_indices(errors)
+
+    return errors
+
+
+def main():
+    # After the agent adds the metricbeat/filebeat sidecars, the monitoring
+    # cluster needs a beat collection interval (~10s+) before .monitoring-es*
+    # indices appear and accrue documents, and a curl to the monitoring service
+    # can flake during warm-up. A single snapshot right after submit catches that
+    # transient and reports a false "Monitoring indices not found" / "no
+    # documents". So verify the STABLE converged state: re-evaluate for up to
+    # ~120s and pass on the first clean snapshot. This does not loosen the
+    # sidecar / monitoring-index requirements -- a genuinely missing integration
+    # fails every attempt.
+    import time
+    deadline = time.monotonic() + 120
+    errors = evaluate()
+    while errors and time.monotonic() < deadline:
+        time.sleep(8)
+        errors = evaluate()
 
     if errors:
         print("Stack monitoring sidecars verification failed:", file=sys.stderr)

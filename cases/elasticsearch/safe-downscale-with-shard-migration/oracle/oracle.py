@@ -12,7 +12,13 @@ SERVICE = os.environ.get("BENCH_PARAM_HTTP_SERVICE_NAME", "es-http")
 # across stages, so a workflow's inherited ES cluster may carry a different
 # StatefulSet name/label than this case's standalone default of 'es-cluster'.
 CLUSTER_PREFIX_HINT = os.environ.get("BENCH_PARAM_CLUSTER_PREFIX", "es-cluster")
-MARKER_PATH = "/usr/share/elasticsearch/data/pvc-gc-marker"
+# Marker file the precondition writes on each data volume and the agent must
+# preserve on the surviving node. Read it from the param so the oracle checks the
+# SAME literal path the prompt names and the precondition seeds (Pattern 4: never
+# grade a literal the prompt did not promise). Default matches the standalone seed.
+MARKER_PATH = os.environ.get(
+    "BENCH_PARAM_MARKER_FILE_PATH", "/usr/share/elasticsearch/data/pvc-gc-marker"
+)
 # ES 8.x runs with security enabled, so the HTTP API requires authenticating as
 # the elastic superuser. When this case inherits a secured cluster from an
 # earlier workflow stage, read its password from the secret that stage created

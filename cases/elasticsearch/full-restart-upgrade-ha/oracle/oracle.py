@@ -150,62 +150,24 @@ def _live_sts_names(node_names):
 
 
 def _resolve_expected_nodes(node_names, default=3):
-    """Expected node count to enforce, derived from the LIVE cluster.
+    """Expected node count to enforce, scoped to the TARGET StatefulSet.
 
-    The expected total is the DESIRED topology of ONLY the StatefulSets that
-    actually back the live cluster (the nodes returned by ``_cat/nodes``): the
-    sum of spec.replicas over just those StatefulSets. The namespace PERSISTS
-    across workflow stages and accumulates multiple ES clusters, so summing
-    replicas across *every* ES StatefulSet overcounts versus the single cluster
-    the oracle queries. Restricting to the live cluster's StatefulSets fixes that.
+    This case upgrades ONE cluster: the StatefulSet resolved from
+    ``cluster_prefix`` (``STS_NAME``). The namespace PERSISTS across workflow
+    stages and accumulates extra ES StatefulSets (other clusters / nodesets a
+    prior stage spawned), so summing spec.replicas over *every* ES StatefulSet
+    overcounts -- the observed "Expected 7 nodes, got 3" failure when the prompt
+    only ever asks for 3. Scope the expected count to the target StatefulSet's
+    DESIRED spec.replicas instead.
 
     Using DESIRED spec.replicas (not the live count) keeps the check strict: a
-    node that FAILED to rejoin after the restart leaves its StatefulSet "live"
-    (siblings are up) but absent from ``_cat/nodes``, so EXPECTED stays above the
-    actual count -- no masking. The LIVE cluster is derived FIRST; the param is a
-    FALLBACK used only when no live StatefulSets resolve (e.g. _cat/nodes empty).
+    target node that FAILED to rejoin after the restart leaves its StatefulSet
+    "live" but absent from ``_cat/nodes``, so EXPECTED stays above the actual
+    count -- no masking. Priority: an explicit param override -> the target
+    StatefulSet's spec.replicas -> the default.
     """
-    # Derive from the LIVE cluster FIRST (workflow-agnostic + composition-aware):
-    # sum spec.replicas over the active ES StatefulSets -- the base cluster PLUS
-    # any nodeset a PRIOR stage added to the same cluster (e.g. an inherited
-    # transform nodeset). A static EXPECTED_NODES param encodes a standalone
-    # baseline that wrongly ignores such inherited nodesets, so it is demoted to a
-    # FALLBACK below, used only when the live cluster cannot be resolved.
-    # Robust count: sum spec.replicas over ES StatefulSets that are actually
-    # present (status.replicas > 0). Counts the base cluster + any scaled-up
-    # nodeset WITHOUT the fragile node.name -> StatefulSet string mapping (which
-    # breaks when a nodeset's node.name differs from its pod name). A torn-down
-    # prior cluster's StatefulSet has readyReplicas 0 and is excluded. Still
-    # strict: a node that failed to join leaves its STS ready>0 but short, so the
-    # spec-replica sum exceeds the live node count and the check still fails.
-    res = run(["kubectl", "-n", NAMESPACE, "get", "sts", "-o", "json"])
-    if res.returncode == 0:
-        try:
-            items = json.loads(res.stdout).get("items", [])
-        except Exception:
-            items = []
-        desired = 0
-        for sts in items:
-            spec = sts.get("spec", {}) or {}
-            containers = spec.get("template", {}).get("spec", {}).get("containers", []) or []
-            if "elasticsearch" not in " ".join(c.get("image", "") for c in containers):
-                continue
-            replicas = spec.get("replicas")
-            # Use status.replicas (pods that EXIST), not readyReplicas: a
-            # scaled-up nodeset whose pods joined the cluster but lack a passing
-            # STS readiness probe has readyReplicas 0 yet is genuinely live.
-            # Count an ES StatefulSet's DESIRED replicas when it is an active part
-            # of the cluster: spec.replicas > 0 and not being torn down. Gating on
-            # status.replicas undercounts a freshly scaled-up nodeset whose status
-            # lags -- its pods have joined the cluster but status.replicas is still
-            # 0 -- which wrongly made EXPECTED < the live node count.
-            being_deleted = (sts.get("metadata", {}) or {}).get("deletionTimestamp") is not None
-            if isinstance(replicas, int) and replicas > 0 and not being_deleted:
-                desired += replicas
-        if desired > 0:
-            return desired
-
-    # Fallbacks (live cluster unresolvable): explicit param, then the default.
+    # An explicit per-case override wins (a workflow that deliberately changes the
+    # target topology can set it).
     for key in ("BENCH_PARAM_EXPECTED_NODES", "BENCH_PARAM_EXPECTED_NODE_COUNT"):
         val = os.environ.get(key)
         if val is not None and str(val).strip():
@@ -213,6 +175,20 @@ def _resolve_expected_nodes(node_names, default=3):
                 return int(val)
             except ValueError:
                 pass
+
+    # Scope to the TARGET StatefulSet only (never the whole namespace): its
+    # DESIRED spec.replicas is the cluster the prompt upgrades.
+    res = run(["kubectl", "-n", NAMESPACE, "get", "sts", STS_NAME, "-o", "json"])
+    if res.returncode == 0:
+        try:
+            spec = json.loads(res.stdout).get("spec", {}) or {}
+        except Exception:
+            spec = {}
+        replicas = spec.get("replicas")
+        being_deleted = False  # a get-by-name of a live STS is the target
+        if isinstance(replicas, int) and replicas > 0 and not being_deleted:
+            return replicas
+
     return default
 
 
@@ -312,23 +288,33 @@ def evaluate():
     node_names = []
     if isinstance(nodes, list):
         node_names = [n.get("name") for n in nodes if n.get("name")]
+    # Scope the node-count assertion to nodes backed by the TARGET StatefulSet:
+    # the persisted namespace may carry extra nodesets joined to the same cluster
+    # from a prior stage, which inflate the cluster-wide node count past the
+    # target's expected topology. Count only target-backed nodes (those whose name
+    # maps to STS_NAME). Fall back to the full list if none map (e.g. node names
+    # diverge from pod names) so the check is never silently disabled.
+    target_node_names = [n for n in node_names if _sts_name_for_node(n) == STS_NAME]
+    if not target_node_names:
+        target_node_names = node_names
     expected_nodes = _resolve_expected_nodes(node_names, default=3)
 
     health = curl(
-        f"/_cluster/health?wait_for_status=yellow&wait_for_nodes={expected_nodes}&timeout=10s",
+        f"/_cluster/health?wait_for_status=yellow&wait_for_nodes=>={expected_nodes}&timeout=10s",
         errors,
     )
     if isinstance(health, dict):
         status = health.get("status")
         if status not in {"yellow", "green"}:
             errors.append(f"Cluster health status expected yellow/green, got {status}")
-        if health.get("number_of_nodes") != expected_nodes:
-            errors.append(f"Expected {expected_nodes} nodes, got {health.get('number_of_nodes')}")
+        # Assert the TARGET cluster has at least its expected node count; extra
+        # inherited nodes joined to the same cluster are valid carry-over state.
+        if len(target_node_names) != expected_nodes:
+            errors.append(
+                f"Expected {expected_nodes} target nodes, got {len(target_node_names)}"
+            )
     else:
         errors.append("Failed to read cluster health")
-
-    if isinstance(nodes, list) and len(node_names) != expected_nodes:
-        errors.append(f"Expected {expected_nodes} nodes in _cat/nodes, got {len(node_names)}")
 
     if index and expected:
         count = curl(f"/{index}/_count", errors)

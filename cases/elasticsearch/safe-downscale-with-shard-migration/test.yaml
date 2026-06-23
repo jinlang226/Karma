@@ -16,7 +16,7 @@ prompt: |
   1. Cluster health is yellow/green with {{params.target_replicas}} node and no unassigned shards.
   2. {{params.index_name}} shards are on the remaining node.
   3. Only PVCs for active ordinals remain.
-  4. Remaining pod still has its marker file.
+  4. The remaining pod still has its marker file at {{params.marker_file_path}}.
 
 params:
   marker_file_path:
@@ -76,20 +76,21 @@ preconditionUnits:
       - command: "kubectl -n elasticsearch get pods 2>/dev/null | grep -c Running"
         timeout_sec: 10
 
-  # Additive seed fixture (composition safety): the oracle requires the
-  # {{params.index_name}} index (its shards must end up on the surviving node)
-  # plus a marker file at {{params.marker_file_path}} on the remaining pod.
-  # es_env_ready seeds both on its destructive fresh-build path, which is SKIPPED
-  # on an inherited cluster (the probe sees pods Running), so the index and marker
-  # are absent and the oracle fails. Re-establish them additively when the index
-  # is missing: create the index + 3 docs and write the marker on every live ES
-  # pod (so the pod that survives the downscale carries it). Unlike the build this
-  # does NOT pin index.routing.allocation.include to specific original node names
-  # -- on an inherited topology those names may not exist, which would strand the
-  # shards the agent must migrate. It never deletes the namespace or touches the
-  # StatefulSet. Standalone the index already exists so the probe matches and this
-  # unit skips -> byte-identical standalone behaviour.
-  - name: downscale_seed_fixture
+  # Additive INDEX fixture (composition safety, problem unit): the oracle requires
+  # the {{params.index_name}} index whose shards must end up on the surviving
+  # node. es_env_ready seeds it on its destructive fresh-build path, which is
+  # SKIPPED on an inherited cluster (the probe sees pods Running), so the index is
+  # absent and the oracle fails. Re-establish it additively when the index is
+  # missing: create the index + 3 docs. Unlike the build this does NOT pin
+  # index.routing.allocation.include to specific original node names -- on an
+  # inherited topology those names may not exist, which would strand the shards the
+  # agent must migrate. It never deletes the namespace or touches the StatefulSet.
+  # Standalone the index already exists so the probe matches and this unit skips
+  # -> byte-identical standalone behaviour. The marker file is a SEPARATE concern
+  # seeded by downscale_marker_fixture below (Pattern 1: an index-existence probe
+  # must not gate marker seeding, or an inherited cluster with the index but no
+  # marker leaves the marker unseeded and the oracle fails by design).
+  - name: downscale_index_fixture
     on_probe_fail: skip
     probe:
       - command: "/bin/sh -c 'pw=$(kubectl -n elasticsearch get secret elastic-password -o jsonpath=\"{.data.password}\" 2>/dev/null | base64 -d 2>/dev/null); A=\"\"; [ -n \"$pw\" ] && A=\"-u elastic:$pw\"; kubectl -n elasticsearch exec {{params.curl_pod_name}} -- curl -sk $A --max-time 5 \"http://{{params.http_service_name}}.elasticsearch.svc:9200/{{params.index_name}}/_count\" 2>/dev/null | grep -q \"\\\"count\\\"\"'"
@@ -97,11 +98,32 @@ preconditionUnits:
     apply:
       - command: "/bin/sh -c 'pw=$(kubectl -n elasticsearch get secret elastic-password -o jsonpath=\"{.data.password}\" 2>/dev/null | base64 -d 2>/dev/null); A=\"\"; [ -n \"$pw\" ] && A=\"-u elastic:$pw\"; kubectl -n elasticsearch exec {{params.curl_pod_name}} -- curl -sk $A -XPUT \"http://{{params.http_service_name}}.elasticsearch.svc:9200/{{params.index_name}}\" -H \"Content-Type: application/json\" -d \"{\\\"settings\\\":{\\\"number_of_shards\\\":3,\\\"number_of_replicas\\\":1}}\" >/dev/null 2>&1; kubectl -n elasticsearch exec {{params.curl_pod_name}} -- curl -sk $A -XPOST \"http://{{params.http_service_name}}.elasticsearch.svc:9200/{{params.index_name}}/_doc/1\" -H \"Content-Type: application/json\" -d \"{\\\"msg\\\":\\\"alpha\\\"}\" >/dev/null 2>&1; kubectl -n elasticsearch exec {{params.curl_pod_name}} -- curl -sk $A -XPOST \"http://{{params.http_service_name}}.elasticsearch.svc:9200/{{params.index_name}}/_doc/2\" -H \"Content-Type: application/json\" -d \"{\\\"msg\\\":\\\"beta\\\"}\" >/dev/null 2>&1; kubectl -n elasticsearch exec {{params.curl_pod_name}} -- curl -sk $A -XPOST \"http://{{params.http_service_name}}.elasticsearch.svc:9200/{{params.index_name}}/_doc/3\" -H \"Content-Type: application/json\" -d \"{\\\"msg\\\":\\\"gamma\\\"}\" >/dev/null 2>&1; true'"
         sleep: 2
-      - command: "/bin/sh -c 'for pod in $(kubectl -n elasticsearch get pods -l app={{params.cluster_prefix}} -o jsonpath=\"{.items[*].metadata.name}\"); do kubectl -n elasticsearch exec \"$pod\" -- /bin/sh -c \"echo marker > {{params.marker_file_path}}\" >/dev/null 2>&1 || true; done; true'"
-        sleep: 1
     verify:
       - command: "/bin/sh -c 'pw=$(kubectl -n elasticsearch get secret elastic-password -o jsonpath=\"{.data.password}\" 2>/dev/null | base64 -d 2>/dev/null); A=\"\"; [ -n \"$pw\" ] && A=\"-u elastic:$pw\"; kubectl -n elasticsearch exec {{params.curl_pod_name}} -- curl -sk $A --max-time 5 \"http://{{params.http_service_name}}.elasticsearch.svc:9200/{{params.index_name}}/_count\" >/dev/null 2>&1; true'"
         timeout_sec: 20
+
+  # Additive MARKER fixture (composition safety, problem unit, Pattern 1): the
+  # oracle asserts the surviving pod still carries a marker file at
+  # {{params.marker_file_path}}. es_env_ready writes it on the fresh-build path,
+  # which is SKIPPED on an inherited cluster, and folding the marker write into the
+  # index-gated unit above would skip it whenever the index already exists but the
+  # marker does not (an inherited cluster that ran a prior index-seeding stage).
+  # So seed the marker in its OWN unit whose probe tests the EXACT condition the
+  # oracle checks -- the marker present on every live ES pod -- and writes it on
+  # all of them when any is missing (so the pod that survives the downscale carries
+  # it). Never touches data, the namespace, or the StatefulSet. Standalone the
+  # marker already exists on all pods so the probe matches and this unit skips.
+  - name: downscale_marker_fixture
+    on_probe_fail: skip
+    probe:
+      - command: "/bin/sh -c 'for pod in $(kubectl -n elasticsearch get pods -l app={{params.cluster_prefix}} -o jsonpath=\"{.items[*].metadata.name}\"); do kubectl -n elasticsearch exec \"$pod\" -- /bin/sh -c \"test -f {{params.marker_file_path}}\" >/dev/null 2>&1 || exit 1; done; exit 0'"
+        timeout_sec: 30
+    apply:
+      - command: "/bin/sh -c 'for pod in $(kubectl -n elasticsearch get pods -l app={{params.cluster_prefix}} -o jsonpath=\"{.items[*].metadata.name}\"); do kubectl -n elasticsearch exec \"$pod\" -- /bin/sh -c \"echo marker > {{params.marker_file_path}}\" >/dev/null 2>&1 || true; done; true'"
+        sleep: 1
+    verify:
+      - command: "/bin/sh -c 'for pod in $(kubectl -n elasticsearch get pods -l app={{params.cluster_prefix}} -o jsonpath=\"{.items[*].metadata.name}\"); do kubectl -n elasticsearch exec \"$pod\" -- /bin/sh -c \"test -f {{params.marker_file_path}}\" >/dev/null 2>&1 || exit 1; done; exit 0'"
+        timeout_sec: 30
 
 oracle:
   verify:

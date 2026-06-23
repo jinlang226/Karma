@@ -75,6 +75,31 @@ preconditionUnits:
       - command: "kubectl -n elasticsearch get pods 2>/dev/null | grep -c Running"
         timeout_sec: 10
 
+  # Additive problem-shape fixture (composition safety, Pattern 1): the unsolved
+  # problem is the UNSAFE coordination setting
+  # persistent.cluster.auto_shrink_voting_configuration=false (the agent must
+  # clear it / restore the safe default). es_env_ready plants it on its
+  # destructive fresh-build path, which is SKIPPED on an inherited running cluster
+  # (the probe sees pods Running), so on an inherited cluster the setting is at its
+  # safe default and the oracle's "auto_shrink disabled" check passes with ZERO
+  # agent action -- a solved task silently bypassing the challenge. Re-plant the
+  # fault additively when it is NOT already false: set
+  # auto_shrink_voting_configuration=false. The probe tests the EXACT condition the
+  # oracle grades (is the setting currently false?), so standalone (where the build
+  # already set it) the probe matches and this unit skips. It only writes a cluster
+  # setting -- never deletes the namespace, scales the StatefulSet, or touches data.
+  - name: voting_drift_ready
+    on_probe_fail: skip
+    probe:
+      - command: "/bin/sh -c 'pw=$(kubectl -n elasticsearch get secret elastic-password -o jsonpath=\"{.data.password}\" 2>/dev/null | base64 -d 2>/dev/null); A=\"\"; [ -n \"$pw\" ] && A=\"-u elastic:$pw\"; S=https; kubectl -n elasticsearch exec {{params.curl_pod_name}} -- curl -sk $A --max-time 5 \"https://{{params.http_service_name}}.elasticsearch.svc:9200/\" >/dev/null 2>&1 || S=http; kubectl -n elasticsearch exec {{params.curl_pod_name}} -- curl -sk $A --max-time 5 \"$S://{{params.http_service_name}}.elasticsearch.svc:9200/_cluster/settings\" 2>/dev/null | grep -q \"\\\"auto_shrink_voting_configuration\\\":\\\"false\\\"\"'"
+        timeout_sec: 20
+    apply:
+      - command: "/bin/sh -c 'pw=$(kubectl -n elasticsearch get secret elastic-password -o jsonpath=\"{.data.password}\" 2>/dev/null | base64 -d 2>/dev/null); A=\"\"; [ -n \"$pw\" ] && A=\"-u elastic:$pw\"; S=https; kubectl -n elasticsearch exec {{params.curl_pod_name}} -- curl -sk $A --max-time 5 \"https://{{params.http_service_name}}.elasticsearch.svc:9200/\" >/dev/null 2>&1 || S=http; kubectl -n elasticsearch exec {{params.curl_pod_name}} -- curl -sk $A -XPUT \"$S://{{params.http_service_name}}.elasticsearch.svc:9200/_cluster/settings\" -H \"Content-Type: application/json\" -d \"{\\\"persistent\\\":{\\\"cluster.auto_shrink_voting_configuration\\\":false}}\" >/dev/null 2>&1; true'"
+        sleep: 1
+    verify:
+      - command: "/bin/sh -c 'pw=$(kubectl -n elasticsearch get secret elastic-password -o jsonpath=\"{.data.password}\" 2>/dev/null | base64 -d 2>/dev/null); A=\"\"; [ -n \"$pw\" ] && A=\"-u elastic:$pw\"; S=https; kubectl -n elasticsearch exec {{params.curl_pod_name}} -- curl -sk $A --max-time 5 \"https://{{params.http_service_name}}.elasticsearch.svc:9200/\" >/dev/null 2>&1 || S=http; kubectl -n elasticsearch exec {{params.curl_pod_name}} -- curl -sk $A --max-time 5 \"$S://{{params.http_service_name}}.elasticsearch.svc:9200/_cluster/settings\" 2>/dev/null | grep -q \"\\\"auto_shrink_voting_configuration\\\":\\\"false\\\"\"'"
+        timeout_sec: 20
+
 oracle:
   verify:
     commands:
