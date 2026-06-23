@@ -137,6 +137,29 @@ preconditionUnits:
       - command: "kubectl -n ${BENCH_NAMESPACE} wait --for=condition=ready pod -l app=curl-test --timeout=3s"
         timeout_sec: 10
 
+  # Problem-shape unit: the unsolved task is "mirroring not yet configured", i.e.
+  # the ha-all policy is ABSENT on /app. The setup-job above only creates the
+  # vhost/user/queue -- it never removes ha-all -- so standalone a fresh cluster
+  # has no ha-all and the probe passes (skip). But when this case re-runs on an
+  # INHERITED cluster a prior policy-sync stage already created ha-all; the
+  # bootstrap probe (queue exists) passes and the setup-job is skipped, so ha-all
+  # persists and the agent would have nothing to do while the oracle still passes
+  # trivially. The probe below tests the EXACT oracle-checked drift (ha-all absent);
+  # when it is present the apply replants the unsolved baseline by clearing only
+  # this case's own ha-all policy. Additive: touches no inherited cluster state
+  # beyond the policy the task is about, never restarts a pod.
+  - name: policy_sync_baseline_ready
+    on_probe_fail: skip
+    probe:
+      - command: "/bin/sh -c '! kubectl -n ${BENCH_NAMESPACE} exec {{params.cluster_prefix}}-0 -- rabbitmqctl -q list_policies -p /app 2>/dev/null | grep -qw ha-all'"
+        timeout_sec: 30
+    apply:
+      - command: "kubectl -n ${BENCH_NAMESPACE} exec {{params.cluster_prefix}}-0 -- rabbitmqctl clear_policy -p /app ha-all || true"
+        sleep: 2
+    verify:
+      - command: "/bin/sh -c '! kubectl -n ${BENCH_NAMESPACE} exec {{params.cluster_prefix}}-0 -- rabbitmqctl -q list_policies -p /app 2>/dev/null | grep -qw ha-all'"
+        timeout_sec: 30
+
 oracle:
   verify:
     before_commands:
