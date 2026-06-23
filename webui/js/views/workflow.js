@@ -563,6 +563,10 @@
     const addBtn = el("button", { class: "btn secondary", onClick: () => {
       stages.push({ service: services[0] ? services[0].name : "", case: "", overrides: {}, _defaults: {} });
       renderStages();
+      // The stage list has a capped height; scroll the just-added last row into
+      // view so the new stage isn't hidden below the fold.
+      const last = stageList.lastElementChild;
+      if (last) last.scrollIntoView({ block: "nearest", behavior: "smooth" });
     } }, "+ Add stage");
 
     // Adversary injections -- an option of the workflow, not a separate tab.
@@ -582,6 +586,10 @@
         }
         advRows.push({ scenario: "", injectIndex: 0, liftIndex: -1 });
         renderAdv();
+        // Same as stages: scroll the just-added row into view so it isn't
+        // hidden below the capped-height list.
+        const last = advList.lastElementChild;
+        if (last) last.scrollIntoView({ block: "nearest", behavior: "smooth" });
       },
     }, "+ Add adversary");
     const advHint = scenarios.length
