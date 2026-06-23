@@ -158,13 +158,10 @@ def extract_checkpoint(transform):
     return checkpoint
 
 
-def main():
-    global ELASTIC_PASSWORD
-    ELASTIC_PASSWORD = _elastic_password()
-
+def evaluate(checkpoint_before):
+    """Run one full snapshot of the transform-recovery checks; return errors."""
     errors = []
 
-    checkpoint_before = get_checkpoint_before(errors)
     transform = get_transform(errors)
     if transform:
         state = transform.get("state") or transform.get("stats", {}).get("state")
@@ -184,6 +181,31 @@ def main():
     if isinstance(count, dict):
         if count.get("count", 0) <= 0:
             errors.append("Destination index has no documents")
+
+    return errors
+
+
+def main():
+    global ELASTIC_PASSWORD
+    ELASTIC_PASSWORD = _elastic_password()
+
+    # After the agent restarts the transform, its next checkpoint and the
+    # destination index's documents only materialize once a transform sync cycle
+    # runs (seconds to a sync interval later), and a curl can flake during that
+    # window. A single immediate snapshot catches the not-yet-advanced state and
+    # falsely reports "Checkpoint did not advance" / "no documents". So verify the
+    # STABLE converged state: re-evaluate for up to ~120s and pass on the first
+    # clean snapshot. The checkpoint_before baseline is read ONCE up front so the
+    # advance check stays strict across retries.
+    import time
+    config_errors = []
+    checkpoint_before = get_checkpoint_before(config_errors)
+    deadline = time.monotonic() + 120
+    live_errors = evaluate(checkpoint_before)
+    while live_errors and time.monotonic() < deadline:
+        time.sleep(8)
+        live_errors = evaluate(checkpoint_before)
+    errors = config_errors + live_errors
 
     if errors:
         print("Transform recovery verification failed:", file=sys.stderr)
