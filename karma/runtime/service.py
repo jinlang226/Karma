@@ -16,6 +16,7 @@ Dependency rules:
 from __future__ import annotations
 
 import threading
+import uuid
 from pathlib import Path
 from typing import Any
 
@@ -167,6 +168,11 @@ def run_workflow(
                 agent_meta, image_tag=tag, run_dir=run_dir
             )
         prompt_mode = str(workflow.get("prompt_mode") or "progressive")
+        # Persistent-session mode keeps ONE agent conversation alive across all
+        # stages (each stage resumes the same CLI/api session). Mint one stable
+        # session id per run; per_stage mode leaves it None (fresh agent/stage).
+        agent_session = str(workflow.get("agent_session") or "per_stage")
+        session_id = str(uuid.uuid4()) if agent_session == "persistent" else None
 
         result = run_workflow_loop(
             rows,
@@ -177,6 +183,8 @@ def run_workflow(
             sandbox_mode=sandbox_mode,
             environment=env,
             prompt_mode=prompt_mode,
+            agent_session=agent_session,
+            session_id=session_id,
             on_stage_complete=on_stage_complete,
             on_progress=on_progress,
             should_cancel=should_cancel,
