@@ -131,10 +131,28 @@ def main():
         return
 
     log(f"api agent: model={MODEL} base_url={BASE_URL} max_steps={MAX_STEPS}")
-    messages = [
-        {"role": "system", "content": SYSTEM},
-        {"role": "user", "content": prompt},
-    ]
+    # Persistent-session mode (workflow agent_session: persistent): keep ONE
+    # conversation across stages. Reload the prior transcript and append this
+    # stage's prompt instead of re-feeding only the prompt text. The store is a
+    # per-run JSON file the runtime points us at via BENCH_SESSION_DIR.
+    session_file = None
+    if os.environ.get("BENCH_SESSION_PERSIST") and os.environ.get("BENCH_SESSION_DIR"):
+        session_file = os.path.join(os.environ["BENCH_SESSION_DIR"], "api-messages.json")
+    messages = None
+    if session_file and os.path.exists(session_file):
+        try:
+            with open(session_file) as fh:
+                messages = json.load(fh)
+            messages.append({"role": "user", "content": prompt})
+            log(f"api agent: resumed session ({len(messages)} prior messages)")
+        except Exception as exc:  # noqa: BLE001 -- fall back to a fresh thread
+            log(f"api agent: could not resume session ({exc}); starting fresh")
+            messages = None
+    if messages is None:
+        messages = [
+            {"role": "system", "content": SYSTEM},
+            {"role": "user", "content": prompt},
+        ]
     final = ""
     for step in range(1, MAX_STEPS + 1):
         try:
@@ -178,6 +196,15 @@ def main():
 
     write_submit(final)
     log("api agent: wrote submit.txt")
+    # Persist the full transcript so the next stage resumes this conversation.
+    if session_file:
+        try:
+            os.makedirs(os.path.dirname(session_file), exist_ok=True)
+            with open(session_file, "w") as fh:
+                json.dump(messages, fh)
+            log(f"api agent: saved session ({len(messages)} messages)")
+        except Exception as exc:  # noqa: BLE001
+            log(f"api agent: could not save session ({exc})")
 
 
 if __name__ == "__main__":

@@ -55,13 +55,37 @@ a background command), you MUST poll it to completion SYNCHRONOUSLY within this 
 Do not end your turn until the entire task is fully complete and you have verified \
 the end state."
 
+# Persistent-session mode (workflow agent_session: persistent): keep ONE claude
+# conversation across stages instead of a fresh one each stage. Stage 0 creates
+# the session with a stable id; later stages resume it. claude keys sessions by
+# cwd, and KARMA gives each stage a different stage dir, so before resuming we
+# copy the prior stage's session JSONL into THIS cwd's project dir so --resume
+# finds it (a no-op in docker, where cwd is always /workspace).
+SESSION_ARGS=()
+if [ -n "${BENCH_SESSION_PERSIST:-}" ] && [ -n "${BENCH_SESSION_ID:-}" ]; then
+  if [ "${BENCH_SESSION_STAGE_INDEX:-0}" = "0" ]; then
+    SESSION_ARGS=(--session-id "$BENCH_SESSION_ID")
+  else
+    # claude derives a project dir from the cwd by replacing every
+    # non-alphanumeric char with '-' (e.g. /private/tmp/a.b/stage_1 ->
+    # -private-tmp-a-b-stage-1). Mirror that exactly so the copied session lands
+    # where --resume looks.
+    PROJDIR="$HOME/.claude/projects/$(pwd -P | sed 's#[^a-zA-Z0-9]#-#g')"
+    mkdir -p "$PROJDIR"
+    PRIOR="$(ls "$HOME"/.claude/projects/*/"$BENCH_SESSION_ID".jsonl 2>/dev/null | head -1)"
+    [ -n "$PRIOR" ] && cp -f "$PRIOR" "$PROJDIR/" 2>/dev/null
+    SESSION_ARGS=(--resume "$BENCH_SESSION_ID")
+  fi
+fi
+
 # Stream the full event log to stdout (-> agent.log) in REAL TIME via tee, and
 # also to a temp file for parsing. Real-time matters: when KARMA times out and
 # kills the agent mid-run, agent.log still holds the partial turn-by-turn (the
 # runs you most want to debug), instead of being lost.
 claude --print --verbose --output-format stream-json \
   --model "$MODEL" \
-  "${EFFORT_ARGS[@]}" \
+  ${EFFORT_ARGS[@]+"${EFFORT_ARGS[@]}"} \
+  ${SESSION_ARGS[@]+"${SESSION_ARGS[@]}"} \
   --append-system-prompt "$SYS_PROMPT" \
   --dangerously-skip-permissions \
   "$(cat "$PROMPT_FILE")" \
