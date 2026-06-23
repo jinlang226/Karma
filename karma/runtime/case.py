@@ -123,6 +123,7 @@ def _is_transient_apply_error(text: str) -> bool:
         or "unable to connect to the server" in t
         or "object is being deleted" in t
         or "no matching resources found" in t
+        or "being terminated" in t
     )
 
 
