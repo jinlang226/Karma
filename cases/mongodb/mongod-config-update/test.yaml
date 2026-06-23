@@ -20,6 +20,12 @@ params:
   target_journal_compressor:
     default: zlib
     description: Approved WiredTiger journal compression algorithm.
+  baseline_verbosity:
+    default: 1
+    description: Seeded systemLog.verbosity baseline the prompt is relative to.
+  baseline_slow_ms:
+    default: 200
+    description: Seeded operationProfiling.slowOpThresholdMs baseline the prompt is relative to.
 
 prompt: |
   A 3-member MongoDB replica set is running in the mongodb namespace with auth enabled.
@@ -155,6 +161,68 @@ preconditionUnits:
     verify:
       - command: "/bin/sh -c 'kubectl -n mongodb get secret admin-user-password >/dev/null 2>&1 && echo ok'"
         timeout_sec: 15
+
+  # Problem-shape replant (composition safety, Pattern 1): the oracle grades the
+  # ABSOLUTE post-change targets (verbosity {{params.baseline_verbosity}}+1,
+  # slowOpThresholdMs 2x{{params.baseline_slow_ms}}, journalCompressor
+  # {{params.target_journal_compressor}}) that the prompt expresses RELATIVE to a
+  # SEEDED baseline (verbosity {{params.baseline_verbosity}},
+  # slowOpThresholdMs {{params.baseline_slow_ms}}). That baseline is established
+  # only inside the destructive mongo_env_ready.apply, which is SKIPPED on an
+  # inherited cluster -> a prior config stage may have left a different live
+  # baseline, so the agent's correct +1/2x computation lands on the wrong absolute
+  # value and the hardcoded oracle is "off by one step". This unit reconciles ONLY
+  # the live mongod config baseline (verbosity + slowms) back to the seeded values
+  # the prompt assumes, when the cluster is NOT already at the post-solve target.
+  # Probe gates on the EXACT pre-change baseline being live across all members;
+  # standalone (apply already seeded it) the probe passes and this skips ->
+  # identical behaviour. Applied at runtime via setParameter/profile (no restart,
+  # no data touched); never resets the cluster or other config.
+  - name: mongo_config_baseline_ready
+    on_probe_fail: skip
+    probe:
+      # True (skip) when every member is ALREADY at the seeded baseline
+      # (verbosity == baseline, slowms == baseline) OR already at the post-solve
+      # target (verbosity == baseline+1, slowms == 2x). Either way the relative
+      # task is well-posed and no replant is needed.
+      - command: |
+          /bin/sh -c '
+          t=""; for cca in /etc/tls/ca.crt /etc/mongo-ca/ca.crt; do kubectl -n mongodb exec {{params.cluster_prefix}}-0 -- ls $cca >/dev/null 2>&1 && { t="--tls --tlsAllowInvalidHostnames --tlsAllowInvalidCertificates --tlsCAFile $cca"; break; }; done
+          pw=$(kubectl -n mongodb get secret admin-user-password -o jsonpath="{.data.password}" 2>/dev/null | base64 -d 2>/dev/null); pw=${pw:-admin123password}
+          base_v={{params.baseline_verbosity}}; tgt_v=$((base_v+1)); base_s={{params.baseline_slow_ms}}; tgt_s=$((base_s*2))
+          ok=1
+          for i in 0 1 2; do
+            out=$(kubectl -n mongodb exec {{params.cluster_prefix}}-$i -- mongosh --quiet $t "mongodb://{{params.admin_username}}:$pw@localhost:27017/admin?directConnection=true" --eval "var o=db.adminCommand({getCmdLineOpts:1}).parsed||{}; var v=(o.systemLog||{}).verbosity; var s=(o.operationProfiling||{}).slowOpThresholdMs; if(s===undefined){s=db.getProfilingStatus().slowms;} print(v+\"|\"+s)" 2>/dev/null)
+            v=$(echo "$out" | cut -d"|" -f1); s=$(echo "$out" | cut -d"|" -f2)
+            if [ "$v" = "$base_v" ] && [ "$s" = "$base_s" ]; then :; elif [ "$v" = "$tgt_v" ] && [ "$s" = "$tgt_s" ]; then :; else ok=0; fi
+          done
+          [ "$ok" = "1" ]
+          '
+        timeout_sec: 60
+    apply:
+      # Reconcile the configmap baseline (so a member restart re-reads it) and set
+      # the live runtime baseline on every member via setParameter (logLevel) and
+      # setProfilingLevel (slowms), authenticated as admin. Idempotent; preserves
+      # all other config and data.
+      - command: "kubectl -n mongodb apply -f cases/mongodb/mongod-config-update/resource/configmap.yaml"
+        sleep: 1
+      - command: |
+          /bin/sh -c '
+          t=""; for cca in /etc/tls/ca.crt /etc/mongo-ca/ca.crt; do kubectl -n mongodb exec {{params.cluster_prefix}}-0 -- ls $cca >/dev/null 2>&1 && { t="--tls --tlsAllowInvalidHostnames --tlsAllowInvalidCertificates --tlsCAFile $cca"; break; }; done
+          pw=$(kubectl -n mongodb get secret admin-user-password -o jsonpath="{.data.password}" 2>/dev/null | base64 -d 2>/dev/null); pw=${pw:-admin123password}
+          for i in 0 1 2; do
+            kubectl -n mongodb exec {{params.cluster_prefix}}-$i -- mongosh --quiet $t "mongodb://{{params.admin_username}}:$pw@localhost:27017/admin?directConnection=true" --eval "db.adminCommand({setParameter:1,logLevel:{{params.baseline_verbosity}}}); db.setProfilingLevel(db.getProfilingStatus().was, {slowms: {{params.baseline_slow_ms}} })" 2>/dev/null || true
+          done
+          '
+        sleep: 2
+    verify:
+      - command: |
+          /bin/sh -c '
+          t=""; for cca in /etc/tls/ca.crt /etc/mongo-ca/ca.crt; do kubectl -n mongodb exec {{params.cluster_prefix}}-0 -- ls $cca >/dev/null 2>&1 && { t="--tls --tlsAllowInvalidHostnames --tlsAllowInvalidCertificates --tlsCAFile $cca"; break; }; done
+          pw=$(kubectl -n mongodb get secret admin-user-password -o jsonpath="{.data.password}" 2>/dev/null | base64 -d 2>/dev/null); pw=${pw:-admin123password}
+          kubectl -n mongodb exec {{params.cluster_prefix}}-0 -- mongosh --quiet $t "mongodb://{{params.admin_username}}:$pw@localhost:27017/admin?directConnection=true" --eval "quit(0)" >/dev/null 2>&1; true
+          '
+        timeout_sec: 30
 
 oracle:
   verify:

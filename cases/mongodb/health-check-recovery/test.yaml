@@ -205,6 +205,56 @@ preconditionUnits:
       - command: "/bin/sh -c 'kubectl -n mongodb get secret health-user-password >/dev/null 2>&1 && echo ok'"
         timeout_sec: 15
 
+  # Problem-shape replant (composition safety, Pattern 1) -- NEEDS KIND VALIDATION.
+  # The planted FAULT is the `health-overrides` ConfigMap keying mongodb-replica-1
+  # to a WRONG password (legacyHealthPass123), combined with the override-aware
+  # readiness probe (health-check-script ConfigMap) the StatefulSet mounts: member-1
+  # authenticates its probe with the bad override and never becomes Ready. The
+  # oracle's check_health_auth FAILS if that stale override is still present AND
+  # ERRORS if the health-overrides ConfigMap is absent. All of this is planted only
+  # inside the destructive mongo_env_ready.apply, which is SKIPPED on an inherited
+  # cluster -> the fault never exists (the agent has nothing to fix) yet the oracle
+  # still grades against the fixture. This unit re-plants the EXACT fault: it
+  # re-applies the override-aware probe + override ConfigMaps and this case's
+  # StatefulSet (so the mounts exist), then bounces member-1 so its readiness probe
+  # re-evaluates and fails. Probe gates on the EXACT oracle-checked state (stale,
+  # non-empty, != real-health-pw override on member-1); standalone the fault is
+  # already present and this skips -> identical behaviour.
+  #
+  # HIGH-RISK / NEEDS KIND VALIDATION: re-applying statefulset.yaml on an inherited
+  # cluster pins image mongo:6.0.5 and the case-specific readiness-probe shape over
+  # whatever a prior stage established (Pattern 7). If a version-bearing predecessor
+  # composes ahead of this case, narrow the StatefulSet apply to PATCH only the
+  # readiness/liveness probe + health volume mounts onto the live StatefulSet
+  # instead of re-applying the whole manifest.
+  - name: health_probe_fault_ready
+    on_probe_fail: skip
+    probe:
+      # True (skip) when the unsolved fault is ALREADY present: health-overrides
+      # carries a stale (non-empty, != real health password) override for member-1.
+      - command: |
+          /bin/sh -c '
+          hp=$(kubectl -n mongodb get secret health-user-password -o jsonpath="{.data.password}" 2>/dev/null | base64 -d 2>/dev/null); hp=${hp:-healthpass123}
+          v=$(kubectl -n mongodb get configmap health-overrides -o jsonpath="{.data.mongodb-replica-1}" 2>/dev/null)
+          [ -n "$v" ] && [ "$v" != "$hp" ]
+          '
+        timeout_sec: 15
+    apply:
+      - command: "kubectl -n mongodb apply -f cases/mongodb/health-check-recovery/resource/health-check.yaml"
+        sleep: 1
+      - command: "kubectl -n mongodb apply -f cases/mongodb/health-check-recovery/resource/statefulset.yaml"
+        sleep: 3
+      - command: "kubectl -n mongodb delete pod mongodb-replica-1 --ignore-not-found=true"
+        sleep: 2
+    verify:
+      - command: |
+          /bin/sh -c '
+          hp=$(kubectl -n mongodb get secret health-user-password -o jsonpath="{.data.password}" 2>/dev/null | base64 -d 2>/dev/null); hp=${hp:-healthpass123}
+          v=$(kubectl -n mongodb get configmap health-overrides -o jsonpath="{.data.mongodb-replica-1}" 2>/dev/null)
+          [ -n "$v" ] && [ "$v" != "$hp" ]
+          '
+        timeout_sec: 15
+
 oracle:
   verify:
     commands:
