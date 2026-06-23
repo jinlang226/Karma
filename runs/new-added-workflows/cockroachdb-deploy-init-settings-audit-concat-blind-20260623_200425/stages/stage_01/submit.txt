@@ -1,0 +1,3599 @@
+OpenAI Codex v0.142.0-alpha.6
+--------
+workdir: /Users/jinyige/Karma/runs/new-added-workflows/cockroachdb-deploy-init-settings-audit-concat-blind-20260623_200425/stages/stage_01
+model: gpt-5.5
+provider: openai
+approval: never
+sandbox: danger-full-access
+reasoning effort: xhigh
+reasoning summaries: none
+session id: 019ef615-83de-7c53-a8f3-aed71aaf24a3
+--------
+user
+A CockroachDB cluster needs to be deployed in the cockroachdb namespace.
+
+OBSERVED STATE:
+- RBAC resources ready (ServiceAccount, Role, RoleBinding)
+- No workload resources exist yet
+
+YOUR TASK:
+Deploy a 3-node CockroachDB cluster using only native Kubernetes resources.
+
+CONSTRAINTS:
+- Resources and names must be:
+  - Headless Service: crdb-cluster
+  - Public Service: crdb-cluster-public
+  - StatefulSet: crdb-cluster
+- Services must expose grpc (26257) and http (8080).
+- StatefulSet:
+  - 3 replicas
+  - Image: cockroachdb/cockroach:v24.1.0
+  - Advertise each pod by its DNS and join all 3 nodes
+  - VolumeClaimTemplate with 10Gi storage
+- Insecure mode (no TLS) for this case.
+- Use the existing RBAC; do not create new RBAC resources.
+- Do not install CRDs or use a CockroachDB operator.
+- Ensure voluntary disruptions preserve quorum (at least 2 of 3 nodes remain available).
+
+Check resources and pods:
+```bash
+kubectl -n cockroachdb get statefulset,service
+kubectl -n cockroachdb get pods
+kubectl -n cockroachdb get pvc
+```
+codex
+I’ll inspect the namespace and any existing manifests first, then apply only the native Kubernetes objects needed for the CockroachDB cluster and verify the requested resources.
+exec
+/bin/zsh -lc 'rg --files' in /Users/jinyige/Karma/runs/new-added-workflows/cockroachdb-deploy-init-settings-audit-concat-blind-20260623_200425/stages/stage_01
+ succeeded in 0ms:
+proxy-client.crt
+agent.log
+precondition.log
+prompt.txt
+proxy-client.key
+
+exec
+/bin/zsh -lc 'kubectl -n cockroachdb get serviceaccount,role,rolebinding,statefulset,service,pod,pvc,pdb' in /Users/jinyige/Karma/runs/new-added-workflows/cockroachdb-deploy-init-settings-audit-concat-blind-20260623_200425/stages/stage_01
+ succeeded in 384ms:
+NAME                             SECRETS   AGE
+serviceaccount/crdb-cluster-sa   0         22h
+serviceaccount/default           0         22h
+
+NAME                                               CREATED AT
+role.rbac.authorization.k8s.io/crdb-cluster-role   2026-06-22T21:37:54Z
+
+NAME                                                             ROLE                     AGE
+rolebinding.rbac.authorization.k8s.io/crdb-cluster-rolebinding   Role/crdb-cluster-role   22h
+
+NAME                            READY   AGE
+statefulset.apps/crdb-cluster   3/3     22h
+
+NAME                          TYPE        CLUSTER-IP      EXTERNAL-IP   PORT(S)              AGE
+service/crdb-cluster          ClusterIP   None            <none>        26257/TCP,8080/TCP   22h
+service/crdb-cluster-public   ClusterIP   10.96.131.212   <none>        26257/TCP,8080/TCP   22h
+
+NAME                 READY   STATUS    RESTARTS   AGE
+pod/crdb-cluster-0   1/1     Running   0          4m1s
+pod/crdb-cluster-1   1/1     Running   0          4m20s
+pod/crdb-cluster-2   1/1     Running   0          4m34s
+
+NAME                                           STATUS   VOLUME                                     CAPACITY   ACCESS MODES   STORAGECLASS   VOLUMEATTRIBUTESCLASS   AGE
+persistentvolumeclaim/datadir-crdb-cluster-0   Bound    pvc-1f80dc2a-82a9-4080-9cdc-3cd77468cba6   10Gi       RWO            standard       <unset>                 22h
+persistentvolumeclaim/datadir-crdb-cluster-1   Bound    pvc-d11a16c0-78f0-4b70-97d0-9db649cddddd   10Gi       RWO            standard       <unset>                 22h
+persistentvolumeclaim/datadir-crdb-cluster-2   Bound    pvc-bb09619c-26d7-4f06-bbc4-912c18c68901   10Gi       RWO            standard       <unset>                 22h
+
+NAME                                      MIN AVAILABLE   MAX UNAVAILABLE   ALLOWED DISRUPTIONS   AGE
+poddisruptionbudget.policy/crdb-cluster   2               N/A               1                     22h
+
+codex
+The namespace already has `crdb-cluster` objects present, so I’m checking their specs before changing anything. The key question is whether the existing StatefulSet and services match the requested image, ports, DNS advertising, storage, and quorum protection.
+exec
+/bin/zsh -lc 'kubectl -n cockroachdb get statefulset crdb-cluster -o yaml' in /Users/jinyige/Karma/runs/new-added-workflows/cockroachdb-deploy-init-settings-audit-concat-blind-20260623_200425/stages/stage_01
+exec
+/bin/zsh -lc 'kubectl -n cockroachdb exec crdb-cluster-0 -- /cockroach/cockroach node status --insecure --host=localhost:26257' in /Users/jinyige/Karma/runs/new-added-workflows/cockroachdb-deploy-init-settings-audit-concat-blind-20260623_200425/stages/stage_01
+exec
+/bin/zsh -lc 'kubectl -n cockroachdb get service crdb-cluster crdb-cluster-public -o yaml' in /Users/jinyige/Karma/runs/new-added-workflows/cockroachdb-deploy-init-settings-audit-concat-blind-20260623_200425/stages/stage_01
+exec
+/bin/zsh -lc 'kubectl -n cockroachdb get pdb crdb-cluster -o yaml' in /Users/jinyige/Karma/runs/new-added-workflows/cockroachdb-deploy-init-settings-audit-concat-blind-20260623_200425/stages/stage_01
+ succeeded in 210ms:
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  annotations:
+    kubectl.kubernetes.io/last-applied-configuration: |
+      {"apiVersion":"policy/v1","kind":"PodDisruptionBudget","metadata":{"labels":{"app.kubernetes.io/instance":"crdb-cluster","app.kubernetes.io/name":"cockroachdb"},"name":"crdb-cluster","namespace":"cockroachdb"},"spec":{"minAvailable":2,"selector":{"matchLabels":{"app.kubernetes.io/instance":"crdb-cluster","app.kubernetes.io/name":"cockroachdb"}}}}
+  creationTimestamp: "2026-06-22T21:47:37Z"
+  generation: 1
+  labels:
+    app.kubernetes.io/instance: crdb-cluster
+    app.kubernetes.io/name: cockroachdb
+  name: crdb-cluster
+  namespace: cockroachdb
+  resourceVersion: "161799"
+  uid: 850076fb-cbe9-4e71-9811-891dd7e0f9a8
+spec:
+  minAvailable: 2
+  selector:
+    matchLabels:
+      app.kubernetes.io/instance: crdb-cluster
+      app.kubernetes.io/name: cockroachdb
+status:
+  conditions:
+  - lastTransitionTime: "2026-06-23T20:00:53Z"
+    message: ""
+    observedGeneration: 1
+    reason: SufficientPods
+    status: "True"
+    type: DisruptionAllowed
+  currentHealthy: 3
+  desiredHealthy: 2
+  disruptionsAllowed: 1
+  expectedPods: 3
+  observedGeneration: 1
+
+ succeeded in 213ms:
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  annotations:
+    kubectl.kubernetes.io/last-applied-configuration: |
+      {"apiVersion":"apps/v1","kind":"StatefulSet","metadata":{"labels":{"app.kubernetes.io/instance":"crdb-cluster","app.kubernetes.io/name":"cockroachdb"},"name":"crdb-cluster","namespace":"cockroachdb"},"spec":{"podManagementPolicy":"Parallel","replicas":3,"selector":{"matchLabels":{"app.kubernetes.io/instance":"crdb-cluster","app.kubernetes.io/name":"cockroachdb"}},"serviceName":"crdb-cluster","template":{"metadata":{"labels":{"app.kubernetes.io/instance":"crdb-cluster","app.kubernetes.io/name":"cockroachdb"}},"spec":{"containers":[{"command":["/bin/bash","-c","exec /cockroach/cockroach start --logtostderr=INFO --insecure --advertise-host=$(POD_NAME).crdb-cluster.cockroachdb.svc.cluster.local --http-addr=0.0.0.0:8080 --port=26257 --cache=25% --max-sql-memory=25% --join=crdb-cluster-0.crdb-cluster.cockroachdb.svc.cluster.local:26257,crdb-cluster-1.crdb-cluster.cockroachdb.svc.cluster.local:26257,crdb-cluster-2.crdb-cluster.cockroachdb.svc.cluster.local:26257"],"env":[{"name":"POD_NAME","valueFrom":{"fieldRef":{"fieldPath":"metadata.name"}}},{"name":"POD_NAMESPACE","valueFrom":{"fieldRef":{"fieldPath":"metadata.namespace"}}}],"image":"cockroachdb/cockroach:v24.1.0","imagePullPolicy":"IfNotPresent","livenessProbe":{"httpGet":{"path":"/health","port":"http","scheme":"HTTP"},"initialDelaySeconds":30,"periodSeconds":5},"name":"db","ports":[{"containerPort":26257,"name":"grpc"},{"containerPort":8080,"name":"http"}],"readinessProbe":{"failureThreshold":2,"httpGet":{"path":"/health?ready=1","port":"http","scheme":"HTTP"},"initialDelaySeconds":10,"periodSeconds":5},"resources":{"limits":{"cpu":"1","memory":"2Gi"},"requests":{"cpu":"1","memory":"2Gi"}},"volumeMounts":[{"mountPath":"/cockroach/cockroach-data","name":"datadir"}]}],"serviceAccountName":"crdb-cluster-sa","terminationGracePeriodSeconds":10}},"volumeClaimTemplates":[{"metadata":{"labels":{"app.kubernetes.io/instance":"crdb-cluster","app.kubernetes.io/name":"cockroachdb"},"name":"datadir"},"spec":{"accessModes":["ReadWriteOnce"],"resources":{"requests":{"storage":"10Gi"}}}}]}}
+  creationTimestamp: "2026-06-22T21:37:58Z"
+  generation: 25
+  labels:
+    app.kubernetes.io/instance: crdb-cluster
+    app.kubernetes.io/name: cockroachdb
+  name: crdb-cluster
+  namespace: cockroachdb
+  resourceVersion: "161801"
+  uid: 8cf0bc96-9a59-4afa-9e12-91d89df30846
+spec:
+  persistentVolumeClaimRetentionPolicy:
+    whenDeleted: Retain
+    whenScaled: Retain
+  podManagementPolicy: Parallel
+  replicas: 3
+  revisionHistoryLimit: 10
+  selector:
+    matchLabels:
+      app.kubernetes.io/instance: crdb-cluster
+      app.kubernetes.io/name: cockroachdb
+  serviceName: crdb-cluster
+  template:
+    metadata:
+      creationTimestamp: null
+      labels:
+        app.kubernetes.io/instance: crdb-cluster
+        app.kubernetes.io/name: cockroachdb
+    spec:
+      containers:
+      - command:
+        - /bin/bash
+        - -c
+        - exec /cockroach/cockroach start --logtostderr=INFO --certs-dir=/cockroach/cockroach-certs
+          --advertise-host=$(POD_NAME).crdb-cluster.cockroachdb.svc.cluster.local
+          --http-addr=0.0.0.0:8080 --port=26257 --cache=25% --max-sql-memory=25% --join=crdb-cluster-0.crdb-cluster.cockroachdb.svc.cluster.local:26257,crdb-cluster-1.crdb-cluster.cockroachdb.svc.cluster.local:26257,crdb-cluster-2.crdb-cluster.cockroachdb.svc.cluster.local:26257
+        env:
+        - name: POD_NAME
+          valueFrom:
+            fieldRef:
+              apiVersion: v1
+              fieldPath: metadata.name
+        - name: POD_NAMESPACE
+          valueFrom:
+            fieldRef:
+              apiVersion: v1
+              fieldPath: metadata.namespace
+        image: cockroachdb/cockroach:v24.1.0
+        imagePullPolicy: IfNotPresent
+        livenessProbe:
+          failureThreshold: 3
+          httpGet:
+            path: /health
+            port: http
+            scheme: HTTPS
+          initialDelaySeconds: 30
+          periodSeconds: 5
+          successThreshold: 1
+          timeoutSeconds: 1
+        name: db
+        ports:
+        - containerPort: 26257
+          name: grpc
+          protocol: TCP
+        - containerPort: 8080
+          name: http
+          protocol: TCP
+        readinessProbe:
+          failureThreshold: 2
+          httpGet:
+            path: /health?ready=1
+            port: http
+            scheme: HTTPS
+          initialDelaySeconds: 10
+          periodSeconds: 5
+          successThreshold: 1
+          timeoutSeconds: 1
+        resources:
+          limits:
+            cpu: "1"
+            memory: 2Gi
+          requests:
+            cpu: "1"
+            memory: 2Gi
+        terminationMessagePath: /dev/termination-log
+        terminationMessagePolicy: File
+        volumeMounts:
+        - mountPath: /cockroach/cockroach-data
+          name: datadir
+        - mountPath: /cockroach/cockroach-certs
+          name: certs
+          readOnly: true
+      dnsPolicy: ClusterFirst
+      restartPolicy: Always
+      schedulerName: default-scheduler
+      securityContext: {}
+      serviceAccount: crdb-cluster-sa
+      serviceAccountName: crdb-cluster-sa
+      terminationGracePeriodSeconds: 10
+      volumes:
+      - name: certs
+        secret:
+          defaultMode: 256
+          secretName: crdb-cluster-certs
+  updateStrategy:
+    rollingUpdate:
+      partition: 0
+    type: RollingUpdate
+  volumeClaimTemplates:
+  - apiVersion: v1
+    kind: PersistentVolumeClaim
+    metadata:
+      creationTimestamp: null
+      labels:
+        app.kubernetes.io/instance: crdb-cluster
+        app.kubernetes.io/name: cockroachdb
+      name: datadir
+    spec:
+      accessModes:
+      - ReadWriteOnce
+      resources:
+        requests:
+          storage: 10Gi
+      volumeMode: Filesystem
+    status:
+      phase: Pending
+status:
+  availableReplicas: 3
+  collisionCount: 0
+  currentReplicas: 3
+  currentRevision: crdb-cluster-7bc99cf4bd
+  observedGeneration: 25
+  readyReplicas: 3
+  replicas: 3
+  updateRevision: crdb-cluster-7bc99cf4bd
+  updatedReplicas: 3
+
+ succeeded in 228ms:
+apiVersion: v1
+items:
+- apiVersion: v1
+  kind: Service
+  metadata:
+    annotations:
+      kubectl.kubernetes.io/last-applied-configuration: |
+        {"apiVersion":"v1","kind":"Service","metadata":{"labels":{"app.kubernetes.io/component":"database","app.kubernetes.io/instance":"crdb-cluster","app.kubernetes.io/name":"cockroachdb"},"name":"crdb-cluster","namespace":"cockroachdb"},"spec":{"clusterIP":"None","ports":[{"name":"grpc","port":26257,"targetPort":"grpc"},{"name":"http","port":8080,"targetPort":"http"}],"publishNotReadyAddresses":true,"selector":{"app.kubernetes.io/instance":"crdb-cluster","app.kubernetes.io/name":"cockroachdb"}}}
+    creationTimestamp: "2026-06-22T21:37:56Z"
+    labels:
+      app.kubernetes.io/component: database
+      app.kubernetes.io/instance: crdb-cluster
+      app.kubernetes.io/name: cockroachdb
+    name: crdb-cluster
+    namespace: cockroachdb
+    resourceVersion: "159724"
+    uid: 5df704ac-f6ff-42eb-983a-c2e793e1b721
+  spec:
+    clusterIP: None
+    clusterIPs:
+    - None
+    internalTrafficPolicy: Cluster
+    ipFamilies:
+    - IPv4
+    ipFamilyPolicy: SingleStack
+    ports:
+    - name: grpc
+      port: 26257
+      protocol: TCP
+      targetPort: grpc
+    - name: http
+      port: 8080
+      protocol: TCP
+      targetPort: http
+    publishNotReadyAddresses: true
+    selector:
+      app.kubernetes.io/instance: crdb-cluster
+      app.kubernetes.io/name: cockroachdb
+    sessionAffinity: None
+    type: ClusterIP
+  status:
+    loadBalancer: {}
+- apiVersion: v1
+  kind: Service
+  metadata:
+    annotations:
+      kubectl.kubernetes.io/last-applied-configuration: |
+        {"apiVersion":"v1","kind":"Service","metadata":{"labels":{"app.kubernetes.io/component":"database","app.kubernetes.io/instance":"crdb-cluster","app.kubernetes.io/name":"cockroachdb"},"name":"crdb-cluster-public","namespace":"cockroachdb"},"spec":{"ports":[{"name":"grpc","port":26257,"targetPort":"grpc"},{"name":"http","port":8080,"targetPort":"http"}],"selector":{"app.kubernetes.io/instance":"crdb-cluster","app.kubernetes.io/name":"cockroachdb"},"type":"ClusterIP"}}
+    creationTimestamp: "2026-06-22T21:37:56Z"
+    labels:
+      app.kubernetes.io/component: database
+      app.kubernetes.io/instance: crdb-cluster
+      app.kubernetes.io/name: cockroachdb
+    name: crdb-cluster-public
+    namespace: cockroachdb
+    resourceVersion: "159728"
+    uid: 4e2ba71a-fd23-44b6-8402-034ae9bff944
+  spec:
+    clusterIP: 10.96.131.212
+    clusterIPs:
+    - 10.96.131.212
+    internalTrafficPolicy: Cluster
+    ipFamilies:
+    - IPv4
+    ipFamilyPolicy: SingleStack
+    ports:
+    - name: grpc
+      port: 26257
+      protocol: TCP
+      targetPort: grpc
+    - name: http
+      port: 8080
+      protocol: TCP
+      targetPort: http
+    selector:
+      app.kubernetes.io/instance: crdb-cluster
+      app.kubernetes.io/name: cockroachdb
+    sessionAffinity: None
+    type: ClusterIP
+  status:
+    loadBalancer: {}
+kind: List
+metadata:
+  resourceVersion: ""
+
+ exited 1 in 820ms:
+ERROR: SSL authentication error while connecting.
+failed to connect to `host=localhost user=root database=system`: server error (ERROR: node is running secure mode, SSL connection required (SQLSTATE 08P01))
+Failed running "node status"
+command terminated with exit code 1
+
+codex
+The existing StatefulSet is not in the requested mode: it is currently configured with `--certs-dir` and HTTPS probes. I’m going to record the desired native manifest, apply the service/PDB shape, then patch the StatefulSet pod template back to insecure mode and let Kubernetes roll the three pods.
+apply patch
+patch: completed
+/Users/jinyige/Karma/runs/new-added-workflows/cockroachdb-deploy-init-settings-audit-concat-blind-20260623_200425/stages/stage_01/cockroachdb-cluster.yaml
+diff --git a/runs/new-added-workflows/cockroachdb-deploy-init-settings-audit-concat-blind-20260623_200425/stages/stage_01/cockroachdb-cluster.yaml b/runs/new-added-workflows/cockroachdb-deploy-init-settings-audit-concat-blind-20260623_200425/stages/stage_01/cockroachdb-cluster.yaml
+new file mode 100644
+index 0000000000000000000000000000000000000000..1dd5655d8d56369f7fe918be08018881c2bdcb83
+--- /dev/null
++++ b/runs/new-added-workflows/cockroachdb-deploy-init-settings-audit-concat-blind-20260623_200425/stages/stage_01/cockroachdb-cluster.yaml
+@@ -0,0 +1,153 @@
++apiVersion: v1
++kind: Service
++metadata:
++  name: crdb-cluster
++  namespace: cockroachdb
++  labels:
++    app.kubernetes.io/name: cockroachdb
++    app.kubernetes.io/instance: crdb-cluster
++    app.kubernetes.io/component: database
++spec:
++  clusterIP: None
++  publishNotReadyAddresses: true
++  selector:
++    app.kubernetes.io/name: cockroachdb
++    app.kubernetes.io/instance: crdb-cluster
++  ports:
++    - name: grpc
++      port: 26257
++      targetPort: grpc
++    - name: http
++      port: 8080
++      targetPort: http
++---
++apiVersion: v1
++kind: Service
++metadata:
++  name: crdb-cluster-public
++  namespace: cockroachdb
++  labels:
++    app.kubernetes.io/name: cockroachdb
++    app.kubernetes.io/instance: crdb-cluster
++    app.kubernetes.io/component: database
++spec:
++  type: ClusterIP
++  selector:
++    app.kubernetes.io/name: cockroachdb
++    app.kubernetes.io/instance: crdb-cluster
++  ports:
++    - name: grpc
++      port: 26257
++      targetPort: grpc
++    - name: http
++      port: 8080
++      targetPort: http
++---
++apiVersion: apps/v1
++kind: StatefulSet
++metadata:
++  name: crdb-cluster
++  namespace: cockroachdb
++  labels:
++    app.kubernetes.io/name: cockroachdb
++    app.kubernetes.io/instance: crdb-cluster
++spec:
++  serviceName: crdb-cluster
++  replicas: 3
++  podManagementPolicy: Parallel
++  selector:
++    matchLabels:
++      app.kubernetes.io/name: cockroachdb
++      app.kubernetes.io/instance: crdb-cluster
++  template:
++    metadata:
++      labels:
++        app.kubernetes.io/name: cockroachdb
++        app.kubernetes.io/instance: crdb-cluster
++    spec:
++      serviceAccountName: crdb-cluster-sa
++      terminationGracePeriodSeconds: 60
++      containers:
++        - name: db
++          image: cockroachdb/cockroach:v24.1.0
++          imagePullPolicy: IfNotPresent
++          command:
++            - /bin/bash
++            - -c
++            - >-
++              exec /cockroach/cockroach start
++              --logtostderr=INFO
++              --insecure
++              --store=/cockroach/cockroach-data
++              --advertise-host=$(POD_NAME).crdb-cluster.cockroachdb.svc.cluster.local
++              --http-addr=0.0.0.0:8080
++              --port=26257
++              --cache=25%
++              --max-sql-memory=25%
++              --join=crdb-cluster-0.crdb-cluster.cockroachdb.svc.cluster.local:26257,crdb-cluster-1.crdb-cluster.cockroachdb.svc.cluster.local:26257,crdb-cluster-2.crdb-cluster.cockroachdb.svc.cluster.local:26257
++          env:
++            - name: POD_NAME
++              valueFrom:
++                fieldRef:
++                  fieldPath: metadata.name
++            - name: POD_NAMESPACE
++              valueFrom:
++                fieldRef:
++                  fieldPath: metadata.namespace
++          ports:
++            - name: grpc
++              containerPort: 26257
++            - name: http
++              containerPort: 8080
++          livenessProbe:
++            httpGet:
++              path: /health
++              port: http
++              scheme: HTTP
++            initialDelaySeconds: 30
++            periodSeconds: 5
++          readinessProbe:
++            httpGet:
++              path: /health?ready=1
++              port: http
++              scheme: HTTP
++            initialDelaySeconds: 10
++            periodSeconds: 5
++            failureThreshold: 2
++          resources:
++            requests:
++              cpu: "1"
++              memory: 2Gi
++            limits:
++              cpu: "1"
++              memory: 2Gi
++          volumeMounts:
++            - name: datadir
++              mountPath: /cockroach/cockroach-data
++  volumeClaimTemplates:
++    - metadata:
++        name: datadir
++        labels:
++          app.kubernetes.io/name: cockroachdb
++          app.kubernetes.io/instance: crdb-cluster
++      spec:
++        accessModes:
++          - ReadWriteOnce
++        resources:
++          requests:
++            storage: 10Gi
++---
++apiVersion: policy/v1
++kind: PodDisruptionBudget
++metadata:
++  name: crdb-cluster
++  namespace: cockroachdb
++  labels:
++    app.kubernetes.io/name: cockroachdb
++    app.kubernetes.io/instance: crdb-cluster
++spec:
++  minAvailable: 2
++  selector:
++    matchLabels:
++      app.kubernetes.io/name: cockroachdb
++      app.kubernetes.io/instance: crdb-cluster
+
+diff --git a/runs/new-added-workflows/cockroachdb-deploy-init-settings-audit-concat-blind-20260623_200425/stages/stage_01/cockroachdb-cluster.yaml b/runs/new-added-workflows/cockroachdb-deploy-init-settings-audit-concat-blind-20260623_200425/stages/stage_01/cockroachdb-cluster.yaml
+new file mode 100644
+index 0000000000000000000000000000000000000000..1dd5655d8d56369f7fe918be08018881c2bdcb83
+--- /dev/null
++++ b/runs/new-added-workflows/cockroachdb-deploy-init-settings-audit-concat-blind-20260623_200425/stages/stage_01/cockroachdb-cluster.yaml
+@@ -0,0 +1,153 @@
++apiVersion: v1
++kind: Service
++metadata:
++  name: crdb-cluster
++  namespace: cockroachdb
++  labels:
++    app.kubernetes.io/name: cockroachdb
++    app.kubernetes.io/instance: crdb-cluster
++    app.kubernetes.io/component: database
++spec:
++  clusterIP: None
++  publishNotReadyAddresses: true
++  selector:
++    app.kubernetes.io/name: cockroachdb
++    app.kubernetes.io/instance: crdb-cluster
++  ports:
++    - name: grpc
++      port: 26257
++      targetPort: grpc
++    - name: http
++      port: 8080
++      targetPort: http
++---
++apiVersion: v1
++kind: Service
++metadata:
++  name: crdb-cluster-public
++  namespace: cockroachdb
++  labels:
++    app.kubernetes.io/name: cockroachdb
++    app.kubernetes.io/instance: crdb-cluster
++    app.kubernetes.io/component: database
++spec:
++  type: ClusterIP
++  selector:
++    app.kubernetes.io/name: cockroachdb
++    app.kubernetes.io/instance: crdb-cluster
++  ports:
++    - name: grpc
++      port: 26257
++      targetPort: grpc
++    - name: http
++      port: 8080
++      targetPort: http
++---
++apiVersion: apps/v1
++kind: StatefulSet
++metadata:
++  name: crdb-cluster
++  namespace: cockroachdb
++  labels:
++    app.kubernetes.io/name: cockroachdb
++    app.kubernetes.io/instance: crdb-cluster
++spec:
++  serviceName: crdb-cluster
++  replicas: 3
++  podManagementPolicy: Parallel
++  selector:
++    matchLabels:
++      app.kubernetes.io/name: cockroachdb
++      app.kubernetes.io/instance: crdb-cluster
++  template:
++    metadata:
++      labels:
++        app.kubernetes.io/name: cockroachdb
++        app.kubernetes.io/instance: crdb-cluster
++    spec:
++      serviceAccountName: crdb-cluster-sa
++      terminationGracePeriodSeconds: 60
++      containers:
++        - name: db
++          image: cockroachdb/cockroach:v24.1.0
++          imagePullPolicy: IfNotPresent
++          command:
++            - /bin/bash
++            - -c
++            - >-
++              exec /cockroach/cockroach start
++              --logtostderr=INFO
++              --insecure
++              --store=/cockroach/cockroach-data
++              --advertise-host=$(POD_NAME).crdb-cluster.cockroachdb.svc.cluster.local
++              --http-addr=0.0.0.0:8080
++              --port=26257
++              --cache=25%
++              --max-sql-memory=25%
++              --join=crdb-cluster-0.crdb-cluster.cockroachdb.svc.cluster.local:26257,crdb-cluster-1.crdb-cluster.cockroachdb.svc.cluster.local:26257,crdb-cluster-2.crdb-cluster.cockroachdb.svc.cluster.local:26257
++          env:
++            - name: POD_NAME
++              valueFrom:
++                fieldRef:
++                  fieldPath: metadata.name
++            - name: POD_NAMESPACE
++              valueFrom:
++                fieldRef:
++                  fieldPath: metadata.namespace
++          ports:
++            - name: grpc
++              containerPort: 26257
++            - name: http
++              containerPort: 8080
++          livenessProbe:
++            httpGet:
++              path: /health
++              port: http
++              scheme: HTTP
++            initialDelaySeconds: 30
++            periodSeconds: 5
++          readinessProbe:
++            httpGet:
++              path: /health?ready=1
++              port: http
++              scheme: HTTP
++            initialDelaySeconds: 10
++            periodSeconds: 5
++            failureThreshold: 2
++          resources:
++            requests:
++              cpu: "1"
++              memory: 2Gi
++            limits:
++              cpu: "1"
++              memory: 2Gi
++          volumeMounts:
++            - name: datadir
++              mountPath: /cockroach/cockroach-data
++  volumeClaimTemplates:
++    - metadata:
++        name: datadir
++        labels:
++          app.kubernetes.io/name: cockroachdb
++          app.kubernetes.io/instance: crdb-cluster
++      spec:
++        accessModes:
++          - ReadWriteOnce
++        resources:
++          requests:
++            storage: 10Gi
++---
++apiVersion: policy/v1
++kind: PodDisruptionBudget
++metadata:
++  name: crdb-cluster
++  namespace: cockroachdb
++  labels:
++    app.kubernetes.io/name: cockroachdb
++    app.kubernetes.io/instance: crdb-cluster
++spec:
++  minAvailable: 2
++  selector:
++    matchLabels:
++      app.kubernetes.io/name: cockroachdb
++      app.kubernetes.io/instance: crdb-cluster
+
+codex
+The manifest includes the two required services, the 3-replica StatefulSet using the existing service account, a 10Gi `datadir` claim template, and a PDB with `minAvailable: 2`. Applying it now, then I’ll handle any live drift that client-side apply does not overwrite.
+exec
+/bin/zsh -lc 'kubectl apply -f cockroachdb-cluster.yaml' in /Users/jinyige/Karma/runs/new-added-workflows/cockroachdb-deploy-init-settings-audit-concat-blind-20260623_200425/stages/stage_01
+diff --git a/runs/new-added-workflows/cockroachdb-deploy-init-settings-audit-concat-blind-20260623_200425/stages/stage_01/cockroachdb-cluster.yaml b/runs/new-added-workflows/cockroachdb-deploy-init-settings-audit-concat-blind-20260623_200425/stages/stage_01/cockroachdb-cluster.yaml
+new file mode 100644
+index 0000000000000000000000000000000000000000..1dd5655d8d56369f7fe918be08018881c2bdcb83
+--- /dev/null
++++ b/runs/new-added-workflows/cockroachdb-deploy-init-settings-audit-concat-blind-20260623_200425/stages/stage_01/cockroachdb-cluster.yaml
+@@ -0,0 +1,153 @@
++apiVersion: v1
++kind: Service
++metadata:
++  name: crdb-cluster
++  namespace: cockroachdb
++  labels:
++    app.kubernetes.io/name: cockroachdb
++    app.kubernetes.io/instance: crdb-cluster
++    app.kubernetes.io/component: database
++spec:
++  clusterIP: None
++  publishNotReadyAddresses: true
++  selector:
++    app.kubernetes.io/name: cockroachdb
++    app.kubernetes.io/instance: crdb-cluster
++  ports:
++    - name: grpc
++      port: 26257
++      targetPort: grpc
++    - name: http
++      port: 8080
++      targetPort: http
++---
++apiVersion: v1
++kind: Service
++metadata:
++  name: crdb-cluster-public
++  namespace: cockroachdb
++  labels:
++    app.kubernetes.io/name: cockroachdb
++    app.kubernetes.io/instance: crdb-cluster
++    app.kubernetes.io/component: database
++spec:
++  type: ClusterIP
++  selector:
++    app.kubernetes.io/name: cockroachdb
++    app.kubernetes.io/instance: crdb-cluster
++  ports:
++    - name: grpc
++      port: 26257
++      targetPort: grpc
++    - name: http
++      port: 8080
++      targetPort: http
++---
++apiVersion: apps/v1
++kind: StatefulSet
++metadata:
++  name: crdb-cluster
++  namespace: cockroachdb
++  labels:
++    app.kubernetes.io/name: cockroachdb
++    app.kubernetes.io/instance: crdb-cluster
++spec:
++  serviceName: crdb-cluster
++  replicas: 3
++  podManagementPolicy: Parallel
++  selector:
++    matchLabels:
++      app.kubernetes.io/name: cockroachdb
++      app.kubernetes.io/instance: crdb-cluster
++  template:
++    metadata:
++      labels:
++        app.kubernetes.io/name: cockroachdb
++        app.kubernetes.io/instance: crdb-cluster
++    spec:
++      serviceAccountName: crdb-cluster-sa
++      terminationGracePeriodSeconds: 60
++      containers:
++        - name: db
++          image: cockroachdb/cockroach:v24.1.0
++          imagePullPolicy: IfNotPresent
++          command:
++            - /bin/bash
++            - -c
++            - >-
++              exec /cockroach/cockroach start
++              --logtostderr=INFO
++              --insecure
++              --store=/cockroach/cockroach-data
++              --advertise-host=$(POD_NAME).crdb-cluster.cockroachdb.svc.cluster.local
++              --http-addr=0.0.0.0:8080
++              --port=26257
++              --cache=25%
++              --max-sql-memory=25%
++              --join=crdb-cluster-0.crdb-cluster.cockroachdb.svc.cluster.local:26257,crdb-cluster-1.crdb-cluster.cockroachdb.svc.cluster.local:26257,crdb-cluster-2.crdb-cluster.cockroachdb.svc.cluster.local:26257
++          env:
++            - name: POD_NAME
++              valueFrom:
++                fieldRef:
++                  fieldPath: metadata.name
++            - name: POD_NAMESPACE
++              valueFrom:
++                fieldRef:
++                  fieldPath: metadata.namespace
++          ports:
++            - name: grpc
++              containerPort: 26257
++            - name: http
++              containerPort: 8080
++          livenessProbe:
++            httpGet:
++              path: /health
++              port: http
++              scheme: HTTP
++            initialDelaySeconds: 30
++            periodSeconds: 5
++          readinessProbe:
++            httpGet:
++              path: /health?ready=1
++              port: http
++              scheme: HTTP
++            initialDelaySeconds: 10
++            periodSeconds: 5
++            failureThreshold: 2
++          resources:
++            requests:
++              cpu: "1"
++              memory: 2Gi
++            limits:
++              cpu: "1"
++              memory: 2Gi
++          volumeMounts:
++            - name: datadir
++              mountPath: /cockroach/cockroach-data
++  volumeClaimTemplates:
++    - metadata:
++        name: datadir
++        labels:
++          app.kubernetes.io/name: cockroachdb
++          app.kubernetes.io/instance: crdb-cluster
++      spec:
++        accessModes:
++          - ReadWriteOnce
++        resources:
++          requests:
++            storage: 10Gi
++---
++apiVersion: policy/v1
++kind: PodDisruptionBudget
++metadata:
++  name: crdb-cluster
++  namespace: cockroachdb
++  labels:
++    app.kubernetes.io/name: cockroachdb
++    app.kubernetes.io/instance: crdb-cluster
++spec:
++  minAvailable: 2
++  selector:
++    matchLabels:
++      app.kubernetes.io/name: cockroachdb
++      app.kubernetes.io/instance: crdb-cluster
+
+ succeeded in 491ms:
+service/crdb-cluster configured
+service/crdb-cluster-public configured
+statefulset.apps/crdb-cluster configured
+poddisruptionbudget.policy/crdb-cluster configured
+
+codex
+The apply succeeded. I’m checking the live StatefulSet template now because Kubernetes apply can preserve fields that were added outside the last-applied manifest, especially old certificate mounts.
+exec
+/bin/zsh -lc "kubectl -n cockroachdb get statefulset crdb-cluster -o jsonpath='{.spec.template.spec.containers[0].command}{\"\\n\"}{.spec.template.spec.containers[0].livenessProbe.httpGet.scheme}{\"\\n\"}{.spec.template.spec.containers[0].readinessProbe.httpGet.scheme}{\"\\n\"}{.spec.template.spec.containers[0].volumeMounts}{\"\\n\"}{.spec.template.spec.volumes}{\"\\n\"}'" in /Users/jinyige/Karma/runs/new-added-workflows/cockroachdb-deploy-init-settings-audit-concat-blind-20260623_200425/stages/stage_01
+ succeeded in 0ms:
+["/bin/bash","-c","exec /cockroach/cockroach start --logtostderr=INFO --insecure --store=/cockroach/cockroach-data --advertise-host=$(POD_NAME).crdb-cluster.cockroachdb.svc.cluster.local --http-addr=0.0.0.0:8080 --port=26257 --cache=25% --max-sql-memory=25% --join=crdb-cluster-0.crdb-cluster.cockroachdb.svc.cluster.local:26257,crdb-cluster-1.crdb-cluster.cockroachdb.svc.cluster.local:26257,crdb-cluster-2.crdb-cluster.cockroachdb.svc.cluster.local:26257"]
+HTTP
+HTTP
+[{"mountPath":"/cockroach/cockroach-data","name":"datadir"},{"mountPath":"/cockroach/cockroach-certs","name":"certs","readOnly":true}]
+[{"name":"certs","secret":{"defaultMode":256,"secretName":"crdb-cluster-certs"}}]
+
+exec
+/bin/zsh -lc 'kubectl -n cockroachdb rollout status statefulset/crdb-cluster --timeout=5s' in /Users/jinyige/Karma/runs/new-added-workflows/cockroachdb-deploy-init-settings-audit-concat-blind-20260623_200425/stages/stage_01
+diff --git a/runs/new-added-workflows/cockroachdb-deploy-init-settings-audit-concat-blind-20260623_200425/stages/stage_01/cockroachdb-cluster.yaml b/runs/new-added-workflows/cockroachdb-deploy-init-settings-audit-concat-blind-20260623_200425/stages/stage_01/cockroachdb-cluster.yaml
+new file mode 100644
+index 0000000000000000000000000000000000000000..1dd5655d8d56369f7fe918be08018881c2bdcb83
+--- /dev/null
++++ b/runs/new-added-workflows/cockroachdb-deploy-init-settings-audit-concat-blind-20260623_200425/stages/stage_01/cockroachdb-cluster.yaml
+@@ -0,0 +1,153 @@
++apiVersion: v1
++kind: Service
++metadata:
++  name: crdb-cluster
++  namespace: cockroachdb
++  labels:
++    app.kubernetes.io/name: cockroachdb
++    app.kubernetes.io/instance: crdb-cluster
++    app.kubernetes.io/component: database
++spec:
++  clusterIP: None
++  publishNotReadyAddresses: true
++  selector:
++    app.kubernetes.io/name: cockroachdb
++    app.kubernetes.io/instance: crdb-cluster
++  ports:
++    - name: grpc
++      port: 26257
++      targetPort: grpc
++    - name: http
++      port: 8080
++      targetPort: http
++---
++apiVersion: v1
++kind: Service
++metadata:
++  name: crdb-cluster-public
++  namespace: cockroachdb
++  labels:
++    app.kubernetes.io/name: cockroachdb
++    app.kubernetes.io/instance: crdb-cluster
++    app.kubernetes.io/component: database
++spec:
++  type: ClusterIP
++  selector:
++    app.kubernetes.io/name: cockroachdb
++    app.kubernetes.io/instance: crdb-cluster
++  ports:
++    - name: grpc
++      port: 26257
++      targetPort: grpc
++    - name: http
++      port: 8080
++      targetPort: http
++---
++apiVersion: apps/v1
++kind: StatefulSet
++metadata:
++  name: crdb-cluster
++  namespace: cockroachdb
++  labels:
++    app.kubernetes.io/name: cockroachdb
++    app.kubernetes.io/instance: crdb-cluster
++spec:
++  serviceName: crdb-cluster
++  replicas: 3
++  podManagementPolicy: Parallel
++  selector:
++    matchLabels:
++      app.kubernetes.io/name: cockroachdb
++      app.kubernetes.io/instance: crdb-cluster
++  template:
++    metadata:
++      labels:
++        app.kubernetes.io/name: cockroachdb
++        app.kubernetes.io/instance: crdb-cluster
++    spec:
++      serviceAccountName: crdb-cluster-sa
++      terminationGracePeriodSeconds: 60
++      containers:
++        - name: db
++          image: cockroachdb/cockroach:v24.1.0
++          imagePullPolicy: IfNotPresent
++          command:
++            - /bin/bash
++            - -c
++            - >-
++              exec /cockroach/cockroach start
++              --logtostderr=INFO
++              --insecure
++              --store=/cockroach/cockroach-data
++              --advertise-host=$(POD_NAME).crdb-cluster.cockroachdb.svc.cluster.local
++              --http-addr=0.0.0.0:8080
++              --port=26257
++              --cache=25%
++              --max-sql-memory=25%
++              --join=crdb-cluster-0.crdb-cluster.cockroachdb.svc.cluster.local:26257,crdb-cluster-1.crdb-cluster.cockroachdb.svc.cluster.local:26257,crdb-cluster-2.crdb-cluster.cockroachdb.svc.cluster.local:26257
++          env:
++            - name: POD_NAME
++              valueFrom:
++                fieldRef:
++                  fieldPath: metadata.name
++            - name: POD_NAMESPACE
++              valueFrom:
++                fieldRef:
++                  fieldPath: metadata.namespace
++          ports:
++            - name: grpc
++              containerPort: 26257
++            - name: http
++              containerPort: 8080
++          livenessProbe:
++            httpGet:
++              path: /health
++              port: http
++              scheme: HTTP
++            initialDelaySeconds: 30
++            periodSeconds: 5
++          readinessProbe:
++            httpGet:
++              path: /health?ready=1
++              port: http
++              scheme: HTTP
++            initialDelaySeconds: 10
++            periodSeconds: 5
++            failureThreshold: 2
++          resources:
++            requests:
++              cpu: "1"
++              memory: 2Gi
++            limits:
++              cpu: "1"
++              memory: 2Gi
++          volumeMounts:
++            - name: datadir
++              mountPath: /cockroach/cockroach-data
++  volumeClaimTemplates:
++    - metadata:
++        name: datadir
++        labels:
++          app.kubernetes.io/name: cockroachdb
++          app.kubernetes.io/instance: crdb-cluster
++      spec:
++        accessModes:
++          - ReadWriteOnce
++        resources:
++          requests:
++            storage: 10Gi
++---
++apiVersion: policy/v1
++kind: PodDisruptionBudget
++metadata:
++  name: crdb-cluster
++  namespace: cockroachdb
++  labels:
++    app.kubernetes.io/name: cockroachdb
++    app.kubernetes.io/instance: crdb-cluster
++spec:
++  minAvailable: 2
++  selector:
++    matchLabels:
++      app.kubernetes.io/name: cockroachdb
++      app.kubernetes.io/instance: crdb-cluster
+
+ exited 1 in 5054ms:
+error: timed out waiting for the condition
+
+codex
+The command and probes are now insecure/HTTP, but an unused certificate volume from the old template is still attached. I’m removing that from the StatefulSet template so the workload no longer depends on or references TLS material.
+exec
+/bin/zsh -lc "kubectl -n cockroachdb patch statefulset crdb-cluster --type=json -p='[{\"op\":\"remove\",\"path\":\"/spec/template/spec/containers/0/volumeMounts/1\"},{\"op\":\"remove\",\"path\":\"/spec/template/spec/volumes/0\"}]'" in /Users/jinyige/Karma/runs/new-added-workflows/cockroachdb-deploy-init-settings-audit-concat-blind-20260623_200425/stages/stage_01
+ succeeded in 0ms:
+statefulset.apps/crdb-cluster patched
+
+diff --git a/runs/new-added-workflows/cockroachdb-deploy-init-settings-audit-concat-blind-20260623_200425/stages/stage_01/cockroachdb-cluster.yaml b/runs/new-added-workflows/cockroachdb-deploy-init-settings-audit-concat-blind-20260623_200425/stages/stage_01/cockroachdb-cluster.yaml
+new file mode 100644
+index 0000000000000000000000000000000000000000..1dd5655d8d56369f7fe918be08018881c2bdcb83
+--- /dev/null
++++ b/runs/new-added-workflows/cockroachdb-deploy-init-settings-audit-concat-blind-20260623_200425/stages/stage_01/cockroachdb-cluster.yaml
+@@ -0,0 +1,153 @@
++apiVersion: v1
++kind: Service
++metadata:
++  name: crdb-cluster
++  namespace: cockroachdb
++  labels:
++    app.kubernetes.io/name: cockroachdb
++    app.kubernetes.io/instance: crdb-cluster
++    app.kubernetes.io/component: database
++spec:
++  clusterIP: None
++  publishNotReadyAddresses: true
++  selector:
++    app.kubernetes.io/name: cockroachdb
++    app.kubernetes.io/instance: crdb-cluster
++  ports:
++    - name: grpc
++      port: 26257
++      targetPort: grpc
++    - name: http
++      port: 8080
++      targetPort: http
++---
++apiVersion: v1
++kind: Service
++metadata:
++  name: crdb-cluster-public
++  namespace: cockroachdb
++  labels:
++    app.kubernetes.io/name: cockroachdb
++    app.kubernetes.io/instance: crdb-cluster
++    app.kubernetes.io/component: database
++spec:
++  type: ClusterIP
++  selector:
++    app.kubernetes.io/name: cockroachdb
++    app.kubernetes.io/instance: crdb-cluster
++  ports:
++    - name: grpc
++      port: 26257
++      targetPort: grpc
++    - name: http
++      port: 8080
++      targetPort: http
++---
++apiVersion: apps/v1
++kind: StatefulSet
++metadata:
++  name: crdb-cluster
++  namespace: cockroachdb
++  labels:
++    app.kubernetes.io/name: cockroachdb
++    app.kubernetes.io/instance: crdb-cluster
++spec:
++  serviceName: crdb-cluster
++  replicas: 3
++  podManagementPolicy: Parallel
++  selector:
++    matchLabels:
++      app.kubernetes.io/name: cockroachdb
++      app.kubernetes.io/instance: crdb-cluster
++  template:
++    metadata:
++      labels:
++        app.kubernetes.io/name: cockroachdb
++        app.kubernetes.io/instance: crdb-cluster
++    spec:
++      serviceAccountName: crdb-cluster-sa
++      terminationGracePeriodSeconds: 60
++      containers:
++        - name: db
++          image: cockroachdb/cockroach:v24.1.0
++          imagePullPolicy: IfNotPresent
++          command:
++            - /bin/bash
++            - -c
++            - >-
++              exec /cockroach/cockroach start
++              --logtostderr=INFO
++              --insecure
++              --store=/cockroach/cockroach-data
++              --advertise-host=$(POD_NAME).crdb-cluster.cockroachdb.svc.cluster.local
++              --http-addr=0.0.0.0:8080
++              --port=26257
++              --cache=25%
++              --max-sql-memory=25%
++              --join=crdb-cluster-0.crdb-cluster.cockroachdb.svc.cluster.local:26257,crdb-cluster-1.crdb-cluster.cockroachdb.svc.cluster.local:26257,crdb-cluster-2.crdb-cluster.cockroachdb.svc.cluster.local:26257
++          env:
++            - name: POD_NAME
++              valueFrom:
++                fieldRef:
++                  fieldPath: metadata.name
++            - name: POD_NAMESPACE
++              valueFrom:
++                fieldRef:
++                  fieldPath: metadata.namespace
++          ports:
++            - name: grpc
++              containerPort: 26257
++            - name: http
++              containerPort: 8080
++          livenessProbe:
++            httpGet:
++              path: /health
++              port: http
++              scheme: HTTP
++            initialDelaySeconds: 30
++            periodSeconds: 5
++          readinessProbe:
++            httpGet:
++              path: /health?ready=1
++              port: http
++              scheme: HTTP
++            initialDelaySeconds: 10
++            periodSeconds: 5
++            failureThreshold: 2
++          resources:
++            requests:
++              cpu: "1"
++              memory: 2Gi
++            limits:
++              cpu: "1"
++              memory: 2Gi
++          volumeMounts:
++            - name: datadir
++              mountPath: /cockroach/cockroach-data
++  volumeClaimTemplates:
++    - metadata:
++        name: datadir
++        labels:
++          app.kubernetes.io/name: cockroachdb
++          app.kubernetes.io/instance: crdb-cluster
++      spec:
++        accessModes:
++          - ReadWriteOnce
++        resources:
++          requests:
++            storage: 10Gi
++---
++apiVersion: policy/v1
++kind: PodDisruptionBudget
++metadata:
++  name: crdb-cluster
++  namespace: cockroachdb
++  labels:
++    app.kubernetes.io/name: cockroachdb
++    app.kubernetes.io/instance: crdb-cluster
++spec:
++  minAvailable: 2
++  selector:
++    matchLabels:
++      app.kubernetes.io/name: cockroachdb
++      app.kubernetes.io/instance: crdb-cluster
+
+codex
+The template is now clean. Kubernetes is rolling the StatefulSet, so I’m waiting for all three CockroachDB pods to come back ready before checking cluster health.
+exec
+/bin/zsh -lc 'kubectl -n cockroachdb rollout status statefulset/crdb-cluster --timeout=180s' in /Users/jinyige/Karma/runs/new-added-workflows/cockroachdb-deploy-init-settings-audit-concat-blind-20260623_200425/stages/stage_01
+diff --git a/runs/new-added-workflows/cockroachdb-deploy-init-settings-audit-concat-blind-20260623_200425/stages/stage_01/cockroachdb-cluster.yaml b/runs/new-added-workflows/cockroachdb-deploy-init-settings-audit-concat-blind-20260623_200425/stages/stage_01/cockroachdb-cluster.yaml
+new file mode 100644
+index 0000000000000000000000000000000000000000..1dd5655d8d56369f7fe918be08018881c2bdcb83
+--- /dev/null
++++ b/runs/new-added-workflows/cockroachdb-deploy-init-settings-audit-concat-blind-20260623_200425/stages/stage_01/cockroachdb-cluster.yaml
+@@ -0,0 +1,153 @@
++apiVersion: v1
++kind: Service
++metadata:
++  name: crdb-cluster
++  namespace: cockroachdb
++  labels:
++    app.kubernetes.io/name: cockroachdb
++    app.kubernetes.io/instance: crdb-cluster
++    app.kubernetes.io/component: database
++spec:
++  clusterIP: None
++  publishNotReadyAddresses: true
++  selector:
++    app.kubernetes.io/name: cockroachdb
++    app.kubernetes.io/instance: crdb-cluster
++  ports:
++    - name: grpc
++      port: 26257
++      targetPort: grpc
++    - name: http
++      port: 8080
++      targetPort: http
++---
++apiVersion: v1
++kind: Service
++metadata:
++  name: crdb-cluster-public
++  namespace: cockroachdb
++  labels:
++    app.kubernetes.io/name: cockroachdb
++    app.kubernetes.io/instance: crdb-cluster
++    app.kubernetes.io/component: database
++spec:
++  type: ClusterIP
++  selector:
++    app.kubernetes.io/name: cockroachdb
++    app.kubernetes.io/instance: crdb-cluster
++  ports:
++    - name: grpc
++      port: 26257
++      targetPort: grpc
++    - name: http
++      port: 8080
++      targetPort: http
++---
++apiVersion: apps/v1
++kind: StatefulSet
++metadata:
++  name: crdb-cluster
++  namespace: cockroachdb
++  labels:
++    app.kubernetes.io/name: cockroachdb
++    app.kubernetes.io/instance: crdb-cluster
++spec:
++  serviceName: crdb-cluster
++  replicas: 3
++  podManagementPolicy: Parallel
++  selector:
++    matchLabels:
++      app.kubernetes.io/name: cockroachdb
++      app.kubernetes.io/instance: crdb-cluster
++  template:
++    metadata:
++      labels:
++        app.kubernetes.io/name: cockroachdb
++        app.kubernetes.io/instance: crdb-cluster
++    spec:
++      serviceAccountName: crdb-cluster-sa
++      terminationGracePeriodSeconds: 60
++      containers:
++        - name: db
++          image: cockroachdb/cockroach:v24.1.0
++          imagePullPolicy: IfNotPresent
++          command:
++            - /bin/bash
++            - -c
++            - >-
++              exec /cockroach/cockroach start
++              --logtostderr=INFO
++              --insecure
++              --store=/cockroach/cockroach-data
++              --advertise-host=$(POD_NAME).crdb-cluster.cockroachdb.svc.cluster.local
++              --http-addr=0.0.0.0:8080
++              --port=26257
++              --cache=25%
++              --max-sql-memory=25%
++              --join=crdb-cluster-0.crdb-cluster.cockroachdb.svc.cluster.local:26257,crdb-cluster-1.crdb-cluster.cockroachdb.svc.cluster.local:26257,crdb-cluster-2.crdb-cluster.cockroachdb.svc.cluster.local:26257
++          env:
++            - name: POD_NAME
++              valueFrom:
++                fieldRef:
++                  fieldPath: metadata.name
++            - name: POD_NAMESPACE
++              valueFrom:
++                fieldRef:
++                  fieldPath: metadata.namespace
++          ports:
++            - name: grpc
++              containerPort: 26257
++            - name: http
++              containerPort: 8080
++          livenessProbe:
++            httpGet:
++              path: /health
++              port: http
++              scheme: HTTP
++            initialDelaySeconds: 30
++            periodSeconds: 5
++          readinessProbe:
++            httpGet:
++              path: /health?ready=1
++              port: http
++              scheme: HTTP
++            initialDelaySeconds: 10
++            periodSeconds: 5
++            failureThreshold: 2
++          resources:
++            requests:
++              cpu: "1"
++              memory: 2Gi
++            limits:
++              cpu: "1"
++              memory: 2Gi
++          volumeMounts:
++            - name: datadir
++              mountPath: /cockroach/cockroach-data
++  volumeClaimTemplates:
++    - metadata:
++        name: datadir
++        labels:
++          app.kubernetes.io/name: cockroachdb
++          app.kubernetes.io/instance: crdb-cluster
++      spec:
++        accessModes:
++          - ReadWriteOnce
++        resources:
++          requests:
++            storage: 10Gi
++---
++apiVersion: policy/v1
++kind: PodDisruptionBudget
++metadata:
++  name: crdb-cluster
++  namespace: cockroachdb
++  labels:
++    app.kubernetes.io/name: cockroachdb
++    app.kubernetes.io/instance: crdb-cluster
++spec:
++  minAvailable: 2
++  selector:
++    matchLabels:
++      app.kubernetes.io/name: cockroachdb
++      app.kubernetes.io/instance: crdb-cluster
+
+codex
+One pod is still becoming ready after the restart. I’m going to inspect the rollout and pod status in parallel so we can distinguish normal startup from a configuration issue.
+exec
+/bin/zsh -lc 'kubectl -n cockroachdb get pods -o wide' in /Users/jinyige/Karma/runs/new-added-workflows/cockroachdb-deploy-init-settings-audit-concat-blind-20260623_200425/stages/stage_01
+ succeeded in 0ms:
+NAME             READY   STATUS    RESTARTS   AGE     IP            NODE           NOMINATED NODE   READINESS GATES
+crdb-cluster-0   1/1     Running   0          7m26s   10.244.3.34   kind-worker3   <none>           <none>
+crdb-cluster-1   1/1     Running   0          7m45s   10.244.2.32   kind-worker2   <none>           <none>
+crdb-cluster-2   0/1     Running   0          73s     10.244.1.31   kind-worker    <none>           <none>
+
+exec
+/bin/zsh -lc 'kubectl -n cockroachdb describe pod crdb-cluster-2' in /Users/jinyige/Karma/runs/new-added-workflows/cockroachdb-deploy-init-settings-audit-concat-blind-20260623_200425/stages/stage_01
+exec
+/bin/zsh -lc 'kubectl -n cockroachdb logs crdb-cluster-2 --tail=80' in /Users/jinyige/Karma/runs/new-added-workflows/cockroachdb-deploy-init-settings-audit-concat-blind-20260623_200425/stages/stage_01
+ succeeded in 0ms:
+I260623 20:07:16.190868 321 kv/kvserver/store.go:3556 ⋮ [T1,Vsystem,n2] 82 +Backing tables: 0 (0B)
+I260623 20:07:16.190868 321 kv/kvserver/store.go:3556 ⋮ [T1,Vsystem,n2] 82 +Virtual tables: 0 (0B)
+I260623 20:07:16.190868 321 kv/kvserver/store.go:3556 ⋮ [T1,Vsystem,n2] 82 +Local tables size: 11MB
+I260623 20:07:16.190868 321 kv/kvserver/store.go:3556 ⋮ [T1,Vsystem,n2] 82 +Block cache: 34 entries (1.4MB)  hit rate: 62.2%
+I260623 20:07:16.190868 321 kv/kvserver/store.go:3556 ⋮ [T1,Vsystem,n2] 82 +Table cache: 4 entries (3.0KB)  hit rate: 99.1%
+I260623 20:07:16.190868 321 kv/kvserver/store.go:3556 ⋮ [T1,Vsystem,n2] 82 +Secondary cache: 0 entries (0B)  hit rate: 0.0%
+I260623 20:07:16.190868 321 kv/kvserver/store.go:3556 ⋮ [T1,Vsystem,n2] 82 +Snapshots: 0  earliest seq num: 0
+I260623 20:07:16.190868 321 kv/kvserver/store.go:3556 ⋮ [T1,Vsystem,n2] 82 +Table iters: 0
+I260623 20:07:16.190868 321 kv/kvserver/store.go:3556 ⋮ [T1,Vsystem,n2] 82 +Filter utility: 100.0%
+I260623 20:07:16.190868 321 kv/kvserver/store.go:3556 ⋮ [T1,Vsystem,n2] 82 +Ingestions: 0  as flushable: 0 (0B in 0 tables)
+W260623 20:07:17.191655 1273 gossip/client.go:121 ⋮ [T1,Vsystem,n2] 83  failed to start gossip client to ‹crdb-cluster-0.crdb-cluster.cockroachdb.svc.cluster.local:26257›: initial connection heartbeat failed: grpc: ‹connection error: desc = "error reading server preface: EOF"› [code 14/Unavailable]
+I260623 20:07:17.212033 329 kv/kvserver/liveness/liveness.go:648 ⋮ [T1,Vsystem,n2,liveness-hb] 84  unable to get liveness record from KV: unable to get liveness: aborted in DistSender: result is ambiguous: context deadline exceeded
+I260623 20:07:20.202757 329 kv/kvserver/liveness/liveness.go:648 ⋮ [T1,Vsystem,n2,liveness-hb] 85  unable to get liveness record from KV: unable to get liveness: aborted in DistSender: result is ambiguous: context deadline exceeded
+W260623 20:07:22.183957 1489 gossip/client.go:121 ⋮ [T1,Vsystem,n2] 86  failed to start gossip client to ‹crdb-cluster-0.crdb-cluster.cockroachdb.svc.cluster.local:26257›: initial connection heartbeat failed: grpc: ‹connection error: desc = "error reading server preface: EOF"› [code 14/Unavailable]
+I260623 20:07:23.207734 329 kv/kvserver/liveness/liveness.go:648 ⋮ [T1,Vsystem,n2,liveness-hb] 87  unable to get liveness record from KV: unable to get liveness: aborted in DistSender: result is ambiguous: context deadline exceeded
+W260623 20:07:25.662561 1646 1@cli/start.go:642 ⋮ [T1,Vsystem,n2] 88  The server appears to be unable to contact the other nodes in the cluster. Please try:
+W260623 20:07:25.662561 1646 1@cli/start.go:642 ⋮ [T1,Vsystem,n2] 88 +
+W260623 20:07:25.662561 1646 1@cli/start.go:642 ⋮ [T1,Vsystem,n2] 88 +- starting the other nodes, if you haven't already;
+W260623 20:07:25.662561 1646 1@cli/start.go:642 ⋮ [T1,Vsystem,n2] 88 +- double-checking that the '--join' and '--listen'/'--advertise' flags are set up correctly;
+W260623 20:07:25.662561 1646 1@cli/start.go:642 ⋮ [T1,Vsystem,n2] 88 +- running the 'cockroach init' command if you are trying to initialize a new cluster.
+W260623 20:07:25.662561 1646 1@cli/start.go:642 ⋮ [T1,Vsystem,n2] 88 +
+W260623 20:07:25.662561 1646 1@cli/start.go:642 ⋮ [T1,Vsystem,n2] 88 +If problems persist, please see ‹https://www.cockroachlabs.com/docs/v24.1/cluster-setup-troubleshooting.html›.
+I260623 20:07:26.170931 326 2@util/log/event_log.go:32 ⋮ [T1,Vsystem,n2] 89 ={"Timestamp":1782245246170924711,"EventType":"runtime_stats","MemRSSBytes":545099776,"GoroutineCount":264,"MemStackSysBytes":2031616,"GoAllocBytes":122428824,"GoTotalBytes":387838296,"HeapFragmentBytes":12305000,"HeapReservedBytes":238043136,"HeapReleasedBytes":2621440,"CGoAllocBytes":4289792,"CGoTotalBytes":17432576,"CGoCallRate":2.1023774,"CPUUserPercent":1.9021511,"CPUSysPercent":0.80090564,"GCRunCount":7,"NetHostRecvBytes":44130,"NetHostSendBytes":27561}
+I260623 20:07:26.171034 326 2@server/status/runtime_log.go:47 ⋮ [T1,Vsystem,n2] 90  runtime stats: 520 MiB RSS, 264 goroutines (stacks: 1.9 MiB), 117 MiB/370 MiB Go alloc/total (heap fragmentation: 12 MiB, heap reserved: 227 MiB, heap released: 2.5 MiB), 4.1 MiB/17 MiB CGO alloc/total (2.1 CGO/sec), 1.9/0.8 %(u/s)time, 0.0 %gc (7x), 43 KiB/27 KiB (r/w)net
+I260623 20:07:26.210825 329 kv/kvserver/liveness/liveness.go:648 ⋮ [T1,Vsystem,n2,liveness-hb] 91  unable to get liveness record from KV: unable to get liveness: aborted in DistSender: result is ambiguous: context deadline exceeded
+I260623 20:07:26.213702 1678 kv/kvserver/replica_range_lease.go:773 ⋮ [T1,Vsystem,n2,timeSeriesMaintenance,s2,r19/2:‹/Table/1{6-7}›] 92  can't determine lease status of (n3,s3):3 due to node liveness error: liveness record not found in cache
+W260623 20:07:27.187065 1722 gossip/client.go:121 ⋮ [T1,Vsystem,n2] 93  failed to start gossip client to ‹crdb-cluster-1.crdb-cluster.cockroachdb.svc.cluster.local:26257›: initial connection heartbeat failed: grpc: ‹connection error: desc = "error reading server preface: EOF"› [code 14/Unavailable]
+I260623 20:07:29.215491 329 kv/kvserver/liveness/liveness.go:648 ⋮ [T1,Vsystem,n2,liveness-hb] 94  unable to get liveness record from KV: unable to get liveness: aborted in DistSender: result is ambiguous: context deadline exceeded
+W260623 20:07:32.190979 1943 gossip/client.go:121 ⋮ [T1,Vsystem,n2] 95  failed to start gossip client to ‹crdb-cluster-1.crdb-cluster.cockroachdb.svc.cluster.local:26257›: initial connection heartbeat failed: grpc: ‹connection error: desc = "error reading server preface: EOF"› [code 14/Unavailable]
+I260623 20:07:32.219914 329 kv/kvserver/liveness/liveness.go:648 ⋮ [T1,Vsystem,n2,liveness-hb] 96  unable to get liveness record from KV: unable to get liveness: aborted in DistSender: result is ambiguous: context deadline exceeded
+I260623 20:07:35.223917 329 kv/kvserver/liveness/liveness.go:648 ⋮ [T1,Vsystem,n2,liveness-hb] 97  unable to get liveness record from KV: unable to get liveness: aborted in DistSender: result is ambiguous: context deadline exceeded
+I260623 20:07:36.185635 326 2@util/log/event_log.go:32 ⋮ [T1,Vsystem,n2] 98 ={"Timestamp":1782245256185611383,"EventType":"runtime_stats","MemRSSBytes":545099776,"GoroutineCount":266,"MemStackSysBytes":2031616,"GoAllocBytes":136741288,"GoTotalBytes":387838296,"HeapFragmentBytes":11714136,"HeapReservedBytes":224296960,"HeapReleasedBytes":2621440,"CGoAllocBytes":4208128,"CGoTotalBytes":17498112,"CGoCallRate":2.0969248,"CPUUserPercent":1.8972178,"CPUSysPercent":0.79882854,"GCRunCount":7,"NetHostRecvBytes":44511,"NetHostSendBytes":28367}
+I260623 20:07:36.189956 326 2@server/status/runtime_log.go:47 ⋮ [T1,Vsystem,n2] 99  runtime stats: 520 MiB RSS, 266 goroutines (stacks: 1.9 MiB), 130 MiB/370 MiB Go alloc/total (heap fragmentation: 11 MiB, heap reserved: 214 MiB, heap released: 2.5 MiB), 4.0 MiB/17 MiB CGO alloc/total (2.1 CGO/sec), 1.9/0.8 %(u/s)time, 0.0 %gc (7x), 44 KiB/28 KiB (r/w)net
+W260623 20:07:37.201760 2176 gossip/client.go:121 ⋮ [T1,Vsystem,n2] 100  failed to start gossip client to ‹crdb-cluster-0.crdb-cluster.cockroachdb.svc.cluster.local:26257›: initial connection heartbeat failed: grpc: ‹connection error: desc = "error reading server preface: EOF"› [code 14/Unavailable]
+I260623 20:07:38.227083 329 kv/kvserver/liveness/liveness.go:648 ⋮ [T1,Vsystem,n2,liveness-hb] 101  unable to get liveness record from KV: unable to get liveness: aborted in DistSender: result is ambiguous: context deadline exceeded
+I260623 20:07:41.229498 2369 kv/kvserver/replica_range_lease.go:773 ⋮ [T1,Vsystem,n2,timeSeriesMaintenance,s2,r26/2:‹/Table/2{3-4}›] 102  can't determine lease status of (n1,s1):1 due to node liveness error: liveness record not found in cache
+I260623 20:07:41.230038 329 kv/kvserver/liveness/liveness.go:648 ⋮ [T1,Vsystem,n2,liveness-hb] 103  unable to get liveness record from KV: unable to get liveness: aborted in DistSender: result is ambiguous: context deadline exceeded
+W260623 20:07:42.205714 2396 gossip/client.go:121 ⋮ [T1,Vsystem,n2] 104  failed to start gossip client to ‹crdb-cluster-0.crdb-cluster.cockroachdb.svc.cluster.local:26257›: initial connection heartbeat failed: grpc: ‹connection error: desc = "error reading server preface: EOF"› [code 14/Unavailable]
+I260623 20:07:44.233912 329 kv/kvserver/liveness/liveness.go:648 ⋮ [T1,Vsystem,n2,liveness-hb] 105  unable to get liveness record from KV: unable to get liveness: aborted in DistSender: result is ambiguous: context deadline exceeded
+I260623 20:07:46.186631 326 2@util/log/event_log.go:32 ⋮ [T1,Vsystem,n2] 106 ={"Timestamp":1782245266186616846,"EventType":"runtime_stats","MemRSSBytes":545292288,"GoroutineCount":264,"MemStackSysBytes":2031616,"GoAllocBytes":150535608,"GoTotalBytes":387903832,"HeapFragmentBytes":11698760,"HeapReservedBytes":210493440,"HeapReleasedBytes":2621440,"CGoAllocBytes":3937792,"CGoTotalBytes":17498112,"CGoCallRate":2.0997844,"CPUUserPercent":2.3997536,"CPUSysPercent":0.8999076,"GCRunCount":7,"NetHostRecvBytes":44044,"NetHostSendBytes":27964}
+I260623 20:07:46.186800 326 2@server/status/runtime_log.go:47 ⋮ [T1,Vsystem,n2] 107  runtime stats: 520 MiB RSS, 264 goroutines (stacks: 1.9 MiB), 144 MiB/370 MiB Go alloc/total (heap fragmentation: 11 MiB, heap reserved: 201 MiB, heap released: 2.5 MiB), 3.8 MiB/17 MiB CGO alloc/total (2.1 CGO/sec), 2.4/0.9 %(u/s)time, 0.0 %gc (7x), 43 KiB/27 KiB (r/w)net
+W260623 20:07:47.211676 2617 gossip/client.go:121 ⋮ [T1,Vsystem,n2] 108  failed to start gossip client to ‹crdb-cluster-1.crdb-cluster.cockroachdb.svc.cluster.local:26257›: initial connection heartbeat failed: grpc: ‹connection error: desc = "error reading server preface: EOF"› [code 14/Unavailable]
+I260623 20:07:47.240791 329 kv/kvserver/liveness/liveness.go:648 ⋮ [T1,Vsystem,n2,liveness-hb] 109  unable to get liveness record from KV: unable to get liveness: aborted in DistSender: result is ambiguous: context deadline exceeded
+I260623 20:07:50.229239 329 kv/kvserver/liveness/liveness.go:648 ⋮ [T1,Vsystem,n2,liveness-hb] 110  unable to get liveness record from KV: unable to get liveness: aborted in DistSender: result is ambiguous: context deadline exceeded
+W260623 20:07:52.201036 2848 gossip/client.go:121 ⋮ [T1,Vsystem,n2] 111  failed to start gossip client to ‹crdb-cluster-1.crdb-cluster.cockroachdb.svc.cluster.local:26257›: initial connection heartbeat failed: grpc: ‹connection error: desc = "error reading server preface: EOF"› [code 14/Unavailable]
+I260623 20:07:53.231970 329 kv/kvserver/liveness/liveness.go:648 ⋮ [T1,Vsystem,n2,liveness-hb] 112  unable to get liveness record from KV: unable to get liveness: aborted in DistSender: result is ambiguous: context deadline exceeded
+W260623 20:07:56.156800 327 ts/db.go:198 ⋮ [T1,Vsystem,n2,ts-poll] 113  error writing time series data: operation ‹"ts-poll"› timed out after 1m0.001s (given timeout 1m0s): aborted in DistSender: result is ambiguous: context deadline exceeded
+I260623 20:07:56.166031 323 2@gossip/gossip.go:531 ⋮ [T1,Vsystem,n2] 114  gossip status (stalled, 1 node)
+I260623 20:07:56.166031 323 2@gossip/gossip.go:531 ⋮ [T1,Vsystem,n2] 114 +gossip client (0/3 cur/max conns)
+I260623 20:07:56.166031 323 2@gossip/gossip.go:531 ⋮ [T1,Vsystem,n2] 114 +gossip server (0/3 cur/max conns, infos 0/0 sent/received, bytes 0B/0B sent/received)
+I260623 20:07:56.177301 326 2@util/log/event_log.go:32 ⋮ [T1,Vsystem,n2] 115 ={"Timestamp":1782245276177280919,"EventType":"runtime_stats","MemRSSBytes":545292288,"GoroutineCount":264,"MemStackSysBytes":2031616,"GoAllocBytes":171840656,"GoTotalBytes":387903832,"HeapFragmentBytes":11283312,"HeapReservedBytes":189579264,"HeapReleasedBytes":2621440,"CGoAllocBytes":3883984,"CGoTotalBytes":17498112,"CGoCallRate":2.1019635,"CPUUserPercent":2.9027116,"CPUSysPercent":0.9008415,"GCRunCount":7,"NetHostRecvBytes":44841,"NetHostSendBytes":28567}
+I260623 20:07:56.177677 326 2@server/status/runtime_log.go:47 ⋮ [T1,Vsystem,n2] 116  runtime stats: 520 MiB RSS, 264 goroutines (stacks: 1.9 MiB), 164 MiB/370 MiB Go alloc/total (heap fragmentation: 11 MiB, heap reserved: 181 MiB, heap released: 2.5 MiB), 3.7 MiB/17 MiB CGO alloc/total (2.1 CGO/sec), 2.9/0.9 %(u/s)time, 0.0 %gc (7x), 44 KiB/28 KiB (r/w)net
+I260623 20:07:56.234038 3035 kv/kvserver/replica_range_lease.go:773 ⋮ [T1,Vsystem,n2,consistencyChecker,s2,r42/3:‹/Table/{39-40}›] 117  can't determine lease status of (n1,s1):1 due to node liveness error: liveness record not found in cache
+I260623 20:07:56.237941 329 kv/kvserver/liveness/liveness.go:648 ⋮ [T1,Vsystem,n2,liveness-hb] 118  unable to get liveness record from KV: unable to get liveness: aborted in DistSender: result is ambiguous: context deadline exceeded
+I260623 20:07:56.656314 227 kv/kvserver/store_gossip.go:136 ⋮ [T1,Vsystem,n2,s2,r2/3:‹/System/NodeLiveness{-Max}›] 119  could not gossip node liveness: [NotLeaseHolderError] ‹lease acquisition canceled because context canceled›; r2: replica (n2,s2):3 not lease holder; lease holder unknown
+E260623 20:07:57.151380 401 kv/kvserver/queue.go:1202 ⋮ [T1,Vsystem,n2,replicaGC,s2,r33/3:‹/NamespaceTable/{30-Max}›] 120  operation ‹"replicaGC queue process replica 33"› timed out after 1m0.001s (given timeout 1m0s): aborted in DistSender: result is ambiguous: context deadline exceeded
+W260623 20:07:57.204974 3071 gossip/client.go:121 ⋮ [T1,Vsystem,n2] 121  failed to start gossip client to ‹crdb-cluster-0.crdb-cluster.cockroachdb.svc.cluster.local:26257›: initial connection heartbeat failed: grpc: ‹connection error: desc = "error reading server preface: EOF"› [code 14/Unavailable]
+E260623 20:07:57.207046 3072 2@rpc/peer.go:598 ⋮ [T1,Vsystem,n2,rnode=?,raddr=‹crdb-cluster-0.crdb-cluster.cockroachdb.svc.cluster.local:26257›,class=system,rpc] 122  failed connection attempt‹ (last connected 1m1.048s ago)›: grpc: ‹connection error: desc = "error reading server preface: EOF"› [code 14/Unavailable]
+I260623 20:07:59.242148 329 kv/kvserver/liveness/liveness.go:648 ⋮ [T1,Vsystem,n2,liveness-hb] 123  unable to get liveness record from KV: unable to get liveness: aborted in DistSender: result is ambiguous: context deadline exceeded
+E260623 20:08:00.209727 3224 2@rpc/peer.go:598 ⋮ [T1,Vsystem,n2,rnode=?,raddr=‹crdb-cluster-1.crdb-cluster.cockroachdb.svc.cluster.local:26257›,class=system,rpc] 124  failed connection attempt‹ (last connected 1m1.062s ago)›: grpc: ‹connection error: desc = "error reading server preface: EOF"› [code 14/Unavailable]
+W260623 20:08:02.150461 230 kv/kvserver/replica_raft.go:1510 ⋮ [T1,Vsystem,n2,s2,r1/2:‹/{Min-System/NodeL…}›,raft] 125  have been waiting 63.00s for slow proposal RequestLease [/Min]
+W260623 20:08:02.151181 230 kv/kvserver/replica_raft.go:1510 ⋮ [T1,Vsystem,n2,s2,r2/3:‹/System/NodeLiveness{-Max}›,raft] 126  have been waiting 63.00s for slow proposal RequestLease [/System/NodeLiveness]
+E260623 20:08:02.152556 3301 kv/kvserver/replica_circuit_breaker.go:168 ⋮ [T1,Vsystem,n2,s2,r1/2:‹/{Min-System/NodeL…}›] 127  breaker: tripped with error: replica unavailable: (n2,s2):2 unable to serve request to r1:‹/{Min-System/NodeLiveness}› [(n1,s1):1, (n2,s2):2, (n3,s3):3, next=4, gen=4]: lost quorum (down: (n1,s1):1,(n2,s2):2,(n3,s3):3); closed timestamp: 1782244926.460277801,0 (2026-06-23 20:02:06); raft status: {"id":"2","term":30,"vote":"1","commit":2360,"lead":"0","raftState":"StatePreCandidate","applied":2360,"progress":{},"leadtransferee":"0"}: have been waiting 63.00s for slow proposal RequestLease [/Min]
+E260623 20:08:02.153328 3304 kv/kvserver/replica_circuit_breaker.go:168 ⋮ [T1,Vsystem,n2,s2,r2/3:‹/System/NodeLiveness{-Max}›] 128  breaker: tripped with error: replica unavailable: (n2,s2):3 unable to serve request to r2:‹/System/NodeLiveness{-Max}› [(n1,s1):1, (n3,s3):2, (n2,s2):3, next=4, gen=4]: lost quorum (down: (n1,s1):1,(n3,s3):2,(n2,s2):3); closed timestamp: 1782245195.131257133,0 (2026-06-23 20:06:35); raft status: {"id":"3","term":30,"vote":"2","commit":8069,"lead":"0","raftState":"StatePreCandidate","applied":8069,"progress":{},"leadtransferee":"0"}: have been waiting 63.00s for slow proposal RequestLease [/System/NodeLiveness]
+W260623 20:08:02.210955 3308 gossip/client.go:121 ⋮ [T1,Vsystem,n2] 129  failed to start gossip client to ‹crdb-cluster-0.crdb-cluster.cockroachdb.svc.cluster.local:26257›: initial connection heartbeat failed: grpc: ‹connection error: desc = "error reading server preface: EOF"› [code 14/Unavailable]
+I260623 20:08:02.245113 329 kv/kvserver/liveness/liveness.go:648 ⋮ [T1,Vsystem,n2,liveness-hb] 130  unable to get liveness record from KV: unable to get liveness: aborted in DistSender: result is ambiguous: context deadline exceeded
+W260623 20:08:02.588092 227 kv/kvserver/replica_gossip.go:158 ⋮ [T1,Vsystem,n2,s2,r2/3:‹/System/NodeLiveness{-Max}›] 131  could not acquire lease for range gossip: replica unavailable: (n2,s2):3 unable to serve request to r2:‹/System/NodeLiveness{-Max}› [(n1,s1):1, (n3,s3):2, (n2,s2):3, next=4, gen=4]: lost quorum (down: (n1,s1):1,(n3,s3):2,(n2,s2):3); closed timestamp: 1782245195.131257133,0 (2026-06-23 20:06:35); raft status: {"id":"3","term":30,"vote":"2","commit":8069,"lead":"0","raftState":"StatePreCandidate","applied":8069,"progress":{},"leadtransferee":"0"}: have been waiting 63.00s for slow proposal RequestLease [/System/NodeLiveness]
+W260623 20:08:02.815308 226 kv/kvserver/replica_gossip.go:158 ⋮ [T1,Vsystem,n2,s2,r1/2:‹/{Min-System/NodeL…}›] 132  could not acquire lease for range gossip: replica unavailable: (n2,s2):2 unable to serve request to r1:‹/{Min-System/NodeLiveness}› [(n1,s1):1, (n2,s2):2, (n3,s3):3, next=4, gen=4]: lost quorum (down: (n1,s1):1,(n2,s2):2,(n3,s3):3); closed timestamp: 1782244926.460277801,0 (2026-06-23 20:02:06); raft status: {"id":"2","term":30,"vote":"1","commit":2360,"lead":"0","raftState":"StatePreCandidate","applied":2360,"progress":{},"leadtransferee":"0"}: have been waiting 63.00s for slow proposal RequestLease [/Min]
+W260623 20:08:03.727302 227 kv/kvserver/replica_gossip.go:158 ⋮ [T1,Vsystem,n2,s2,r2/3:‹/System/NodeLiveness{-Max}›] 133  could not acquire lease for range gossip: replica unavailable: (n2,s2):3 unable to serve request to r2:‹/System/NodeLiveness{-Max}› [(n1,s1):1, (n3,s3):2, (n2,s2):3, next=4, gen=4]: lost quorum (down: (n1,s1):1,(n3,s3):2,(n2,s2):3); closed timestamp: 1782245195.131257133,0 (2026-06-23 20:06:35); raft status: {"id":"3","term":30,"vote":"2","commit":8069,"lead":"0","raftState":"StatePreCandidate","applied":8069,"progress":{},"leadtransferee":"0"}: have been waiting 63.00s for slow proposal RequestLease [/System/NodeLiveness]
+W260623 20:08:03.734104 226 kv/kvserver/replica_gossip.go:158 ⋮ [T1,Vsystem,n2,s2,r1/2:‹/{Min-System/NodeL…}›] 134  could not acquire lease for range gossip: replica unavailable: (n2,s2):2 unable to serve request to r1:‹/{Min-System/NodeLiveness}› [(n1,s1):1, (n2,s2):2, (n3,s3):3, next=4, gen=4]: lost quorum (down: (n1,s1):1,(n2,s2):2,(n3,s3):3); closed timestamp: 1782244926.460277801,0 (2026-06-23 20:02:06); raft status: {"id":"2","term":30,"vote":"1","commit":2360,"lead":"0","raftState":"StatePreCandidate","applied":2360,"progress":{},"leadtransferee":"0"}: have been waiting 63.00s for slow proposal RequestLease [/Min]
+W260623 20:08:04.581218 227 kv/kvserver/replica_gossip.go:158 ⋮ [T1,Vsystem,n2,s2,r2/3:‹/System/NodeLiveness{-Max}›] 135  could not acquire lease for range gossip: replica unavailable: (n2,s2):3 unable to serve request to r2:‹/System/NodeLiveness{-Max}› [(n1,s1):1, (n3,s3):2, (n2,s2):3, next=4, gen=4]: lost quorum (down: (n1,s1):1,(n3,s3):2,(n2,s2):3); closed timestamp: 1782245195.131257133,0 (2026-06-23 20:06:35); raft status: {"id":"3","term":30,"vote":"2","commit":8069,"lead":"0","raftState":"StatePreCandidate","applied":8069,"progress":{},"leadtransferee":"0"}: have been waiting 63.00s for slow proposal RequestLease [/System/NodeLiveness]
+W260623 20:08:04.679008 226 kv/kvserver/replica_gossip.go:158 ⋮ [T1,Vsystem,n2,s2,r1/2:‹/{Min-System/NodeL…}›] 136  could not acquire lease for range gossip: replica unavailable: (n2,s2):2 unable to serve request to r1:‹/{Min-System/NodeLiveness}› [(n1,s1):1, (n2,s2):2, (n3,s3):3, next=4, gen=4]: lost quorum (down: (n1,s1):1,(n2,s2):2,(n3,s3):3); closed timestamp: 1782244926.460277801,0 (2026-06-23 20:02:06); raft status: {"id":"2","term":30,"vote":"1","commit":2360,"lead":"0","raftState":"StatePreCandidate","applied":2360,"progress":{},"leadtransferee":"0"}: have been waiting 63.00s for slow proposal RequestLease [/Min]
+I260623 20:08:05.249348 329 kv/kvserver/liveness/liveness.go:648 ⋮ [T1,Vsystem,n2,liveness-hb] 137  unable to get liveness record from KV: unable to get liveness: aborted in DistSender: result is ambiguous: context deadline exceeded
+W260623 20:08:05.561472 227 kv/kvserver/replica_gossip.go:158 ⋮ [T1,Vsystem,n2,s2,r2/3:‹/System/NodeLiveness{-Max}›] 138  could not acquire lease for range gossip: replica unavailable: (n2,s2):3 unable to serve request to r2:‹/System/NodeLiveness{-Max}› [(n1,s1):1, (n3,s3):2, (n2,s2):3, next=4, gen=4]: lost quorum (down: (n1,s1):1,(n3,s3):2,(n2,s2):3); closed timestamp: 1782245195.131257133,0 (2026-06-23 20:06:35); raft status: {"id":"3","term":30,"vote":"2","commit":8069,"lead":"0","raftState":"StatePreCandidate","applied":8069,"progress":{},"leadtransferee":"0"}: have been waiting 63.00s for slow proposal RequestLease [/System/NodeLiveness]
+W260623 20:08:05.746316 226 kv/kvserver/replica_gossip.go:158 ⋮ [T1,Vsystem,n2,s2,r1/2:‹/{Min-System/NodeL…}›] 139  could not acquire lease for range gossip: replica unavailable: (n2,s2):2 unable to serve request to r1:‹/{Min-System/NodeLiveness}› [(n1,s1):1, (n2,s2):2, (n3,s3):3, next=4, gen=4]: lost quorum (down: (n1,s1):1,(n2,s2):2,(n3,s3):3); closed timestamp: 1782244926.460277801,0 (2026-06-23 20:02:06); raft status: {"id":"2","term":30,"vote":"1","commit":2360,"lead":"0","raftState":"StatePreCandidate","applied":2360,"progress":{},"leadtransferee":"0"}: have been waiting 63.00s for slow proposal RequestLease [/Min]
+I260623 20:08:06.177534 326 2@util/log/event_log.go:32 ⋮ [T1,Vsystem,n2] 140 ={"Timestamp":1782245286177530049,"EventType":"runtime_stats","MemRSSBytes":545292288,"GoroutineCount":266,"MemStackSysBytes":2162688,"GoAllocBytes":187013208,"GoTotalBytes":387903832,"HeapFragmentBytes":11003816,"HeapReservedBytes":174530560,"HeapReleasedBytes":2621440,"CGoAllocBytes":3836240,"CGoTotalBytes":17498112,"CGoCallRate":2.0999465,"CPUUserPercent":2.199944,"CPUSysPercent":0.5999847,"GCRunCount":7,"NetHostRecvBytes":45230,"NetHostSendBytes":29154}
+I260623 20:08:06.177633 326 2@server/status/runtime_log.go:47 ⋮ [T1,Vsystem,n2] 141  runtime stats: 520 MiB RSS, 266 goroutines (stacks: 2.1 MiB), 178 MiB/370 MiB Go alloc/total (heap fragmentation: 10 MiB, heap reserved: 166 MiB, heap released: 2.5 MiB), 3.7 MiB/17 MiB CGO alloc/total (2.1 CGO/sec), 2.2/0.6 %(u/s)time, 0.0 %gc (7x), 44 KiB/28 KiB (r/w)net
+W260623 20:08:06.580200 227 kv/kvserver/replica_gossip.go:158 ⋮ [T1,Vsystem,n2,s2,r2/3:‹/System/NodeLiveness{-Max}›] 142  could not acquire lease for range gossip: replica unavailable: (n2,s2):3 unable to serve request to r2:‹/System/NodeLiveness{-Max}› [(n1,s1):1, (n3,s3):2, (n2,s2):3, next=4, gen=4]: lost quorum (down: (n1,s1):1,(n3,s3):2,(n2,s2):3); closed timestamp: 1782245195.131257133,0 (2026-06-23 20:06:35); raft status: {"id":"3","term":30,"vote":"2","commit":8069,"lead":"0","raftState":"StatePreCandidate","applied":8069,"progress":{},"leadtransferee":"0"}: have been waiting 63.00s for slow proposal RequestLease [/System/NodeLiveness]
+W260623 20:08:06.756301 226 kv/kvserver/replica_gossip.go:158 ⋮ [T1,Vsystem,n2,s2,r1/2:‹/{Min-System/NodeL…}›] 143  could not acquire lease for range gossip: replica unavailable: (n2,s2):2 unable to serve request to r1:‹/{Min-System/NodeLiveness}› [(n1,s1):1, (n2,s2):2, (n3,s3):3, next=4, gen=4]: lost quorum (down: (n1,s1):1,(n2,s2):2,(n3,s3):3); closed timestamp: 1782244926.460277801,0 (2026-06-23 20:02:06); raft status: {"id":"2","term":30,"vote":"1","commit":2360,"lead":"0","raftState":"StatePreCandidate","applied":2360,"progress":{},"leadtransferee":"0"}: have been waiting 63.00s for slow proposal RequestLease [/Min]
+W260623 20:08:07.217815 3528 gossip/client.go:121 ⋮ [T1,Vsystem,n2] 144  failed to start gossip client to ‹crdb-cluster-1.crdb-cluster.cockroachdb.svc.cluster.local:26257›: initial connection heartbeat failed: grpc: ‹connection error: desc = "error reading server preface: EOF"› [code 14/Unavailable]
+
+diff --git a/runs/new-added-workflows/cockroachdb-deploy-init-settings-audit-concat-blind-20260623_200425/stages/stage_01/cockroachdb-cluster.yaml b/runs/new-added-workflows/cockroachdb-deploy-init-settings-audit-concat-blind-20260623_200425/stages/stage_01/cockroachdb-cluster.yaml
+new file mode 100644
+index 0000000000000000000000000000000000000000..1dd5655d8d56369f7fe918be08018881c2bdcb83
+--- /dev/null
++++ b/runs/new-added-workflows/cockroachdb-deploy-init-settings-audit-concat-blind-20260623_200425/stages/stage_01/cockroachdb-cluster.yaml
+@@ -0,0 +1,153 @@
++apiVersion: v1
++kind: Service
++metadata:
++  name: crdb-cluster
++  namespace: cockroachdb
++  labels:
++    app.kubernetes.io/name: cockroachdb
++    app.kubernetes.io/instance: crdb-cluster
++    app.kubernetes.io/component: database
++spec:
++  clusterIP: None
++  publishNotReadyAddresses: true
++  selector:
++    app.kubernetes.io/name: cockroachdb
++    app.kubernetes.io/instance: crdb-cluster
++  ports:
++    - name: grpc
++      port: 26257
++      targetPort: grpc
++    - name: http
++      port: 8080
++      targetPort: http
++---
++apiVersion: v1
++kind: Service
++metadata:
++  name: crdb-cluster-public
++  namespace: cockroachdb
++  labels:
++    app.kubernetes.io/name: cockroachdb
++    app.kubernetes.io/instance: crdb-cluster
++    app.kubernetes.io/component: database
++spec:
++  type: ClusterIP
++  selector:
++    app.kubernetes.io/name: cockroachdb
++    app.kubernetes.io/instance: crdb-cluster
++  ports:
++    - name: grpc
++      port: 26257
++      targetPort: grpc
++    - name: http
++      port: 8080
++      targetPort: http
++---
++apiVersion: apps/v1
++kind: StatefulSet
++metadata:
++  name: crdb-cluster
++  namespace: cockroachdb
++  labels:
++    app.kubernetes.io/name: cockroachdb
++    app.kubernetes.io/instance: crdb-cluster
++spec:
++  serviceName: crdb-cluster
++  replicas: 3
++  podManagementPolicy: Parallel
++  selector:
++    matchLabels:
++      app.kubernetes.io/name: cockroachdb
++      app.kubernetes.io/instance: crdb-cluster
++  template:
++    metadata:
++      labels:
++        app.kubernetes.io/name: cockroachdb
++        app.kubernetes.io/instance: crdb-cluster
++    spec:
++      serviceAccountName: crdb-cluster-sa
++      terminationGracePeriodSeconds: 60
++      containers:
++        - name: db
++          image: cockroachdb/cockroach:v24.1.0
++          imagePullPolicy: IfNotPresent
++          command:
++            - /bin/bash
++            - -c
++            - >-
++              exec /cockroach/cockroach start
++              --logtostderr=INFO
++              --insecure
++              --store=/cockroach/cockroach-data
++              --advertise-host=$(POD_NAME).crdb-cluster.cockroachdb.svc.cluster.local
++              --http-addr=0.0.0.0:8080
++              --port=26257
++              --cache=25%
++              --max-sql-memory=25%
++              --join=crdb-cluster-0.crdb-cluster.cockroachdb.svc.cluster.local:26257,crdb-cluster-1.crdb-cluster.cockroachdb.svc.cluster.local:26257,crdb-cluster-2.crdb-cluster.cockroachdb.svc.cluster.local:26257
++          env:
++            - name: POD_NAME
++              valueFrom:
++                fieldRef:
++                  fieldPath: metadata.name
++            - name: POD_NAMESPACE
++              valueFrom:
++                fieldRef:
++                  fieldPath: metadata.namespace
++          ports:
++            - name: grpc
++              containerPort: 26257
++            - name: http
++              containerPort: 8080
++          livenessProbe:
++            httpGet:
++              path: /health
++              port: http
++              scheme: HTTP
++            initialDelaySeconds: 30
++            periodSeconds: 5
++          readinessProbe:
++            httpGet:
++              path: /health?ready=1
++              port: http
++              scheme: HTTP
++            initialDelaySeconds: 10
++            periodSeconds: 5
++            failureThreshold: 2
++          resources:
++            requests:
++              cpu: "1"
++              memory: 2Gi
++            limits:
++              cpu: "1"
++              memory: 2Gi
++          volumeMounts:
++            - name: datadir
++              mountPath: /cockroach/cockroach-data
++  volumeClaimTemplates:
++    - metadata:
++        name: datadir
++        labels:
++          app.kubernetes.io/name: cockroachdb
++          app.kubernetes.io/instance: crdb-cluster
++      spec:
++        accessModes:
++          - ReadWriteOnce
++        resources:
++          requests:
++            storage: 10Gi
++---
++apiVersion: policy/v1
++kind: PodDisruptionBudget
++metadata:
++  name: crdb-cluster
++  namespace: cockroachdb
++  labels:
++    app.kubernetes.io/name: cockroachdb
++    app.kubernetes.io/instance: crdb-cluster
++spec:
++  minAvailable: 2
++  selector:
++    matchLabels:
++      app.kubernetes.io/name: cockroachdb
++      app.kubernetes.io/instance: crdb-cluster
+
+ succeeded in 106ms:
+Name:             crdb-cluster-2
+Namespace:        cockroachdb
+Priority:         0
+Service Account:  crdb-cluster-sa
+Node:             kind-worker/172.22.0.4
+Start Time:       Tue, 23 Jun 2026 15:06:54 -0500
+Labels:           app.kubernetes.io/instance=crdb-cluster
+                  app.kubernetes.io/name=cockroachdb
+                  apps.kubernetes.io/pod-index=2
+                  controller-revision-hash=crdb-cluster-fd848ff97
+                  statefulset.kubernetes.io/pod-name=crdb-cluster-2
+Annotations:      <none>
+Status:           Running
+IP:               10.244.1.31
+IPs:
+  IP:           10.244.1.31
+Controlled By:  StatefulSet/crdb-cluster
+Containers:
+  db:
+    Container ID:  containerd://7d70c6b6b99314d39960680ee38e744b43e30a59125072ff6bd0aa3fadf237e8
+    Image:         cockroachdb/cockroach:v24.1.0
+    Image ID:      docker.io/cockroachdb/cockroach@sha256:cc4e3ee67104d6f6434c81b555d69d4eb319f8aa0c5495931ffbe9273adfc4b5
+    Ports:         26257/TCP (grpc), 8080/TCP (http)
+    Host Ports:    0/TCP (grpc), 0/TCP (http)
+    Command:
+      /bin/bash
+      -c
+      exec /cockroach/cockroach start --logtostderr=INFO --insecure --store=/cockroach/cockroach-data --advertise-host=$(POD_NAME).crdb-cluster.cockroachdb.svc.cluster.local --http-addr=0.0.0.0:8080 --port=26257 --cache=25% --max-sql-memory=25% --join=crdb-cluster-0.crdb-cluster.cockroachdb.svc.cluster.local:26257,crdb-cluster-1.crdb-cluster.cockroachdb.svc.cluster.local:26257,crdb-cluster-2.crdb-cluster.cockroachdb.svc.cluster.local:26257
+    State:          Running
+      Started:      Tue, 23 Jun 2026 15:06:55 -0500
+    Ready:          False
+    Restart Count:  0
+    Limits:
+      cpu:     1
+      memory:  2Gi
+    Requests:
+      cpu:      1
+      memory:   2Gi
+    Liveness:   http-get http://:http/health delay=30s timeout=1s period=5s #success=1 #failure=3
+    Readiness:  http-get http://:http/health%3Fready=1 delay=10s timeout=1s period=5s #success=1 #failure=2
+    Environment:
+      POD_NAME:       crdb-cluster-2 (v1:metadata.name)
+      POD_NAMESPACE:  cockroachdb (v1:metadata.namespace)
+    Mounts:
+      /cockroach/cockroach-data from datadir (rw)
+      /var/run/secrets/kubernetes.io/serviceaccount from kube-api-access-nkzhn (ro)
+Conditions:
+  Type                        Status
+  PodReadyToStartContainers   True 
+  Initialized                 True 
+  Ready                       False 
+  ContainersReady             False 
+  PodScheduled                True 
+Volumes:
+  datadir:
+    Type:       PersistentVolumeClaim (a reference to a PersistentVolumeClaim in the same namespace)
+    ClaimName:  datadir-crdb-cluster-2
+    ReadOnly:   false
+  kube-api-access-nkzhn:
+    Type:                    Projected (a volume that contains injected data from multiple sources)
+    TokenExpirationSeconds:  3607
+    ConfigMapName:           kube-root-ca.crt
+    Optional:                false
+    DownwardAPI:             true
+QoS Class:                   Guaranteed
+Node-Selectors:              <none>
+Tolerations:                 node.kubernetes.io/not-ready:NoExecute op=Exists for 300s
+                             node.kubernetes.io/unreachable:NoExecute op=Exists for 300s
+Events:
+  Type     Reason     Age                From               Message
+  ----     ------     ----               ----               -------
+  Normal   Scheduled  73s                default-scheduler  Successfully assigned cockroachdb/crdb-cluster-2 to kind-worker
+  Normal   Pulled     72s                kubelet            Container image "cockroachdb/cockroach:v24.1.0" already present on machine
+  Normal   Created    72s                kubelet            Created container: db
+  Normal   Started    72s                kubelet            Started container db
+  Warning  Unhealthy  4s (x13 over 61s)  kubelet            Readiness probe failed: HTTP probe failed with statuscode: 503
+
+codex
+The rollout is stalled because the old pods are still running in secure mode while the new pod is insecure, and CockroachDB nodes cannot gossip across that security-mode mismatch. The data PVCs are retained, so I’m deleting the two old pods to let the StatefulSet recreate them from the corrected insecure template.
+exec
+/bin/zsh -lc 'kubectl -n cockroachdb delete pod crdb-cluster-0 crdb-cluster-1' in /Users/jinyige/Karma/runs/new-added-workflows/cockroachdb-deploy-init-settings-audit-concat-blind-20260623_200425/stages/stage_01
+diff --git a/runs/new-added-workflows/cockroachdb-deploy-init-settings-audit-concat-blind-20260623_200425/stages/stage_01/cockroachdb-cluster.yaml b/runs/new-added-workflows/cockroachdb-deploy-init-settings-audit-concat-blind-20260623_200425/stages/stage_01/cockroachdb-cluster.yaml
+new file mode 100644
+index 0000000000000000000000000000000000000000..1dd5655d8d56369f7fe918be08018881c2bdcb83
+--- /dev/null
++++ b/runs/new-added-workflows/cockroachdb-deploy-init-settings-audit-concat-blind-20260623_200425/stages/stage_01/cockroachdb-cluster.yaml
+@@ -0,0 +1,153 @@
++apiVersion: v1
++kind: Service
++metadata:
++  name: crdb-cluster
++  namespace: cockroachdb
++  labels:
++    app.kubernetes.io/name: cockroachdb
++    app.kubernetes.io/instance: crdb-cluster
++    app.kubernetes.io/component: database
++spec:
++  clusterIP: None
++  publishNotReadyAddresses: true
++  selector:
++    app.kubernetes.io/name: cockroachdb
++    app.kubernetes.io/instance: crdb-cluster
++  ports:
++    - name: grpc
++      port: 26257
++      targetPort: grpc
++    - name: http
++      port: 8080
++      targetPort: http
++---
++apiVersion: v1
++kind: Service
++metadata:
++  name: crdb-cluster-public
++  namespace: cockroachdb
++  labels:
++    app.kubernetes.io/name: cockroachdb
++    app.kubernetes.io/instance: crdb-cluster
++    app.kubernetes.io/component: database
++spec:
++  type: ClusterIP
++  selector:
++    app.kubernetes.io/name: cockroachdb
++    app.kubernetes.io/instance: crdb-cluster
++  ports:
++    - name: grpc
++      port: 26257
++      targetPort: grpc
++    - name: http
++      port: 8080
++      targetPort: http
++---
++apiVersion: apps/v1
++kind: StatefulSet
++metadata:
++  name: crdb-cluster
++  namespace: cockroachdb
++  labels:
++    app.kubernetes.io/name: cockroachdb
++    app.kubernetes.io/instance: crdb-cluster
++spec:
++  serviceName: crdb-cluster
++  replicas: 3
++  podManagementPolicy: Parallel
++  selector:
++    matchLabels:
++      app.kubernetes.io/name: cockroachdb
++      app.kubernetes.io/instance: crdb-cluster
++  template:
++    metadata:
++      labels:
++        app.kubernetes.io/name: cockroachdb
++        app.kubernetes.io/instance: crdb-cluster
++    spec:
++      serviceAccountName: crdb-cluster-sa
++      terminationGracePeriodSeconds: 60
++      containers:
++        - name: db
++          image: cockroachdb/cockroach:v24.1.0
++          imagePullPolicy: IfNotPresent
++          command:
++            - /bin/bash
++            - -c
++            - >-
++              exec /cockroach/cockroach start
++              --logtostderr=INFO
++              --insecure
++              --store=/cockroach/cockroach-data
++              --advertise-host=$(POD_NAME).crdb-cluster.cockroachdb.svc.cluster.local
++              --http-addr=0.0.0.0:8080
++              --port=26257
++              --cache=25%
++              --max-sql-memory=25%
++              --join=crdb-cluster-0.crdb-cluster.cockroachdb.svc.cluster.local:26257,crdb-cluster-1.crdb-cluster.cockroachdb.svc.cluster.local:26257,crdb-cluster-2.crdb-cluster.cockroachdb.svc.cluster.local:26257
++          env:
++            - name: POD_NAME
++              valueFrom:
++                fieldRef:
++                  fieldPath: metadata.name
++            - name: POD_NAMESPACE
++              valueFrom:
++                fieldRef:
++                  fieldPath: metadata.namespace
++          ports:
++            - name: grpc
++              containerPort: 26257
++            - name: http
++              containerPort: 8080
++          livenessProbe:
++            httpGet:
++              path: /health
++              port: http
++              scheme: HTTP
++            initialDelaySeconds: 30
++            periodSeconds: 5
++          readinessProbe:
++            httpGet:
++              path: /health?ready=1
++              port: http
++              scheme: HTTP
++            initialDelaySeconds: 10
++            periodSeconds: 5
++            failureThreshold: 2
++          resources:
++            requests:
++              cpu: "1"
++              memory: 2Gi
++            limits:
++              cpu: "1"
++              memory: 2Gi
++          volumeMounts:
++            - name: datadir
++              mountPath: /cockroach/cockroach-data
++  volumeClaimTemplates:
++    - metadata:
++        name: datadir
++        labels:
++          app.kubernetes.io/name: cockroachdb
++          app.kubernetes.io/instance: crdb-cluster
++      spec:
++        accessModes:
++          - ReadWriteOnce
++        resources:
++          requests:
++            storage: 10Gi
++---
++apiVersion: policy/v1
++kind: PodDisruptionBudget
++metadata:
++  name: crdb-cluster
++  namespace: cockroachdb
++  labels:
++    app.kubernetes.io/name: cockroachdb
++    app.kubernetes.io/instance: crdb-cluster
++spec:
++  minAvailable: 2
++  selector:
++    matchLabels:
++      app.kubernetes.io/name: cockroachdb
++      app.kubernetes.io/instance: crdb-cluster
+
+ succeeded in 10779ms:
+codex
+The old secure pods have been recreated. I’m watching readiness now; once all three are on the same insecure template, the cluster should regain gossip and SQL connectivity.
+ succeeded in 118758ms:
+Waiting for 1 pods to be ready...
+Waiting for 1 pods to be ready...
+Waiting for 2 pods to be ready...
+Waiting for 2 pods to be ready...
+Waiting for 2 pods to be ready...
+Waiting for 1 pods to be ready...
+Waiting for 2 pods to be ready...
+Waiting for 2 pods to be ready...
+Waiting for 2 pods to be ready...
+Waiting for 1 pods to be ready...
+partitioned roll out complete: 3 new pods have been updated...
+
+exec
+/bin/zsh -lc 'kubectl -n cockroachdb get pods -o wide' in /Users/jinyige/Karma/runs/new-added-workflows/cockroachdb-deploy-init-settings-audit-concat-blind-20260623_200425/stages/stage_01
+exec
+/bin/zsh -lc "kubectl -n cockroachdb get statefulset crdb-cluster -o jsonpath='{.status.readyReplicas}/{.spec.replicas}{\" ready, currentRevision=\"}{.status.currentRevision}{\", updateRevision=\"}{.status.updateRevision}{\"\\n\"}'" in /Users/jinyige/Karma/runs/new-added-workflows/cockroachdb-deploy-init-settings-audit-concat-blind-20260623_200425/stages/stage_01
+ succeeded in 0ms:
+3/3 ready, currentRevision=crdb-cluster-fd848ff97, updateRevision=crdb-cluster-fd848ff97
+
+ succeeded in 0ms:
+NAME             READY   STATUS    RESTARTS   AGE    IP            NODE           NOMINATED NODE   READINESS GATES
+crdb-cluster-0   1/1     Running   0          12s    10.244.3.35   kind-worker3   <none>           <none>
+crdb-cluster-1   1/1     Running   0          20s    10.244.2.33   kind-worker2   <none>           <none>
+crdb-cluster-2   1/1     Running   0          2m2s   10.244.1.31   kind-worker    <none>           <none>
+
+exec
+/bin/zsh -lc "kubectl -n cockroachdb get pods -o jsonpath='{range .items[*]}{.metadata.name}{\"\\t\"}{.metadata.labels.controller-revision-hash}{\"\\t\"}{.status.containerStatuses[0].ready}{\"\\n\"}{end}'" in /Users/jinyige/Karma/runs/new-added-workflows/cockroachdb-deploy-init-settings-audit-concat-blind-20260623_200425/stages/stage_01
+ succeeded in 0ms:
+crdb-cluster-0	crdb-cluster-fd848ff97	true
+crdb-cluster-1	crdb-cluster-fd848ff97	true
+crdb-cluster-2	crdb-cluster-fd848ff97	true
+
+diff --git a/runs/new-added-workflows/cockroachdb-deploy-init-settings-audit-concat-blind-20260623_200425/stages/stage_01/cockroachdb-cluster.yaml b/runs/new-added-workflows/cockroachdb-deploy-init-settings-audit-concat-blind-20260623_200425/stages/stage_01/cockroachdb-cluster.yaml
+new file mode 100644
+index 0000000000000000000000000000000000000000..1dd5655d8d56369f7fe918be08018881c2bdcb83
+--- /dev/null
++++ b/runs/new-added-workflows/cockroachdb-deploy-init-settings-audit-concat-blind-20260623_200425/stages/stage_01/cockroachdb-cluster.yaml
+@@ -0,0 +1,153 @@
++apiVersion: v1
++kind: Service
++metadata:
++  name: crdb-cluster
++  namespace: cockroachdb
++  labels:
++    app.kubernetes.io/name: cockroachdb
++    app.kubernetes.io/instance: crdb-cluster
++    app.kubernetes.io/component: database
++spec:
++  clusterIP: None
++  publishNotReadyAddresses: true
++  selector:
++    app.kubernetes.io/name: cockroachdb
++    app.kubernetes.io/instance: crdb-cluster
++  ports:
++    - name: grpc
++      port: 26257
++      targetPort: grpc
++    - name: http
++      port: 8080
++      targetPort: http
++---
++apiVersion: v1
++kind: Service
++metadata:
++  name: crdb-cluster-public
++  namespace: cockroachdb
++  labels:
++    app.kubernetes.io/name: cockroachdb
++    app.kubernetes.io/instance: crdb-cluster
++    app.kubernetes.io/component: database
++spec:
++  type: ClusterIP
++  selector:
++    app.kubernetes.io/name: cockroachdb
++    app.kubernetes.io/instance: crdb-cluster
++  ports:
++    - name: grpc
++      port: 26257
++      targetPort: grpc
++    - name: http
++      port: 8080
++      targetPort: http
++---
++apiVersion: apps/v1
++kind: StatefulSet
++metadata:
++  name: crdb-cluster
++  namespace: cockroachdb
++  labels:
++    app.kubernetes.io/name: cockroachdb
++    app.kubernetes.io/instance: crdb-cluster
++spec:
++  serviceName: crdb-cluster
++  replicas: 3
++  podManagementPolicy: Parallel
++  selector:
++    matchLabels:
++      app.kubernetes.io/name: cockroachdb
++      app.kubernetes.io/instance: crdb-cluster
++  template:
++    metadata:
++      labels:
++        app.kubernetes.io/name: cockroachdb
++        app.kubernetes.io/instance: crdb-cluster
++    spec:
++      serviceAccountName: crdb-cluster-sa
++      terminationGracePeriodSeconds: 60
++      containers:
++        - name: db
++          image: cockroachdb/cockroach:v24.1.0
++          imagePullPolicy: IfNotPresent
++          command:
++            - /bin/bash
++            - -c
++            - >-
++              exec /cockroach/cockroach start
++              --logtostderr=INFO
++              --insecure
++              --store=/cockroach/cockroach-data
++              --advertise-host=$(POD_NAME).crdb-cluster.cockroachdb.svc.cluster.local
++              --http-addr=0.0.0.0:8080
++              --port=26257
++              --cache=25%
++              --max-sql-memory=25%
++              --join=crdb-cluster-0.crdb-cluster.cockroachdb.svc.cluster.local:26257,crdb-cluster-1.crdb-cluster.cockroachdb.svc.cluster.local:26257,crdb-cluster-2.crdb-cluster.cockroachdb.svc.cluster.local:26257
++          env:
++            - name: POD_NAME
++              valueFrom:
++                fieldRef:
++                  fieldPath: metadata.name
++            - name: POD_NAMESPACE
++              valueFrom:
++                fieldRef:
++                  fieldPath: metadata.namespace
++          ports:
++            - name: grpc
++              containerPort: 26257
++            - name: http
++              containerPort: 8080
++          livenessProbe:
++            httpGet:
++              path: /health
++              port: http
++              scheme: HTTP
++            initialDelaySeconds: 30
++            periodSeconds: 5
++          readinessProbe:
++            httpGet:
++              path: /health?ready=1
++              port: http
++              scheme: HTTP
++            initialDelaySeconds: 10
++            periodSeconds: 5
++            failureThreshold: 2
++          resources:
++            requests:
++              cpu: "1"
++              memory: 2Gi
++            limits:
++              cpu: "1"
++              memory: 2Gi
++          volumeMounts:
++            - name: datadir
++              mountPath: /cockroach/cockroach-data
++  volumeClaimTemplates:
++    - metadata:
++        name: datadir
++        labels:
++          app.kubernetes.io/name: cockroachdb
++          app.kubernetes.io/instance: crdb-cluster
++      spec:
++        accessModes:
++          - ReadWriteOnce
++        resources:
++          requests:
++            storage: 10Gi
++---
++apiVersion: policy/v1
++kind: PodDisruptionBudget
++metadata:
++  name: crdb-cluster
++  namespace: cockroachdb
++  labels:
++    app.kubernetes.io/name: cockroachdb
++    app.kubernetes.io/instance: crdb-cluster
++spec:
++  minAvailable: 2
++  selector:
++    matchLabels:
++      app.kubernetes.io/name: cockroachdb
++      app.kubernetes.io/instance: crdb-cluster
+
+codex
+All three pods are now ready on the corrected revision. I’m verifying CockroachDB itself over insecure SQL/RPC next, then I’ll run the exact resource checks you requested.
+exec
+/bin/zsh -lc 'kubectl -n cockroachdb exec crdb-cluster-0 -- /cockroach/cockroach node status --insecure --host=localhost:26257' in /Users/jinyige/Karma/runs/new-added-workflows/cockroachdb-deploy-init-settings-audit-concat-blind-20260623_200425/stages/stage_01
+exec
+/bin/zsh -lc "kubectl -n cockroachdb exec crdb-cluster-0 -- /cockroach/cockroach sql --insecure --host=localhost:26257 -e 'select count(*) as node_count from crdb_internal.gossip_nodes;'" in /Users/jinyige/Karma/runs/new-added-workflows/cockroachdb-deploy-init-settings-audit-concat-blind-20260623_200425/stages/stage_01
+exec
+/bin/zsh -lc 'kubectl -n cockroachdb get pdb crdb-cluster' in /Users/jinyige/Karma/runs/new-added-workflows/cockroachdb-deploy-init-settings-audit-concat-blind-20260623_200425/stages/stage_01
+exec
+/bin/zsh -lc "kubectl -n cockroachdb get statefulset crdb-cluster -o jsonpath='{.spec.template.spec.containers[0].image}{\"\\n\"}{.spec.template.spec.containers[0].command}{\"\\n\"}{.spec.template.spec.containers[0].volumeMounts}{\"\\n\"}{.spec.volumeClaimTemplates[0].spec.resources.requests.storage}{\"\\n\"}'" in /Users/jinyige/Karma/runs/new-added-workflows/cockroachdb-deploy-init-settings-audit-concat-blind-20260623_200425/stages/stage_01
+ succeeded in 0ms:
+NAME           MIN AVAILABLE   MAX UNAVAILABLE   ALLOWED DISRUPTIONS   AGE
+crdb-cluster   2               N/A               1                     22h
+
+ succeeded in 0ms:
+cockroachdb/cockroach:v24.1.0
+["/bin/bash","-c","exec /cockroach/cockroach start --logtostderr=INFO --insecure --store=/cockroach/cockroach-data --advertise-host=$(POD_NAME).crdb-cluster.cockroachdb.svc.cluster.local --http-addr=0.0.0.0:8080 --port=26257 --cache=25% --max-sql-memory=25% --join=crdb-cluster-0.crdb-cluster.cockroachdb.svc.cluster.local:26257,crdb-cluster-1.crdb-cluster.cockroachdb.svc.cluster.local:26257,crdb-cluster-2.crdb-cluster.cockroachdb.svc.cluster.local:26257"]
+[{"mountPath":"/cockroach/cockroach-data","name":"datadir"}]
+10Gi
+
+diff --git a/runs/new-added-workflows/cockroachdb-deploy-init-settings-audit-concat-blind-20260623_200425/stages/stage_01/cockroachdb-cluster.yaml b/runs/new-added-workflows/cockroachdb-deploy-init-settings-audit-concat-blind-20260623_200425/stages/stage_01/cockroachdb-cluster.yaml
+new file mode 100644
+index 0000000000000000000000000000000000000000..1dd5655d8d56369f7fe918be08018881c2bdcb83
+--- /dev/null
++++ b/runs/new-added-workflows/cockroachdb-deploy-init-settings-audit-concat-blind-20260623_200425/stages/stage_01/cockroachdb-cluster.yaml
+@@ -0,0 +1,153 @@
++apiVersion: v1
++kind: Service
++metadata:
++  name: crdb-cluster
++  namespace: cockroachdb
++  labels:
++    app.kubernetes.io/name: cockroachdb
++    app.kubernetes.io/instance: crdb-cluster
++    app.kubernetes.io/component: database
++spec:
++  clusterIP: None
++  publishNotReadyAddresses: true
++  selector:
++    app.kubernetes.io/name: cockroachdb
++    app.kubernetes.io/instance: crdb-cluster
++  ports:
++    - name: grpc
++      port: 26257
++      targetPort: grpc
++    - name: http
++      port: 8080
++      targetPort: http
++---
++apiVersion: v1
++kind: Service
++metadata:
++  name: crdb-cluster-public
++  namespace: cockroachdb
++  labels:
++    app.kubernetes.io/name: cockroachdb
++    app.kubernetes.io/instance: crdb-cluster
++    app.kubernetes.io/component: database
++spec:
++  type: ClusterIP
++  selector:
++    app.kubernetes.io/name: cockroachdb
++    app.kubernetes.io/instance: crdb-cluster
++  ports:
++    - name: grpc
++      port: 26257
++      targetPort: grpc
++    - name: http
++      port: 8080
++      targetPort: http
++---
++apiVersion: apps/v1
++kind: StatefulSet
++metadata:
++  name: crdb-cluster
++  namespace: cockroachdb
++  labels:
++    app.kubernetes.io/name: cockroachdb
++    app.kubernetes.io/instance: crdb-cluster
++spec:
++  serviceName: crdb-cluster
++  replicas: 3
++  podManagementPolicy: Parallel
++  selector:
++    matchLabels:
++      app.kubernetes.io/name: cockroachdb
++      app.kubernetes.io/instance: crdb-cluster
++  template:
++    metadata:
++      labels:
++        app.kubernetes.io/name: cockroachdb
++        app.kubernetes.io/instance: crdb-cluster
++    spec:
++      serviceAccountName: crdb-cluster-sa
++      terminationGracePeriodSeconds: 60
++      containers:
++        - name: db
++          image: cockroachdb/cockroach:v24.1.0
++          imagePullPolicy: IfNotPresent
++          command:
++            - /bin/bash
++            - -c
++            - >-
++              exec /cockroach/cockroach start
++              --logtostderr=INFO
++              --insecure
++              --store=/cockroach/cockroach-data
++              --advertise-host=$(POD_NAME).crdb-cluster.cockroachdb.svc.cluster.local
++              --http-addr=0.0.0.0:8080
++              --port=26257
++              --cache=25%
++              --max-sql-memory=25%
++              --join=crdb-cluster-0.crdb-cluster.cockroachdb.svc.cluster.local:26257,crdb-cluster-1.crdb-cluster.cockroachdb.svc.cluster.local:26257,crdb-cluster-2.crdb-cluster.cockroachdb.svc.cluster.local:26257
++          env:
++            - name: POD_NAME
++              valueFrom:
++                fieldRef:
++                  fieldPath: metadata.name
++            - name: POD_NAMESPACE
++              valueFrom:
++                fieldRef:
++                  fieldPath: metadata.namespace
++          ports:
++            - name: grpc
++              containerPort: 26257
++            - name: http
++              containerPort: 8080
++          livenessProbe:
++            httpGet:
++              path: /health
++              port: http
++              scheme: HTTP
++            initialDelaySeconds: 30
++            periodSeconds: 5
++          readinessProbe:
++            httpGet:
++              path: /health?ready=1
++              port: http
++              scheme: HTTP
++            initialDelaySeconds: 10
++            periodSeconds: 5
++            failureThreshold: 2
++          resources:
++            requests:
++              cpu: "1"
++              memory: 2Gi
++            limits:
++              cpu: "1"
++              memory: 2Gi
++          volumeMounts:
++            - name: datadir
++              mountPath: /cockroach/cockroach-data
++  volumeClaimTemplates:
++    - metadata:
++        name: datadir
++        labels:
++          app.kubernetes.io/name: cockroachdb
++          app.kubernetes.io/instance: crdb-cluster
++      spec:
++        accessModes:
++          - ReadWriteOnce
++        resources:
++          requests:
++            storage: 10Gi
++---
++apiVersion: policy/v1
++kind: PodDisruptionBudget
++metadata:
++  name: crdb-cluster
++  namespace: cockroachdb
++  labels:
++    app.kubernetes.io/name: cockroachdb
++    app.kubernetes.io/instance: crdb-cluster
++spec:
++  minAvailable: 2
++  selector:
++    matchLabels:
++      app.kubernetes.io/name: cockroachdb
++      app.kubernetes.io/instance: crdb-cluster
+
+ succeeded in 1187ms:
+id	address	sql_address	build	started_at	updated_at	locality	is_available	is_live
+1	crdb-cluster-0.crdb-cluster.cockroachdb.svc.cluster.local:26257	crdb-cluster-0.crdb-cluster.cockroachdb.svc.cluster.local:26257	v24.1.0	2026-06-23 20:08:46.628121 +0000 UTC	2026-06-23 20:09:07.656994 +0000 UTC		true	true
+2	crdb-cluster-2.crdb-cluster.cockroachdb.svc.cluster.local:26257	crdb-cluster-2.crdb-cluster.cockroachdb.svc.cluster.local:26257	v24.1.0	2026-06-23 20:06:56.163404 +0000 UTC	2026-06-23 20:09:08.161226 +0000 UTC		true	true
+3	crdb-cluster-1.crdb-cluster.cockroachdb.svc.cluster.local:26257	crdb-cluster-1.crdb-cluster.cockroachdb.svc.cluster.local:26257	v24.1.0	2026-06-23 20:08:37.663417 +0000 UTC	2026-06-23 20:09:07.718402 +0000 UTC		true	true
+
+ succeeded in 1209ms:
+node_count
+3
+
+codex
+CockroachDB reports all three nodes live over `--insecure`, and the gossip node count is 3. I’m running the final requested `kubectl get` checks now.
+exec
+/bin/zsh -lc 'kubectl -n cockroachdb get pods' in /Users/jinyige/Karma/runs/new-added-workflows/cockroachdb-deploy-init-settings-audit-concat-blind-20260623_200425/stages/stage_01
+ succeeded in 0ms:
+NAME             READY   STATUS    RESTARTS   AGE
+crdb-cluster-0   1/1     Running   0          33s
+crdb-cluster-1   1/1     Running   0          41s
+crdb-cluster-2   1/1     Running   0          2m23s
+
+exec
+/bin/zsh -lc 'kubectl -n cockroachdb get statefulset,service' in /Users/jinyige/Karma/runs/new-added-workflows/cockroachdb-deploy-init-settings-audit-concat-blind-20260623_200425/stages/stage_01
+ succeeded in 0ms:
+NAME                            READY   AGE
+statefulset.apps/crdb-cluster   3/3     22h
+
+NAME                          TYPE        CLUSTER-IP      EXTERNAL-IP   PORT(S)              AGE
+service/crdb-cluster          ClusterIP   None            <none>        26257/TCP,8080/TCP   22h
+service/crdb-cluster-public   ClusterIP   10.96.131.212   <none>        26257/TCP,8080/TCP   22h
+
+exec
+/bin/zsh -lc 'kubectl -n cockroachdb get pvc' in /Users/jinyige/Karma/runs/new-added-workflows/cockroachdb-deploy-init-settings-audit-concat-blind-20260623_200425/stages/stage_01
+ succeeded in 0ms:
+NAME                     STATUS   VOLUME                                     CAPACITY   ACCESS MODES   STORAGECLASS   VOLUMEATTRIBUTESCLASS   AGE
+datadir-crdb-cluster-0   Bound    pvc-1f80dc2a-82a9-4080-9cdc-3cd77468cba6   10Gi       RWO            standard       <unset>                 22h
+datadir-crdb-cluster-1   Bound    pvc-d11a16c0-78f0-4b70-97d0-9db649cddddd   10Gi       RWO            standard       <unset>                 22h
+datadir-crdb-cluster-2   Bound    pvc-bb09619c-26d7-4f06-bbc4-912c18c68901   10Gi       RWO            standard       <unset>                 22h
+
+diff --git a/runs/new-added-workflows/cockroachdb-deploy-init-settings-audit-concat-blind-20260623_200425/stages/stage_01/cockroachdb-cluster.yaml b/runs/new-added-workflows/cockroachdb-deploy-init-settings-audit-concat-blind-20260623_200425/stages/stage_01/cockroachdb-cluster.yaml
+new file mode 100644
+index 0000000000000000000000000000000000000000..1dd5655d8d56369f7fe918be08018881c2bdcb83
+--- /dev/null
++++ b/runs/new-added-workflows/cockroachdb-deploy-init-settings-audit-concat-blind-20260623_200425/stages/stage_01/cockroachdb-cluster.yaml
+@@ -0,0 +1,153 @@
++apiVersion: v1
++kind: Service
++metadata:
++  name: crdb-cluster
++  namespace: cockroachdb
++  labels:
++    app.kubernetes.io/name: cockroachdb
++    app.kubernetes.io/instance: crdb-cluster
++    app.kubernetes.io/component: database
++spec:
++  clusterIP: None
++  publishNotReadyAddresses: true
++  selector:
++    app.kubernetes.io/name: cockroachdb
++    app.kubernetes.io/instance: crdb-cluster
++  ports:
++    - name: grpc
++      port: 26257
++      targetPort: grpc
++    - name: http
++      port: 8080
++      targetPort: http
++---
++apiVersion: v1
++kind: Service
++metadata:
++  name: crdb-cluster-public
++  namespace: cockroachdb
++  labels:
++    app.kubernetes.io/name: cockroachdb
++    app.kubernetes.io/instance: crdb-cluster
++    app.kubernetes.io/component: database
++spec:
++  type: ClusterIP
++  selector:
++    app.kubernetes.io/name: cockroachdb
++    app.kubernetes.io/instance: crdb-cluster
++  ports:
++    - name: grpc
++      port: 26257
++      targetPort: grpc
++    - name: http
++      port: 8080
++      targetPort: http
++---
++apiVersion: apps/v1
++kind: StatefulSet
++metadata:
++  name: crdb-cluster
++  namespace: cockroachdb
++  labels:
++    app.kubernetes.io/name: cockroachdb
++    app.kubernetes.io/instance: crdb-cluster
++spec:
++  serviceName: crdb-cluster
++  replicas: 3
++  podManagementPolicy: Parallel
++  selector:
++    matchLabels:
++      app.kubernetes.io/name: cockroachdb
++      app.kubernetes.io/instance: crdb-cluster
++  template:
++    metadata:
++      labels:
++        app.kubernetes.io/name: cockroachdb
++        app.kubernetes.io/instance: crdb-cluster
++    spec:
++      serviceAccountName: crdb-cluster-sa
++      terminationGracePeriodSeconds: 60
++      containers:
++        - name: db
++          image: cockroachdb/cockroach:v24.1.0
++          imagePullPolicy: IfNotPresent
++          command:
++            - /bin/bash
++            - -c
++            - >-
++              exec /cockroach/cockroach start
++              --logtostderr=INFO
++              --insecure
++              --store=/cockroach/cockroach-data
++              --advertise-host=$(POD_NAME).crdb-cluster.cockroachdb.svc.cluster.local
++              --http-addr=0.0.0.0:8080
++              --port=26257
++              --cache=25%
++              --max-sql-memory=25%
++              --join=crdb-cluster-0.crdb-cluster.cockroachdb.svc.cluster.local:26257,crdb-cluster-1.crdb-cluster.cockroachdb.svc.cluster.local:26257,crdb-cluster-2.crdb-cluster.cockroachdb.svc.cluster.local:26257
++          env:
++            - name: POD_NAME
++              valueFrom:
++                fieldRef:
++                  fieldPath: metadata.name
++            - name: POD_NAMESPACE
++              valueFrom:
++                fieldRef:
++                  fieldPath: metadata.namespace
++          ports:
++            - name: grpc
++              containerPort: 26257
++            - name: http
++              containerPort: 8080
++          livenessProbe:
++            httpGet:
++              path: /health
++              port: http
++              scheme: HTTP
++            initialDelaySeconds: 30
++            periodSeconds: 5
++          readinessProbe:
++            httpGet:
++              path: /health?ready=1
++              port: http
++              scheme: HTTP
++            initialDelaySeconds: 10
++            periodSeconds: 5
++            failureThreshold: 2
++          resources:
++            requests:
++              cpu: "1"
++              memory: 2Gi
++            limits:
++              cpu: "1"
++              memory: 2Gi
++          volumeMounts:
++            - name: datadir
++              mountPath: /cockroach/cockroach-data
++  volumeClaimTemplates:
++    - metadata:
++        name: datadir
++        labels:
++          app.kubernetes.io/name: cockroachdb
++          app.kubernetes.io/instance: crdb-cluster
++      spec:
++        accessModes:
++          - ReadWriteOnce
++        resources:
++          requests:
++            storage: 10Gi
++---
++apiVersion: policy/v1
++kind: PodDisruptionBudget
++metadata:
++  name: crdb-cluster
++  namespace: cockroachdb
++  labels:
++    app.kubernetes.io/name: cockroachdb
++    app.kubernetes.io/instance: crdb-cluster
++spec:
++  minAvailable: 2
++  selector:
++    matchLabels:
++      app.kubernetes.io/name: cockroachdb
++      app.kubernetes.io/instance: crdb-cluster
+
+codex
+The requested resource checks are clean: StatefulSet 3/3, both services expose `26257` and `8080`, all pods are running, and all three PVCs are bound at `10Gi`. I’m doing one last spec sanity check so the final summary is exact.
+exec
+/bin/zsh -lc "kubectl -n cockroachdb get svc crdb-cluster -o jsonpath='{.spec.clusterIP}{\"\\n\"}{range .spec.ports[*]}{.name}:{.port}->{.targetPort}{\"\\n\"}{end}'" in /Users/jinyige/Karma/runs/new-added-workflows/cockroachdb-deploy-init-settings-audit-concat-blind-20260623_200425/stages/stage_01
+exec
+/bin/zsh -lc "kubectl -n cockroachdb get statefulset crdb-cluster -o jsonpath='{.spec.replicas}{\" replicas\\n\"}{.spec.serviceName}{\"\\n\"}{.spec.template.spec.serviceAccountName}{\"\\n\"}{.spec.template.spec.containers[0].image}{\"\\n\"}{.spec.template.spec.containers[0].command[2]}{\"\\n\"}{.spec.volumeClaimTemplates[0].spec.resources.requests.storage}{\"\\n\"}'" in /Users/jinyige/Karma/runs/new-added-workflows/cockroachdb-deploy-init-settings-audit-concat-blind-20260623_200425/stages/stage_01
+exec
+/bin/zsh -lc 'git status --short' in /Users/jinyige/Karma/runs/new-added-workflows/cockroachdb-deploy-init-settings-audit-concat-blind-20260623_200425/stages/stage_01
+exec
+/bin/zsh -lc "kubectl -n cockroachdb get svc crdb-cluster-public -o jsonpath='{.spec.type}{\"\\n\"}{range .spec.ports[*]}{.name}:{.port}->{.targetPort}{\"\\n\"}{end}'" in /Users/jinyige/Karma/runs/new-added-workflows/cockroachdb-deploy-init-settings-audit-concat-blind-20260623_200425/stages/stage_01
+diff --git a/runs/new-added-workflows/cockroachdb-deploy-init-settings-audit-concat-blind-20260623_200425/stages/stage_01/cockroachdb-cluster.yaml b/runs/new-added-workflows/cockroachdb-deploy-init-settings-audit-concat-blind-20260623_200425/stages/stage_01/cockroachdb-cluster.yaml
+new file mode 100644
+index 0000000000000000000000000000000000000000..1dd5655d8d56369f7fe918be08018881c2bdcb83
+--- /dev/null
++++ b/runs/new-added-workflows/cockroachdb-deploy-init-settings-audit-concat-blind-20260623_200425/stages/stage_01/cockroachdb-cluster.yaml
+@@ -0,0 +1,153 @@
++apiVersion: v1
++kind: Service
++metadata:
++  name: crdb-cluster
++  namespace: cockroachdb
++  labels:
++    app.kubernetes.io/name: cockroachdb
++    app.kubernetes.io/instance: crdb-cluster
++    app.kubernetes.io/component: database
++spec:
++  clusterIP: None
++  publishNotReadyAddresses: true
++  selector:
++    app.kubernetes.io/name: cockroachdb
++    app.kubernetes.io/instance: crdb-cluster
++  ports:
++    - name: grpc
++      port: 26257
++      targetPort: grpc
++    - name: http
++      port: 8080
++      targetPort: http
++---
++apiVersion: v1
++kind: Service
++metadata:
++  name: crdb-cluster-public
++  namespace: cockroachdb
++  labels:
++    app.kubernetes.io/name: cockroachdb
++    app.kubernetes.io/instance: crdb-cluster
++    app.kubernetes.io/component: database
++spec:
++  type: ClusterIP
++  selector:
++    app.kubernetes.io/name: cockroachdb
++    app.kubernetes.io/instance: crdb-cluster
++  ports:
++    - name: grpc
++      port: 26257
++      targetPort: grpc
++    - name: http
++      port: 8080
++      targetPort: http
++---
++apiVersion: apps/v1
++kind: StatefulSet
++metadata:
++  name: crdb-cluster
++  namespace: cockroachdb
++  labels:
++    app.kubernetes.io/name: cockroachdb
++    app.kubernetes.io/instance: crdb-cluster
++spec:
++  serviceName: crdb-cluster
++  replicas: 3
++  podManagementPolicy: Parallel
++  selector:
++    matchLabels:
++      app.kubernetes.io/name: cockroachdb
++      app.kubernetes.io/instance: crdb-cluster
++  template:
++    metadata:
++      labels:
++        app.kubernetes.io/name: cockroachdb
++        app.kubernetes.io/instance: crdb-cluster
++    spec:
++      serviceAccountName: crdb-cluster-sa
++      terminationGracePeriodSeconds: 60
++      containers:
++        - name: db
++          image: cockroachdb/cockroach:v24.1.0
++          imagePullPolicy: IfNotPresent
++          command:
++            - /bin/bash
++            - -c
++            - >-
++              exec /cockroach/cockroach start
++              --logtostderr=INFO
++              --insecure
++              --store=/cockroach/cockroach-data
++              --advertise-host=$(POD_NAME).crdb-cluster.cockroachdb.svc.cluster.local
++              --http-addr=0.0.0.0:8080
++              --port=26257
++              --cache=25%
++              --max-sql-memory=25%
++              --join=crdb-cluster-0.crdb-cluster.cockroachdb.svc.cluster.local:26257,crdb-cluster-1.crdb-cluster.cockroachdb.svc.cluster.local:26257,crdb-cluster-2.crdb-cluster.cockroachdb.svc.cluster.local:26257
++          env:
++            - name: POD_NAME
++              valueFrom:
++                fieldRef:
++                  fieldPath: metadata.name
++            - name: POD_NAMESPACE
++              valueFrom:
++                fieldRef:
++                  fieldPath: metadata.namespace
++          ports:
++            - name: grpc
++              containerPort: 26257
++            - name: http
++              containerPort: 8080
++          livenessProbe:
++            httpGet:
++              path: /health
++              port: http
++              scheme: HTTP
++            initialDelaySeconds: 30
++            periodSeconds: 5
++          readinessProbe:
++            httpGet:
++              path: /health?ready=1
++              port: http
++              scheme: HTTP
++            initialDelaySeconds: 10
++            periodSeconds: 5
++            failureThreshold: 2
++          resources:
++            requests:
++              cpu: "1"
++              memory: 2Gi
++            limits:
++              cpu: "1"
++              memory: 2Gi
++          volumeMounts:
++            - name: datadir
++              mountPath: /cockroach/cockroach-data
++  volumeClaimTemplates:
++    - metadata:
++        name: datadir
++        labels:
++          app.kubernetes.io/name: cockroachdb
++          app.kubernetes.io/instance: crdb-cluster
++      spec:
++        accessModes:
++          - ReadWriteOnce
++        resources:
++          requests:
++            storage: 10Gi
++---
++apiVersion: policy/v1
++kind: PodDisruptionBudget
++metadata:
++  name: crdb-cluster
++  namespace: cockroachdb
++  labels:
++    app.kubernetes.io/name: cockroachdb
++    app.kubernetes.io/instance: crdb-cluster
++spec:
++  minAvailable: 2
++  selector:
++    matchLabels:
++      app.kubernetes.io/name: cockroachdb
++      app.kubernetes.io/instance: crdb-cluster
+
+ succeeded in 135ms:
+ClusterIP
+grpc:26257->grpc
+http:8080->http
+
+ succeeded in 233ms:
+None
+grpc:26257->grpc
+http:8080->http
+
+ succeeded in 175ms:
+3 replicas
+crdb-cluster
+crdb-cluster-sa
+cockroachdb/cockroach:v24.1.0
+exec /cockroach/cockroach start --logtostderr=INFO --insecure --store=/cockroach/cockroach-data --advertise-host=$(POD_NAME).crdb-cluster.cockroachdb.svc.cluster.local --http-addr=0.0.0.0:8080 --port=26257 --cache=25% --max-sql-memory=25% --join=crdb-cluster-0.crdb-cluster.cockroachdb.svc.cluster.local:26257,crdb-cluster-1.crdb-cluster.cockroachdb.svc.cluster.local:26257,crdb-cluster-2.crdb-cluster.cockroachdb.svc.cluster.local:26257
+10Gi
+
+ succeeded in 191ms:
+?? ../../../../error-prone-rerun/cockroachdb-tls-upgrade-zone-audit-rollback-change-plan-20260618_122551/judge.json
+?? ../../../../error-prone-rerun/cockroachdb-tls-upgrade-zone-audit-rollback-change-plan-20260618_122551/judge.log
+?? ../../../../error-prone-rerun/elasticsearch-password-ingress-audit-change-plan-20260618_123159/judge.json
+?? ../../../../error-prone-rerun/elasticsearch-password-ingress-audit-change-plan-20260618_123159/judge.log
+?? ../../../../error-prone-rerun/elasticsearch-scale-certs-password-snapshot-audit-rollback-20260618_123155/judge.json
+?? ../../../../error-prone-rerun/elasticsearch-scale-certs-password-snapshot-audit-rollback-20260618_123155/judge.log
+?? ../../../../error-prone-rerun/elasticsearch-scale-users-audit-20260618_123154/judge.json
+?? ../../../../error-prone-rerun/elasticsearch-scale-users-audit-20260618_123154/judge.log
+?? ../../../../error-prone-rerun/mongodb-snappy-probe-tune-lifecycle-change-plan-audit-rollback-20260618_124235/judge.json
+?? ../../../../error-prone-rerun/mongodb-snappy-probe-tune-lifecycle-change-plan-audit-rollback-20260618_124235/judge.log
+?? ../../../../error-prone-rerun/nginx-ingress-expose-ratelimit-canary-audit-change-plan-20260618_103116/judge.json
+?? ../../../../error-prone-rerun/nginx-ingress-expose-ratelimit-canary-audit-change-plan-20260618_103116/judge.log
+?? ../../../../error-prone-rerun/nginx-ingress-full-lifecycle-rollback-20260618_104312/judge.json
+?? ../../../../error-prone-rerun/nginx-ingress-full-lifecycle-rollback-20260618_104312/judge.log
+?? ../../../../error-prone-rerun/rabbitmq-maximal-lifecycle-rollback-change-plan-audit-20260618_105823/judge.json
+?? ../../../../error-prone-rerun/rabbitmq-maximal-lifecycle-rollback-change-plan-audit-20260618_105823/judge.log
+?? ../../../../error-prone-rerun/ray-hardening-chain-job-change-plan-audit-20260618_092129/judge.json
+?? ../../../../error-prone-rerun/ray-hardening-chain-job-change-plan-audit-20260618_092129/judge.log
+?? ../../../../error-prone-rerun/ray-scale-upgrade-dashboard-rollback-audit-20260618_092201/judge.json
+?? ../../../../error-prone-rerun/ray-scale-upgrade-dashboard-rollback-audit-20260618_092201/judge.log
+?? ../../../../error-prone-rerun/spark-etl-oom-multi-tenant-sparkpi-audit-change-plan-20260618_092437/judge.json
+?? ../../../../error-prone-rerun/spark-etl-oom-multi-tenant-sparkpi-audit-change-plan-20260618_092437/judge.log
+?? ../../../../error-prone-rerun/spark-streaming-data-skew-sparkpi-rollback-audit-20260618_105645/judge.json
+?? ../../../../error-prone-rerun/spark-streaming-data-skew-sparkpi-rollback-audit-20260618_105645/judge.log
+?? ../../../../examples-rerun/cockroachdb-certificate-rotation-20260618_125810/judge.json
+?? ../../../../examples-rerun/cockroachdb-certificate-rotation-20260618_125810/judge.log
+?? ../../../../examples-rerun/cockroachdb-change-plan-only-20260618_125956/judge.json
+?? ../../../../examples-rerun/cockroachdb-change-plan-only-20260618_125956/judge.log
+?? ../../../../examples-rerun/cockroachdb-cluster-settings-20260618_130350/judge.json
+?? ../../../../examples-rerun/cockroachdb-cluster-settings-20260618_130350/judge.log
+?? ../../../../examples-rerun/cockroachdb-decommission-20260618_131109/judge.json
+?? ../../../../examples-rerun/cockroachdb-decommission-20260618_131109/judge.log
+?? ../../../../examples-rerun/cockroachdb-deploy-20260618_131658/judge.json
+?? ../../../../examples-rerun/cockroachdb-deploy-20260618_131658/judge.log
+?? ../../../../examples-rerun/cockroachdb-expose-ingress-20260618_132000/judge.json
+?? ../../../../examples-rerun/cockroachdb-expose-ingress-20260618_132000/judge.log
+?? ../../../../examples-rerun/cockroachdb-generate-cert-20260618_131942/judge.json
+?? ../../../../examples-rerun/cockroachdb-generate-cert-20260618_131942/judge.log
+?? ../../../../examples-rerun/cockroachdb-health-check-recovery-20260618_132503/judge.json
+?? ../../../../examples-rerun/cockroachdb-health-check-recovery-20260618_132503/judge.log
+?? ../../../../examples-rerun/cockroachdb-initialize-20260618_132528/judge.json
+?? ../../../../examples-rerun/cockroachdb-initialize-20260618_132528/judge.log
+?? ../../../../examples-rerun/cockroachdb-major-upgrade-finalize-20260618_132716/judge.json
+?? ../../../../examples-rerun/cockroachdb-major-upgrade-finalize-20260618_132716/judge.log
+?? ../../../../examples-rerun/cockroachdb-monitoring-integration-20260618_133055/judge.json
+?? ../../../../examples-rerun/cockroachdb-monitoring-integration-20260618_133055/judge.log
+?? ../../../../examples-rerun/cockroachdb-partitioned-update-20260618_133214/judge.json
+?? ../../../../examples-rerun/cockroachdb-partitioned-update-20260618_133214/judge.log
+?? ../../../../examples-rerun/cockroachdb-readonly-audit-20260618_133127/judge.json
+?? ../../../../examples-rerun/cockroachdb-readonly-audit-20260618_133127/judge.log
+?? ../../../../examples-rerun/cockroachdb-rollback-rehearsal-20260618_133749/judge.json
+?? ../../../../examples-rerun/cockroachdb-rollback-rehearsal-20260618_133749/judge.log
+?? ../../../../examples-rerun/cockroachdb-version-check-20260618_134310/judge.json
+?? ../../../../examples-rerun/cockroachdb-version-check-20260618_134310/judge.log
+?? ../../../../examples-rerun/cockroachdb-zone-config-20260618_134532/judge.json
+?? ../../../../examples-rerun/cockroachdb-zone-config-20260618_134532/judge.log
+?? ../../../../examples-rerun/demo-configmap-update-20260618_093031/judge.json
+?? ../../../../examples-rerun/demo-configmap-update-20260618_093031/judge.log
+?? ../../../../examples-rerun/demo-configmap-update-two-ns-20260618_092949/judge.json
+?? ../../../../examples-rerun/demo-configmap-update-two-ns-20260618_092949/judge.log
+?? ../../../../examples-rerun/elasticsearch-bootstrap-initial-master-nodes-20260618_134725/judge.json
+?? ../../../../examples-rerun/elasticsearch-bootstrap-initial-master-nodes-20260618_134725/judge.log
+?? ../../../../examples-rerun/elasticsearch-change-plan-only-20260618_134814/judge.json
+?? ../../../../examples-rerun/elasticsearch-change-plan-only-20260618_134814/judge.log
+?? ../../../../examples-rerun/elasticsearch-deploy-core-cluster-20260618_134930/judge.json
+?? ../../../../examples-rerun/elasticsearch-deploy-core-cluster-20260618_134930/judge.log
+?? ../../../../examples-rerun/elasticsearch-file-realm-user-roles-merge-20260618_135251/judge.json
+?? ../../../../examples-rerun/elasticsearch-file-realm-user-roles-merge-20260618_135251/judge.log
+?? ../../../../examples-rerun/elasticsearch-full-restart-upgrade-ha-20260618_135258/judge.json
+?? ../../../../examples-rerun/elasticsearch-full-restart-upgrade-ha-20260618_135258/judge.log
+?? ../../../../examples-rerun/elasticsearch-full-restart-upgrade-ha-hard-20260618_135551/judge.json
+?? ../../../../examples-rerun/elasticsearch-full-restart-upgrade-ha-hard-20260618_135551/judge.log
+?? ../../../../examples-rerun/elasticsearch-internal-http-service-drift-20260618_135901/judge.json
+?? ../../../../examples-rerun/elasticsearch-internal-http-service-drift-20260618_135901/judge.log
+?? ../../../../examples-rerun/elasticsearch-master-downscale-voting-exclusions-20260618_135956/judge.json
+?? ../../../../examples-rerun/elasticsearch-master-downscale-voting-exclusions-20260618_135956/judge.log
+?? ../../../../examples-rerun/elasticsearch-readonly-audit-20260618_140220/judge.json
+?? ../../../../examples-rerun/elasticsearch-readonly-audit-20260618_140220/judge.log
+?? ../../../../examples-rerun/elasticsearch-rollback-rehearsal-20260618_140314/judge.json
+?? ../../../../examples-rerun/elasticsearch-rollback-rehearsal-20260618_140314/judge.log
+?? ../../../../examples-rerun/elasticsearch-rotate-elastic-password-20260618_140538/judge.json
+?? ../../../../examples-rerun/elasticsearch-rotate-elastic-password-20260618_140538/judge.log
+?? ../../../../examples-rerun/elasticsearch-rotate-http-certs-20260618_140753/judge.json
+?? ../../../../examples-rerun/elasticsearch-rotate-http-certs-20260618_140753/judge.log
+?? ../../../../examples-rerun/elasticsearch-safe-downscale-with-shard-migration-20260618_140858/judge.json
+?? ../../../../examples-rerun/elasticsearch-safe-downscale-with-shard-migration-20260618_140858/judge.log
+?? ../../../../examples-rerun/elasticsearch-scale-up-new-nodeset-20260618_140841/judge.json
+?? ../../../../examples-rerun/elasticsearch-scale-up-new-nodeset-20260618_140841/judge.log
+?? ../../../../examples-rerun/elasticsearch-secure-http-ingress-20260618_141450/judge.json
+?? ../../../../examples-rerun/elasticsearch-secure-http-ingress-20260618_141450/judge.log
+?? ../../../../examples-rerun/elasticsearch-seed-hosts-repair-20260618_141912/judge.json
+?? ../../../../examples-rerun/elasticsearch-seed-hosts-repair-20260618_141912/judge.log
+?? ../../../../examples-rerun/elasticsearch-snapshot-repo-setup-20260618_142234/judge.json
+?? ../../../../examples-rerun/elasticsearch-snapshot-repo-setup-20260618_142234/judge.log
+?? ../../../../examples-rerun/elasticsearch-stack-monitoring-sidecars-20260618_142404/judge.json
+?? ../../../../examples-rerun/elasticsearch-stack-monitoring-sidecars-20260618_142404/judge.log
+?? ../../../../examples-rerun/elasticsearch-transform-job-recovery-20260618_142442/judge.json
+?? ../../../../examples-rerun/elasticsearch-transform-job-recovery-20260618_142442/judge.log
+?? ../../../../examples-rerun/elasticsearch-transport-additional-ca-trust-20260618_142736/judge.json
+?? ../../../../examples-rerun/elasticsearch-transport-additional-ca-trust-20260618_142736/judge.log
+?? ../../../../examples-rerun/mongodb-arbiters-20260618_143149/judge.json
+?? ../../../../examples-rerun/mongodb-arbiters-20260618_143149/judge.log
+?? ../../../../examples-rerun/mongodb-certificate-rotation-20260618_143430/judge.json
+?? ../../../../examples-rerun/mongodb-certificate-rotation-20260618_143430/judge.log
+?? ../../../../examples-rerun/mongodb-change-plan-only-20260618_143519/judge.json
+?? ../../../../examples-rerun/mongodb-change-plan-only-20260618_143519/judge.log
+?? ../../../../examples-rerun/mongodb-custom-roles-20260618_143654/judge.json
+?? ../../../../examples-rerun/mongodb-custom-roles-20260618_143654/judge.log
+?? ../../../../examples-rerun/mongodb-decommission-20260618_143932/judge.json
+?? ../../../../examples-rerun/mongodb-decommission-20260618_143932/judge.log
+?? ../../../../examples-rerun/mongodb-deploy-20260618_143954/judge.json
+?? ../../../../examples-rerun/mongodb-deploy-20260618_143954/judge.log
+?? ../../../../examples-rerun/mongodb-external-access-horizons-20260618_144035/judge.json
+?? ../../../../examples-rerun/mongodb-external-access-horizons-20260618_144035/judge.log
+?? ../../../../examples-rerun/mongodb-health-check-recovery-20260618_144224/judge.json
+?? ../../../../examples-rerun/mongodb-health-check-recovery-20260618_144224/judge.log
+?? ../../../../examples-rerun/mongodb-initialize-20260618_144335/judge.json
+?? ../../../../examples-rerun/mongodb-initialize-20260618_144335/judge.log
+?? ../../../../examples-rerun/mongodb-mongod-config-update-20260618_144349/judge.json
+?? ../../../../examples-rerun/mongodb-mongod-config-update-20260618_144349/judge.log
+?? ../../../../examples-rerun/mongodb-monitoring-integration-20260618_144621/judge.json
+?? ../../../../examples-rerun/mongodb-monitoring-integration-20260618_144621/judge.log
+?? ../../../../examples-rerun/mongodb-password-rotation-20260618_144657/judge.json
+?? ../../../../examples-rerun/mongodb-password-rotation-20260618_144657/judge.log
+?? ../../../../examples-rerun/mongodb-readiness-probe-tuning-20260618_144928/judge.json
+?? ../../../../examples-rerun/mongodb-readiness-probe-tuning-20260618_144928/judge.log
+?? ../../../../examples-rerun/mongodb-readonly-audit-20260618_145112/judge.json
+?? ../../../../examples-rerun/mongodb-readonly-audit-20260618_145112/judge.log
+?? ../../../../examples-rerun/mongodb-replica-scaling-20260618_145138/judge.json
+?? ../../../../examples-rerun/mongodb-replica-scaling-20260618_145138/judge.log
+?? ../../../../examples-rerun/mongodb-rollback-rehearsal-20260618_145434/judge.json
+?? ../../../../examples-rerun/mongodb-rollback-rehearsal-20260618_145434/judge.log
+?? ../../../../examples-rerun/mongodb-statefulset-customization-20260618_145519/judge.json
+?? ../../../../examples-rerun/mongodb-statefulset-customization-20260618_145519/judge.log
+?? ../../../../examples-rerun/mongodb-tls-setup-20260618_145745/judge.json
+?? ../../../../examples-rerun/mongodb-tls-setup-20260618_145745/judge.log
+?? ../../../../examples-rerun/mongodb-user-management-20260618_145817/judge.json
+?? ../../../../examples-rerun/mongodb-user-management-20260618_145817/judge.log
+?? ../../../../examples-rerun/mongodb-version-upgrade-20260618_150426/judge.json
+?? ../../../../examples-rerun/mongodb-version-upgrade-20260618_150426/judge.log
+?? ../../../../examples-rerun/mongodb-version-upgrade-hard-20260618_150705/judge.json
+?? ../../../../examples-rerun/mongodb-version-upgrade-hard-20260618_150705/judge.log
+?? ../../../../examples-rerun/nginx-ingress-change-plan-only-20260618_093024/judge.json
+?? ../../../../examples-rerun/nginx-ingress-change-plan-only-20260618_093024/judge.log
+?? ../../../../examples-rerun/nginx-ingress-class_only_upgrade-20260618_105346/judge.json
+?? ../../../../examples-rerun/nginx-ingress-class_only_upgrade-20260618_105346/judge.log
+?? ../../../../examples-rerun/nginx-ingress-create_ingress-20260618_093446/judge.json
+?? ../../../../examples-rerun/nginx-ingress-create_ingress-20260618_093446/judge.log
+?? ../../../../examples-rerun/nginx-ingress-ingress_canary-20260618_105820/judge.json
+?? ../../../../examples-rerun/nginx-ingress-ingress_canary-20260618_105820/judge.log
+?? ../../../../examples-rerun/nginx-ingress-otel_log_format-20260618_093804/judge.json
+?? ../../../../examples-rerun/nginx-ingress-otel_log_format-20260618_093804/judge.log
+?? ../../../../examples-rerun/nginx-ingress-rate_limit_ingress_easy-20260618_094134/judge.json
+?? ../../../../examples-rerun/nginx-ingress-rate_limit_ingress_easy-20260618_094134/judge.log
+?? ../../../../examples-rerun/nginx-ingress-rate_limit_replica_hard-20260618_094147/judge.json
+?? ../../../../examples-rerun/nginx-ingress-rate_limit_replica_hard-20260618_094147/judge.log
+?? ../../../../examples-rerun/nginx-ingress-readonly-audit-20260618_094519/judge.json
+?? ../../../../examples-rerun/nginx-ingress-readonly-audit-20260618_094519/judge.log
+?? ../../../../examples-rerun/nginx-ingress-renew_tls_secret-20260618_094839/judge.json
+?? ../../../../examples-rerun/nginx-ingress-renew_tls_secret-20260618_094839/judge.log
+?? ../../../../examples-rerun/nginx-ingress-rollback-rehearsal-20260618_094845/judge.json
+?? ../../../../examples-rerun/nginx-ingress-rollback-rehearsal-20260618_094845/judge.log
+?? ../../../../examples-rerun/rabbitmq-blue_green_migration-20260618_095236/judge.json
+?? ../../../../examples-rerun/rabbitmq-blue_green_migration-20260618_095236/judge.log
+?? ../../../../examples-rerun/rabbitmq-change-plan-only-20260618_095431/judge.json
+?? ../../../../examples-rerun/rabbitmq-change-plan-only-20260618_095431/judge.log
+?? ../../../../examples-rerun/rabbitmq-classic_queue-20260618_100020/judge.json
+?? ../../../../examples-rerun/rabbitmq-classic_queue-20260618_100020/judge.log
+?? ../../../../examples-rerun/rabbitmq-failover-20260618_100147/judge.json
+?? ../../../../examples-rerun/rabbitmq-failover-20260618_100147/judge.log
+?? ../../../../examples-rerun/rabbitmq-manual_backup_restore-20260618_100423/judge.json
+?? ../../../../examples-rerun/rabbitmq-manual_backup_restore-20260618_100423/judge.log
+?? ../../../../examples-rerun/rabbitmq-manual_monitoring-20260618_100425/judge.json
+?? ../../../../examples-rerun/rabbitmq-manual_monitoring-20260618_100425/judge.log
+?? ../../../../examples-rerun/rabbitmq-manual_policy_sync-20260618_100523/judge.json
+?? ../../../../examples-rerun/rabbitmq-manual_policy_sync-20260618_100523/judge.log
+?? ../../../../examples-rerun/rabbitmq-manual_skip_upgrade-20260618_100509/judge.json
+?? ../../../../examples-rerun/rabbitmq-manual_skip_upgrade-20260618_100509/judge.log
+?? ../../../../examples-rerun/rabbitmq-manual_tls_rotation-20260618_100702/judge.json
+?? ../../../../examples-rerun/rabbitmq-manual_tls_rotation-20260618_100702/judge.log
+?? ../../../../examples-rerun/rabbitmq-manual_user_permission-20260618_101009/judge.json
+?? ../../../../examples-rerun/rabbitmq-manual_user_permission-20260618_101009/judge.log
+?? ../../../../examples-rerun/rabbitmq-readonly-audit-20260618_101049/judge.json
+?? ../../../../examples-rerun/rabbitmq-readonly-audit-20260618_101049/judge.log
+?? ../../../../examples-rerun/rabbitmq-rollback-rehearsal-20260618_101351/judge.json
+?? ../../../../examples-rerun/rabbitmq-rollback-rehearsal-20260618_101351/judge.log
+?? ../../../../examples-rerun/ray-change-plan-only-20260618_101414/judge.json
+?? ../../../../examples-rerun/ray-change-plan-only-20260618_101414/judge.log
+?? ../../../../examples-rerun/ray-dashboard_exposure-20260618_101549/judge.json
+?? ../../../../examples-rerun/ray-dashboard_exposure-20260618_101549/judge.log
+?? ../../../../examples-rerun/ray-deploy_cluster-20260618_101732/judge.json
+?? ../../../../examples-rerun/ray-deploy_cluster-20260618_101732/judge.log
+?? ../../../../examples-rerun/ray-job_submission-20260618_101729/judge.json
+?? ../../../../examples-rerun/ray-job_submission-20260618_101729/judge.log
+?? ../../../../examples-rerun/ray-readonly-audit-20260618_101726/judge.json
+?? ../../../../examples-rerun/ray-readonly-audit-20260618_101726/judge.log
+?? ../../../../examples-rerun/ray-rollback-rehearsal-20260618_101745/judge.json
+?? ../../../../examples-rerun/ray-rollback-rehearsal-20260618_101745/judge.log
+?? ../../../../examples-rerun/ray-scale_workers-20260618_101938/judge.json
+?? ../../../../examples-rerun/ray-scale_workers-20260618_101938/judge.log
+?? ../../../../examples-rerun/ray-teardown_cluster-20260618_101952/judge.json
+?? ../../../../examples-rerun/ray-teardown_cluster-20260618_101952/judge.log
+?? ../../../../examples-rerun/ray-upgrade_version-20260618_102100/judge.json
+?? ../../../../examples-rerun/ray-upgrade_version-20260618_102100/judge.log
+?? ../../../../examples-rerun/ray-worker_recovery-20260618_102133/judge.json
+?? ../../../../examples-rerun/ray-worker_recovery-20260618_102133/judge.log
+?? ../../../../examples-rerun/spark-change-plan-only-20260618_102328/judge.json
+?? ../../../../examples-rerun/spark-change-plan-only-20260618_102328/judge.log
+?? ../../../../examples-rerun/spark-deploy_spark_pi-20260618_102338/judge.json
+?? ../../../../examples-rerun/spark-deploy_spark_pi-20260618_102338/judge.log
+?? ../../../../examples-rerun/spark-readonly-audit-20260618_102402/judge.json
+?? ../../../../examples-rerun/spark-readonly-audit-20260618_102402/judge.log
+?? ../../../../examples-rerun/spark-rollback-rehearsal-20260618_102458/judge.json
+?? ../../../../examples-rerun/spark-rollback-rehearsal-20260618_102458/judge.log
+?? ../../../../examples-rerun/spark-spark_data_skew-20260618_102629/judge.json
+?? ../../../../examples-rerun/spark-spark_data_skew-20260618_102629/judge.log
+?? ../../../../examples-rerun/spark-spark_etl_skew_oom-20260618_102637/judge.json
+?? ../../../../examples-rerun/spark-spark_etl_skew_oom-20260618_102637/judge.log
+?? ../../../../examples-rerun/spark-spark_multi_tenant-20260618_102709/judge.json
+?? ../../../../examples-rerun/spark-spark_multi_tenant-20260618_102709/judge.log
+?? ../../../../examples-rerun/spark-spark_runtime_ops-20260618_102736/judge.json
+?? ../../../../examples-rerun/spark-spark_runtime_ops-20260618_102736/judge.log
+?? ../../../../examples-rerun/spark-spark_streaming_autoscale-20260618_102907/judge.json
+?? ../../../../examples-rerun/spark-spark_streaming_autoscale-20260618_102907/judge.log
+?? ../../../../long-examples/mongodb-long-all-cases-marathon-a-20260618_080426/judge.json
+?? ../../../../long-examples/mongodb-long-all-cases-marathon-a-20260618_080426/judge.log
+?? ../../../../long-rerun/cockroachdb-long-multi-version-upgrade-20260618_154353/judge.json
+?? ../../../../long-rerun/cockroachdb-long-multi-version-upgrade-20260618_154353/judge.log
+?? ../../../../long-rerun/cockroachdb-long-security-upgrade-adversary-20260618_150932/judge.json
+?? ../../../../long-rerun/cockroachdb-long-security-upgrade-adversary-20260618_150932/judge.log
+?? ../../../../long-rerun/elasticsearch-long-all-cases-marathon-20260618_084727/judge.json
+?? ../../../../long-rerun/elasticsearch-long-all-cases-marathon-20260618_084727/judge.log
+?? ../../../../long-rerun/mongodb-long-all-cases-marathon-a-20260618_155709/judge.json
+?? ../../../../long-rerun/mongodb-long-all-cases-marathon-a-20260618_155709/judge.log
+?? ../../../../long-rerun/nginx-ingress-long-06-canary-scale-fault-20260618_084704/judge.json
+?? ../../../../long-rerun/nginx-ingress-long-06-canary-scale-fault-20260618_084704/judge.log
+?? ../../../../long-rerun/nginx-ingress-long-22-upgrade-otel-scale-fault-20260618_084758/judge.json
+?? ../../../../long-rerun/nginx-ingress-long-22-upgrade-otel-scale-fault-20260618_084758/judge.log
+?? ../../../../long-rerun/ray-long-scale-down-upgrade-recovery-20260618_084830/judge.json
+?? ../../../../long-rerun/ray-long-scale-down-upgrade-recovery-20260618_084830/judge.log
+?? ../../../../long-rerun/spark-long-pipeline-buildout-20260618_084827/judge.json
+?? ../../../../long-rerun/spark-long-pipeline-buildout-20260618_084827/judge.log
+?? ../../../../short-rerun/cockroachdb-cert-rotation-audit-adversary-20260618_154824/judge.json
+?? ../../../../short-rerun/cockroachdb-cert-rotation-audit-adversary-20260618_154824/judge.log
+?? ../../../../short-rerun/cockroachdb-enterprise-lifecycle-adversary-20260618_095021/judge.json
+?? ../../../../short-rerun/cockroachdb-enterprise-lifecycle-adversary-20260618_095021/judge.log
+?? ../../../../short-rerun/demo-configmap-update-20260618_085020/judge.json
+?? ../../../../short-rerun/demo-configmap-update-20260618_085020/judge.log
+?? ../../../../short-rerun/elasticsearch-drift-monitoring-seed-20260618_102231/judge.json
+?? ../../../../short-rerun/elasticsearch-drift-monitoring-seed-20260618_102231/judge.log
+?? ../../../../short-rerun/elasticsearch-full-lifecycle-20260618_105654/judge.json
+?? ../../../../short-rerun/elasticsearch-full-lifecycle-20260618_105654/judge.log
+?? ../../../../short-rerun/elasticsearch-incident-response-chain-20260618_114051/judge.json
+?? ../../../../short-rerun/elasticsearch-incident-response-chain-20260618_114051/judge.log
+?? ../../../../short-rerun/elasticsearch-service-and-network-repair-20260618_115905/judge.json
+?? ../../../../short-rerun/elasticsearch-service-and-network-repair-20260618_115905/judge.log
+?? ../../../../short-rerun/elasticsearch-transform-scale-upgrade-20260618_115945/judge.json
+?? ../../../../short-rerun/elasticsearch-transform-scale-upgrade-20260618_115945/judge.log
+?? ../../../../short-rerun/mongodb-comprehensive-ops-day-20260618_115945/judge.json
+?? ../../../../short-rerun/mongodb-comprehensive-ops-day-20260618_115945/judge.log
+?? ../../../../short-rerun/mongodb-deploy-arbiters-roles-20260618_120836/judge.json
+?? ../../../../short-rerun/mongodb-deploy-arbiters-roles-20260618_120836/judge.log
+?? ../../../../short-rerun/mongodb-incident-response-chain-adversary-20260618_121821/judge.json
+?? ../../../../short-rerun/mongodb-incident-response-chain-adversary-20260618_121821/judge.log
+?? ../../../../short-rerun/nginx-ingress-15-e2e-five-stage-20260618_103101/judge.json
+?? ../../../../short-rerun/nginx-ingress-15-e2e-five-stage-20260618_103101/judge.log
+?? ../../../../short-rerun/platform-compute-pipeline-ext-20260618_085136/judge.json
+?? ../../../../short-rerun/platform-compute-pipeline-ext-20260618_085136/judge.log
+?? ../../../../short-rerun/rabbitmq-dr-security-e2e-adversary-20260618_104114/judge.json
+?? ../../../../short-rerun/rabbitmq-dr-security-e2e-adversary-20260618_104114/judge.log
+?? ../../../../short-rerun/rabbitmq-full-lifecycle-01-20260618_104609/judge.json
+?? ../../../../short-rerun/rabbitmq-full-lifecycle-01-20260618_104609/judge.log
+?? ../../../../short-rerun/ray-e2e-recovery-mid-20260618_085151/judge.json
+?? ../../../../short-rerun/ray-e2e-recovery-mid-20260618_085151/judge.log
+?? ../../../../short-rerun/spark-exhaustive-chain-adversary-20260618_090506/judge.json
+?? ../../../../short-rerun/spark-exhaustive-chain-adversary-20260618_090506/judge.log
+?? ../../../../../scripts/run-added-workflows.sh
+
+exec
+/bin/zsh -lc 'git status --short -- cockroachdb-cluster.yaml' in /Users/jinyige/Karma/runs/new-added-workflows/cockroachdb-deploy-init-settings-audit-concat-blind-20260623_200425/stages/stage_01
+ succeeded in 0ms:
+diff --git a/runs/new-added-workflows/cockroachdb-deploy-init-settings-audit-concat-blind-20260623_200425/stages/stage_01/cockroachdb-cluster.yaml b/runs/new-added-workflows/cockroachdb-deploy-init-settings-audit-concat-blind-20260623_200425/stages/stage_01/cockroachdb-cluster.yaml
+new file mode 100644
+index 0000000000000000000000000000000000000000..1dd5655d8d56369f7fe918be08018881c2bdcb83
+--- /dev/null
++++ b/runs/new-added-workflows/cockroachdb-deploy-init-settings-audit-concat-blind-20260623_200425/stages/stage_01/cockroachdb-cluster.yaml
+@@ -0,0 +1,153 @@
++apiVersion: v1
++kind: Service
++metadata:
++  name: crdb-cluster
++  namespace: cockroachdb
++  labels:
++    app.kubernetes.io/name: cockroachdb
++    app.kubernetes.io/instance: crdb-cluster
++    app.kubernetes.io/component: database
++spec:
++  clusterIP: None
++  publishNotReadyAddresses: true
++  selector:
++    app.kubernetes.io/name: cockroachdb
++    app.kubernetes.io/instance: crdb-cluster
++  ports:
++    - name: grpc
++      port: 26257
++      targetPort: grpc
++    - name: http
++      port: 8080
++      targetPort: http
++---
++apiVersion: v1
++kind: Service
++metadata:
++  name: crdb-cluster-public
++  namespace: cockroachdb
++  labels:
++    app.kubernetes.io/name: cockroachdb
++    app.kubernetes.io/instance: crdb-cluster
++    app.kubernetes.io/component: database
++spec:
++  type: ClusterIP
++  selector:
++    app.kubernetes.io/name: cockroachdb
++    app.kubernetes.io/instance: crdb-cluster
++  ports:
++    - name: grpc
++      port: 26257
++      targetPort: grpc
++    - name: http
++      port: 8080
++      targetPort: http
++---
++apiVersion: apps/v1
++kind: StatefulSet
++metadata:
++  name: crdb-cluster
++  namespace: cockroachdb
++  labels:
++    app.kubernetes.io/name: cockroachdb
++    app.kubernetes.io/instance: crdb-cluster
++spec:
++  serviceName: crdb-cluster
++  replicas: 3
++  podManagementPolicy: Parallel
++  selector:
++    matchLabels:
++      app.kubernetes.io/name: cockroachdb
++      app.kubernetes.io/instance: crdb-cluster
++  template:
++    metadata:
++      labels:
++        app.kubernetes.io/name: cockroachdb
++        app.kubernetes.io/instance: crdb-cluster
++    spec:
++      serviceAccountName: crdb-cluster-sa
++      terminationGracePeriodSeconds: 60
++      containers:
++        - name: db
++          image: cockroachdb/cockroach:v24.1.0
++          imagePullPolicy: IfNotPresent
++          command:
++            - /bin/bash
++            - -c
++            - >-
++              exec /cockroach/cockroach start
++              --logtostderr=INFO
++              --insecure
++              --store=/cockroach/cockroach-data
++              --advertise-host=$(POD_NAME).crdb-cluster.cockroachdb.svc.cluster.local
++              --http-addr=0.0.0.0:8080
++              --port=26257
++              --cache=25%
++              --max-sql-memory=25%
++              --join=crdb-cluster-0.crdb-cluster.cockroachdb.svc.cluster.local:26257,crdb-cluster-1.crdb-cluster.cockroachdb.svc.cluster.local:26257,crdb-cluster-2.crdb-cluster.cockroachdb.svc.cluster.local:26257
++          env:
++            - name: POD_NAME
++              valueFrom:
++                fieldRef:
++                  fieldPath: metadata.name
++            - name: POD_NAMESPACE
++              valueFrom:
++                fieldRef:
++                  fieldPath: metadata.namespace
++          ports:
++            - name: grpc
++              containerPort: 26257
++            - name: http
++              containerPort: 8080
++          livenessProbe:
++            httpGet:
++              path: /health
++              port: http
++              scheme: HTTP
++            initialDelaySeconds: 30
++            periodSeconds: 5
++          readinessProbe:
++            httpGet:
++              path: /health?ready=1
++              port: http
++              scheme: HTTP
++            initialDelaySeconds: 10
++            periodSeconds: 5
++            failureThreshold: 2
++          resources:
++            requests:
++              cpu: "1"
++              memory: 2Gi
++            limits:
++              cpu: "1"
++              memory: 2Gi
++          volumeMounts:
++            - name: datadir
++              mountPath: /cockroach/cockroach-data
++  volumeClaimTemplates:
++    - metadata:
++        name: datadir
++        labels:
++          app.kubernetes.io/name: cockroachdb
++          app.kubernetes.io/instance: crdb-cluster
++      spec:
++        accessModes:
++          - ReadWriteOnce
++        resources:
++          requests:
++            storage: 10Gi
++---
++apiVersion: policy/v1
++kind: PodDisruptionBudget
++metadata:
++  name: crdb-cluster
++  namespace: cockroachdb
++  labels:
++    app.kubernetes.io/name: cockroachdb
++    app.kubernetes.io/instance: crdb-cluster
++spec:
++  minAvailable: 2
++  selector:
++    matchLabels:
++      app.kubernetes.io/name: cockroachdb
++      app.kubernetes.io/instance: crdb-cluster
+
+exec
+/bin/zsh -lc 'ls -l cockroachdb-cluster.yaml' in /Users/jinyige/Karma/runs/new-added-workflows/cockroachdb-deploy-init-settings-audit-concat-blind-20260623_200425/stages/stage_01
+ succeeded in 0ms:
+-rw-r--r--  1 jinyige  staff  4111 Jun 23 15:06 cockroachdb-cluster.yaml
+
+diff --git a/runs/new-added-workflows/cockroachdb-deploy-init-settings-audit-concat-blind-20260623_200425/stages/stage_01/cockroachdb-cluster.yaml b/runs/new-added-workflows/cockroachdb-deploy-init-settings-audit-concat-blind-20260623_200425/stages/stage_01/cockroachdb-cluster.yaml
+new file mode 100644
+index 0000000000000000000000000000000000000000..1dd5655d8d56369f7fe918be08018881c2bdcb83
+--- /dev/null
++++ b/runs/new-added-workflows/cockroachdb-deploy-init-settings-audit-concat-blind-20260623_200425/stages/stage_01/cockroachdb-cluster.yaml
+@@ -0,0 +1,153 @@
++apiVersion: v1
++kind: Service
++metadata:
++  name: crdb-cluster
++  namespace: cockroachdb
++  labels:
++    app.kubernetes.io/name: cockroachdb
++    app.kubernetes.io/instance: crdb-cluster
++    app.kubernetes.io/component: database
++spec:
++  clusterIP: None
++  publishNotReadyAddresses: true
++  selector:
++    app.kubernetes.io/name: cockroachdb
++    app.kubernetes.io/instance: crdb-cluster
++  ports:
++    - name: grpc
++      port: 26257
++      targetPort: grpc
++    - name: http
++      port: 8080
++      targetPort: http
++---
++apiVersion: v1
++kind: Service
++metadata:
++  name: crdb-cluster-public
++  namespace: cockroachdb
++  labels:
++    app.kubernetes.io/name: cockroachdb
++    app.kubernetes.io/instance: crdb-cluster
++    app.kubernetes.io/component: database
++spec:
++  type: ClusterIP
++  selector:
++    app.kubernetes.io/name: cockroachdb
++    app.kubernetes.io/instance: crdb-cluster
++  ports:
++    - name: grpc
++      port: 26257
++      targetPort: grpc
++    - name: http
++      port: 8080
++      targetPort: http
++---
++apiVersion: apps/v1
++kind: StatefulSet
++metadata:
++  name: crdb-cluster
++  namespace: cockroachdb
++  labels:
++    app.kubernetes.io/name: cockroachdb
++    app.kubernetes.io/instance: crdb-cluster
++spec:
++  serviceName: crdb-cluster
++  replicas: 3
++  podManagementPolicy: Parallel
++  selector:
++    matchLabels:
++      app.kubernetes.io/name: cockroachdb
++      app.kubernetes.io/instance: crdb-cluster
++  template:
++    metadata:
++      labels:
++        app.kubernetes.io/name: cockroachdb
++        app.kubernetes.io/instance: crdb-cluster
++    spec:
++      serviceAccountName: crdb-cluster-sa
++      terminationGracePeriodSeconds: 60
++      containers:
++        - name: db
++          image: cockroachdb/cockroach:v24.1.0
++          imagePullPolicy: IfNotPresent
++          command:
++            - /bin/bash
++            - -c
++            - >-
++              exec /cockroach/cockroach start
++              --logtostderr=INFO
++              --insecure
++              --store=/cockroach/cockroach-data
++              --advertise-host=$(POD_NAME).crdb-cluster.cockroachdb.svc.cluster.local
++              --http-addr=0.0.0.0:8080
++              --port=26257
++              --cache=25%
++              --max-sql-memory=25%
++              --join=crdb-cluster-0.crdb-cluster.cockroachdb.svc.cluster.local:26257,crdb-cluster-1.crdb-cluster.cockroachdb.svc.cluster.local:26257,crdb-cluster-2.crdb-cluster.cockroachdb.svc.cluster.local:26257
++          env:
++            - name: POD_NAME
++              valueFrom:
++                fieldRef:
++                  fieldPath: metadata.name
++            - name: POD_NAMESPACE
++              valueFrom:
++                fieldRef:
++                  fieldPath: metadata.namespace
++          ports:
++            - name: grpc
++              containerPort: 26257
++            - name: http
++              containerPort: 8080
++          livenessProbe:
++            httpGet:
++              path: /health
++              port: http
++              scheme: HTTP
++            initialDelaySeconds: 30
++            periodSeconds: 5
++          readinessProbe:
++            httpGet:
++              path: /health?ready=1
++              port: http
++              scheme: HTTP
++            initialDelaySeconds: 10
++            periodSeconds: 5
++            failureThreshold: 2
++          resources:
++            requests:
++              cpu: "1"
++              memory: 2Gi
++            limits:
++              cpu: "1"
++              memory: 2Gi
++          volumeMounts:
++            - name: datadir
++              mountPath: /cockroach/cockroach-data
++  volumeClaimTemplates:
++    - metadata:
++        name: datadir
++        labels:
++          app.kubernetes.io/name: cockroachdb
++          app.kubernetes.io/instance: crdb-cluster
++      spec:
++        accessModes:
++          - ReadWriteOnce
++        resources:
++          requests:
++            storage: 10Gi
++---
++apiVersion: policy/v1
++kind: PodDisruptionBudget
++metadata:
++  name: crdb-cluster
++  namespace: cockroachdb
++  labels:
++    app.kubernetes.io/name: cockroachdb
++    app.kubernetes.io/instance: crdb-cluster
++spec:
++  minAvailable: 2
++  selector:
++    matchLabels:
++      app.kubernetes.io/name: cockroachdb
++      app.kubernetes.io/instance: crdb-cluster
+
+codex
+The desired StatefulSet now has no certificate mounts and uses `--insecure`; the remaining validation is green. I’m checking for any leftover TLS Secret reference only to make sure the workload spec is not depending on it.
+exec
+/bin/zsh -lc "kubectl -n cockroachdb get statefulset crdb-cluster -o jsonpath='{.spec.template.spec.volumes}{\"\\n\"}{.spec.template.spec.containers[0].volumeMounts}{\"\\n\"}'" in /Users/jinyige/Karma/runs/new-added-workflows/cockroachdb-deploy-init-settings-audit-concat-blind-20260623_200425/stages/stage_01
+ succeeded in 0ms:
+
+[{"mountPath":"/cockroach/cockroach-data","name":"datadir"}]
+
+exec
+/bin/zsh -lc 'kubectl -n cockroachdb get secret' in /Users/jinyige/Karma/runs/new-added-workflows/cockroachdb-deploy-init-settings-audit-concat-blind-20260623_200425/stages/stage_01
+ succeeded in 0ms:
+NAME                 TYPE     DATA   AGE
+crdb-certs           Opaque   5      21h
+crdb-cluster-certs   Opaque   5      9m51s
+
+diff --git a/runs/new-added-workflows/cockroachdb-deploy-init-settings-audit-concat-blind-20260623_200425/stages/stage_01/cockroachdb-cluster.yaml b/runs/new-added-workflows/cockroachdb-deploy-init-settings-audit-concat-blind-20260623_200425/stages/stage_01/cockroachdb-cluster.yaml
+new file mode 100644
+index 0000000000000000000000000000000000000000..1dd5655d8d56369f7fe918be08018881c2bdcb83
+--- /dev/null
++++ b/runs/new-added-workflows/cockroachdb-deploy-init-settings-audit-concat-blind-20260623_200425/stages/stage_01/cockroachdb-cluster.yaml
+@@ -0,0 +1,153 @@
++apiVersion: v1
++kind: Service
++metadata:
++  name: crdb-cluster
++  namespace: cockroachdb
++  labels:
++    app.kubernetes.io/name: cockroachdb
++    app.kubernetes.io/instance: crdb-cluster
++    app.kubernetes.io/component: database
++spec:
++  clusterIP: None
++  publishNotReadyAddresses: true
++  selector:
++    app.kubernetes.io/name: cockroachdb
++    app.kubernetes.io/instance: crdb-cluster
++  ports:
++    - name: grpc
++      port: 26257
++      targetPort: grpc
++    - name: http
++      port: 8080
++      targetPort: http
++---
++apiVersion: v1
++kind: Service
++metadata:
++  name: crdb-cluster-public
++  namespace: cockroachdb
++  labels:
++    app.kubernetes.io/name: cockroachdb
++    app.kubernetes.io/instance: crdb-cluster
++    app.kubernetes.io/component: database
++spec:
++  type: ClusterIP
++  selector:
++    app.kubernetes.io/name: cockroachdb
++    app.kubernetes.io/instance: crdb-cluster
++  ports:
++    - name: grpc
++      port: 26257
++      targetPort: grpc
++    - name: http
++      port: 8080
++      targetPort: http
++---
++apiVersion: apps/v1
++kind: StatefulSet
++metadata:
++  name: crdb-cluster
++  namespace: cockroachdb
++  labels:
++    app.kubernetes.io/name: cockroachdb
++    app.kubernetes.io/instance: crdb-cluster
++spec:
++  serviceName: crdb-cluster
++  replicas: 3
++  podManagementPolicy: Parallel
++  selector:
++    matchLabels:
++      app.kubernetes.io/name: cockroachdb
++      app.kubernetes.io/instance: crdb-cluster
++  template:
++    metadata:
++      labels:
++        app.kubernetes.io/name: cockroachdb
++        app.kubernetes.io/instance: crdb-cluster
++    spec:
++      serviceAccountName: crdb-cluster-sa
++      terminationGracePeriodSeconds: 60
++      containers:
++        - name: db
++          image: cockroachdb/cockroach:v24.1.0
++          imagePullPolicy: IfNotPresent
++          command:
++            - /bin/bash
++            - -c
++            - >-
++              exec /cockroach/cockroach start
++              --logtostderr=INFO
++              --insecure
++              --store=/cockroach/cockroach-data
++              --advertise-host=$(POD_NAME).crdb-cluster.cockroachdb.svc.cluster.local
++              --http-addr=0.0.0.0:8080
++              --port=26257
++              --cache=25%
++              --max-sql-memory=25%
++              --join=crdb-cluster-0.crdb-cluster.cockroachdb.svc.cluster.local:26257,crdb-cluster-1.crdb-cluster.cockroachdb.svc.cluster.local:26257,crdb-cluster-2.crdb-cluster.cockroachdb.svc.cluster.local:26257
++          env:
++            - name: POD_NAME
++              valueFrom:
++                fieldRef:
++                  fieldPath: metadata.name
++            - name: POD_NAMESPACE
++              valueFrom:
++                fieldRef:
++                  fieldPath: metadata.namespace
++          ports:
++            - name: grpc
++              containerPort: 26257
++            - name: http
++              containerPort: 8080
++          livenessProbe:
++            httpGet:
++              path: /health
++              port: http
++              scheme: HTTP
++            initialDelaySeconds: 30
++            periodSeconds: 5
++          readinessProbe:
++            httpGet:
++              path: /health?ready=1
++              port: http
++              scheme: HTTP
++            initialDelaySeconds: 10
++            periodSeconds: 5
++            failureThreshold: 2
++          resources:
++            requests:
++              cpu: "1"
++              memory: 2Gi
++            limits:
++              cpu: "1"
++              memory: 2Gi
++          volumeMounts:
++            - name: datadir
++              mountPath: /cockroach/cockroach-data
++  volumeClaimTemplates:
++    - metadata:
++        name: datadir
++        labels:
++          app.kubernetes.io/name: cockroachdb
++          app.kubernetes.io/instance: crdb-cluster
++      spec:
++        accessModes:
++          - ReadWriteOnce
++        resources:
++          requests:
++            storage: 10Gi
++---
++apiVersion: policy/v1
++kind: PodDisruptionBudget
++metadata:
++  name: crdb-cluster
++  namespace: cockroachdb
++  labels:
++    app.kubernetes.io/name: cockroachdb
++    app.kubernetes.io/instance: crdb-cluster
++spec:
++  minAvailable: 2
++  selector:
++    matchLabels:
++      app.kubernetes.io/name: cockroachdb
++      app.kubernetes.io/instance: crdb-cluster
+
+codex
+Deployed/corrected the native Kubernetes CockroachDB cluster in `cockroachdb`.
+
+Manifest recorded at [cockroachdb-cluster.yaml](/Users/jinyige/Karma/runs/new-added-workflows/cockroachdb-deploy-init-settings-audit-concat-blind-20260623_200425/stages/stage_01/cockroachdb-cluster.yaml). It uses the existing `crdb-cluster-sa`, creates no RBAC/CRDs/operator resources, runs `cockroachdb/cockroach:v24.1.0` with `--insecure`, advertises pod DNS names, joins all 3 pods, and uses 10Gi PVCs.
+
+Verification:
+- `statefulset.apps/crdb-cluster` is `3/3`
+- `service/crdb-cluster` is headless and exposes `26257`, `8080`
+- `service/crdb-cluster-public` exposes `26257`, `8080`
+- Pods `crdb-cluster-0`, `-1`, `-2` are all `1/1 Running`
+- PVCs `datadir-crdb-cluster-{0,1,2}` are all `Bound`, `10Gi`
+- PDB `crdb-cluster` has `minAvailable: 2`, `ALLOWED DISRUPTIONS: 1`
+- `cockroach node status --insecure` reports all 3 nodes live.
+diff --git a/runs/new-added-workflows/cockroachdb-deploy-init-settings-audit-concat-blind-20260623_200425/stages/stage_01/cockroachdb-cluster.yaml b/runs/new-added-workflows/cockroachdb-deploy-init-settings-audit-concat-blind-20260623_200425/stages/stage_01/cockroachdb-cluster.yaml
+new file mode 100644
+index 0000000000000000000000000000000000000000..1dd5655d8d56369f7fe918be08018881c2bdcb83
+--- /dev/null
++++ b/runs/new-added-workflows/cockroachdb-deploy-init-settings-audit-concat-blind-20260623_200425/stages/stage_01/cockroachdb-cluster.yaml
+@@ -0,0 +1,153 @@
++apiVersion: v1
++kind: Service
++metadata:
++  name: crdb-cluster
++  namespace: cockroachdb
++  labels:
++    app.kubernetes.io/name: cockroachdb
++    app.kubernetes.io/instance: crdb-cluster
++    app.kubernetes.io/component: database
++spec:
++  clusterIP: None
++  publishNotReadyAddresses: true
++  selector:
++    app.kubernetes.io/name: cockroachdb
++    app.kubernetes.io/instance: crdb-cluster
++  ports:
++    - name: grpc
++      port: 26257
++      targetPort: grpc
++    - name: http
++      port: 8080
++      targetPort: http
++---
++apiVersion: v1
++kind: Service
++metadata:
++  name: crdb-cluster-public
++  namespace: cockroachdb
++  labels:
++    app.kubernetes.io/name: cockroachdb
++    app.kubernetes.io/instance: crdb-cluster
++    app.kubernetes.io/component: database
++spec:
++  type: ClusterIP
++  selector:
++    app.kubernetes.io/name: cockroachdb
++    app.kubernetes.io/instance: crdb-cluster
++  ports:
++    - name: grpc
++      port: 26257
++      targetPort: grpc
++    - name: http
++      port: 8080
++      targetPort: http
++---
++apiVersion: apps/v1
++kind: StatefulSet
++metadata:
++  name: crdb-cluster
++  namespace: cockroachdb
++  labels:
++    app.kubernetes.io/name: cockroachdb
++    app.kubernetes.io/instance: crdb-cluster
++spec:
++  serviceName: crdb-cluster
++  replicas: 3
++  podManagementPolicy: Parallel
++  selector:
++    matchLabels:
++      app.kubernetes.io/name: cockroachdb
++      app.kubernetes.io/instance: crdb-cluster
++  template:
++    metadata:
++      labels:
++        app.kubernetes.io/name: cockroachdb
++        app.kubernetes.io/instance: crdb-cluster
++    spec:
++      serviceAccountName: crdb-cluster-sa
++      terminationGracePeriodSeconds: 60
++      containers:
++        - name: db
++          image: cockroachdb/cockroach:v24.1.0
++          imagePullPolicy: IfNotPresent
++          command:
++            - /bin/bash
++            - -c
++            - >-
++              exec /cockroach/cockroach start
++              --logtostderr=INFO
++              --insecure
++              --store=/cockroach/cockroach-data
++              --advertise-host=$(POD_NAME).crdb-cluster.cockroachdb.svc.cluster.local
++              --http-addr=0.0.0.0:8080
++              --port=26257
++              --cache=25%
++              --max-sql-memory=25%
++              --join=crdb-cluster-0.crdb-cluster.cockroachdb.svc.cluster.local:26257,crdb-cluster-1.crdb-cluster.cockroachdb.svc.cluster.local:26257,crdb-cluster-2.crdb-cluster.cockroachdb.svc.cluster.local:26257
++          env:
++            - name: POD_NAME
++              valueFrom:
++                fieldRef:
++                  fieldPath: metadata.name
++            - name: POD_NAMESPACE
++              valueFrom:
++                fieldRef:
++                  fieldPath: metadata.namespace
++          ports:
++            - name: grpc
++              containerPort: 26257
++            - name: http
++              containerPort: 8080
++          livenessProbe:
++            httpGet:
++              path: /health
++              port: http
++              scheme: HTTP
++            initialDelaySeconds: 30
++            periodSeconds: 5
++          readinessProbe:
++            httpGet:
++              path: /health?ready=1
++              port: http
++              scheme: HTTP
++            initialDelaySeconds: 10
++            periodSeconds: 5
++            failureThreshold: 2
++          resources:
++            requests:
++              cpu: "1"
++              memory: 2Gi
++            limits:
++              cpu: "1"
++              memory: 2Gi
++          volumeMounts:
++            - name: datadir
++              mountPath: /cockroach/cockroach-data
++  volumeClaimTemplates:
++    - metadata:
++        name: datadir
++        labels:
++          app.kubernetes.io/name: cockroachdb
++          app.kubernetes.io/instance: crdb-cluster
++      spec:
++        accessModes:
++          - ReadWriteOnce
++        resources:
++          requests:
++            storage: 10Gi
++---
++apiVersion: policy/v1
++kind: PodDisruptionBudget
++metadata:
++  name: crdb-cluster
++  namespace: cockroachdb
++  labels:
++    app.kubernetes.io/name: cockroachdb
++    app.kubernetes.io/instance: crdb-cluster
++spec:
++  minAvailable: 2
++  selector:
++    matchLabels:
++      app.kubernetes.io/name: cockroachdb
++      app.kubernetes.io/instance: crdb-cluster
+
+tokens used
+86,538
+Deployed/corrected the native Kubernetes CockroachDB cluster in `cockroachdb`.
+
+Manifest recorded at [cockroachdb-cluster.yaml](/Users/jinyige/Karma/runs/new-added-workflows/cockroachdb-deploy-init-settings-audit-concat-blind-20260623_200425/stages/stage_01/cockroachdb-cluster.yaml). It uses the existing `crdb-cluster-sa`, creates no RBAC/CRDs/operator resources, runs `cockroachdb/cockroach:v24.1.0` with `--insecure`, advertises pod DNS names, joins all 3 pods, and uses 10Gi PVCs.
+
+Verification:
+- `statefulset.apps/crdb-cluster` is `3/3`
+- `service/crdb-cluster` is headless and exposes `26257`, `8080`
+- `service/crdb-cluster-public` exposes `26257`, `8080`
+- Pods `crdb-cluster-0`, `-1`, `-2` are all `1/1 Running`
+- PVCs `datadir-crdb-cluster-{0,1,2}` are all `Bound`, `10Gi`
+- PDB `crdb-cluster` has `minAvailable: 2`, `ALLOWED DISRUPTIONS: 1`
+- `cockroach node status --insecure` reports all 3 nodes live.

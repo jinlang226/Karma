@@ -1,0 +1,1108 @@
+OpenAI Codex v0.142.0-alpha.6
+--------
+workdir: /Users/jinyige/Karma/runs/new-added-workflows/cockroachdb-deploy-init-settings-audit-20260623_202329/stages/stage_02
+model: gpt-5.5
+provider: openai
+approval: never
+sandbox: danger-full-access
+reasoning effort: xhigh
+reasoning summaries: none
+session id: 019ef628-2138-7163-94ec-c45878c8ffd7
+--------
+user
+A 3-node CockroachDB cluster has been deployed but not yet initialized.
+
+OBSERVED STATE:
+- CockroachDB pods are running but the cluster is not forming
+- Pod logs show join/advertise errors when attempting to contact peer nodes
+
+YOUR TASK:
+Diagnose and fix the configuration so all 3 nodes can join.
+Initialize the CockroachDB cluster so it becomes SQL-ready.
+
+CONSTRAINTS:
+- Use existing resources; do not recreate the cluster.
+- No CRDs/operators/Helm.
+- Insecure mode (no TLS) for this case.
+
+HINT:
+Use in-cluster tooling available in the CockroachDB pods.
+
+GOAL:
+- Cluster accepts SQL connections.
+- 3 nodes are healthy and visible in cluster status.
+
+Useful commands:
+```bash
+# View pod logs
+kubectl -n cockroachdb logs crdb-cluster-0
+
+# Check all pods
+kubectl -n cockroachdb get pods
+
+# Interactive SQL shell
+kubectl -n cockroachdb exec -it crdb-cluster-0 -- ./cockroach sql --insecure
+```
+codex
+I’ll inspect the Kubernetes objects and pod logs first to find the join/advertise mismatch, then patch the existing workload in place and initialize from inside a CockroachDB pod.
+exec
+/bin/zsh -lc 'kubectl -n cockroachdb get statefulset -o yaml' in /Users/jinyige/Karma/runs/new-added-workflows/cockroachdb-deploy-init-settings-audit-20260623_202329/stages/stage_02
+exec
+/bin/zsh -lc 'kubectl -n cockroachdb logs crdb-cluster-0 --tail=120' in /Users/jinyige/Karma/runs/new-added-workflows/cockroachdb-deploy-init-settings-audit-20260623_202329/stages/stage_02
+exec
+/bin/zsh -lc 'kubectl -n cockroachdb get pods -o wide' in /Users/jinyige/Karma/runs/new-added-workflows/cockroachdb-deploy-init-settings-audit-20260623_202329/stages/stage_02
+exec
+/bin/zsh -lc 'kubectl -n cockroachdb get svc -o wide' in /Users/jinyige/Karma/runs/new-added-workflows/cockroachdb-deploy-init-settings-audit-20260623_202329/stages/stage_02
+ succeeded in 263ms:
+NAME             READY   STATUS    RESTARTS   AGE     IP            NODE           NOMINATED NODE   READINESS GATES
+crdb-cluster-0   1/1     Running   0          4m44s   10.244.3.39   kind-worker3   <none>           <none>
+crdb-cluster-1   1/1     Running   0          16m     10.244.2.33   kind-worker2   <none>           <none>
+crdb-cluster-2   1/1     Running   0          18m     10.244.1.31   kind-worker    <none>           <none>
+
+ succeeded in 263ms:
+NAME                  TYPE        CLUSTER-IP      EXTERNAL-IP   PORT(S)              AGE   SELECTOR
+crdb-cluster          ClusterIP   None            <none>        26257/TCP,8080/TCP   22h   app.kubernetes.io/instance=crdb-cluster,app.kubernetes.io/name=cockroachdb
+crdb-cluster-public   ClusterIP   10.96.131.212   <none>        26257/TCP,8080/TCP   22h   app.kubernetes.io/instance=crdb-cluster,app.kubernetes.io/name=cockroachdb
+
+ succeeded in 265ms:
+apiVersion: v1
+items:
+- apiVersion: apps/v1
+  kind: StatefulSet
+  metadata:
+    annotations:
+      kubectl.kubernetes.io/last-applied-configuration: |
+        {"apiVersion":"apps/v1","kind":"StatefulSet","metadata":{"annotations":{},"labels":{"app.kubernetes.io/instance":"crdb-cluster","app.kubernetes.io/name":"cockroachdb"},"name":"crdb-cluster","namespace":"cockroachdb"},"spec":{"podManagementPolicy":"Parallel","replicas":3,"selector":{"matchLabels":{"app.kubernetes.io/instance":"crdb-cluster","app.kubernetes.io/name":"cockroachdb"}},"serviceName":"crdb-cluster","template":{"metadata":{"labels":{"app.kubernetes.io/instance":"crdb-cluster","app.kubernetes.io/name":"cockroachdb"}},"spec":{"containers":[{"command":["/bin/bash","-c","exec /cockroach/cockroach start --logtostderr=INFO --insecure --store=/cockroach/cockroach-data --advertise-host=$(POD_NAME).crdb-cluster.cockroachdb.svc.cluster.local --http-addr=0.0.0.0:8080 --port=26257 --cache=25% --max-sql-memory=25% --join=crdb-cluster-0.crdb-cluster.cockroachdb.svc.cluster.local:26257,crdb-cluster-1.crdb-cluster.cockroachdb.svc.cluster.local:26257,crdb-cluster-2.crdb-cluster.cockroachdb.svc.cluster.local:26257"],"env":[{"name":"POD_NAME","valueFrom":{"fieldRef":{"fieldPath":"metadata.name"}}},{"name":"POD_NAMESPACE","valueFrom":{"fieldRef":{"fieldPath":"metadata.namespace"}}}],"image":"cockroachdb/cockroach:v24.1.0","imagePullPolicy":"IfNotPresent","livenessProbe":{"httpGet":{"path":"/health","port":"http","scheme":"HTTP"},"initialDelaySeconds":30,"periodSeconds":5},"name":"db","ports":[{"containerPort":26257,"name":"grpc"},{"containerPort":8080,"name":"http"}],"readinessProbe":{"failureThreshold":2,"httpGet":{"path":"/health?ready=1","port":"http","scheme":"HTTP"},"initialDelaySeconds":10,"periodSeconds":5},"resources":{"limits":{"cpu":"1","memory":"2Gi"},"requests":{"cpu":"1","memory":"2Gi"}},"volumeMounts":[{"mountPath":"/cockroach/cockroach-data","name":"datadir"}]}],"serviceAccountName":"crdb-cluster-sa","terminationGracePeriodSeconds":60}},"volumeClaimTemplates":[{"metadata":{"labels":{"app.kubernetes.io/instance":"crdb-cluster","app.kubernetes.io/name":"cockroachdb"},"name":"datadir"},"spec":{"accessModes":["ReadWriteOnce"],"resources":{"requests":{"storage":"10Gi"}}}}]}}
+    creationTimestamp: "2026-06-22T21:37:58Z"
+    generation: 27
+    labels:
+      app.kubernetes.io/instance: crdb-cluster
+      app.kubernetes.io/name: cockroachdb
+    name: crdb-cluster
+    namespace: cockroachdb
+    resourceVersion: "164019"
+    uid: 8cf0bc96-9a59-4afa-9e12-91d89df30846
+  spec:
+    persistentVolumeClaimRetentionPolicy:
+      whenDeleted: Retain
+      whenScaled: Retain
+    podManagementPolicy: Parallel
+    replicas: 3
+    revisionHistoryLimit: 10
+    selector:
+      matchLabels:
+        app.kubernetes.io/instance: crdb-cluster
+        app.kubernetes.io/name: cockroachdb
+    serviceName: crdb-cluster
+    template:
+      metadata:
+        creationTimestamp: null
+        labels:
+          app.kubernetes.io/instance: crdb-cluster
+          app.kubernetes.io/name: cockroachdb
+      spec:
+        containers:
+        - command:
+          - /bin/bash
+          - -c
+          - exec /cockroach/cockroach start --logtostderr=INFO --insecure --store=/cockroach/cockroach-data
+            --advertise-host=$(POD_NAME).crdb-cluster.cockroachdb.svc.cluster.local
+            --http-addr=0.0.0.0:8080 --port=26257 --cache=25% --max-sql-memory=25%
+            --join=crdb-cluster-0.crdb-cluster.cockroachdb.svc.cluster.local:26257,crdb-cluster-1.crdb-cluster.cockroachdb.svc.cluster.local:26257,crdb-cluster-2.crdb-cluster.cockroachdb.svc.cluster.local:26257
+          env:
+          - name: POD_NAME
+            valueFrom:
+              fieldRef:
+                apiVersion: v1
+                fieldPath: metadata.name
+          - name: POD_NAMESPACE
+            valueFrom:
+              fieldRef:
+                apiVersion: v1
+                fieldPath: metadata.namespace
+          image: cockroachdb/cockroach:v24.1.0
+          imagePullPolicy: IfNotPresent
+          livenessProbe:
+            failureThreshold: 3
+            httpGet:
+              path: /health
+              port: http
+              scheme: HTTP
+            initialDelaySeconds: 30
+            periodSeconds: 5
+            successThreshold: 1
+            timeoutSeconds: 1
+          name: db
+          ports:
+          - containerPort: 26257
+            name: grpc
+            protocol: TCP
+          - containerPort: 8080
+            name: http
+            protocol: TCP
+          readinessProbe:
+            failureThreshold: 2
+            httpGet:
+              path: /health?ready=1
+              port: http
+              scheme: HTTP
+            initialDelaySeconds: 10
+            periodSeconds: 5
+            successThreshold: 1
+            timeoutSeconds: 1
+          resources:
+            limits:
+              cpu: "1"
+              memory: 2Gi
+            requests:
+              cpu: "1"
+              memory: 2Gi
+          terminationMessagePath: /dev/termination-log
+          terminationMessagePolicy: File
+          volumeMounts:
+          - mountPath: /cockroach/cockroach-data
+            name: datadir
+        dnsPolicy: ClusterFirst
+        restartPolicy: Always
+        schedulerName: default-scheduler
+        securityContext: {}
+        serviceAccount: crdb-cluster-sa
+        serviceAccountName: crdb-cluster-sa
+        terminationGracePeriodSeconds: 60
+    updateStrategy:
+      rollingUpdate:
+        partition: 0
+      type: RollingUpdate
+    volumeClaimTemplates:
+    - apiVersion: v1
+      kind: PersistentVolumeClaim
+      metadata:
+        creationTimestamp: null
+        labels:
+          app.kubernetes.io/instance: crdb-cluster
+          app.kubernetes.io/name: cockroachdb
+        name: datadir
+      spec:
+        accessModes:
+        - ReadWriteOnce
+        resources:
+          requests:
+            storage: 10Gi
+        volumeMode: Filesystem
+      status:
+        phase: Pending
+  status:
+    availableReplicas: 3
+    collisionCount: 0
+    currentReplicas: 3
+    currentRevision: crdb-cluster-fd848ff97
+    observedGeneration: 27
+    readyReplicas: 3
+    replicas: 3
+    updateRevision: crdb-cluster-fd848ff97
+    updatedReplicas: 3
+kind: List
+metadata:
+  resourceVersion: ""
+
+ succeeded in 295ms:
+I260623 20:20:18.498833 223 kv/kvserver/stores.go:283 ⋮ [T1,Vsystem,n1] 109  wrote 2 node addresses to persistent storage
+I260623 20:20:26.071386 365 2@util/log/event_log.go:32 ⋮ [T1,Vsystem,n1] 110 ={"Timestamp":1782246026071379794,"EventType":"runtime_stats","MemRSSBytes":490840064,"GoroutineCount":450,"MemStackSysBytes":7405568,"GoAllocBytes":118027840,"GoTotalBytes":322068824,"HeapFragmentBytes":8686016,"HeapReservedBytes":174194688,"HeapReleasedBytes":69156864,"CGoAllocBytes":23249296,"CGoTotalBytes":40960000,"CGoCallRate":0.00000014420007,"GCPausePercent":0.0000000001641912,"GCRunCount":9,"NetHostRecvBytes":664553,"NetHostSendBytes":238148}
+I260623 20:20:26.071635 365 2@server/status/runtime_log.go:47 ⋮ [T1,Vsystem,n1] 111  runtime stats: 468 MiB RSS, 450 goroutines (stacks: 7.1 MiB), 113 MiB/307 MiB Go alloc/total (heap fragmentation: 8.3 MiB, heap reserved: 166 MiB, heap released: 66 MiB), 22 MiB/39 MiB CGO alloc/total (0.0 CGO/sec), 0.0/0.0 %(u/s)time, 0.0 %gc (9x), 649 KiB/233 KiB (r/w)net
+I260623 20:20:36.074070 365 2@util/log/event_log.go:32 ⋮ [T1,Vsystem,n1] 112 ={"Timestamp":1782246036074053007,"EventType":"runtime_stats","MemRSSBytes":500080640,"GoroutineCount":448,"MemStackSysBytes":7831552,"GoAllocBytes":140313440,"GoTotalBytes":322068824,"HeapFragmentBytes":7888032,"HeapReservedBytes":152256512,"HeapReleasedBytes":69156864,"CGoAllocBytes":23249296,"CGoTotalBytes":40960000,"CGoCallRate":0.09997322,"CPUUserPercent":2.899223,"CPUSysPercent":0.89975893,"GCRunCount":9,"NetHostRecvBytes":374941,"NetHostSendBytes":182929}
+I260623 20:20:36.074256 365 2@server/status/runtime_log.go:47 ⋮ [T1,Vsystem,n1] 113  runtime stats: 477 MiB RSS, 448 goroutines (stacks: 7.5 MiB), 134 MiB/307 MiB Go alloc/total (heap fragmentation: 7.5 MiB, heap reserved: 145 MiB, heap released: 66 MiB), 22 MiB/39 MiB CGO alloc/total (0.1 CGO/sec), 2.9/0.9 %(u/s)time, 0.0 %gc (9x), 366 KiB/179 KiB (r/w)net
+I260623 20:20:36.075727 360 kv/kvserver/store.go:3556 ⋮ [T1,Vsystem,n1] 114  
+I260623 20:20:36.075727 360 kv/kvserver/store.go:3556 ⋮ [T1,Vsystem,n1] 114 +      |                             |       |       |   ingested   |     moved    |    written   |       |    amp
+I260623 20:20:36.075727 360 kv/kvserver/store.go:3556 ⋮ [T1,Vsystem,n1] 114 +level | tables  size val-bl vtables | score |   in  | tables  size | tables  size | tables  size |  read |   r   w
+I260623 20:20:36.075727 360 kv/kvserver/store.go:3556 ⋮ [T1,Vsystem,n1] 114 +------+-----------------------------+-------+-------+--------------+--------------+--------------+-------+---------
+I260623 20:20:36.075727 360 kv/kvserver/store.go:3556 ⋮ [T1,Vsystem,n1] 114 +    0 |     0     0B     0B       0 |  0.00 |    0B |     0     0B |     0     0B |     0     0B |    0B |   0  0.0
+I260623 20:20:36.075727 360 kv/kvserver/store.go:3556 ⋮ [T1,Vsystem,n1] 114 +    1 |     0     0B     0B       0 |  0.00 |    0B |     0     0B |     0     0B |     0     0B |    0B |   0  0.0
+I260623 20:20:36.075727 360 kv/kvserver/store.go:3556 ⋮ [T1,Vsystem,n1] 114 +    2 |     0     0B     0B       0 |  0.00 |    0B |     0     0B |     0     0B |     0     0B |    0B |   0  0.0
+I260623 20:20:36.075727 360 kv/kvserver/store.go:3556 ⋮ [T1,Vsystem,n1] 114 +    3 |     0     0B     0B       0 |  0.00 |    0B |     0     0B |     0     0B |     0     0B |    0B |   0  0.0
+I260623 20:20:36.075727 360 kv/kvserver/store.go:3556 ⋮ [T1,Vsystem,n1] 114 +    4 |     0     0B     0B       0 |  0.00 |    0B |     0     0B |     0     0B |     0     0B |    0B |   0  0.0
+I260623 20:20:36.075727 360 kv/kvserver/store.go:3556 ⋮ [T1,Vsystem,n1] 114 +    5 |     0     0B     0B       0 |  0.00 |    0B |     0     0B |     0     0B |     0     0B |    0B |   0  0.0
+I260623 20:20:36.075727 360 kv/kvserver/store.go:3556 ⋮ [T1,Vsystem,n1] 114 +    6 |     4   12MB  349KB       0 |     - | 490KB |     0     0B |     0     0B |     4   12MB |  13MB |   1 25.6
+I260623 20:20:36.075727 360 kv/kvserver/store.go:3556 ⋮ [T1,Vsystem,n1] 114 +total |     4   12MB  349KB       0 |     - | 6.1MB |     0     0B |     0     0B |     4   18MB |  13MB |   1  3.0
+I260623 20:20:36.075727 360 kv/kvserver/store.go:3556 ⋮ [T1,Vsystem,n1] 114 +-------------------------------------------------------------------------------------------------------------------
+I260623 20:20:36.075727 360 kv/kvserver/store.go:3556 ⋮ [T1,Vsystem,n1] 114 +WAL: 2 files (6.1MB)  in: 6.0MB  written: 6.1MB (0% overhead)
+I260623 20:20:36.075727 360 kv/kvserver/store.go:3556 ⋮ [T1,Vsystem,n1] 114 +Flushes: 0
+I260623 20:20:36.075727 360 kv/kvserver/store.go:3556 ⋮ [T1,Vsystem,n1] 114 +Compactions: 1  estimated debt: 0B  in progress: 0 (0B)
+I260623 20:20:36.075727 360 kv/kvserver/store.go:3556 ⋮ [T1,Vsystem,n1] 114 +             default: 1  delete: 0  elision: 0  move: 0  read: 0  rewrite: 0  multi-level: 0
+I260623 20:20:36.075727 360 kv/kvserver/store.go:3556 ⋮ [T1,Vsystem,n1] 114 +MemTables: 2 (16MB)  zombie: 0 (0B)
+I260623 20:20:36.075727 360 kv/kvserver/store.go:3556 ⋮ [T1,Vsystem,n1] 114 +Zombie tables: 0 (0B, local: 0B)
+I260623 20:20:36.075727 360 kv/kvserver/store.go:3556 ⋮ [T1,Vsystem,n1] 114 +Backing tables: 0 (0B)
+I260623 20:20:36.075727 360 kv/kvserver/store.go:3556 ⋮ [T1,Vsystem,n1] 114 +Virtual tables: 0 (0B)
+I260623 20:20:36.075727 360 kv/kvserver/store.go:3556 ⋮ [T1,Vsystem,n1] 114 +Local tables size: 12MB
+I260623 20:20:36.075727 360 kv/kvserver/store.go:3556 ⋮ [T1,Vsystem,n1] 114 +Block cache: 31 entries (1.3MB)  hit rate: 38.9%
+I260623 20:20:36.075727 360 kv/kvserver/store.go:3556 ⋮ [T1,Vsystem,n1] 114 +Table cache: 3 entries (2.3KB)  hit rate: 98.7%
+I260623 20:20:36.075727 360 kv/kvserver/store.go:3556 ⋮ [T1,Vsystem,n1] 114 +Secondary cache: 0 entries (0B)  hit rate: 0.0%
+I260623 20:20:36.075727 360 kv/kvserver/store.go:3556 ⋮ [T1,Vsystem,n1] 114 +Snapshots: 0  earliest seq num: 0
+I260623 20:20:36.075727 360 kv/kvserver/store.go:3556 ⋮ [T1,Vsystem,n1] 114 +Table iters: 0
+I260623 20:20:36.075727 360 kv/kvserver/store.go:3556 ⋮ [T1,Vsystem,n1] 114 +Filter utility: 100.0%
+I260623 20:20:36.075727 360 kv/kvserver/store.go:3556 ⋮ [T1,Vsystem,n1] 114 +Ingestions: 0  as flushable: 0 (0B in 0 tables)
+I260623 20:20:46.074247 365 2@util/log/event_log.go:32 ⋮ [T1,Vsystem,n1] 115 ={"Timestamp":1782246046074241762,"EventType":"runtime_stats","MemRSSBytes":502509568,"GoroutineCount":453,"MemStackSysBytes":8290304,"GoAllocBytes":163451456,"GoTotalBytes":322068824,"HeapFragmentBytes":7441856,"HeapReservedBytes":129081344,"HeapReleasedBytes":69156864,"CGoAllocBytes":23249296,"CGoTotalBytes":40960000,"CGoCallRate":0.09999812,"CPUUserPercent":2.699949,"CPUSysPercent":0.7999849,"GCRunCount":9,"NetHostRecvBytes":391424,"NetHostSendBytes":245230}
+I260623 20:20:46.074342 365 2@server/status/runtime_log.go:47 ⋮ [T1,Vsystem,n1] 116  runtime stats: 479 MiB RSS, 453 goroutines (stacks: 7.9 MiB), 156 MiB/307 MiB Go alloc/total (heap fragmentation: 7.1 MiB, heap reserved: 123 MiB, heap released: 66 MiB), 22 MiB/39 MiB CGO alloc/total (0.1 CGO/sec), 2.7/0.8 %(u/s)time, 0.0 %gc (9x), 382 KiB/240 KiB (r/w)net
+I260623 20:20:56.082599 365 2@util/log/event_log.go:32 ⋮ [T1,Vsystem,n1] 117 ={"Timestamp":1782246056082580753,"EventType":"runtime_stats","MemRSSBytes":507170816,"GoroutineCount":453,"MemStackSysBytes":8716288,"GoAllocBytes":187442272,"GoTotalBytes":322068824,"HeapFragmentBytes":7306144,"HeapReservedBytes":104775680,"HeapReleasedBytes":69156864,"CGoAllocBytes":23249296,"CGoTotalBytes":40960000,"CGoCallRate":0.099916816,"CPUUserPercent":3.2972548,"CPUSysPercent":0.89925134,"GCRunCount":9,"NetHostRecvBytes":413725,"NetHostSendBytes":183398}
+I260623 20:20:56.082932 365 2@server/status/runtime_log.go:47 ⋮ [T1,Vsystem,n1] 118  runtime stats: 484 MiB RSS, 453 goroutines (stacks: 8.3 MiB), 179 MiB/307 MiB Go alloc/total (heap fragmentation: 7.0 MiB, heap reserved: 100 MiB, heap released: 66 MiB), 22 MiB/39 MiB CGO alloc/total (0.1 CGO/sec), 3.3/0.9 %(u/s)time, 0.0 %gc (9x), 404 KiB/179 KiB (r/w)net
+I260623 20:21:05.556741 285 3@pebble/event.go:828 ⋮ [n1,s1,pebble] 119  [JOB 5] WAL created 000259
+I260623 20:21:06.084609 365 2@util/log/event_log.go:32 ⋮ [T1,Vsystem,n1] 120 ={"Timestamp":1782246066084545132,"EventType":"runtime_stats","MemRSSBytes":510337024,"GoroutineCount":453,"MemStackSysBytes":8945664,"GoAllocBytes":210454048,"GoTotalBytes":322134360,"HeapFragmentBytes":7322080,"HeapReservedBytes":81494016,"HeapReleasedBytes":69156864,"CGoAllocBytes":56803728,"CGoTotalBytes":74579968,"CGoCallRate":0.19996044,"CPUUserPercent":2.7994463,"CPUSysPercent":0.899822,"GCRunCount":9,"NetHostRecvBytes":401513,"NetHostSendBytes":267304}
+I260623 20:21:06.084944 365 2@server/status/runtime_log.go:47 ⋮ [T1,Vsystem,n1] 121  runtime stats: 487 MiB RSS, 453 goroutines (stacks: 8.5 MiB), 201 MiB/307 MiB Go alloc/total (heap fragmentation: 7.0 MiB, heap reserved: 78 MiB, heap released: 66 MiB), 54 MiB/71 MiB CGO alloc/total (0.2 CGO/sec), 2.8/0.9 %(u/s)time, 0.0 %gc (9x), 392 KiB/261 KiB (r/w)net
+I260623 20:21:16.064704 362 2@gossip/gossip.go:531 ⋮ [T1,Vsystem,n1] 122  gossip status (ok, 3 nodes)
+I260623 20:21:16.064704 362 2@gossip/gossip.go:531 ⋮ [T1,Vsystem,n1] 122 +gossip client (1/3 cur/max conns)
+I260623 20:21:16.064704 362 2@gossip/gossip.go:531 ⋮ [T1,Vsystem,n1] 122 +  3: ‹crdb-cluster-1.crdb-cluster.cockroachdb.svc.cluster.local:26257› (1m0s: infos 35/168 sent/received, bytes 12274B/29986B sent/received)
+I260623 20:21:16.064704 362 2@gossip/gossip.go:531 ⋮ [T1,Vsystem,n1] 122 +gossip server (0/3 cur/max conns, infos 35/168 sent/received, bytes 12274B/29986B sent/received)
+I260623 20:21:16.085350 365 2@util/log/event_log.go:32 ⋮ [T1,Vsystem,n1] 123 ={"Timestamp":1782246076085338512,"EventType":"runtime_stats","MemRSSBytes":515530752,"GoroutineCount":453,"MemStackSysBytes":8945664,"GoAllocBytes":238689432,"GoTotalBytes":322199896,"HeapFragmentBytes":7693160,"HeapReservedBytes":52862976,"HeapReleasedBytes":69156864,"CGoAllocBytes":56844688,"CGoTotalBytes":74579968,"CGoCallRate":2.0998385,"CPUUserPercent":2.9997694,"CPUSysPercent":0.69994617,"GCRunCount":9,"NetHostRecvBytes":536450,"NetHostSendBytes":232955}
+I260623 20:21:16.085601 365 2@server/status/runtime_log.go:47 ⋮ [T1,Vsystem,n1] 124  runtime stats: 492 MiB RSS, 453 goroutines (stacks: 8.5 MiB), 228 MiB/307 MiB Go alloc/total (heap fragmentation: 7.3 MiB, heap reserved: 50 MiB, heap released: 66 MiB), 54 MiB/71 MiB CGO alloc/total (2.1 CGO/sec), 3.0/0.7 %(u/s)time, 0.0 %gc (9x), 524 KiB/228 KiB (r/w)net
+W260623 20:21:25.266427 194 2@rpc/clock_offset.go:291 ⋮ [T1,Vsystem,n1,rnode=2,raddr=‹crdb-cluster-2.crdb-cluster.cockroachdb.svc.cluster.local:26257›,class=system,rpc] 125  latency jump (prev avg 0.92ms, current 71.61ms)
+W260623 20:21:25.366193 442 2@rpc/clock_offset.go:291 ⋮ [T1,Vsystem,n1,rnode=3,raddr=‹crdb-cluster-1.crdb-cluster.cockroachdb.svc.cluster.local:26257›,class=default,rpc] 126  latency jump (prev avg 0.70ms, current 82.42ms)
+I260623 20:21:26.168756 365 2@util/log/event_log.go:32 ⋮ [T1,Vsystem,n1] 127 ={"Timestamp":1782246086168748628,"EventType":"runtime_stats","MemRSSBytes":518770688,"GoroutineCount":452,"MemStackSysBytes":8617984,"GoAllocBytes":101685144,"GoTotalBytes":322462040,"HeapFragmentBytes":17877096,"HeapReservedBytes":180133888,"HeapReleasedBytes":69156864,"CGoAllocBytes":56844688,"CGoTotalBytes":74579968,"CGoCallRate":0.09917257,"CPUUserPercent":4.363593,"CPUSysPercent":0.99172574,"GCPausePercent":0.0135217635,"GCRunCount":10,"NetHostRecvBytes":582886,"NetHostSendBytes":356671}
+I260623 20:21:26.168900 365 2@server/status/runtime_log.go:47 ⋮ [T1,Vsystem,n1] 128  runtime stats: 495 MiB RSS, 452 goroutines (stacks: 8.2 MiB), 97 MiB/308 MiB Go alloc/total (heap fragmentation: 17 MiB, heap reserved: 172 MiB, heap released: 66 MiB), 54 MiB/71 MiB CGO alloc/total (0.1 CGO/sec), 4.4/1.0 %(u/s)time, 0.0 %gc (10x), 569 KiB/348 KiB (r/w)net
+I260623 20:21:36.087038 365 2@util/log/event_log.go:32 ⋮ [T1,Vsystem,n1] 129 ={"Timestamp":1782246096087002216,"EventType":"runtime_stats","MemRSSBytes":522330112,"GoroutineCount":452,"MemStackSysBytes":8847360,"GoAllocBytes":130252752,"GoTotalBytes":322462040,"HeapFragmentBytes":10108976,"HeapReservedBytes":159105024,"HeapReleasedBytes":69156864,"CGoAllocBytes":56844688,"CGoTotalBytes":74579968,"CGoCallRate":0.10082429,"CPUUserPercent":2.8230798,"CPUSysPercent":0.9074186,"GCRunCount":10,"NetHostRecvBytes":450034,"NetHostSendBytes":286730}
+I260623 20:21:36.087492 365 2@server/status/runtime_log.go:47 ⋮ [T1,Vsystem,n1] 130  runtime stats: 498 MiB RSS, 452 goroutines (stacks: 8.4 MiB), 124 MiB/308 MiB Go alloc/total (heap fragmentation: 9.6 MiB, heap reserved: 152 MiB, heap released: 66 MiB), 54 MiB/71 MiB CGO alloc/total (0.1 CGO/sec), 2.8/0.9 %(u/s)time, 0.0 %gc (10x), 440 KiB/280 KiB (r/w)net
+I260623 20:21:46.090036 365 2@util/log/event_log.go:32 ⋮ [T1,Vsystem,n1] 131 ={"Timestamp":1782246106090020137,"EventType":"runtime_stats","MemRSSBytes":526573568,"GoroutineCount":452,"MemStackSysBytes":8978432,"GoAllocBytes":149390352,"GoTotalBytes":322462040,"HeapFragmentBytes":8485872,"HeapReservedBytes":141459456,"HeapReleasedBytes":69156864,"CGoAllocBytes":57303440,"CGoTotalBytes":74579968,"CGoCallRate":0.4998489,"CPUUserPercent":3.2990026,"CPUSysPercent":1.0996675,"GCRunCount":10,"NetHostRecvBytes":403005,"NetHostSendBytes":168958}
+I260623 20:21:46.090342 365 2@server/status/runtime_log.go:47 ⋮ [T1,Vsystem,n1] 132  runtime stats: 502 MiB RSS, 452 goroutines (stacks: 8.6 MiB), 142 MiB/308 MiB Go alloc/total (heap fragmentation: 8.1 MiB, heap reserved: 135 MiB, heap released: 66 MiB), 55 MiB/71 MiB CGO alloc/total (0.5 CGO/sec), 3.3/1.1 %(u/s)time, 0.0 %gc (10x), 394 KiB/165 KiB (r/w)net
+I260623 20:21:56.090897 365 2@util/log/event_log.go:32 ⋮ [T1,Vsystem,n1] 133 ={"Timestamp":1782246116090884919,"EventType":"runtime_stats","MemRSSBytes":528695296,"GoroutineCount":453,"MemStackSysBytes":8978432,"GoAllocBytes":168364456,"GoTotalBytes":322462040,"HeapFragmentBytes":7951960,"HeapReservedBytes":123019264,"HeapReleasedBytes":69156864,"CGoAllocBytes":57303440,"CGoTotalBytes":74579968,"CGoCallRate":0.09999131,"CPUUserPercent":2.6997652,"CPUSysPercent":0.79993045,"GCRunCount":10,"NetHostRecvBytes":389207,"NetHostSendBytes":253478}
+I260623 20:21:56.091037 365 2@server/status/runtime_log.go:47 ⋮ [T1,Vsystem,n1] 134  runtime stats: 504 MiB RSS, 453 goroutines (stacks: 8.6 MiB), 161 MiB/308 MiB Go alloc/total (heap fragmentation: 7.6 MiB, heap reserved: 117 MiB, heap released: 66 MiB), 55 MiB/71 MiB CGO alloc/total (0.1 CGO/sec), 2.7/0.8 %(u/s)time, 0.0 %gc (10x), 380 KiB/248 KiB (r/w)net
+I260623 20:22:06.093305 365 2@util/log/event_log.go:32 ⋮ [T1,Vsystem,n1] 135 ={"Timestamp":1782246126093298716,"EventType":"runtime_stats","MemRSSBytes":533004288,"GoroutineCount":453,"MemStackSysBytes":9011200,"GoAllocBytes":187707232,"GoTotalBytes":322527576,"HeapFragmentBytes":7704736,"HeapReservedBytes":103890944,"HeapReleasedBytes":69156864,"CGoAllocBytes":57303440,"CGoTotalBytes":74579968,"CGoCallRate":0.09997587,"CPUUserPercent":2.5993726,"CPUSysPercent":0.8997828,"GCRunCount":10,"NetHostRecvBytes":442896,"NetHostSendBytes":206735}
+I260623 20:22:06.093444 365 2@server/status/runtime_log.go:47 ⋮ [T1,Vsystem,n1] 136  runtime stats: 508 MiB RSS, 453 goroutines (stacks: 8.6 MiB), 179 MiB/308 MiB Go alloc/total (heap fragmentation: 7.3 MiB, heap reserved: 99 MiB, heap released: 66 MiB), 55 MiB/71 MiB CGO alloc/total (0.1 CGO/sec), 2.6/0.9 %(u/s)time, 0.0 %gc (10x), 432 KiB/202 KiB (r/w)net
+I260623 20:22:16.061694 362 2@gossip/gossip.go:531 ⋮ [T1,Vsystem,n1] 137  gossip status (ok, 3 nodes)
+I260623 20:22:16.061694 362 2@gossip/gossip.go:531 ⋮ [T1,Vsystem,n1] 137 +gossip client (1/3 cur/max conns)
+I260623 20:22:16.061694 362 2@gossip/gossip.go:531 ⋮ [T1,Vsystem,n1] 137 +  3: ‹crdb-cluster-1.crdb-cluster.cockroachdb.svc.cluster.local:26257› (2m0s: infos 61/320 sent/received, bytes 20960B/55964B sent/received)
+I260623 20:22:16.061694 362 2@gossip/gossip.go:531 ⋮ [T1,Vsystem,n1] 137 +gossip server (0/3 cur/max conns, infos 61/320 sent/received, bytes 20960B/55964B sent/received)
+I260623 20:22:16.096700 365 2@util/log/event_log.go:32 ⋮ [T1,Vsystem,n1] 138 ={"Timestamp":1782246136096674554,"EventType":"runtime_stats","MemRSSBytes":534765568,"GoroutineCount":453,"MemStackSysBytes":9011200,"GoAllocBytes":205629872,"GoTotalBytes":322593112,"HeapFragmentBytes":7550544,"HeapReservedBytes":86122496,"HeapReleasedBytes":69156864,"CGoAllocBytes":57303440,"CGoTotalBytes":74579968,"CGoCallRate":0.09996634,"CPUUserPercent":2.599125,"CPUSysPercent":0.89969707,"GCRunCount":10,"NetHostRecvBytes":340298,"NetHostSendBytes":212777}
+I260623 20:22:16.097006 365 2@server/status/runtime_log.go:47 ⋮ [T1,Vsystem,n1] 139  runtime stats: 510 MiB RSS, 453 goroutines (stacks: 8.6 MiB), 196 MiB/308 MiB Go alloc/total (heap fragmentation: 7.2 MiB, heap reserved: 82 MiB, heap released: 66 MiB), 55 MiB/71 MiB CGO alloc/total (0.1 CGO/sec), 2.6/0.9 %(u/s)time, 0.0 %gc (10x), 332 KiB/208 KiB (r/w)net
+I260623 20:22:26.106733 365 2@util/log/event_log.go:32 ⋮ [T1,Vsystem,n1] 140 ={"Timestamp":1782246146106728253,"EventType":"runtime_stats","MemRSSBytes":539594752,"GoroutineCount":452,"MemStackSysBytes":9076736,"GoAllocBytes":225748176,"GoTotalBytes":322658648,"HeapFragmentBytes":7355184,"HeapReservedBytes":66134016,"HeapReleasedBytes":69156864,"CGoAllocBytes":57303440,"CGoTotalBytes":74579968,"CGoCallRate":0.09989947,"CPUUserPercent":2.697286,"CPUSysPercent":0.9989947,"GCRunCount":10,"NetHostRecvBytes":441682,"NetHostSendBytes":206228}
+I260623 20:22:26.106871 365 2@server/status/runtime_log.go:47 ⋮ [T1,Vsystem,n1] 141  runtime stats: 515 MiB RSS, 452 goroutines (stacks: 8.7 MiB), 215 MiB/308 MiB Go alloc/total (heap fragmentation: 7.0 MiB, heap reserved: 63 MiB, heap released: 66 MiB), 55 MiB/71 MiB CGO alloc/total (0.1 CGO/sec), 2.7/1.0 %(u/s)time, 0.0 %gc (10x), 431 KiB/201 KiB (r/w)net
+I260623 20:22:36.107712 365 2@util/log/event_log.go:32 ⋮ [T1,Vsystem,n1] 142 ={"Timestamp":1782246156107704382,"EventType":"runtime_stats","MemRSSBytes":541708288,"GoroutineCount":452,"MemStackSysBytes":9076736,"GoAllocBytes":244271136,"GoTotalBytes":322658648,"HeapFragmentBytes":7526368,"HeapReservedBytes":47439872,"HeapReleasedBytes":69156864,"CGoAllocBytes":57303440,"CGoTotalBytes":74579968,"CGoCallRate":0.09999024,"CPUUserPercent":2.6997366,"CPUSysPercent":0.799922,"GCRunCount":10,"NetHostRecvBytes":388732,"NetHostSendBytes":205279}
+I260623 20:22:36.107805 365 2@server/status/runtime_log.go:47 ⋮ [T1,Vsystem,n1] 143  runtime stats: 517 MiB RSS, 452 goroutines (stacks: 8.7 MiB), 233 MiB/308 MiB Go alloc/total (heap fragmentation: 7.2 MiB, heap reserved: 45 MiB, heap released: 66 MiB), 55 MiB/71 MiB CGO alloc/total (0.1 CGO/sec), 2.7/0.8 %(u/s)time, 0.0 %gc (10x), 380 KiB/200 KiB (r/w)net
+I260623 20:22:46.113698 365 2@util/log/event_log.go:32 ⋮ [T1,Vsystem,n1] 144 ={"Timestamp":1782246166113691137,"EventType":"runtime_stats","MemRSSBytes":546181120,"GoroutineCount":452,"MemStackSysBytes":9076736,"GoAllocBytes":268370528,"GoTotalBytes":322724184,"HeapFragmentBytes":7355808,"HeapReservedBytes":23486464,"HeapReleasedBytes":69156864,"CGoAllocBytes":57303440,"CGoTotalBytes":74579968,"CGoCallRate":0.09994017,"CPUUserPercent":2.9982052,"CPUSysPercent":0.89946157,"GCRunCount":10,"NetHostRecvBytes":396781,"NetHostSendBytes":212876}
+I260623 20:22:46.113880 365 2@server/status/runtime_log.go:47 ⋮ [T1,Vsystem,n1] 145  runtime stats: 521 MiB RSS, 452 goroutines (stacks: 8.7 MiB), 256 MiB/308 MiB Go alloc/total (heap fragmentation: 7.0 MiB, heap reserved: 22 MiB, heap released: 66 MiB), 55 MiB/71 MiB CGO alloc/total (0.1 CGO/sec), 3.0/0.9 %(u/s)time, 0.0 %gc (10x), 388 KiB/208 KiB (r/w)net
+I260623 20:22:47.817216 287 3@pebble/event.go:828 ⋮ [n1,s1,pebble] 146  [JOB 6] WAL created 000260
+I260623 20:22:47.819082 4818 3@pebble/event.go:780 ⋮ [n1,s1,pebble] 147  [JOB 7] flushing 3 memtables (47MB) to L0
+I260623 20:22:47.819313 4818 3@pebble/event.go:808 ⋮ [n1,s1,pebble] 148  [JOB 7] flushing: sstable created 000261
+I260623 20:22:47.944686 4818 3@pebble/event.go:784 ⋮ [n1,s1,pebble] 149  [JOB 7] flushed 3 memtables (47MB) to L0 [000261] (568KB), in 0.1s (0.1s total), output rate 4.4MB/s
+I260623 20:22:47.945627 4825 3@pebble/event.go:768 ⋮ [n1,s1,pebble] 150  [JOB 8] compacting(default) L0 [000261] (568KB) Score=5.23 + L6 [000254 000255 000256 000257] (12MB) Score=0.19; OverlappingRatio: Single 22.05, Multi 0.00
+I260623 20:22:47.946757 4825 3@pebble/event.go:808 ⋮ [n1,s1,pebble] 151  [JOB 8] compacting: sstable created 000262
+I260623 20:22:48.153249 4825 3@pebble/event.go:808 ⋮ [n1,s1,pebble] 152  [JOB 8] compacting: sstable created 000263
+I260623 20:22:48.290481 4825 3@pebble/event.go:808 ⋮ [n1,s1,pebble] 153  [JOB 8] compacting: sstable created 000264
+I260623 20:22:48.433477 4825 3@pebble/event.go:808 ⋮ [n1,s1,pebble] 154  [JOB 8] compacting: sstable created 000265
+I260623 20:22:48.439364 4825 3@pebble/event.go:772 ⋮ [n1,s1,pebble] 155  [JOB 8] compacted(default) L0 [000261] (568KB) Score=5.23 + L6 [000254 000255 000256 000257] (12MB) Score=0.19 -> L6 [000262 000263 000264 000265] (12MB), in 0.5s (0.5s total), output rate 25MB/s
+I260623 20:22:48.439910 83 3@pebble/event.go:812 ⋮ [n1,s1,pebble] 156  [JOB 8] sstable deleted 000254
+I260623 20:22:48.440151 83 3@pebble/event.go:812 ⋮ [n1,s1,pebble] 157  [JOB 8] sstable deleted 000255
+I260623 20:22:48.440486 83 3@pebble/event.go:812 ⋮ [n1,s1,pebble] 158  [JOB 8] sstable deleted 000256
+I260623 20:22:48.440553 83 3@pebble/event.go:812 ⋮ [n1,s1,pebble] 159  [JOB 8] sstable deleted 000257
+I260623 20:22:48.440636 83 3@pebble/event.go:812 ⋮ [n1,s1,pebble] 160  [JOB 8] sstable deleted 000261
+I260623 20:22:56.135327 365 2@util/log/event_log.go:32 ⋮ [T1,Vsystem,n1] 161 ={"Timestamp":1782246176135310711,"EventType":"runtime_stats","MemRSSBytes":694468608,"GoroutineCount":453,"MemStackSysBytes":5832704,"GoAllocBytes":199944736,"GoTotalBytes":486487400,"HeapFragmentBytes":25728480,"HeapReservedBytes":236666880,"HeapReleasedBytes":1572864,"CGoAllocBytes":105820096,"CGoTotalBytes":124911616,"CGoCallRate":10.976274,"CPUUserPercent":8.481667,"CPUSysPercent":1.4967647,"GCPausePercent":0.020066215,"GCRunCount":13,"NetHostRecvBytes":389814,"NetHostSendBytes":204731}
+I260623 20:22:56.135530 365 2@server/status/runtime_log.go:47 ⋮ [T1,Vsystem,n1] 162  runtime stats: 662 MiB RSS, 453 goroutines (stacks: 5.6 MiB), 191 MiB/464 MiB Go alloc/total (heap fragmentation: 24 MiB, heap reserved: 226 MiB, heap released: 1.5 MiB), 101 MiB/119 MiB CGO alloc/total (11.0 CGO/sec), 8.5/1.5 %(u/s)time, 0.0 %gc (13x), 381 KiB/200 KiB (r/w)net
+I260623 20:23:06.135133 365 2@util/log/event_log.go:32 ⋮ [T1,Vsystem,n1] 163 ={"Timestamp":1782246186135127466,"EventType":"runtime_stats","MemRSSBytes":698515456,"GoroutineCount":454,"MemStackSysBytes":6356992,"GoAllocBytes":218782896,"GoTotalBytes":486487400,"HeapFragmentBytes":21898064,"HeapReservedBytes":221134848,"HeapReleasedBytes":1572864,"CGoAllocBytes":105839040,"CGoTotalBytes":124911616,"CGoCallRate":1.900034,"CPUUserPercent":2.5000448,"CPUSysPercent":0.90001607,"GCRunCount":13,"NetHostRecvBytes":385938,"NetHostSendBytes":201414}
+I260623 20:23:06.135262 365 2@server/status/runtime_log.go:47 ⋮ [T1,Vsystem,n1] 164  runtime stats: 666 MiB RSS, 454 goroutines (stacks: 6.1 MiB), 209 MiB/464 MiB Go alloc/total (heap fragmentation: 21 MiB, heap reserved: 211 MiB, heap released: 1.5 MiB), 101 MiB/119 MiB CGO alloc/total (1.9 CGO/sec), 2.5/0.9 %(u/s)time, 0.0 %gc (13x), 377 KiB/197 KiB (r/w)net
+I260623 20:23:16.093666 362 2@gossip/gossip.go:531 ⋮ [T1,Vsystem,n1] 165  gossip status (ok, 3 nodes)
+I260623 20:23:16.093666 362 2@gossip/gossip.go:531 ⋮ [T1,Vsystem,n1] 165 +gossip client (1/3 cur/max conns)
+I260623 20:23:16.093666 362 2@gossip/gossip.go:531 ⋮ [T1,Vsystem,n1] 165 +  3: ‹crdb-cluster-1.crdb-cluster.cockroachdb.svc.cluster.local:26257› (3m0s: infos 87/472 sent/received, bytes 29646B/81952B sent/received)
+I260623 20:23:16.093666 362 2@gossip/gossip.go:531 ⋮ [T1,Vsystem,n1] 165 +gossip server (0/3 cur/max conns, infos 87/472 sent/received, bytes 29646B/81952B sent/received)
+I260623 20:23:16.136227 365 2@util/log/event_log.go:32 ⋮ [T1,Vsystem,n1] 166 ={"Timestamp":1782246196136221679,"EventType":"runtime_stats","MemRSSBytes":700776448,"GoroutineCount":453,"MemStackSysBytes":6717440,"GoAllocBytes":237296040,"GoTotalBytes":486487400,"HeapFragmentBytes":18392664,"HeapReservedBytes":205766656,"HeapReleasedBytes":1572864,"CGoAllocBytes":106000576,"CGoTotalBytes":124911616,"CGoCallRate":3.0996609,"CPUUserPercent":2.5997157,"CPUSysPercent":0.7999125,"GCRunCount":13,"NetHostRecvBytes":393134,"NetHostSendBytes":211000}
+I260623 20:23:16.136326 365 2@server/status/runtime_log.go:47 ⋮ [T1,Vsystem,n1] 167  runtime stats: 668 MiB RSS, 453 goroutines (stacks: 6.4 MiB), 226 MiB/464 MiB Go alloc/total (heap fragmentation: 18 MiB, heap reserved: 196 MiB, heap released: 1.5 MiB), 101 MiB/119 MiB CGO alloc/total (3.1 CGO/sec), 2.6/0.8 %(u/s)time, 0.0 %gc (13x), 384 KiB/206 KiB (r/w)net
+I260623 20:23:26.141468 365 2@util/log/event_log.go:32 ⋮ [T1,Vsystem,n1] 168 ={"Timestamp":1782246206141451128,"EventType":"runtime_stats","MemRSSBytes":704839680,"GoroutineCount":452,"MemStackSysBytes":6815744,"GoAllocBytes":259941368,"GoTotalBytes":486552936,"HeapFragmentBytes":15571976,"HeapReservedBytes":185843712,"HeapReleasedBytes":1572864,"CGoAllocBytes":106000576,"CGoTotalBytes":124911616,"CGoCallRate":0.09994778,"CPUUserPercent":2.3987467,"CPUSysPercent":1.0994256,"GCRunCount":13,"NetHostRecvBytes":498384,"NetHostSendBytes":210083}
+I260623 20:23:26.141679 365 2@server/status/runtime_log.go:47 ⋮ [T1,Vsystem,n1] 169  runtime stats: 672 MiB RSS, 452 goroutines (stacks: 6.5 MiB), 248 MiB/464 MiB Go alloc/total (heap fragmentation: 15 MiB, heap reserved: 177 MiB, heap released: 1.5 MiB), 101 MiB/119 MiB CGO alloc/total (0.1 CGO/sec), 2.4/1.1 %(u/s)time, 0.0 %gc (13x), 487 KiB/205 KiB (r/w)net
+I260623 20:23:36.142372 365 2@util/log/event_log.go:32 ⋮ [T1,Vsystem,n1] 170 ={"Timestamp":1782246216142360174,"EventType":"runtime_stats","MemRSSBytes":709148672,"GoroutineCount":452,"MemStackSysBytes":6848512,"GoAllocBytes":278925576,"GoTotalBytes":486618472,"HeapFragmentBytes":13963000,"HeapReservedBytes":168435712,"HeapReleasedBytes":1572864,"CGoAllocBytes":106190528,"CGoTotalBytes":124911616,"CGoCallRate":1.2998812,"CPUUserPercent":2.5997624,"CPUSysPercent":0.9999086,"GCRunCount":13,"NetHostRecvBytes":387869,"NetHostSendBytes":202677}
+I260623 20:23:36.142483 365 2@server/status/runtime_log.go:47 ⋮ [T1,Vsystem,n1] 171  runtime stats: 676 MiB RSS, 452 goroutines (stacks: 6.5 MiB), 266 MiB/464 MiB Go alloc/total (heap fragmentation: 13 MiB, heap reserved: 161 MiB, heap released: 1.5 MiB), 101 MiB/119 MiB CGO alloc/total (1.3 CGO/sec), 2.6/1.0 %(u/s)time, 0.0 %gc (13x), 379 KiB/198 KiB (r/w)net
+I260623 20:23:46.142189 365 2@util/log/event_log.go:32 ⋮ [T1,Vsystem,n1] 172 ={"Timestamp":1782246226142181762,"EventType":"runtime_stats","MemRSSBytes":711684096,"GoroutineCount":452,"MemStackSysBytes":6914048,"GoAllocBytes":303293136,"GoTotalBytes":486618472,"HeapFragmentBytes":12508464,"HeapReservedBytes":145432576,"HeapReleasedBytes":1572864,"CGoAllocBytes":106571456,"CGoTotalBytes":124911616,"CGoCallRate":0.40000716,"CPUUserPercent":2.80005,"CPUSysPercent":0.90001607,"GCRunCount":13,"NetHostRecvBytes":399984,"NetHostSendBytes":216271}
+I260623 20:23:46.142286 365 2@server/status/runtime_log.go:47 ⋮ [T1,Vsystem,n1] 173  runtime stats: 679 MiB RSS, 452 goroutines (stacks: 6.6 MiB), 289 MiB/464 MiB Go alloc/total (heap fragmentation: 12 MiB, heap reserved: 139 MiB, heap released: 1.5 MiB), 102 MiB/119 MiB CGO alloc/total (0.4 CGO/sec), 2.8/0.9 %(u/s)time, 0.0 %gc (13x), 391 KiB/211 KiB (r/w)net
+I260623 20:23:56.145381 365 2@util/log/event_log.go:32 ⋮ [T1,Vsystem,n1] 174 ={"Timestamp":1782246236145375544,"EventType":"runtime_stats","MemRSSBytes":715821056,"GoroutineCount":454,"MemStackSysBytes":6946816,"GoAllocBytes":326956968,"GoTotalBytes":486684008,"HeapFragmentBytes":12011608,"HeapReservedBytes":122208256,"HeapReleasedBytes":1572864,"CGoAllocBytes":106571456,"CGoTotalBytes":124911616,"CGoCallRate":0.099968076,"CPUUserPercent":2.899074,"CPUSysPercent":0.8997126,"GCRunCount":13,"NetHostRecvBytes":388151,"NetHostSendBytes":203211}
+I260623 20:23:56.145512 365 2@server/status/runtime_log.go:47 ⋮ [T1,Vsystem,n1] 175  runtime stats: 683 MiB RSS, 454 goroutines (stacks: 6.6 MiB), 312 MiB/464 MiB Go alloc/total (heap fragmentation: 12 MiB, heap reserved: 116 MiB, heap released: 1.5 MiB), 102 MiB/119 MiB CGO alloc/total (0.1 CGO/sec), 2.9/0.9 %(u/s)time, 0.0 %gc (13x), 379 KiB/198 KiB (r/w)net
+I260623 20:24:06.146939 365 2@util/log/event_log.go:32 ⋮ [T1,Vsystem,n1] 176 ={"Timestamp":1782246246146930257,"EventType":"runtime_stats","MemRSSBytes":718049280,"GoroutineCount":453,"MemStackSysBytes":7012352,"GoAllocBytes":349968184,"GoTotalBytes":486749544,"HeapFragmentBytes":11806920,"HeapReservedBytes":99311616,"HeapReleasedBytes":1572864,"CGoAllocBytes":106571456,"CGoTotalBytes":124911616,"CGoCallRate":0.09998447,"CPUUserPercent":2.6995807,"CPUSysPercent":0.9998446,"GCRunCount":13,"NetHostRecvBytes":385157,"NetHostSendBytes":203124}
+I260623 20:24:06.147085 365 2@server/status/runtime_log.go:47 ⋮ [T1,Vsystem,n1] 177  runtime stats: 685 MiB RSS, 453 goroutines (stacks: 6.7 MiB), 334 MiB/464 MiB Go alloc/total (heap fragmentation: 11 MiB, heap reserved: 95 MiB, heap released: 1.5 MiB), 102 MiB/119 MiB CGO alloc/total (0.1 CGO/sec), 2.7/1.0 %(u/s)time, 0.0 %gc (13x), 376 KiB/198 KiB (r/w)net
+I260623 20:24:16.098440 362 2@gossip/gossip.go:531 ⋮ [T1,Vsystem,n1] 178  gossip status (ok, 3 nodes)
+I260623 20:24:16.098440 362 2@gossip/gossip.go:531 ⋮ [T1,Vsystem,n1] 178 +gossip client (1/3 cur/max conns)
+I260623 20:24:16.098440 362 2@gossip/gossip.go:531 ⋮ [T1,Vsystem,n1] 178 +  3: ‹crdb-cluster-1.crdb-cluster.cockroachdb.svc.cluster.local:26257› (4m0s: infos 113/624 sent/received, bytes 38332B/107940B sent/received)
+I260623 20:24:16.098440 362 2@gossip/gossip.go:531 ⋮ [T1,Vsystem,n1] 178 +gossip server (0/3 cur/max conns, infos 113/624 sent/received, bytes 38332B/107940B sent/received)
+I260623 20:24:16.148038 365 2@util/log/event_log.go:32 ⋮ [T1,Vsystem,n1] 179 ={"Timestamp":1782246256148010345,"EventType":"runtime_stats","MemRSSBytes":631885824,"GoroutineCount":454,"MemStackSysBytes":6291456,"GoAllocBytes":104959320,"GoTotalBytes":395752808,"HeapFragmentBytes":29815464,"HeapReservedBytes":236109824,"HeapReleasedBytes":92569600,"CGoAllocBytes":106571456,"CGoTotalBytes":124911616,"CGoCallRate":0.09998926,"CPUUserPercent":3.899581,"CPUSysPercent":0.89990336,"GCPausePercent":0.014875063,"GCRunCount":14,"NetHostRecvBytes":398328,"NetHostSendBytes":214473}
+I260623 20:24:16.148371 365 2@server/status/runtime_log.go:47 ⋮ [T1,Vsystem,n1] 180  runtime stats: 603 MiB RSS, 454 goroutines (stacks: 6.0 MiB), 100 MiB/377 MiB Go alloc/total (heap fragmentation: 28 MiB, heap reserved: 225 MiB, heap released: 88 MiB), 102 MiB/119 MiB CGO alloc/total (0.1 CGO/sec), 3.9/0.9 %(u/s)time, 0.0 %gc (14x), 389 KiB/209 KiB (r/w)net
+I260623 20:24:26.147920 365 2@util/log/event_log.go:32 ⋮ [T1,Vsystem,n1] 181 ={"Timestamp":1782246266147913503,"EventType":"runtime_stats","MemRSSBytes":633966592,"GoroutineCount":452,"MemStackSysBytes":6455296,"GoAllocBytes":122129696,"GoTotalBytes":395752808,"HeapFragmentBytes":24408800,"HeapReservedBytes":224182272,"HeapReleasedBytes":92569600,"CGoAllocBytes":106571456,"CGoTotalBytes":124911616,"CGoCallRate":0.100000896,"CPUUserPercent":2.7000241,"CPUSysPercent":0.8000071,"GCRunCount":14,"NetHostRecvBytes":335536,"NetHostSendBytes":200964}
+I260623 20:24:26.148071 365 2@server/status/runtime_log.go:47 ⋮ [T1,Vsystem,n1] 182  runtime stats: 605 MiB RSS, 452 goroutines (stacks: 6.2 MiB), 116 MiB/377 MiB Go alloc/total (heap fragmentation: 23 MiB, heap reserved: 214 MiB, heap released: 88 MiB), 102 MiB/119 MiB CGO alloc/total (0.1 CGO/sec), 2.7/0.8 %(u/s)time, 0.0 %gc (14x), 328 KiB/196 KiB (r/w)net
+I260623 20:24:36.154500 365 2@util/log/event_log.go:32 ⋮ [T1,Vsystem,n1] 183 ={"Timestamp":1782246276154479257,"EventType":"runtime_stats","MemRSSBytes":638234624,"GoroutineCount":452,"MemStackSysBytes":6586368,"GoAllocBytes":141915320,"GoTotalBytes":395752808,"HeapFragmentBytes":19671880,"HeapReservedBytes":209002496,"HeapReleasedBytes":92569600,"CGoAllocBytes":106571456,"CGoTotalBytes":124911616,"CGoCallRate":0.09993444,"CPUUserPercent":2.7981644,"CPUSysPercent":0.59960663,"GCRunCount":14,"NetHostRecvBytes":446313,"NetHostSendBytes":209112}
+I260623 20:24:36.154752 365 2@server/status/runtime_log.go:47 ⋮ [T1,Vsystem,n1] 184  runtime stats: 609 MiB RSS, 452 goroutines (stacks: 6.3 MiB), 135 MiB/377 MiB Go alloc/total (heap fragmentation: 19 MiB, heap reserved: 199 MiB, heap released: 88 MiB), 102 MiB/119 MiB CGO alloc/total (0.1 CGO/sec), 2.8/0.6 %(u/s)time, 0.0 %gc (14x), 436 KiB/204 KiB (r/w)net
+I260623 20:24:46.151873 365 2@util/log/event_log.go:32 ⋮ [T1,Vsystem,n1] 185 ={"Timestamp":1782246286151866595,"EventType":"runtime_stats","MemRSSBytes":640331776,"GoroutineCount":452,"MemStackSysBytes":6717440,"GoAllocBytes":160714032,"GoTotalBytes":395752808,"HeapFragmentBytes":16339664,"HeapReservedBytes":193404928,"HeapReleasedBytes":92569600,"CGoAllocBytes":106571456,"CGoTotalBytes":124911616,"CGoCallRate":0.100026086,"CPUUserPercent":3.200835,"CPUSysPercent":1.000261,"GCRunCount":14,"NetHostRecvBytes":400018,"NetHostSendBytes":215179}
+I260623 20:24:46.152077 365 2@server/status/runtime_log.go:47 ⋮ [T1,Vsystem,n1] 186  runtime stats: 611 MiB RSS, 452 goroutines (stacks: 6.4 MiB), 153 MiB/377 MiB Go alloc/total (heap fragmentation: 16 MiB, heap reserved: 184 MiB, heap released: 88 MiB), 102 MiB/119 MiB CGO alloc/total (0.1 CGO/sec), 3.2/1.0 %(u/s)time, 0.0 %gc (14x), 391 KiB/210 KiB (r/w)net
+I260623 20:24:56.152586 365 2@util/log/event_log.go:32 ⋮ [T1,Vsystem,n1] 187 ={"Timestamp":1782246296152567628,"EventType":"runtime_stats","MemRSSBytes":642428928,"GoroutineCount":453,"MemStackSysBytes":6815744,"GoAllocBytes":178350312,"GoTotalBytes":395752808,"HeapFragmentBytes":14153496,"HeapReservedBytes":177856512,"HeapReleasedBytes":92569600,"CGoAllocBytes":106571456,"CGoTotalBytes":124911616,"CGoCallRate":0.099993035,"CPUUserPercent":2.599819,"CPUSysPercent":0.9999304,"GCRunCount":14,"NetHostRecvBytes":386006,"NetHostSendBytes":202241}
+I260623 20:24:56.152807 365 2@server/status/runtime_log.go:47 ⋮ [T1,Vsystem,n1] 188  runtime stats: 613 MiB RSS, 453 goroutines (stacks: 6.5 MiB), 170 MiB/377 MiB Go alloc/total (heap fragmentation: 14 MiB, heap reserved: 170 MiB, heap released: 88 MiB), 102 MiB/119 MiB CGO alloc/total (0.1 CGO/sec), 2.6/1.0 %(u/s)time, 0.0 %gc (14x), 377 KiB/198 KiB (r/w)net
+
+codex
+The current StatefulSet command already advertises each pod through the headless service and joins all three stable DNS names. Pod `crdb-cluster-0` is now logging `gossip status (ok, 3 nodes)`, so I’m checking whether SQL is accepting connections or whether only gossip is up.
+exec
+/bin/zsh -lc 'kubectl -n cockroachdb logs crdb-cluster-2 --tail=80' in /Users/jinyige/Karma/runs/new-added-workflows/cockroachdb-deploy-init-settings-audit-20260623_202329/stages/stage_02
+exec
+/bin/zsh -lc "kubectl -n cockroachdb exec crdb-cluster-0 -- ./cockroach sql --insecure --host=localhost:26257 -e 'SELECT node_id, address, sql_address, is_available, is_live FROM crdb_internal.gossip_nodes ORDER BY node_id;'" in /Users/jinyige/Karma/runs/new-added-workflows/cockroachdb-deploy-init-settings-audit-20260623_202329/stages/stage_02
+exec
+/bin/zsh -lc 'kubectl -n cockroachdb exec crdb-cluster-0 -- ./cockroach node status --insecure --host=localhost:26257' in /Users/jinyige/Karma/runs/new-added-workflows/cockroachdb-deploy-init-settings-audit-20260623_202329/stages/stage_02
+exec
+/bin/zsh -lc 'kubectl -n cockroachdb logs crdb-cluster-1 --tail=80' in /Users/jinyige/Karma/runs/new-added-workflows/cockroachdb-deploy-init-settings-audit-20260623_202329/stages/stage_02
+ succeeded in 124ms:
+W260623 20:21:25.266751 6293 2@rpc/clock_offset.go:291 ⋮ [T1,Vsystem,n2,rnode=1,raddr=‹crdb-cluster-0.crdb-cluster.cockroachdb.svc.cluster.local:26257›,class=default,rpc] 604  latency jump (prev avg 1.12ms, current 69.32ms)
+I260623 20:21:26.245902 326 2@util/log/event_log.go:32 ⋮ [T1,Vsystem,n2] 605 ={"Timestamp":1782246086245896794,"EventType":"runtime_stats","MemRSSBytes":853241856,"GoroutineCount":479,"MemStackSysBytes":7405568,"GoAllocBytes":391125696,"GoTotalBytes":503234936,"HeapFragmentBytes":15148352,"HeapReservedBytes":69861376,"HeapReleasedBytes":44924928,"CGoAllocBytes":139684880,"CGoTotalBytes":173211648,"CGoCallRate":0.40000474,"CPUUserPercent":3.300039,"CPUSysPercent":1.0000118,"GCRunCount":26,"NetHostRecvBytes":362139,"NetHostSendBytes":542681}
+I260623 20:21:26.246006 326 2@server/status/runtime_log.go:47 ⋮ [T1,Vsystem,n2] 606  runtime stats: 814 MiB RSS, 479 goroutines (stacks: 7.1 MiB), 373 MiB/480 MiB Go alloc/total (heap fragmentation: 14 MiB, heap reserved: 67 MiB, heap released: 43 MiB), 133 MiB/165 MiB CGO alloc/total (0.4 CGO/sec), 3.3/1.0 %(u/s)time, 0.0 %gc (26x), 354 KiB/530 KiB (r/w)net
+I260623 20:21:36.247489 326 2@util/log/event_log.go:32 ⋮ [T1,Vsystem,n2] 607 ={"Timestamp":1782246096247464382,"EventType":"runtime_stats","MemRSSBytes":731869184,"GoroutineCount":479,"MemStackSysBytes":5537792,"GoAllocBytes":98478928,"GoTotalBytes":381272440,"HeapFragmentBytes":60773552,"HeapReservedBytes":196788224,"HeapReleasedBytes":166887424,"CGoAllocBytes":139684880,"CGoTotalBytes":173211648,"CGoCallRate":0.099984355,"CPUUserPercent":4.3993115,"CPUSysPercent":1.0998279,"GCPausePercent":0.03789407,"GCRunCount":27,"NetHostRecvBytes":373405,"NetHostSendBytes":494624}
+I260623 20:21:36.247777 326 2@server/status/runtime_log.go:47 ⋮ [T1,Vsystem,n2] 608  runtime stats: 698 MiB RSS, 479 goroutines (stacks: 5.3 MiB), 94 MiB/364 MiB Go alloc/total (heap fragmentation: 58 MiB, heap reserved: 188 MiB, heap released: 159 MiB), 133 MiB/165 MiB CGO alloc/total (0.1 CGO/sec), 4.4/1.1 %(u/s)time, 0.0 %gc (27x), 365 KiB/483 KiB (r/w)net
+I260623 20:21:46.248838 326 2@util/log/event_log.go:32 ⋮ [T1,Vsystem,n2] 609 ={"Timestamp":1782246106248828679,"EventType":"runtime_stats","MemRSSBytes":731869184,"GoroutineCount":478,"MemStackSysBytes":6619136,"GoAllocBytes":127817792,"GoTotalBytes":381272440,"HeapFragmentBytes":48752576,"HeapReservedBytes":178388992,"HeapReleasedBytes":166887424,"CGoAllocBytes":139684880,"CGoTotalBytes":173211648,"CGoCallRate":0.09998633,"CPUUserPercent":3.4995217,"CPUSysPercent":0.9998633,"GCRunCount":27,"NetHostRecvBytes":364947,"NetHostSendBytes":524464}
+I260623 20:21:46.248970 326 2@server/status/runtime_log.go:47 ⋮ [T1,Vsystem,n2] 610  runtime stats: 698 MiB RSS, 478 goroutines (stacks: 6.3 MiB), 122 MiB/364 MiB Go alloc/total (heap fragmentation: 46 MiB, heap reserved: 170 MiB, heap released: 159 MiB), 133 MiB/165 MiB CGO alloc/total (0.1 CGO/sec), 3.5/1.0 %(u/s)time, 0.0 %gc (27x), 356 KiB/512 KiB (r/w)net
+I260623 20:21:55.605287 92 util/admission/work_queue.go:550 ⋮ [T1,Vsystem,n2] 611  kv: FIFO threshold for tenant 1 is -128
+I260623 20:21:56.147831 323 2@gossip/gossip.go:531 ⋮ [T1,Vsystem,n2] 612  gossip status (ok, 3 nodes)
+I260623 20:21:56.147831 323 2@gossip/gossip.go:531 ⋮ [T1,Vsystem,n2] 612 +gossip client (1/3 cur/max conns)
+I260623 20:21:56.147831 323 2@gossip/gossip.go:531 ⋮ [T1,Vsystem,n2] 612 +  3: ‹crdb-cluster-1.crdb-cluster.cockroachdb.svc.cluster.local:26257› (13m16s: infos 949/1550 sent/received, bytes 251641B/324479B sent/received)
+I260623 20:21:56.147831 323 2@gossip/gossip.go:531 ⋮ [T1,Vsystem,n2] 612 +gossip server (0/3 cur/max conns, infos 1190/1614 sent/received, bytes 295220B/347786B sent/received)
+I260623 20:21:56.205608 332 util/admission/work_queue.go:550 ⋮ [T1,Vsystem,n2] 613  kv: FIFO threshold for tenant 1 is -128
+I260623 20:21:56.250785 326 2@util/log/event_log.go:32 ⋮ [T1,Vsystem,n2] 614 ={"Timestamp":1782246116250771294,"EventType":"runtime_stats","MemRSSBytes":731869184,"GoroutineCount":478,"MemStackSysBytes":6750208,"GoAllocBytes":156760104,"GoTotalBytes":381272440,"HeapFragmentBytes":40888280,"HeapReservedBytes":157179904,"HeapReleasedBytes":166887424,"CGoAllocBytes":139684880,"CGoTotalBytes":173211648,"CGoCallRate":0.0999806,"CPUUserPercent":3.3993404,"CPUSysPercent":0.89982545,"GCRunCount":27,"NetHostRecvBytes":344472,"NetHostSendBytes":499985}
+I260623 20:21:56.250940 326 2@server/status/runtime_log.go:47 ⋮ [T1,Vsystem,n2] 615  runtime stats: 698 MiB RSS, 478 goroutines (stacks: 6.4 MiB), 150 MiB/364 MiB Go alloc/total (heap fragmentation: 39 MiB, heap reserved: 150 MiB, heap released: 159 MiB), 133 MiB/165 MiB CGO alloc/total (0.1 CGO/sec), 3.4/0.9 %(u/s)time, 0.0 %gc (27x), 336 KiB/488 KiB (r/w)net
+I260623 20:22:06.252516 326 2@util/log/event_log.go:32 ⋮ [T1,Vsystem,n2] 616 ={"Timestamp":1782246126252507966,"EventType":"runtime_stats","MemRSSBytes":731869184,"GoroutineCount":478,"MemStackSysBytes":6914048,"GoAllocBytes":185947968,"GoTotalBytes":381272440,"HeapFragmentBytes":33818816,"HeapReservedBytes":134897664,"HeapReleasedBytes":166887424,"CGoAllocBytes":139684880,"CGoTotalBytes":173211648,"CGoCallRate":0.099982604,"CPUUserPercent":3.4993913,"CPUSysPercent":0.8998435,"GCRunCount":27,"NetHostRecvBytes":340992,"NetHostSendBytes":497482}
+I260623 20:22:06.252635 326 2@server/status/runtime_log.go:47 ⋮ [T1,Vsystem,n2] 617  runtime stats: 698 MiB RSS, 478 goroutines (stacks: 6.6 MiB), 177 MiB/364 MiB Go alloc/total (heap fragmentation: 32 MiB, heap reserved: 129 MiB, heap released: 159 MiB), 133 MiB/165 MiB CGO alloc/total (0.1 CGO/sec), 3.5/0.9 %(u/s)time, 0.0 %gc (27x), 333 KiB/486 KiB (r/w)net
+I260623 20:22:16.253877 326 2@util/log/event_log.go:32 ⋮ [T1,Vsystem,n2] 618 ={"Timestamp":1782246136253862929,"EventType":"runtime_stats","MemRSSBytes":731869184,"GoroutineCount":479,"MemStackSysBytes":7077888,"GoAllocBytes":215068184,"GoTotalBytes":381272440,"HeapFragmentBytes":27259368,"HeapReservedBytes":112173056,"HeapReleasedBytes":166887424,"CGoAllocBytes":139684880,"CGoTotalBytes":173211648,"CGoCallRate":0.09998647,"CPUUserPercent":3.599513,"CPUSysPercent":0.99986476,"GCRunCount":27,"NetHostRecvBytes":346796,"NetHostSendBytes":501838}
+I260623 20:22:16.254103 326 2@server/status/runtime_log.go:47 ⋮ [T1,Vsystem,n2] 619  runtime stats: 698 MiB RSS, 479 goroutines (stacks: 6.8 MiB), 205 MiB/364 MiB Go alloc/total (heap fragmentation: 26 MiB, heap reserved: 107 MiB, heap released: 159 MiB), 133 MiB/165 MiB CGO alloc/total (0.1 CGO/sec), 3.6/1.0 %(u/s)time, 0.0 %gc (27x), 339 KiB/490 KiB (r/w)net
+I260623 20:22:26.266725 326 2@util/log/event_log.go:32 ⋮ [T1,Vsystem,n2] 620 ={"Timestamp":1782246146266720294,"EventType":"runtime_stats","MemRSSBytes":731869184,"GoroutineCount":479,"MemStackSysBytes":7077888,"GoAllocBytes":244243376,"GoTotalBytes":381272440,"HeapFragmentBytes":21537872,"HeapReservedBytes":88719360,"HeapReleasedBytes":166887424,"CGoAllocBytes":139684880,"CGoTotalBytes":173211648,"CGoCallRate":0.09987157,"CPUUserPercent":3.1958904,"CPUSysPercent":1.1984589,"GCRunCount":27,"NetHostRecvBytes":340099,"NetHostSendBytes":497229}
+I260623 20:22:26.266871 326 2@server/status/runtime_log.go:47 ⋮ [T1,Vsystem,n2] 621  runtime stats: 698 MiB RSS, 479 goroutines (stacks: 6.8 MiB), 233 MiB/364 MiB Go alloc/total (heap fragmentation: 20 MiB, heap reserved: 85 MiB, heap released: 159 MiB), 133 MiB/165 MiB CGO alloc/total (0.1 CGO/sec), 3.2/1.2 %(u/s)time, 0.0 %gc (27x), 332 KiB/486 KiB (r/w)net
+I260623 20:22:36.267004 326 2@util/log/event_log.go:32 ⋮ [T1,Vsystem,n2] 622 ={"Timestamp":1782246156266994132,"EventType":"runtime_stats","MemRSSBytes":734097408,"GoroutineCount":479,"MemStackSysBytes":7077888,"GoAllocBytes":272454376,"GoTotalBytes":383680888,"HeapFragmentBytes":18582808,"HeapReservedBytes":65871872,"HeapReleasedBytes":164478976,"CGoAllocBytes":139684880,"CGoTotalBytes":173211648,"CGoCallRate":0.09999726,"CPUUserPercent":3.1999123,"CPUSysPercent":0.9999726,"GCRunCount":27,"NetHostRecvBytes":341953,"NetHostSendBytes":497510}
+I260623 20:22:36.267240 326 2@server/status/runtime_log.go:47 ⋮ [T1,Vsystem,n2] 623  runtime stats: 700 MiB RSS, 479 goroutines (stacks: 6.8 MiB), 260 MiB/366 MiB Go alloc/total (heap fragmentation: 18 MiB, heap reserved: 63 MiB, heap released: 157 MiB), 133 MiB/165 MiB CGO alloc/total (0.1 CGO/sec), 3.2/1.0 %(u/s)time, 0.0 %gc (27x), 334 KiB/486 KiB (r/w)net
+I260623 20:22:46.266981 326 2@util/log/event_log.go:32 ⋮ [T1,Vsystem,n2] 624 ={"Timestamp":1782246166266973262,"EventType":"runtime_stats","MemRSSBytes":704598016,"GoroutineCount":478,"MemStackSysBytes":5537792,"GoAllocBytes":91904024,"GoTotalBytes":354312568,"HeapFragmentBytes":52987880,"HeapReservedBytes":184188928,"HeapReleasedBytes":193847296,"CGoAllocBytes":139684880,"CGoTotalBytes":173211648,"CGoCallRate":2.2000046,"CPUUserPercent":3.700008,"CPUSysPercent":1.0000021,"GCPausePercent":0.020137541,"GCRunCount":28,"NetHostRecvBytes":357016,"NetHostSendBytes":515221}
+I260623 20:22:46.267095 326 2@server/status/runtime_log.go:47 ⋮ [T1,Vsystem,n2] 625  runtime stats: 672 MiB RSS, 478 goroutines (stacks: 5.3 MiB), 88 MiB/338 MiB Go alloc/total (heap fragmentation: 50 MiB, heap reserved: 176 MiB, heap released: 185 MiB), 133 MiB/165 MiB CGO alloc/total (2.2 CGO/sec), 3.7/1.0 %(u/s)time, 0.0 %gc (28x), 349 KiB/503 KiB (r/w)net
+I260623 20:22:56.179600 323 2@gossip/gossip.go:531 ⋮ [T1,Vsystem,n2] 626  gossip status (ok, 3 nodes)
+I260623 20:22:56.179600 323 2@gossip/gossip.go:531 ⋮ [T1,Vsystem,n2] 626 +gossip client (1/3 cur/max conns)
+I260623 20:22:56.179600 323 2@gossip/gossip.go:531 ⋮ [T1,Vsystem,n2] 626 +  3: ‹crdb-cluster-1.crdb-cluster.cockroachdb.svc.cluster.local:26257› (14m16s: infos 1035/1642 sent/received, bytes 272995B/345607B sent/received)
+I260623 20:22:56.179600 323 2@gossip/gossip.go:531 ⋮ [T1,Vsystem,n2] 626 +gossip server (0/3 cur/max conns, infos 1276/1706 sent/received, bytes 316574B/368914B sent/received)
+I260623 20:22:56.288011 326 2@util/log/event_log.go:32 ⋮ [T1,Vsystem,n2] 627 ={"Timestamp":1782246176287999211,"EventType":"runtime_stats","MemRSSBytes":696131584,"GoroutineCount":478,"MemStackSysBytes":6389760,"GoAllocBytes":120882728,"GoTotalBytes":345751928,"HeapFragmentBytes":41286104,"HeapReservedBytes":157499392,"HeapReleasedBytes":202407936,"CGoAllocBytes":139684880,"CGoTotalBytes":173211648,"CGoCallRate":0.0997902,"CPUUserPercent":3.1932864,"CPUSysPercent":0.6985314,"GCRunCount":28,"NetHostRecvBytes":346007,"NetHostSendBytes":501054}
+I260623 20:22:56.288167 326 2@server/status/runtime_log.go:47 ⋮ [T1,Vsystem,n2] 628  runtime stats: 664 MiB RSS, 478 goroutines (stacks: 6.1 MiB), 115 MiB/330 MiB Go alloc/total (heap fragmentation: 39 MiB, heap reserved: 150 MiB, heap released: 193 MiB), 133 MiB/165 MiB CGO alloc/total (0.1 CGO/sec), 3.2/0.7 %(u/s)time, 0.0 %gc (28x), 338 KiB/489 KiB (r/w)net
+I260623 20:23:06.288171 326 2@util/log/event_log.go:32 ⋮ [T1,Vsystem,n2] 629 ={"Timestamp":1782246186288164841,"EventType":"runtime_stats","MemRSSBytes":696131584,"GoroutineCount":478,"MemStackSysBytes":6684672,"GoAllocBytes":149877400,"GoTotalBytes":345751928,"HeapFragmentBytes":33484136,"HeapReservedBytes":136011776,"HeapReleasedBytes":202407936,"CGoAllocBytes":139684880,"CGoTotalBytes":173211648,"CGoCallRate":0.099998325,"CPUUserPercent":3.399943,"CPUSysPercent":0.8999849,"GCRunCount":28,"NetHostRecvBytes":336098,"NetHostSendBytes":490817}
+I260623 20:23:06.288257 326 2@server/status/runtime_log.go:47 ⋮ [T1,Vsystem,n2] 630  runtime stats: 664 MiB RSS, 478 goroutines (stacks: 6.4 MiB), 143 MiB/330 MiB Go alloc/total (heap fragmentation: 32 MiB, heap reserved: 130 MiB, heap released: 193 MiB), 133 MiB/165 MiB CGO alloc/total (0.1 CGO/sec), 3.4/0.9 %(u/s)time, 0.0 %gc (28x), 328 KiB/479 KiB (r/w)net
+I260623 20:23:16.288645 326 2@util/log/event_log.go:32 ⋮ [T1,Vsystem,n2] 631 ={"Timestamp":1782246196288637929,"EventType":"runtime_stats","MemRSSBytes":696131584,"GoroutineCount":479,"MemStackSysBytes":6914048,"GoAllocBytes":179182840,"GoTotalBytes":345751928,"HeapFragmentBytes":26346248,"HeapReservedBytes":113614848,"HeapReleasedBytes":202407936,"CGoAllocBytes":139684880,"CGoTotalBytes":173211648,"CGoCallRate":0.09999527,"CPUUserPercent":3.1998487,"CPUSysPercent":0.8999574,"GCRunCount":28,"NetHostRecvBytes":345047,"NetHostSendBytes":502328}
+I260623 20:23:16.288766 326 2@server/status/runtime_log.go:47 ⋮ [T1,Vsystem,n2] 632  runtime stats: 664 MiB RSS, 479 goroutines (stacks: 6.6 MiB), 171 MiB/330 MiB Go alloc/total (heap fragmentation: 25 MiB, heap reserved: 108 MiB, heap released: 193 MiB), 133 MiB/165 MiB CGO alloc/total (0.1 CGO/sec), 3.2/0.9 %(u/s)time, 0.0 %gc (28x), 337 KiB/491 KiB (r/w)net
+I260623 20:23:26.293287 326 2@util/log/event_log.go:32 ⋮ [T1,Vsystem,n2] 633 ={"Timestamp":1782246206293279128,"EventType":"runtime_stats","MemRSSBytes":696131584,"GoroutineCount":479,"MemStackSysBytes":7012352,"GoAllocBytes":208347792,"GoTotalBytes":345751928,"HeapFragmentBytes":21560688,"HeapReservedBytes":89137152,"HeapReleasedBytes":202407936,"CGoAllocBytes":139684880,"CGoTotalBytes":173211648,"CGoCallRate":0.09995361,"CPUUserPercent":3.098562,"CPUSysPercent":0.9995361,"GCRunCount":28,"NetHostRecvBytes":344738,"NetHostSendBytes":500597}
+I260623 20:23:26.293446 326 2@server/status/runtime_log.go:47 ⋮ [T1,Vsystem,n2] 634  runtime stats: 664 MiB RSS, 479 goroutines (stacks: 6.7 MiB), 199 MiB/330 MiB Go alloc/total (heap fragmentation: 21 MiB, heap reserved: 85 MiB, heap released: 193 MiB), 133 MiB/165 MiB CGO alloc/total (0.1 CGO/sec), 3.1/1.0 %(u/s)time, 0.0 %gc (28x), 337 KiB/489 KiB (r/w)net
+I260623 20:23:36.293588 326 2@util/log/event_log.go:32 ⋮ [T1,Vsystem,n2] 635 ={"Timestamp":1782246216293573174,"EventType":"runtime_stats","MemRSSBytes":696131584,"GoroutineCount":479,"MemStackSysBytes":7077888,"GoAllocBytes":237098984,"GoTotalBytes":345751928,"HeapFragmentBytes":18688024,"HeapReservedBytes":63193088,"HeapReleasedBytes":202407936,"CGoAllocBytes":139684880,"CGoTotalBytes":173211648,"CGoCallRate":0.09999717,"CPUUserPercent":3.0999124,"CPUSysPercent":0.99997175,"GCRunCount":28,"NetHostRecvBytes":340186,"NetHostSendBytes":496182}
+I260623 20:23:36.293761 326 2@server/status/runtime_log.go:47 ⋮ [T1,Vsystem,n2] 636  runtime stats: 664 MiB RSS, 479 goroutines (stacks: 6.8 MiB), 226 MiB/330 MiB Go alloc/total (heap fragmentation: 18 MiB, heap reserved: 60 MiB, heap released: 193 MiB), 133 MiB/165 MiB CGO alloc/total (0.1 CGO/sec), 3.1/1.0 %(u/s)time, 0.0 %gc (28x), 332 KiB/485 KiB (r/w)net
+I260623 20:23:46.294124 326 2@util/log/event_log.go:32 ⋮ [T1,Vsystem,n2] 637 ={"Timestamp":1782246226294119637,"EventType":"runtime_stats","MemRSSBytes":696131584,"GoroutineCount":478,"MemStackSysBytes":7077888,"GoAllocBytes":266617968,"GoTotalBytes":345751928,"HeapFragmentBytes":16481168,"HeapReservedBytes":35880960,"HeapReleasedBytes":202407936,"CGoAllocBytes":139684880,"CGoTotalBytes":173211648,"CGoCallRate":0.09999442,"CPUUserPercent":2.9998324,"CPUSysPercent":0.8999498,"GCRunCount":28,"NetHostRecvBytes":357731,"NetHostSendBytes":516525}
+I260623 20:23:46.294218 326 2@server/status/runtime_log.go:47 ⋮ [T1,Vsystem,n2] 638  runtime stats: 664 MiB RSS, 478 goroutines (stacks: 6.8 MiB), 254 MiB/330 MiB Go alloc/total (heap fragmentation: 16 MiB, heap reserved: 34 MiB, heap released: 193 MiB), 133 MiB/165 MiB CGO alloc/total (0.1 CGO/sec), 3.0/0.9 %(u/s)time, 0.0 %gc (28x), 349 KiB/504 KiB (r/w)net
+I260623 20:23:47.842367 238 3@pebble/event.go:828 ⋮ [n2,s2,pebble] 639  [JOB 24] WAL created 001030 (recycled 001005)
+I260623 20:23:47.845772 30697 3@pebble/event.go:780 ⋮ [n2,s2,pebble] 640  [JOB 25] flushing 1 memtable (63MB) to L0
+I260623 20:23:47.848232 30697 3@pebble/event.go:808 ⋮ [n2,s2,pebble] 641  [JOB 25] flushing: sstable created 001031
+I260623 20:23:48.088440 30697 3@pebble/event.go:784 ⋮ [n2,s2,pebble] 642  [JOB 25] flushed 1 memtable (63MB) to L0 [001031] (582KB), in 0.2s (0.2s total), output rate 2.4MB/s
+I260623 20:23:48.089148 30703 3@pebble/event.go:768 ⋮ [n2,s2,pebble] 643  [JOB 27] compacting(default) L0 [001031] (582KB) Score=5.17 + L6 [001026 001027 001028 001029] (12MB) Score=0.19; OverlappingRatio: Single 21.76, Multi 0.00
+I260623 20:23:48.089572 30703 3@pebble/event.go:808 ⋮ [n2,s2,pebble] 644  [JOB 27] compacting: sstable created 001032
+I260623 20:23:48.297995 30703 3@pebble/event.go:808 ⋮ [n2,s2,pebble] 645  [JOB 27] compacting: sstable created 001033
+I260623 20:23:48.477907 30703 3@pebble/event.go:808 ⋮ [n2,s2,pebble] 646  [JOB 27] compacting: sstable created 001034
+I260623 20:23:48.578413 30703 3@pebble/event.go:808 ⋮ [n2,s2,pebble] 647  [JOB 27] compacting: sstable created 001035
+I260623 20:23:48.584438 30703 3@pebble/event.go:772 ⋮ [n2,s2,pebble] 648  [JOB 27] compacted(default) L0 [001031] (582KB) Score=5.17 + L6 [001026 001027 001028 001029] (12MB) Score=0.19 -> L6 [001032 001033 001034 001035] (12MB), in 0.5s (0.5s total), output rate 25MB/s
+I260623 20:23:48.585951 12 3@pebble/event.go:812 ⋮ [n2,s2,pebble] 649  [JOB 27] sstable deleted 001026
+I260623 20:23:48.586990 12 3@pebble/event.go:812 ⋮ [n2,s2,pebble] 650  [JOB 27] sstable deleted 001027
+I260623 20:23:48.587812 12 3@pebble/event.go:812 ⋮ [n2,s2,pebble] 651  [JOB 27] sstable deleted 001028
+I260623 20:23:48.587909 12 3@pebble/event.go:812 ⋮ [n2,s2,pebble] 652  [JOB 27] sstable deleted 001029
+I260623 20:23:48.588040 12 3@pebble/event.go:812 ⋮ [n2,s2,pebble] 653  [JOB 27] sstable deleted 001031
+I260623 20:23:56.182825 323 2@gossip/gossip.go:531 ⋮ [T1,Vsystem,n2] 654  gossip status (ok, 3 nodes)
+I260623 20:23:56.182825 323 2@gossip/gossip.go:531 ⋮ [T1,Vsystem,n2] 654 +gossip client (1/3 cur/max conns)
+I260623 20:23:56.182825 323 2@gossip/gossip.go:531 ⋮ [T1,Vsystem,n2] 654 +  3: ‹crdb-cluster-1.crdb-cluster.cockroachdb.svc.cluster.local:26257› (15m16s: infos 1121/1734 sent/received, bytes 294341B/366735B sent/received)
+I260623 20:23:56.182825 323 2@gossip/gossip.go:531 ⋮ [T1,Vsystem,n2] 654 +gossip server (0/3 cur/max conns, infos 1362/1798 sent/received, bytes 337920B/390042B sent/received)
+I260623 20:23:56.295074 326 2@util/log/event_log.go:32 ⋮ [T1,Vsystem,n2] 655 ={"Timestamp":1782246236295069128,"EventType":"runtime_stats","MemRSSBytes":913690624,"GoroutineCount":478,"MemStackSysBytes":6193152,"GoAllocBytes":366537192,"GoTotalBytes":580406664,"HeapFragmentBytes":37254680,"HeapReservedBytes":149348352,"HeapReleasedBytes":2686976,"CGoAllocBytes":138645648,"CGoTotalBytes":173211648,"CGoCallRate":13.598709,"CPUUserPercent":9.499099,"CPUSysPercent":1.599848,"GCPausePercent":0.07253645,"GCRunCount":30,"NetHostRecvBytes":343359,"NetHostSendBytes":497825}
+I260623 20:23:56.295158 326 2@server/status/runtime_log.go:47 ⋮ [T1,Vsystem,n2] 656  runtime stats: 871 MiB RSS, 478 goroutines (stacks: 5.9 MiB), 350 MiB/554 MiB Go alloc/total (heap fragmentation: 36 MiB, heap reserved: 142 MiB, heap released: 2.6 MiB), 132 MiB/165 MiB CGO alloc/total (13.6 CGO/sec), 9.5/1.6 %(u/s)time, 0.1 %gc (30x), 335 KiB/486 KiB (r/w)net
+I260623 20:24:06.296223 326 2@util/log/event_log.go:32 ⋮ [T1,Vsystem,n2] 657 ={"Timestamp":1782246246296216507,"EventType":"runtime_stats","MemRSSBytes":919867392,"GoroutineCount":478,"MemStackSysBytes":6553600,"GoAllocBytes":395352112,"GoTotalBytes":586599816,"HeapFragmentBytes":32212944,"HeapReservedBytes":131407872,"HeapReleasedBytes":688128,"CGoAllocBytes":138684816,"CGoTotalBytes":173211648,"CGoCallRate":1.899782,"CPUUserPercent":2.9996557,"CPUSysPercent":1.0998738,"GCRunCount":30,"NetHostRecvBytes":340769,"NetHostSendBytes":494115}
+I260623 20:24:06.296389 326 2@server/status/runtime_log.go:47 ⋮ [T1,Vsystem,n2] 658  runtime stats: 877 MiB RSS, 478 goroutines (stacks: 6.3 MiB), 377 MiB/559 MiB Go alloc/total (heap fragmentation: 31 MiB, heap reserved: 125 MiB, heap released: 672 KiB), 132 MiB/165 MiB CGO alloc/total (1.9 CGO/sec), 3.0/1.1 %(u/s)time, 0.0 %gc (30x), 333 KiB/482 KiB (r/w)net
+I260623 20:24:16.300956 326 2@util/log/event_log.go:32 ⋮ [T1,Vsystem,n2] 659 ={"Timestamp":1782246256300683721,"EventType":"runtime_stats","MemRSSBytes":929144832,"GoroutineCount":479,"MemStackSysBytes":7012352,"GoAllocBytes":424955408,"GoTotalBytes":593915272,"HeapFragmentBytes":27259376,"HeapReservedBytes":113614848,"HeapReleasedBytes":1761280,"CGoAllocBytes":138684816,"CGoTotalBytes":173211648,"CGoCallRate":0.6996882,"CPUUserPercent":3.1985745,"CPUSysPercent":0.89959913,"GCRunCount":30,"NetHostRecvBytes":349162,"NetHostSendBytes":504871}
+I260623 20:24:16.302002 326 2@server/status/runtime_log.go:47 ⋮ [T1,Vsystem,n2] 660  runtime stats: 886 MiB RSS, 479 goroutines (stacks: 6.7 MiB), 405 MiB/566 MiB Go alloc/total (heap fragmentation: 26 MiB, heap reserved: 108 MiB, heap released: 1.7 MiB), 132 MiB/165 MiB CGO alloc/total (0.7 CGO/sec), 3.2/0.9 %(u/s)time, 0.0 %gc (30x), 341 KiB/493 KiB (r/w)net
+I260623 20:24:26.298935 326 2@util/log/event_log.go:32 ⋮ [T1,Vsystem,n2] 661 ={"Timestamp":1782246266298930128,"EventType":"runtime_stats","MemRSSBytes":716771328,"GoroutineCount":479,"MemStackSysBytes":5439488,"GoAllocBytes":92440480,"GoTotalBytes":382758280,"HeapFragmentBytes":54040672,"HeapReservedBytes":209764352,"HeapReleasedBytes":217112576,"CGoAllocBytes":139028112,"CGoTotalBytes":173211648,"CGoCallRate":1.0001743,"CPUUserPercent":3.8006625,"CPUSysPercent":1.1001917,"GCPausePercent":0.014635051,"GCRunCount":31,"NetHostRecvBytes":339590,"NetHostSendBytes":497668}
+I260623 20:24:26.299037 326 2@server/status/runtime_log.go:47 ⋮ [T1,Vsystem,n2] 662  runtime stats: 684 MiB RSS, 479 goroutines (stacks: 5.2 MiB), 88 MiB/365 MiB Go alloc/total (heap fragmentation: 52 MiB, heap reserved: 200 MiB, heap released: 207 MiB), 133 MiB/165 MiB CGO alloc/total (1.0 CGO/sec), 3.8/1.1 %(u/s)time, 0.0 %gc (31x), 332 KiB/486 KiB (r/w)net
+I260623 20:24:36.300398 326 2@util/log/event_log.go:32 ⋮ [T1,Vsystem,n2] 663 ={"Timestamp":1782246276300380841,"EventType":"runtime_stats","MemRSSBytes":716771328,"GoroutineCount":479,"MemStackSysBytes":6225920,"GoAllocBytes":120864560,"GoTotalBytes":382758280,"HeapFragmentBytes":42909904,"HeapReservedBytes":191684608,"HeapReleasedBytes":217112576,"CGoAllocBytes":139069072,"CGoTotalBytes":173211648,"CGoCallRate":0.39994207,"CPUUserPercent":2.9995656,"CPUSysPercent":0.7998842,"GCRunCount":31,"NetHostRecvBytes":342192,"NetHostSendBytes":496632}
+I260623 20:24:36.300605 326 2@server/status/runtime_log.go:47 ⋮ [T1,Vsystem,n2] 664  runtime stats: 684 MiB RSS, 479 goroutines (stacks: 5.9 MiB), 115 MiB/365 MiB Go alloc/total (heap fragmentation: 41 MiB, heap reserved: 183 MiB, heap released: 207 MiB), 133 MiB/165 MiB CGO alloc/total (0.4 CGO/sec), 3.0/0.8 %(u/s)time, 0.0 %gc (31x), 334 KiB/485 KiB (r/w)net
+I260623 20:24:46.301007 326 2@util/log/event_log.go:32 ⋮ [T1,Vsystem,n2] 665 ={"Timestamp":1782246286301002137,"EventType":"runtime_stats","MemRSSBytes":716771328,"GoroutineCount":478,"MemStackSysBytes":6881280,"GoAllocBytes":150362936,"GoTotalBytes":382758280,"HeapFragmentBytes":34637000,"HeapReservedBytes":169803776,"HeapReleasedBytes":217112576,"CGoAllocBytes":139069072,"CGoTotalBytes":173211648,"CGoCallRate":0.099993765,"CPUUserPercent":3.5997756,"CPUSysPercent":0.99993765,"GCRunCount":31,"NetHostRecvBytes":360443,"NetHostSendBytes":519047}
+I260623 20:24:46.301182 326 2@server/status/runtime_log.go:47 ⋮ [T1,Vsystem,n2] 666  runtime stats: 684 MiB RSS, 478 goroutines (stacks: 6.6 MiB), 143 MiB/365 MiB Go alloc/total (heap fragmentation: 33 MiB, heap reserved: 162 MiB, heap released: 207 MiB), 133 MiB/165 MiB CGO alloc/total (0.1 CGO/sec), 3.6/1.0 %(u/s)time, 0.0 %gc (31x), 352 KiB/507 KiB (r/w)net
+I260623 20:24:56.183864 323 2@gossip/gossip.go:531 ⋮ [T1,Vsystem,n2] 667  gossip status (ok, 3 nodes)
+I260623 20:24:56.183864 323 2@gossip/gossip.go:531 ⋮ [T1,Vsystem,n2] 667 +gossip client (1/3 cur/max conns)
+I260623 20:24:56.183864 323 2@gossip/gossip.go:531 ⋮ [T1,Vsystem,n2] 667 +  3: ‹crdb-cluster-1.crdb-cluster.cockroachdb.svc.cluster.local:26257› (16m16s: infos 1207/1826 sent/received, bytes 315687B/387863B sent/received)
+I260623 20:24:56.183864 323 2@gossip/gossip.go:531 ⋮ [T1,Vsystem,n2] 667 +gossip server (0/3 cur/max conns, infos 1448/1890 sent/received, bytes 359266B/411170B sent/received)
+I260623 20:24:56.303391 326 2@util/log/event_log.go:32 ⋮ [T1,Vsystem,n2] 668 ={"Timestamp":1782246296303378753,"EventType":"runtime_stats","MemRSSBytes":716771328,"GoroutineCount":478,"MemStackSysBytes":7143424,"GoAllocBytes":180594432,"GoTotalBytes":382758280,"HeapFragmentBytes":27646208,"HeapReservedBytes":146300928,"HeapReleasedBytes":217112576,"CGoAllocBytes":139063952,"CGoTotalBytes":173211648,"CGoCallRate":0.3999051,"CPUUserPercent":3.3991933,"CPUSysPercent":0.7998102,"GCRunCount":31,"NetHostRecvBytes":342670,"NetHostSendBytes":498707}
+I260623 20:24:56.303568 326 2@server/status/runtime_log.go:47 ⋮ [T1,Vsystem,n2] 669  runtime stats: 684 MiB RSS, 478 goroutines (stacks: 6.8 MiB), 172 MiB/365 MiB Go alloc/total (heap fragmentation: 26 MiB, heap reserved: 140 MiB, heap released: 207 MiB), 133 MiB/165 MiB CGO alloc/total (0.4 CGO/sec), 3.4/0.8 %(u/s)time, 0.0 %gc (31x), 335 KiB/487 KiB (r/w)net
+I260623 20:25:06.303898 326 2@util/log/event_log.go:32 ⋮ [T1,Vsystem,n2] 670 ={"Timestamp":1782246306303892841,"EventType":"runtime_stats","MemRSSBytes":716771328,"GoroutineCount":478,"MemStackSysBytes":7208960,"GoAllocBytes":209288144,"GoTotalBytes":382758280,"HeapFragmentBytes":22398000,"HeapReservedBytes":122789888,"HeapReleasedBytes":217112576,"CGoAllocBytes":139063952,"CGoTotalBytes":173211648,"CGoCallRate":0.09999483,"CPUUserPercent":3.2998295,"CPUSysPercent":0.8999535,"GCRunCount":31,"NetHostRecvBytes":340487,"NetHostSendBytes":493765}
+I260623 20:25:06.303984 326 2@server/status/runtime_log.go:47 ⋮ [T1,Vsystem,n2] 671  runtime stats: 684 MiB RSS, 478 goroutines (stacks: 6.9 MiB), 200 MiB/365 MiB Go alloc/total (heap fragmentation: 21 MiB, heap reserved: 117 MiB, heap released: 207 MiB), 133 MiB/165 MiB CGO alloc/total (0.1 CGO/sec), 3.3/0.9 %(u/s)time, 0.0 %gc (31x), 332 KiB/482 KiB (r/w)net
+
+ succeeded in 120ms:
+I260623 20:21:38.362193 25362 3@pebble/event.go:808 ⋮ [n3,s3,pebble] 463  [JOB 21] compacting: sstable created 001069
+I260623 20:21:38.494520 25362 3@pebble/event.go:808 ⋮ [n3,s3,pebble] 464  [JOB 21] compacting: sstable created 001070
+I260623 20:21:38.502906 25362 3@pebble/event.go:772 ⋮ [n3,s3,pebble] 465  [JOB 21] compacted(default) L0 [001066] (797KB) Score=5.31 + L6 [001062 001063 001064] (12MB) Score=0.19 -> L6 [001067 001068 001069 001070] (12MB), in 0.5s (0.5s total), output rate 24MB/s
+I260623 20:21:38.506971 84 3@pebble/event.go:812 ⋮ [n3,s3,pebble] 466  [JOB 21] sstable deleted 001062
+I260623 20:21:38.509324 84 3@pebble/event.go:812 ⋮ [n3,s3,pebble] 467  [JOB 21] sstable deleted 001063
+I260623 20:21:38.511128 84 3@pebble/event.go:812 ⋮ [n3,s3,pebble] 468  [JOB 21] sstable deleted 001064
+I260623 20:21:38.511273 84 3@pebble/event.go:812 ⋮ [n3,s3,pebble] 469  [JOB 21] sstable deleted 001066
+I260623 20:21:47.807477 340 2@util/log/event_log.go:32 ⋮ [T1,Vsystem,n3] 470 ={"Timestamp":1782246107807464471,"EventType":"runtime_stats","MemRSSBytes":881336320,"GoroutineCount":459,"MemStackSysBytes":6422528,"GoAllocBytes":215252352,"GoTotalBytes":537837944,"HeapFragmentBytes":41583232,"HeapReservedBytes":254164992,"HeapReleasedBytes":2654208,"CGoAllocBytes":141459344,"CGoTotalBytes":189661184,"CGoCallRate":17.797287,"CPUUserPercent":8.998628,"CPUSysPercent":1.8997103,"GCPausePercent":0.0051966975,"GCRunCount":26,"NetHostRecvBytes":418087,"NetHostSendBytes":446190}
+I260623 20:21:47.807770 340 2@server/status/runtime_log.go:47 ⋮ [T1,Vsystem,n3] 471  runtime stats: 840 MiB RSS, 459 goroutines (stacks: 6.1 MiB), 205 MiB/513 MiB Go alloc/total (heap fragmentation: 40 MiB, heap reserved: 242 MiB, heap released: 2.5 MiB), 135 MiB/181 MiB CGO alloc/total (17.8 CGO/sec), 9.0/1.9 %(u/s)time, 0.0 %gc (26x), 408 KiB/436 KiB (r/w)net
+I260623 20:21:57.807188 340 2@util/log/event_log.go:32 ⋮ [T1,Vsystem,n3] 472 ={"Timestamp":1782246117807177712,"EventType":"runtime_stats","MemRSSBytes":881336320,"GoroutineCount":459,"MemStackSysBytes":6651904,"GoAllocBytes":238726976,"GoTotalBytes":537837944,"HeapFragmentBytes":35803328,"HeapReservedBytes":236240896,"HeapReleasedBytes":2654208,"CGoAllocBytes":141529264,"CGoTotalBytes":189661184,"CGoCallRate":1.600045,"CPUUserPercent":3.20009,"CPUSysPercent":1.0000281,"GCRunCount":26,"NetHostRecvBytes":402111,"NetHostSendBytes":430283}
+I260623 20:21:57.807330 340 2@server/status/runtime_log.go:47 ⋮ [T1,Vsystem,n3] 473  runtime stats: 840 MiB RSS, 459 goroutines (stacks: 6.3 MiB), 228 MiB/513 MiB Go alloc/total (heap fragmentation: 34 MiB, heap reserved: 225 MiB, heap released: 2.5 MiB), 135 MiB/181 MiB CGO alloc/total (1.6 CGO/sec), 3.2/1.0 %(u/s)time, 0.0 %gc (26x), 393 KiB/420 KiB (r/w)net
+I260623 20:22:07.808563 340 2@util/log/event_log.go:32 ⋮ [T1,Vsystem,n3] 474 ={"Timestamp":1782246127808557883,"EventType":"runtime_stats","MemRSSBytes":881336320,"GoroutineCount":459,"MemStackSysBytes":6717440,"GoAllocBytes":261163856,"GoTotalBytes":537837944,"HeapFragmentBytes":30561456,"HeapReservedBytes":218980352,"HeapReleasedBytes":2654208,"CGoAllocBytes":141570224,"CGoTotalBytes":189661184,"CGoCallRate":0.99986196,"CPUUserPercent":3.1995583,"CPUSysPercent":0.8998758,"GCRunCount":26,"NetHostRecvBytes":405135,"NetHostSendBytes":434974}
+I260623 20:22:07.808675 340 2@server/status/runtime_log.go:47 ⋮ [T1,Vsystem,n3] 475  runtime stats: 840 MiB RSS, 459 goroutines (stacks: 6.4 MiB), 249 MiB/513 MiB Go alloc/total (heap fragmentation: 29 MiB, heap reserved: 209 MiB, heap released: 2.5 MiB), 135 MiB/181 MiB CGO alloc/total (1.0 CGO/sec), 3.2/0.9 %(u/s)time, 0.0 %gc (26x), 396 KiB/425 KiB (r/w)net
+I260623 20:22:17.810395 340 2@util/log/event_log.go:32 ⋮ [T1,Vsystem,n3] 476 ={"Timestamp":1782246137810380763,"EventType":"runtime_stats","MemRSSBytes":881336320,"GoroutineCount":460,"MemStackSysBytes":6782976,"GoAllocBytes":285078048,"GoTotalBytes":537837944,"HeapFragmentBytes":25726432,"HeapReservedBytes":199835648,"HeapReleasedBytes":2654208,"CGoAllocBytes":141611184,"CGoTotalBytes":189661184,"CGoCallRate":0.69987285,"CPUUserPercent":3.399382,"CPUSysPercent":0.6998728,"GCRunCount":26,"NetHostRecvBytes":408562,"NetHostSendBytes":430559}
+I260623 20:22:17.810707 340 2@server/status/runtime_log.go:47 ⋮ [T1,Vsystem,n3] 477  runtime stats: 840 MiB RSS, 460 goroutines (stacks: 6.5 MiB), 272 MiB/513 MiB Go alloc/total (heap fragmentation: 24 MiB, heap reserved: 191 MiB, heap released: 2.5 MiB), 135 MiB/181 MiB CGO alloc/total (0.7 CGO/sec), 3.4/0.7 %(u/s)time, 0.0 %gc (26x), 399 KiB/420 KiB (r/w)net
+I260623 20:22:27.822875 340 2@util/log/event_log.go:32 ⋮ [T1,Vsystem,n3] 478 ={"Timestamp":1782246147822864753,"EventType":"runtime_stats","MemRSSBytes":881336320,"GoroutineCount":461,"MemStackSysBytes":6782976,"GoAllocBytes":307957264,"GoTotalBytes":537837944,"HeapFragmentBytes":22360560,"HeapReservedBytes":180322304,"HeapReleasedBytes":2654208,"CGoAllocBytes":141611184,"CGoTotalBytes":189661184,"CGoCallRate":0.09987527,"CPUUserPercent":3.295884,"CPUSysPercent":0.9987528,"GCRunCount":26,"NetHostRecvBytes":398928,"NetHostSendBytes":428044}
+I260623 20:22:27.823000 340 2@server/status/runtime_log.go:47 ⋮ [T1,Vsystem,n3] 479  runtime stats: 840 MiB RSS, 461 goroutines (stacks: 6.5 MiB), 294 MiB/513 MiB Go alloc/total (heap fragmentation: 21 MiB, heap reserved: 172 MiB, heap released: 2.5 MiB), 135 MiB/181 MiB CGO alloc/total (0.1 CGO/sec), 3.3/1.0 %(u/s)time, 0.0 %gc (26x), 390 KiB/418 KiB (r/w)net
+I260623 20:22:37.686545 337 2@gossip/gossip.go:531 ⋮ [T1,Vsystem,n3] 480  gossip status (ok, 3 nodes)
+I260623 20:22:37.686545 337 2@gossip/gossip.go:531 ⋮ [T1,Vsystem,n3] 480 +gossip client (0/3 cur/max conns)
+I260623 20:22:37.686545 337 2@gossip/gossip.go:531 ⋮ [T1,Vsystem,n3] 480 +gossip server (2/3 cur/max conns, infos 3206/1806 sent/received, bytes 656439B/462209B sent/received)
+I260623 20:22:37.686545 337 2@gossip/gossip.go:531 ⋮ [T1,Vsystem,n3] 480 +  2: ‹crdb-cluster-2.crdb-cluster.cockroachdb.svc.cluster.local:26257› (13m57s)
+I260623 20:22:37.686545 337 2@gossip/gossip.go:531 ⋮ [T1,Vsystem,n3] 480 +  1: ‹crdb-cluster-0.crdb-cluster.cockroachdb.svc.cluster.local:26257› (2m22s)
+I260623 20:22:37.822302 340 2@util/log/event_log.go:32 ⋮ [T1,Vsystem,n3] 481 ={"Timestamp":1782246157822297133,"EventType":"runtime_stats","MemRSSBytes":882647040,"GoroutineCount":460,"MemStackSysBytes":6881280,"GoAllocBytes":330985632,"GoTotalBytes":537837944,"HeapFragmentBytes":19550048,"HeapReservedBytes":160006144,"HeapReleasedBytes":2654208,"CGoAllocBytes":141611184,"CGoTotalBytes":189661184,"CGoCallRate":0.100005664,"CPUUserPercent":3.300187,"CPUSysPercent":0.7000396,"GCRunCount":26,"NetHostRecvBytes":404377,"NetHostSendBytes":434621}
+I260623 20:22:37.822401 340 2@server/status/runtime_log.go:47 ⋮ [T1,Vsystem,n3] 482  runtime stats: 842 MiB RSS, 460 goroutines (stacks: 6.6 MiB), 316 MiB/513 MiB Go alloc/total (heap fragmentation: 19 MiB, heap reserved: 153 MiB, heap released: 2.5 MiB), 135 MiB/181 MiB CGO alloc/total (0.1 CGO/sec), 3.3/0.7 %(u/s)time, 0.0 %gc (26x), 395 KiB/424 KiB (r/w)net
+I260623 20:22:47.823011 340 2@util/log/event_log.go:32 ⋮ [T1,Vsystem,n3] 483 ={"Timestamp":1782246167823003513,"EventType":"runtime_stats","MemRSSBytes":882647040,"GoroutineCount":459,"MemStackSysBytes":6782976,"GoAllocBytes":357620776,"GoTotalBytes":537837944,"HeapFragmentBytes":15786968,"HeapReservedBytes":137232384,"HeapReleasedBytes":2654208,"CGoAllocBytes":141938864,"CGoTotalBytes":189661184,"CGoCallRate":0.39997172,"CPUUserPercent":3.2997668,"CPUSysPercent":0.6999505,"GCRunCount":26,"NetHostRecvBytes":416072,"NetHostSendBytes":442639}
+I260623 20:22:47.823121 340 2@server/status/runtime_log.go:47 ⋮ [T1,Vsystem,n3] 484  runtime stats: 842 MiB RSS, 459 goroutines (stacks: 6.5 MiB), 341 MiB/513 MiB Go alloc/total (heap fragmentation: 15 MiB, heap reserved: 131 MiB, heap released: 2.5 MiB), 135 MiB/181 MiB CGO alloc/total (0.4 CGO/sec), 3.3/0.7 %(u/s)time, 0.0 %gc (26x), 406 KiB/432 KiB (r/w)net
+I260623 20:22:57.844912 340 2@util/log/event_log.go:32 ⋮ [T1,Vsystem,n3] 485 ={"Timestamp":1782246177844900170,"EventType":"runtime_stats","MemRSSBytes":882647040,"GoroutineCount":459,"MemStackSysBytes":6782976,"GoAllocBytes":380999976,"GoTotalBytes":537837944,"HeapFragmentBytes":14804696,"HeapReservedBytes":114835456,"HeapReleasedBytes":2654208,"CGoAllocBytes":141938864,"CGoTotalBytes":189661184,"CGoCallRate":0.099781536,"CPUUserPercent":2.993446,"CPUSysPercent":0.79825234,"GCRunCount":26,"NetHostRecvBytes":399379,"NetHostSendBytes":429147}
+I260623 20:22:57.845147 340 2@server/status/runtime_log.go:47 ⋮ [T1,Vsystem,n3] 486  runtime stats: 842 MiB RSS, 459 goroutines (stacks: 6.5 MiB), 363 MiB/513 MiB Go alloc/total (heap fragmentation: 14 MiB, heap reserved: 110 MiB, heap released: 2.5 MiB), 135 MiB/181 MiB CGO alloc/total (0.1 CGO/sec), 3.0/0.8 %(u/s)time, 0.0 %gc (26x), 390 KiB/419 KiB (r/w)net
+I260623 20:23:07.845720 340 2@util/log/event_log.go:32 ⋮ [T1,Vsystem,n3] 487 ={"Timestamp":1782246187845715925,"EventType":"runtime_stats","MemRSSBytes":882962432,"GoroutineCount":459,"MemStackSysBytes":6782976,"GoAllocBytes":411502304,"GoTotalBytes":537837944,"HeapFragmentBytes":14014752,"HeapReservedBytes":85098496,"HeapReleasedBytes":2654208,"CGoAllocBytes":141938864,"CGoTotalBytes":189661184,"CGoCallRate":0.09999182,"CPUUserPercent":3.5997055,"CPUSysPercent":0.79993457,"GCRunCount":26,"NetHostRecvBytes":401497,"NetHostSendBytes":431622}
+I260623 20:23:07.845842 340 2@server/status/runtime_log.go:47 ⋮ [T1,Vsystem,n3] 488  runtime stats: 842 MiB RSS, 459 goroutines (stacks: 6.5 MiB), 392 MiB/513 MiB Go alloc/total (heap fragmentation: 13 MiB, heap reserved: 81 MiB, heap released: 2.5 MiB), 135 MiB/181 MiB CGO alloc/total (0.1 CGO/sec), 3.6/0.8 %(u/s)time, 0.0 %gc (26x), 392 KiB/422 KiB (r/w)net
+I260623 20:23:17.847822 340 2@util/log/event_log.go:32 ⋮ [T1,Vsystem,n3] 489 ={"Timestamp":1782246197847817805,"EventType":"runtime_stats","MemRSSBytes":774144000,"GoroutineCount":460,"MemStackSysBytes":5734400,"GoAllocBytes":94131944,"GoTotalBytes":428589432,"HeapFragmentBytes":50022680,"HeapReservedBytes":258220032,"HeapReleasedBytes":111968256,"CGoAllocBytes":141938864,"CGoTotalBytes":189661184,"CGoCallRate":0.09997899,"CPUUserPercent":4.0991383,"CPUSysPercent":0.8998109,"GCPausePercent":0.013026833,"GCRunCount":27,"NetHostRecvBytes":406019,"NetHostSendBytes":432869}
+I260623 20:23:17.847930 340 2@server/status/runtime_log.go:47 ⋮ [T1,Vsystem,n3] 490  runtime stats: 738 MiB RSS, 460 goroutines (stacks: 5.5 MiB), 90 MiB/409 MiB Go alloc/total (heap fragmentation: 48 MiB, heap reserved: 246 MiB, heap released: 107 MiB), 135 MiB/181 MiB CGO alloc/total (0.1 CGO/sec), 4.1/0.9 %(u/s)time, 0.0 %gc (27x), 396 KiB/423 KiB (r/w)net
+I260623 20:23:27.852216 340 2@util/log/event_log.go:32 ⋮ [T1,Vsystem,n3] 491 ={"Timestamp":1782246207852200253,"EventType":"runtime_stats","MemRSSBytes":774144000,"GoroutineCount":460,"MemStackSysBytes":6225920,"GoAllocBytes":118167160,"GoTotalBytes":428589432,"HeapFragmentBytes":43141512,"HeapReservedBytes":240574464,"HeapReleasedBytes":111968256,"CGoAllocBytes":141938864,"CGoTotalBytes":189661184,"CGoCallRate":0.39982486,"CPUUserPercent":2.6988177,"CPUSysPercent":0.99956214,"GCRunCount":27,"NetHostRecvBytes":399186,"NetHostSendBytes":532624}
+I260623 20:23:27.852468 340 2@server/status/runtime_log.go:47 ⋮ [T1,Vsystem,n3] 492  runtime stats: 738 MiB RSS, 460 goroutines (stacks: 5.9 MiB), 113 MiB/409 MiB Go alloc/total (heap fragmentation: 41 MiB, heap reserved: 229 MiB, heap released: 107 MiB), 135 MiB/181 MiB CGO alloc/total (0.4 CGO/sec), 2.7/1.0 %(u/s)time, 0.0 %gc (27x), 390 KiB/520 KiB (r/w)net
+I260623 20:23:37.105748 99 util/admission/work_queue.go:550 ⋮ [T1,Vsystem,n3] 493  kv: FIFO threshold for tenant 1 is -128
+I260623 20:23:37.711725 337 2@gossip/gossip.go:531 ⋮ [T1,Vsystem,n3] 494  gossip status (ok, 3 nodes)
+I260623 20:23:37.711725 337 2@gossip/gossip.go:531 ⋮ [T1,Vsystem,n3] 494 +gossip client (0/3 cur/max conns)
+I260623 20:23:37.711725 337 2@gossip/gossip.go:531 ⋮ [T1,Vsystem,n3] 494 +gossip server (2/3 cur/max conns, infos 3450/1918 sent/received, bytes 703555B/492241B sent/received)
+I260623 20:23:37.711725 337 2@gossip/gossip.go:531 ⋮ [T1,Vsystem,n3] 494 +  2: ‹crdb-cluster-2.crdb-cluster.cockroachdb.svc.cluster.local:26257› (14m57s)
+I260623 20:23:37.711725 337 2@gossip/gossip.go:531 ⋮ [T1,Vsystem,n3] 494 +  1: ‹crdb-cluster-0.crdb-cluster.cockroachdb.svc.cluster.local:26257› (3m22s)
+I260623 20:23:37.852679 340 2@util/log/event_log.go:32 ⋮ [T1,Vsystem,n3] 495 ={"Timestamp":1782246217852674925,"EventType":"runtime_stats","MemRSSBytes":775979008,"GoroutineCount":460,"MemStackSysBytes":6455296,"GoAllocBytes":141499656,"GoTotalBytes":428589432,"HeapFragmentBytes":36561656,"HeapReservedBytes":223592448,"HeapReleasedBytes":111968256,"CGoAllocBytes":141938864,"CGoTotalBytes":189661184,"CGoCallRate":0.09999523,"CPUUserPercent":3.0998523,"CPUSysPercent":0.6999666,"GCRunCount":27,"NetHostRecvBytes":403515,"NetHostSendBytes":433483}
+I260623 20:23:37.852764 340 2@server/status/runtime_log.go:47 ⋮ [T1,Vsystem,n3] 496  runtime stats: 740 MiB RSS, 460 goroutines (stacks: 6.2 MiB), 135 MiB/409 MiB Go alloc/total (heap fragmentation: 35 MiB, heap reserved: 213 MiB, heap released: 107 MiB), 135 MiB/181 MiB CGO alloc/total (0.1 CGO/sec), 3.1/0.7 %(u/s)time, 0.0 %gc (27x), 394 KiB/423 KiB (r/w)net
+I260623 20:23:47.853715 340 2@util/log/event_log.go:32 ⋮ [T1,Vsystem,n3] 497 ={"Timestamp":1782246227853709305,"EventType":"runtime_stats","MemRSSBytes":775979008,"GoroutineCount":459,"MemStackSysBytes":6684672,"GoAllocBytes":167621440,"GoTotalBytes":428589432,"HeapFragmentBytes":28339392,"HeapReservedBytes":205463552,"HeapReleasedBytes":111968256,"CGoAllocBytes":141938864,"CGoTotalBytes":189661184,"CGoCallRate":0.09998966,"CPUUserPercent":3.0996795,"CPUSysPercent":0.79991734,"GCRunCount":27,"NetHostRecvBytes":416735,"NetHostSendBytes":444512}
+I260623 20:23:47.853989 340 2@server/status/runtime_log.go:47 ⋮ [T1,Vsystem,n3] 498  runtime stats: 740 MiB RSS, 459 goroutines (stacks: 6.4 MiB), 160 MiB/409 MiB Go alloc/total (heap fragmentation: 27 MiB, heap reserved: 196 MiB, heap released: 107 MiB), 135 MiB/181 MiB CGO alloc/total (0.1 CGO/sec), 3.1/0.8 %(u/s)time, 0.0 %gc (27x), 407 KiB/434 KiB (r/w)net
+I260623 20:23:57.853251 340 2@util/log/event_log.go:32 ⋮ [T1,Vsystem,n3] 499 ={"Timestamp":1782246237853246253,"EventType":"runtime_stats","MemRSSBytes":776110080,"GoroutineCount":459,"MemStackSysBytes":6750208,"GoAllocBytes":190633240,"GoTotalBytes":428589432,"HeapFragmentBytes":24070888,"HeapReservedBytes":186654720,"HeapReleasedBytes":111968256,"CGoAllocBytes":141938864,"CGoTotalBytes":189661184,"CGoCallRate":0.10000463,"CPUUserPercent":3.3001528,"CPUSysPercent":0.800037,"GCRunCount":27,"NetHostRecvBytes":400551,"NetHostSendBytes":429030}
+I260623 20:23:57.853362 340 2@server/status/runtime_log.go:47 ⋮ [T1,Vsystem,n3] 500  runtime stats: 740 MiB RSS, 459 goroutines (stacks: 6.4 MiB), 182 MiB/409 MiB Go alloc/total (heap fragmentation: 23 MiB, heap reserved: 178 MiB, heap released: 107 MiB), 135 MiB/181 MiB CGO alloc/total (0.1 CGO/sec), 3.3/0.8 %(u/s)time, 0.0 %gc (27x), 391 KiB/419 KiB (r/w)net
+I260623 20:24:07.854610 340 2@util/log/event_log.go:32 ⋮ [T1,Vsystem,n3] 501 ={"Timestamp":1782246247854605383,"EventType":"runtime_stats","MemRSSBytes":776110080,"GoroutineCount":459,"MemStackSysBytes":6750208,"GoAllocBytes":214090208,"GoTotalBytes":428589432,"HeapFragmentBytes":19947040,"HeapReservedBytes":167321600,"HeapReleasedBytes":111968256,"CGoAllocBytes":141938864,"CGoTotalBytes":189661184,"CGoCallRate":0.099986434,"CPUUserPercent":3.2995522,"CPUSysPercent":0.89987785,"GCRunCount":27,"NetHostRecvBytes":403980,"NetHostSendBytes":435714}
+I260623 20:24:07.854739 340 2@server/status/runtime_log.go:47 ⋮ [T1,Vsystem,n3] 502  runtime stats: 740 MiB RSS, 459 goroutines (stacks: 6.4 MiB), 204 MiB/409 MiB Go alloc/total (heap fragmentation: 19 MiB, heap reserved: 160 MiB, heap released: 107 MiB), 135 MiB/181 MiB CGO alloc/total (0.1 CGO/sec), 3.3/0.9 %(u/s)time, 0.0 %gc (27x), 394 KiB/426 KiB (r/w)net
+I260623 20:24:17.859022 340 2@util/log/event_log.go:32 ⋮ [T1,Vsystem,n3] 503 ={"Timestamp":1782246257858970430,"EventType":"runtime_stats","MemRSSBytes":776110080,"GoroutineCount":460,"MemStackSysBytes":6782976,"GoAllocBytes":235659536,"GoTotalBytes":428589432,"HeapFragmentBytes":17301232,"HeapReservedBytes":148365312,"HeapReleasedBytes":111968256,"CGoAllocBytes":141938864,"CGoTotalBytes":189661184,"CGoCallRate":0.3998262,"CPUUserPercent":3.3985229,"CPUSysPercent":0.8996089,"GCRunCount":27,"NetHostRecvBytes":356020,"NetHostSendBytes":438173}
+I260623 20:24:17.859824 340 2@server/status/runtime_log.go:47 ⋮ [T1,Vsystem,n3] 504  runtime stats: 740 MiB RSS, 460 goroutines (stacks: 6.5 MiB), 225 MiB/409 MiB Go alloc/total (heap fragmentation: 16 MiB, heap reserved: 142 MiB, heap released: 107 MiB), 135 MiB/181 MiB CGO alloc/total (0.4 CGO/sec), 3.4/0.9 %(u/s)time, 0.0 %gc (27x), 348 KiB/428 KiB (r/w)net
+I260623 20:24:27.856073 340 2@util/log/event_log.go:32 ⋮ [T1,Vsystem,n3] 505 ={"Timestamp":1782246267856061420,"EventType":"runtime_stats","MemRSSBytes":776110080,"GoroutineCount":460,"MemStackSysBytes":6782976,"GoAllocBytes":260607208,"GoTotalBytes":428589432,"HeapFragmentBytes":15708952,"HeapReservedBytes":125009920,"HeapReleasedBytes":111968256,"CGoAllocBytes":141938864,"CGoTotalBytes":189661184,"CGoCallRate":0.10002891,"CPUUserPercent":3.200925,"CPUSysPercent":0.8002313,"GCRunCount":27,"NetHostRecvBytes":455831,"NetHostSendBytes":431819}
+I260623 20:24:27.856215 340 2@server/status/runtime_log.go:47 ⋮ [T1,Vsystem,n3] 506  runtime stats: 740 MiB RSS, 460 goroutines (stacks: 6.5 MiB), 248 MiB/409 MiB Go alloc/total (heap fragmentation: 15 MiB, heap reserved: 119 MiB, heap released: 107 MiB), 135 MiB/181 MiB CGO alloc/total (0.1 CGO/sec), 3.2/0.8 %(u/s)time, 0.0 %gc (27x), 445 KiB/422 KiB (r/w)net
+I260623 20:24:37.710757 337 2@gossip/gossip.go:531 ⋮ [T1,Vsystem,n3] 507  gossip status (ok, 3 nodes)
+I260623 20:24:37.710757 337 2@gossip/gossip.go:531 ⋮ [T1,Vsystem,n3] 507 +gossip client (0/3 cur/max conns)
+I260623 20:24:37.710757 337 2@gossip/gossip.go:531 ⋮ [T1,Vsystem,n3] 507 +gossip server (2/3 cur/max conns, infos 3694/2030 sent/received, bytes 750671B/522273B sent/received)
+I260623 20:24:37.710757 337 2@gossip/gossip.go:531 ⋮ [T1,Vsystem,n3] 507 +  2: ‹crdb-cluster-2.crdb-cluster.cockroachdb.svc.cluster.local:26257› (15m57s)
+I260623 20:24:37.710757 337 2@gossip/gossip.go:531 ⋮ [T1,Vsystem,n3] 507 +  1: ‹crdb-cluster-0.crdb-cluster.cockroachdb.svc.cluster.local:26257› (4m22s)
+I260623 20:24:37.856602 340 2@util/log/event_log.go:32 ⋮ [T1,Vsystem,n3] 508 ={"Timestamp":1782246277856596883,"EventType":"runtime_stats","MemRSSBytes":776110080,"GoroutineCount":461,"MemStackSysBytes":6782976,"GoAllocBytes":283500608,"GoTotalBytes":428589432,"HeapFragmentBytes":14868416,"HeapReservedBytes":102957056,"HeapReleasedBytes":111968256,"CGoAllocBytes":141938864,"CGoTotalBytes":189661184,"CGoCallRate":0.09999464,"CPUUserPercent":3.3998177,"CPUSysPercent":0.7999571,"GCRunCount":27,"NetHostRecvBytes":403260,"NetHostSendBytes":434431}
+I260623 20:24:37.856712 340 2@server/status/runtime_log.go:47 ⋮ [T1,Vsystem,n3] 509  runtime stats: 740 MiB RSS, 461 goroutines (stacks: 6.5 MiB), 270 MiB/409 MiB Go alloc/total (heap fragmentation: 14 MiB, heap reserved: 98 MiB, heap released: 107 MiB), 135 MiB/181 MiB CGO alloc/total (0.1 CGO/sec), 3.4/0.8 %(u/s)time, 0.0 %gc (27x), 394 KiB/424 KiB (r/w)net
+I260623 20:24:47.858160 340 2@util/log/event_log.go:32 ⋮ [T1,Vsystem,n3] 510 ={"Timestamp":1782246287858134138,"EventType":"runtime_stats","MemRSSBytes":697409536,"GoroutineCount":459,"MemStackSysBytes":6324224,"GoAllocBytes":105340048,"GoTotalBytes":349872504,"HeapFragmentBytes":46056304,"HeapReservedBytes":171671552,"HeapReleasedBytes":190685184,"CGoAllocBytes":141938864,"CGoTotalBytes":189661184,"CGoCallRate":0.09998473,"CPUUserPercent":4.3993278,"CPUSysPercent":0.8998626,"GCPausePercent":0.022477817,"GCRunCount":28,"NetHostRecvBytes":415707,"NetHostSendBytes":443693}
+I260623 20:24:47.858539 340 2@server/status/runtime_log.go:47 ⋮ [T1,Vsystem,n3] 511  runtime stats: 665 MiB RSS, 459 goroutines (stacks: 6.0 MiB), 100 MiB/334 MiB Go alloc/total (heap fragmentation: 44 MiB, heap reserved: 164 MiB, heap released: 182 MiB), 135 MiB/181 MiB CGO alloc/total (0.1 CGO/sec), 4.4/0.9 %(u/s)time, 0.0 %gc (28x), 406 KiB/433 KiB (r/w)net
+I260623 20:24:57.859935 340 2@util/log/event_log.go:32 ⋮ [T1,Vsystem,n3] 512 ={"Timestamp":1782246297859926545,"EventType":"runtime_stats","MemRSSBytes":697409536,"GoroutineCount":460,"MemStackSysBytes":6455296,"GoAllocBytes":127811808,"GoTotalBytes":349872504,"HeapFragmentBytes":39984928,"HeapReservedBytes":155140096,"HeapReleasedBytes":190685184,"CGoAllocBytes":141938864,"CGoTotalBytes":189661184,"CGoCallRate":0.09998198,"CPUUserPercent":3.1994236,"CPUSysPercent":0.7998559,"GCRunCount":28,"NetHostRecvBytes":399578,"NetHostSendBytes":428897}
+I260623 20:24:57.860079 340 2@server/status/runtime_log.go:47 ⋮ [T1,Vsystem,n3] 513  runtime stats: 665 MiB RSS, 460 goroutines (stacks: 6.2 MiB), 122 MiB/334 MiB Go alloc/total (heap fragmentation: 38 MiB, heap reserved: 148 MiB, heap released: 182 MiB), 135 MiB/181 MiB CGO alloc/total (0.1 CGO/sec), 3.2/0.8 %(u/s)time, 0.0 %gc (28x), 390 KiB/419 KiB (r/w)net
+I260623 20:25:07.860645 340 2@util/log/event_log.go:32 ⋮ [T1,Vsystem,n3] 514 ={"Timestamp":1782246307860639425,"EventType":"runtime_stats","MemRSSBytes":698327040,"GoroutineCount":459,"MemStackSysBytes":6553600,"GoAllocBytes":150582416,"GoTotalBytes":349872504,"HeapFragmentBytes":33885040,"HeapReservedBytes":138371072,"HeapReleasedBytes":190685184,"CGoAllocBytes":141938864,"CGoTotalBytes":189661184,"CGoCallRate":0.09999287,"CPUUserPercent":3.2997646,"CPUSysPercent":0.8999358,"GCRunCount":28,"NetHostRecvBytes":402568,"NetHostSendBytes":434456}
+I260623 20:25:07.860820 340 2@server/status/runtime_log.go:47 ⋮ [T1,Vsystem,n3] 515  runtime stats: 666 MiB RSS, 459 goroutines (stacks: 6.3 MiB), 144 MiB/334 MiB Go alloc/total (heap fragmentation: 32 MiB, heap reserved: 132 MiB, heap released: 182 MiB), 135 MiB/181 MiB CGO alloc/total (0.1 CGO/sec), 3.3/0.9 %(u/s)time, 0.0 %gc (28x), 393 KiB/424 KiB (r/w)net
+I260623 20:25:07.869791 251 3@pebble/event.go:828 ⋮ [n3,s3,pebble] 516  [JOB 22] WAL created 001071 (recycled 001050)
+I260623 20:25:07.871684 30394 3@pebble/event.go:780 ⋮ [n3,s3,pebble] 517  [JOB 23] flushing 1 memtable (63MB) to L0
+I260623 20:25:07.872030 30394 3@pebble/event.go:808 ⋮ [n3,s3,pebble] 518  [JOB 23] flushing: sstable created 001072
+I260623 20:25:08.123888 30394 3@pebble/event.go:784 ⋮ [n3,s3,pebble] 519  [JOB 23] flushed 1 memtable (63MB) to L0 [001072] (622KB), in 0.3s (0.3s total), output rate 2.4MB/s
+I260623 20:25:08.124130 30415 3@pebble/event.go:768 ⋮ [n3,s3,pebble] 520  [JOB 24] compacting(default) L0 [001072] (622KB) Score=5.15 + L6 [001067 001068 001069 001070] (12MB) Score=0.19; OverlappingRatio: Single 20.47, Multi 0.00
+I260623 20:25:08.124847 30415 3@pebble/event.go:808 ⋮ [n3,s3,pebble] 521  [JOB 24] compacting: sstable created 001073
+I260623 20:25:08.278184 30415 3@pebble/event.go:808 ⋮ [n3,s3,pebble] 522  [JOB 24] compacting: sstable created 001074
+I260623 20:25:08.596639 30415 3@pebble/event.go:808 ⋮ [n3,s3,pebble] 523  [JOB 24] compacting: sstable created 001075
+I260623 20:25:08.702982 30415 3@pebble/event.go:808 ⋮ [n3,s3,pebble] 524  [JOB 24] compacting: sstable created 001076
+I260623 20:25:08.710637 30415 3@pebble/event.go:772 ⋮ [n3,s3,pebble] 525  [JOB 24] compacted(default) L0 [001072] (622KB) Score=5.15 + L6 [001067 001068 001069 001070] (12MB) Score=0.19 -> L6 [001073 001074 001075 001076] (13MB), in 0.6s (0.6s total), output rate 22MB/s
+I260623 20:25:08.712551 84 3@pebble/event.go:812 ⋮ [n3,s3,pebble] 526  [JOB 24] sstable deleted 001067
+I260623 20:25:08.714679 84 3@pebble/event.go:812 ⋮ [n3,s3,pebble] 527  [JOB 24] sstable deleted 001068
+I260623 20:25:08.716280 84 3@pebble/event.go:812 ⋮ [n3,s3,pebble] 528  [JOB 24] sstable deleted 001069
+I260623 20:25:08.716613 84 3@pebble/event.go:812 ⋮ [n3,s3,pebble] 529  [JOB 24] sstable deleted 001070
+I260623 20:25:08.716697 84 3@pebble/event.go:812 ⋮ [n3,s3,pebble] 530  [JOB 24] sstable deleted 001072
+
+ succeeded in 1460ms:
+id	address	sql_address	build	started_at	updated_at	locality	is_available	is_live
+1	crdb-cluster-0.crdb-cluster.cockroachdb.svc.cluster.local:26257	crdb-cluster-0.crdb-cluster.cockroachdb.svc.cluster.local:26257	v24.1.0	2026-06-23 20:20:16.040373 +0000 UTC	2026-06-23 20:25:16.116663 +0000 UTC		true	true
+2	crdb-cluster-2.crdb-cluster.cockroachdb.svc.cluster.local:26257	crdb-cluster-2.crdb-cluster.cockroachdb.svc.cluster.local:26257	v24.1.0	2026-06-23 20:06:56.163404 +0000 UTC	2026-06-23 20:25:14.193566 +0000 UTC		true	true
+3	crdb-cluster-1.crdb-cluster.cockroachdb.svc.cluster.local:26257	crdb-cluster-1.crdb-cluster.cockroachdb.svc.cluster.local:26257	v24.1.0	2026-06-23 20:08:37.663417 +0000 UTC	2026-06-23 20:25:13.719427 +0000 UTC		true	true
+
+ exited 1 in 1463ms:
+ERROR: column "is_available" does not exist
+SQLSTATE: 42703
+Failed running "sql"
+command terminated with exit code 1
+
+codex
+`cockroach node status` from inside `crdb-cluster-0` succeeds and reports all three nodes as `is_available=true` and `is_live=true`. I’m pulling the earlier error lines now so the root cause is clear before I do the final SQL readiness check.
+exec
+/bin/zsh -lc 'kubectl -n cockroachdb rollout history statefulset/crdb-cluster' in /Users/jinyige/Karma/runs/new-added-workflows/cockroachdb-deploy-init-settings-audit-20260623_202329/stages/stage_02
+exec
+/bin/zsh -lc "kubectl -n cockroachdb logs crdb-cluster-0 | grep -iE 'join|advertis|lookup|refused|unreachable|initialized|not initialized' | tail -80" in /Users/jinyige/Karma/runs/new-added-workflows/cockroachdb-deploy-init-settings-audit-20260623_202329/stages/stage_02
+exec
+/bin/zsh -lc "kubectl -n cockroachdb logs crdb-cluster-1 | grep -iE 'join|advertis|lookup|refused|unreachable|initialized|not initialized' | tail -80" in /Users/jinyige/Karma/runs/new-added-workflows/cockroachdb-deploy-init-settings-audit-20260623_202329/stages/stage_02
+exec
+/bin/zsh -lc "kubectl -n cockroachdb logs crdb-cluster-2 | grep -iE 'join|advertis|lookup|refused|unreachable|initialized|not initialized' | tail -80" in /Users/jinyige/Karma/runs/new-added-workflows/cockroachdb-deploy-init-settings-audit-20260623_202329/stages/stage_02
+ succeeded in 274ms:
+I260623 20:20:15.450238 15 server/config.go:875 ⋮ [T1,Vsystem,n?] 20  1 storage engine initialized
+I260623 20:20:16.054235 224 kv/kvserver/store.go:2220 ⋮ [T1,Vsystem,n1,s1] 58  initialized 54/54 replicas
+I260623 20:20:16.054681 224 server/node.go:686 ⋮ [T1,Vsystem,n1] 59  initialized store s1 in 14ms (54 replicas)
+I260623 20:20:16.057693 15 1@server/server.go:1993 ⋮ [T1,Vsystem,n1] 73  advertising CockroachDB node at ‹crdb-cluster-0.crdb-cluster.cockroachdb.svc.cluster.local:26257›
+
+ succeeded in 286ms:
+statefulset.apps/crdb-cluster 
+REVISION  CHANGE-CAUSE
+5         <none>
+6         <none>
+7         <none>
+8         <none>
+9         <none>
+10        <none>
+11        <none>
+12        <none>
+13        <none>
+14        <none>
+15        <none>
+
+
+ succeeded in 282ms:
+I260623 20:06:55.599119 9 server/config.go:875 ⋮ [T1,Vsystem,n?] 18  1 storage engine initialized
+I260623 20:06:56.172658 181 kv/kvserver/store.go:2220 ⋮ [T1,Vsystem,n2,s2] 47  initialized 54/54 replicas
+I260623 20:06:56.172843 181 server/node.go:686 ⋮ [T1,Vsystem,n2] 48  initialized store s2 in 8ms (54 replicas)
+I260623 20:06:56.176911 9 1@server/server.go:1993 ⋮ [T1,Vsystem,n2] 62  advertising CockroachDB node at ‹crdb-cluster-2.crdb-cluster.cockroachdb.svc.cluster.local:26257›
+W260623 20:07:25.662561 1646 1@cli/start.go:642 ⋮ [T1,Vsystem,n2] 88 +- double-checking that the '--join' and '--listen'/'--advertise' flags are set up correctly;
+E260623 20:12:46.529208 6208 2@rpc/peer.go:598 ⋮ [T1,Vsystem,n2,rnode=1,raddr=‹crdb-cluster-0.crdb-cluster.cockroachdb.svc.cluster.local:26257›,class=raft,rpc] 375  failed connection attempt‹ (last connected 2ms ago)›: grpc: ‹connection error: desc = "transport: error while dialing: dial tcp 10.244.3.35:26257: connect: connection refused"› [code 14/Unavailable]
+E260623 20:12:46.831804 6293 2@rpc/peer.go:598 ⋮ [T1,Vsystem,n2,rnode=1,raddr=‹crdb-cluster-0.crdb-cluster.cockroachdb.svc.cluster.local:26257›,class=default,rpc] 378  failed connection attempt‹ (last connected 2ms ago)›: grpc: ‹connection error: desc = "transport: error while dialing: dial tcp: lookup crdb-cluster-0.crdb-cluster.cockroachdb.svc.cluster.local: no such host"› [code 14/Unavailable]
+E260623 20:12:46.898750 6172 2@rpc/peer.go:598 ⋮ [T1,Vsystem,n2,rnode=1,raddr=‹crdb-cluster-0.crdb-cluster.cockroachdb.svc.cluster.local:26257›,class=system,rpc] 381  failed connection attempt‹ (last connected 2ms ago)›: grpc: ‹connection error: desc = "transport: error while dialing: dial tcp: lookup crdb-cluster-0.crdb-cluster.cockroachdb.svc.cluster.local: no such host"› [code 14/Unavailable]
+E260623 20:12:47.530255 6208 2@rpc/peer.go:598 ⋮ [T1,Vsystem,n2,rnode=1,raddr=‹crdb-cluster-0.crdb-cluster.cockroachdb.svc.cluster.local:26257›,class=raft,rpc] 382  failed connection attempt‹ (last connected 1.003s ago)›: grpc: ‹connection error: desc = "transport: error while dialing: dial tcp: lookup crdb-cluster-0.crdb-cluster.cockroachdb.svc.cluster.local: no such host"› [code 14/Unavailable]
+E260623 20:19:35.667797 6172 2@rpc/peer.go:598 ⋮ [T1,Vsystem,n2,rnode=1,raddr=‹crdb-cluster-0.crdb-cluster.cockroachdb.svc.cluster.local:26257›,class=system,rpc] 536  failed connection attempt‹ (last connected 6ms ago)›: grpc: ‹connection error: desc = "transport: error while dialing: dial tcp 10.244.3.37:26257: connect: connection refused"› [code 14/Unavailable]
+E260623 20:19:36.574430 6293 2@rpc/peer.go:598 ⋮ [T1,Vsystem,n2,rnode=1,raddr=‹crdb-cluster-0.crdb-cluster.cockroachdb.svc.cluster.local:26257›,class=default,rpc] 541  failed connection attempt‹ (last connected 2ms ago)›: grpc: ‹connection error: desc = "transport: error while dialing: dial tcp: lookup crdb-cluster-0.crdb-cluster.cockroachdb.svc.cluster.local: no such host"› [code 14/Unavailable]
+E260623 20:19:36.574539 6208 2@rpc/peer.go:598 ⋮ [T1,Vsystem,n2,rnode=1,raddr=‹crdb-cluster-0.crdb-cluster.cockroachdb.svc.cluster.local:26257›,class=raft,rpc] 542  failed connection attempt‹ (last connected 2ms ago)›: grpc: ‹connection error: desc = "transport: error while dialing: dial tcp: lookup crdb-cluster-0.crdb-cluster.cockroachdb.svc.cluster.local: no such host"› [code 14/Unavailable]
+
+ succeeded in 290ms:
+I260623 20:08:36.983005 16 server/config.go:875 ⋮ [T1,Vsystem,n?] 18  1 storage engine initialized
+I260623 20:08:37.673418 200 kv/kvserver/store.go:2220 ⋮ [T1,Vsystem,n3,s3] 55  initialized 54/54 replicas
+I260623 20:08:37.673596 200 server/node.go:686 ⋮ [T1,Vsystem,n3] 56  initialized store s3 in 9ms (54 replicas)
+I260623 20:08:37.676726 16 1@server/server.go:1993 ⋮ [T1,Vsystem,n3] 69  advertising CockroachDB node at ‹crdb-cluster-1.crdb-cluster.cockroachdb.svc.cluster.local:26257›
+E260623 20:12:46.597507 2315 2@rpc/peer.go:598 ⋮ [T1,Vsystem,n3,rnode=1,raddr=‹crdb-cluster-0.crdb-cluster.cockroachdb.svc.cluster.local:26257›,class=default,rpc] 229  failed connection attempt‹ (last connected 2ms ago)›: grpc: ‹connection error: desc = "transport: error while dialing: dial tcp 10.244.3.35:26257: connect: connection refused"› [code 14/Unavailable]
+E260623 20:12:47.520537 2153 2@rpc/peer.go:598 ⋮ [T1,Vsystem,n3,rnode=1,raddr=‹crdb-cluster-0.crdb-cluster.cockroachdb.svc.cluster.local:26257›,class=raft,rpc] 234  failed connection attempt‹ (last connected 5ms ago)›: grpc: ‹connection error: desc = "transport: error while dialing: dial tcp: lookup crdb-cluster-0.crdb-cluster.cockroachdb.svc.cluster.local: no such host"› [code 14/Unavailable]
+E260623 20:19:35.665413 2153 2@rpc/peer.go:598 ⋮ [T1,Vsystem,n3,rnode=1,raddr=‹crdb-cluster-0.crdb-cluster.cockroachdb.svc.cluster.local:26257›,class=raft,rpc] 391  failed connection attempt‹ (last connected 6ms ago)›: grpc: ‹connection error: desc = "transport: error while dialing: dial tcp 10.244.3.37:26257: connect: connection refused"› [code 14/Unavailable]
+E260623 20:19:35.674516 2085 2@rpc/peer.go:598 ⋮ [T1,Vsystem,n3,rnode=1,raddr=‹crdb-cluster-0.crdb-cluster.cockroachdb.svc.cluster.local:26257›,class=system,rpc] 394  failed connection attempt‹ (last connected 2ms ago)›: grpc: ‹connection error: desc = "transport: error while dialing: dial tcp 10.244.3.37:26257: connect: connection refused"› [code 14/Unavailable]
+E260623 20:19:36.187758 2315 2@rpc/peer.go:598 ⋮ [T1,Vsystem,n3,rnode=1,raddr=‹crdb-cluster-0.crdb-cluster.cockroachdb.svc.cluster.local:26257›,class=default,rpc] 396  failed connection attempt‹ (last connected 19ms ago)›: grpc: ‹connection error: desc = "transport: error while dialing: dial tcp: lookup crdb-cluster-0.crdb-cluster.cockroachdb.svc.cluster.local: no such host"› [code 14/Unavailable]
+
+codex
+The earlier failures were all targeted at `crdb-cluster-0`: peers saw either `no such host` or `connect: connection refused` for `crdb-cluster-0.crdb-cluster.cockroachdb.svc.cluster.local:26257`. That points at the first ordinal not being stably reachable while the other two were already advertising the right pod DNS names.
+exec
+/bin/zsh -lc 'kubectl -n cockroachdb get endpoints crdb-cluster -o yaml' in /Users/jinyige/Karma/runs/new-added-workflows/cockroachdb-deploy-init-settings-audit-20260623_202329/stages/stage_02
+exec
+/bin/zsh -lc 'kubectl -n cockroachdb describe pod crdb-cluster-0' in /Users/jinyige/Karma/runs/new-added-workflows/cockroachdb-deploy-init-settings-audit-20260623_202329/stages/stage_02
+exec
+/bin/zsh -lc "kubectl -n cockroachdb get pod crdb-cluster-0 -o jsonpath='{.metadata.labels}{\"\\n\"}{.spec.subdomain}{\"\\n\"}{.spec.hostname}{\"\\n\"}'" in /Users/jinyige/Karma/runs/new-added-workflows/cockroachdb-deploy-init-settings-audit-20260623_202329/stages/stage_02
+exec
+/bin/zsh -lc "kubectl -n cockroachdb exec crdb-cluster-0 -- ./cockroach sql --insecure --host=localhost:26257 -e 'SELECT version(); SELECT count(*) AS ranges FROM crdb_internal.ranges_no_leases;'" in /Users/jinyige/Karma/runs/new-added-workflows/cockroachdb-deploy-init-settings-audit-20260623_202329/stages/stage_02
+ succeeded in 207ms:
+{"app.kubernetes.io/instance":"crdb-cluster","app.kubernetes.io/name":"cockroachdb","apps.kubernetes.io/pod-index":"0","controller-revision-hash":"crdb-cluster-fd848ff97","statefulset.kubernetes.io/pod-name":"crdb-cluster-0"}
+crdb-cluster
+crdb-cluster-0
+
+ succeeded in 233ms:
+apiVersion: v1
+kind: Endpoints
+metadata:
+  annotations:
+    endpoints.kubernetes.io/last-change-trigger-time: "2026-06-23T20:20:14Z"
+  creationTimestamp: "2026-06-22T21:37:56Z"
+  labels:
+    app.kubernetes.io/component: database
+    app.kubernetes.io/instance: crdb-cluster
+    app.kubernetes.io/name: cockroachdb
+    service.kubernetes.io/headless: ""
+  name: crdb-cluster
+  namespace: cockroachdb
+  resourceVersion: "163994"
+  uid: ab83d2e6-ec29-438c-bebe-15b5886d4867
+subsets:
+- addresses:
+  - hostname: crdb-cluster-2
+    ip: 10.244.1.31
+    nodeName: kind-worker
+    targetRef:
+      kind: Pod
+      name: crdb-cluster-2
+      namespace: cockroachdb
+      uid: 3fe68ee9-93ec-4d6f-bb32-2e49825f1f76
+  - hostname: crdb-cluster-1
+    ip: 10.244.2.33
+    nodeName: kind-worker2
+    targetRef:
+      kind: Pod
+      name: crdb-cluster-1
+      namespace: cockroachdb
+      uid: 8d75a308-c889-4a26-afbf-48fbdbf2d4bd
+  - hostname: crdb-cluster-0
+    ip: 10.244.3.39
+    nodeName: kind-worker3
+    targetRef:
+      kind: Pod
+      name: crdb-cluster-0
+      namespace: cockroachdb
+      uid: 723136fc-8181-467d-99a8-1da4dd6813b9
+  ports:
+  - name: grpc
+    port: 26257
+    protocol: TCP
+  - name: http
+    port: 8080
+    protocol: TCP
+
+ succeeded in 248ms:
+Name:             crdb-cluster-0
+Namespace:        cockroachdb
+Priority:         0
+Service Account:  crdb-cluster-sa
+Node:             kind-worker3/172.22.0.5
+Start Time:       Tue, 23 Jun 2026 15:20:14 -0500
+Labels:           app.kubernetes.io/instance=crdb-cluster
+                  app.kubernetes.io/name=cockroachdb
+                  apps.kubernetes.io/pod-index=0
+                  controller-revision-hash=crdb-cluster-fd848ff97
+                  statefulset.kubernetes.io/pod-name=crdb-cluster-0
+Annotations:      <none>
+Status:           Running
+IP:               10.244.3.39
+IPs:
+  IP:           10.244.3.39
+Controlled By:  StatefulSet/crdb-cluster
+Containers:
+  db:
+    Container ID:  containerd://0571d1ab7014d20e07b67540ab44a5370d5fff545b2716d95864bde7cf2383d4
+    Image:         cockroachdb/cockroach:v24.1.0
+    Image ID:      docker.io/cockroachdb/cockroach@sha256:cc4e3ee67104d6f6434c81b555d69d4eb319f8aa0c5495931ffbe9273adfc4b5
+    Ports:         26257/TCP (grpc), 8080/TCP (http)
+    Host Ports:    0/TCP (grpc), 0/TCP (http)
+    Command:
+      /bin/bash
+      -c
+      exec /cockroach/cockroach start --logtostderr=INFO --insecure --store=/cockroach/cockroach-data --advertise-host=$(POD_NAME).crdb-cluster.cockroachdb.svc.cluster.local --http-addr=0.0.0.0:8080 --port=26257 --cache=25% --max-sql-memory=25% --join=crdb-cluster-0.crdb-cluster.cockroachdb.svc.cluster.local:26257,crdb-cluster-1.crdb-cluster.cockroachdb.svc.cluster.local:26257,crdb-cluster-2.crdb-cluster.cockroachdb.svc.cluster.local:26257
+    State:          Running
+      Started:      Tue, 23 Jun 2026 15:20:15 -0500
+    Ready:          True
+    Restart Count:  0
+    Limits:
+      cpu:     1
+      memory:  2Gi
+    Requests:
+      cpu:      1
+      memory:   2Gi
+    Liveness:   http-get http://:http/health delay=30s timeout=1s period=5s #success=1 #failure=3
+    Readiness:  http-get http://:http/health%3Fready=1 delay=10s timeout=1s period=5s #success=1 #failure=2
+    Environment:
+      POD_NAME:       crdb-cluster-0 (v1:metadata.name)
+      POD_NAMESPACE:  cockroachdb (v1:metadata.namespace)
+    Mounts:
+      /cockroach/cockroach-data from datadir (rw)
+      /var/run/secrets/kubernetes.io/serviceaccount from kube-api-access-f22d2 (ro)
+Conditions:
+  Type                        Status
+  PodReadyToStartContainers   True 
+  Initialized                 True 
+  Ready                       True 
+  ContainersReady             True 
+  PodScheduled                True 
+Volumes:
+  datadir:
+    Type:       PersistentVolumeClaim (a reference to a PersistentVolumeClaim in the same namespace)
+    ClaimName:  datadir-crdb-cluster-0
+    ReadOnly:   false
+  kube-api-access-f22d2:
+    Type:                    Projected (a volume that contains injected data from multiple sources)
+    TokenExpirationSeconds:  3607
+    ConfigMapName:           kube-root-ca.crt
+    Optional:                false
+    DownwardAPI:             true
+QoS Class:                   Guaranteed
+Node-Selectors:              <none>
+Tolerations:                 node.kubernetes.io/not-ready:NoExecute op=Exists for 300s
+                             node.kubernetes.io/unreachable:NoExecute op=Exists for 300s
+Events:
+  Type    Reason     Age    From               Message
+  ----    ------     ----   ----               -------
+  Normal  Scheduled  5m43s  default-scheduler  Successfully assigned cockroachdb/crdb-cluster-0 to kind-worker3
+  Normal  Pulled     5m43s  kubelet            Container image "cockroachdb/cockroach:v24.1.0" already present on machine
+  Normal  Created    5m43s  kubelet            Created container: db
+  Normal  Started    5m42s  kubelet            Started container db
+
+ succeeded in 849ms:
+version
+CockroachDB CCL v24.1.0 (aarch64-unknown-linux-gnu, built 2024/05/15 21:28:33, go1.22.2 X:nocoverageredesign)
+ranges
+54
+
+codex
+The headless service endpoints now include all three ordinal hostnames and IPs, including `crdb-cluster-0` at `10.244.3.39`. I also confirmed SQL execution with `SELECT version()` from inside the pod, so the remaining step is to record final health/status cleanly.
+exec
+/bin/zsh -lc 'kubectl -n cockroachdb get pods' in /Users/jinyige/Karma/runs/new-added-workflows/cockroachdb-deploy-init-settings-audit-20260623_202329/stages/stage_02
+ succeeded in 0ms:
+NAME             READY   STATUS    RESTARTS   AGE
+crdb-cluster-0   1/1     Running   0          6m1s
+crdb-cluster-1   1/1     Running   0          17m
+crdb-cluster-2   1/1     Running   0          19m
+
+exec
+/bin/zsh -lc 'kubectl -n cockroachdb get all' in /Users/jinyige/Karma/runs/new-added-workflows/cockroachdb-deploy-init-settings-audit-20260623_202329/stages/stage_02
+exec
+/bin/zsh -lc 'kubectl -n cockroachdb exec crdb-cluster-0 -- ./cockroach node status --insecure --host=localhost:26257' in /Users/jinyige/Karma/runs/new-added-workflows/cockroachdb-deploy-init-settings-audit-20260623_202329/stages/stage_02
+exec
+/bin/zsh -lc "kubectl -n cockroachdb exec crdb-cluster-0 -- ./cockroach sql --insecure --host=localhost:26257 -e 'SHOW DATABASES;'" in /Users/jinyige/Karma/runs/new-added-workflows/cockroachdb-deploy-init-settings-audit-20260623_202329/stages/stage_02
+ succeeded in 204ms:
+NAME                 READY   STATUS    RESTARTS   AGE
+pod/crdb-cluster-0   1/1     Running   0          6m1s
+pod/crdb-cluster-1   1/1     Running   0          17m
+pod/crdb-cluster-2   1/1     Running   0          19m
+
+NAME                          TYPE        CLUSTER-IP      EXTERNAL-IP   PORT(S)              AGE
+service/crdb-cluster          ClusterIP   None            <none>        26257/TCP,8080/TCP   22h
+service/crdb-cluster-public   ClusterIP   10.96.131.212   <none>        26257/TCP,8080/TCP   22h
+
+NAME                            READY   AGE
+statefulset.apps/crdb-cluster   3/3     22h
+
+ succeeded in 1299ms:
+database_name	owner	primary_region	secondary_region	regions	survival_goal
+defaultdb	root	NULL	NULL	{}	NULL
+postgres	root	NULL	NULL	{}	NULL
+system	node	NULL	NULL	{}	NULL
+
+ succeeded in 1324ms:
+id	address	sql_address	build	started_at	updated_at	locality	is_available	is_live
+1	crdb-cluster-0.crdb-cluster.cockroachdb.svc.cluster.local:26257	crdb-cluster-0.crdb-cluster.cockroachdb.svc.cluster.local:26257	v24.1.0	2026-06-23 20:20:16.040373 +0000 UTC	2026-06-23 20:26:16.109693 +0000 UTC		true	true
+2	crdb-cluster-2.crdb-cluster.cockroachdb.svc.cluster.local:26257	crdb-cluster-2.crdb-cluster.cockroachdb.svc.cluster.local:26257	v24.1.0	2026-06-23 20:06:56.163404 +0000 UTC	2026-06-23 20:26:14.192511 +0000 UTC		true	true
+3	crdb-cluster-1.crdb-cluster.cockroachdb.svc.cluster.local:26257	crdb-cluster-1.crdb-cluster.cockroachdb.svc.cluster.local:26257	v24.1.0	2026-06-23 20:08:37.663417 +0000 UTC	2026-06-23 20:26:16.719801 +0000 UTC		true	true
+
+codex
+The cluster is accepting SQL and `SHOW DATABASES` returns the default CockroachDB databases, which means initialization has happened. I’m checking the workspace manifests next in case the live repair needs to be reflected in the local YAML rather than only verified in the running cluster.
+exec
+/bin/zsh -lc 'rg --files' in /Users/jinyige/Karma/runs/new-added-workflows/cockroachdb-deploy-init-settings-audit-20260623_202329/stages/stage_02
+ succeeded in 0ms:
+proxy-client.crt
+agent.log
+precondition.log
+prompt.txt
+proxy-client.key
+kubectl_log.jsonl
+
+exec
+/bin/zsh -lc pwd in /Users/jinyige/Karma/runs/new-added-workflows/cockroachdb-deploy-init-settings-audit-20260623_202329/stages/stage_02
+ succeeded in 0ms:
+/Users/jinyige/Karma/runs/new-added-workflows/cockroachdb-deploy-init-settings-audit-20260623_202329/stages/stage_02
+
+exec
+/bin/zsh -lc 'find . -maxdepth 3 -type f | sort' in /Users/jinyige/Karma/runs/new-added-workflows/cockroachdb-deploy-init-settings-audit-20260623_202329/stages/stage_02
+ succeeded in 0ms:
+./.submit.partial
+./agent.log
+./kubectl_log.jsonl
+./precondition.log
+./prompt.txt
+./proxy-client.crt
+./proxy-client.key
+./proxy.pid
+
+codex
+There are no local Kubernetes manifests in this stage, only task/proxy logs, so the actionable state is the live cluster. The live StatefulSet and services are now internally consistent and the verification is coming from in-cluster CockroachDB commands.
+exec
+/bin/zsh -lc "sed -n '1,200p' precondition.log" in /Users/jinyige/Karma/runs/new-added-workflows/cockroachdb-deploy-init-settings-audit-20260623_202329/stages/stage_02
+ succeeded in 0ms:
+[precondition:crdb_env_ready:preconditionUnits[0] 'crdb_env_ready':probe] $ kubectl -n cockroachdb get pods -l app.kubernetes.io/name=cockroachdb --no-headers 2>/dev/null | grep -c ''
+3
+
+
+exec
+/bin/zsh -lc "sed -n '1,200p' kubectl_log.jsonl" in /Users/jinyige/Karma/runs/new-added-workflows/cockroachdb-deploy-init-settings-audit-20260623_202329/stages/stage_02
+ succeeded in 0ms:
+{"timestamp": 1782246298.4508128, "verb": "get", "path": "/api?timeout=32s", "status": 200, "duration_ms": 33, "streamed": false}
+{"timestamp": 1782246298.4510038, "verb": "get", "path": "/api?timeout=32s", "status": 200, "duration_ms": 34, "streamed": false}
+{"timestamp": 1782246298.449298, "verb": "get", "path": "/api?timeout=32s", "status": 200, "duration_ms": 36, "streamed": false}
+{"timestamp": 1782246298.4511669, "verb": "get", "path": "/api?timeout=32s", "status": 200, "duration_ms": 34, "streamed": false}
+{"timestamp": 1782246298.488427, "verb": "get", "path": "/apis?timeout=32s", "status": 200, "duration_ms": 15, "streamed": false}
+{"timestamp": 1782246298.487087, "verb": "get", "path": "/apis?timeout=32s", "status": 200, "duration_ms": 16, "streamed": false}
+{"timestamp": 1782246298.48755, "verb": "get", "path": "/apis?timeout=32s", "status": 200, "duration_ms": 16, "streamed": false}
+{"timestamp": 1782246298.4872909, "verb": "get", "path": "/apis?timeout=32s", "status": 200, "duration_ms": 16, "streamed": false}
+{"timestamp": 1782246298.5175538, "verb": "get", "path": "/api/v1/namespaces/cockroachdb/pods/crdb-cluster-0", "status": 200, "duration_ms": 19, "streamed": false}
+{"timestamp": 1782246298.518402, "verb": "get", "path": "/api/v1/namespaces/cockroachdb/pods?limit=500", "status": 200, "duration_ms": 18, "streamed": false}
+{"timestamp": 1782246298.518216, "verb": "get", "path": "/api/v1/namespaces/cockroachdb/services?limit=500", "status": 200, "duration_ms": 19, "streamed": false}
+{"timestamp": 1782246298.5186791, "verb": "get", "path": "/apis/apps/v1/namespaces/cockroachdb/statefulsets?limit=500", "status": 200, "duration_ms": 18, "streamed": false}
+{"timestamp": 1782246298.5431821, "verb": "get", "path": "/api/v1/namespaces/cockroachdb/pods/crdb-cluster-0/log?container=db&tailLines=120", "status": 200, "duration_ms": 28, "streamed": false}
+{"timestamp": 1782246315.1184871, "verb": "get", "path": "/api/v1/namespaces/cockroachdb/pods/crdb-cluster-0", "status": 200, "duration_ms": 20, "streamed": false}
+{"timestamp": 1782246315.113195, "verb": "get", "path": "/api/v1/namespaces/cockroachdb/pods/crdb-cluster-2", "status": 200, "duration_ms": 25, "streamed": false}
+{"timestamp": 1782246315.113568, "verb": "get", "path": "/api/v1/namespaces/cockroachdb/pods/crdb-cluster-1", "status": 200, "duration_ms": 25, "streamed": false}
+{"timestamp": 1782246315.118258, "verb": "get", "path": "/api/v1/namespaces/cockroachdb/pods/crdb-cluster-0", "status": 200, "duration_ms": 20, "streamed": false}
+{"timestamp": 1782246315.142375, "verb": "get", "path": "/api/v1/namespaces/cockroachdb/pods/crdb-cluster-2/log?container=db&tailLines=80", "status": 200, "duration_ms": 52, "streamed": false}
+{"timestamp": 1782246315.142028, "verb": "get", "path": "/api/v1/namespaces/cockroachdb/pods/crdb-cluster-1/log?container=db&tailLines=80", "status": 200, "duration_ms": 52, "streamed": false}
+{"timestamp": 1782246315.140859, "verb": "get", "path": "/api/v1/namespaces/cockroachdb/pods/crdb-cluster-0/exec?command=.%2Fcockroach&command=node&command=status&command=--insecure&command=--host%3Dlocalhost%3A26257&container=db&stderr=true&stdout=true", "status": 101, "duration_ms": 1389, "streamed": true, "upgraded": true}
+{"timestamp": 1782246315.141461, "verb": "get", "path": "/api/v1/namespaces/cockroachdb/pods/crdb-cluster-0/exec?command=.%2Fcockroach&command=sql&command=--insecure&command=--host%3Dlocalhost%3A26257&command=-e&command=SELECT+node_id%2C+address%2C+sql_address%2C+is_available%2C+is_live+FROM+crdb_internal.gossip_nodes+ORDER+BY+node_id%3B&container=db&stderr=true&stdout=true", "status": 101, "duration_ms": 1393, "streamed": true, "upgraded": true}
+{"timestamp": 1782246344.772788, "verb": "get", "path": "/api/v1/namespaces/cockroachdb/pods/crdb-cluster-0", "status": 200, "duration_ms": 22, "streamed": false}
+{"timestamp": 1782246344.7740102, "verb": "get", "path": "/api/v1/namespaces/cockroachdb/pods/crdb-cluster-1", "status": 200, "duration_ms": 21, "streamed": false}
+{"timestamp": 1782246344.7732239, "verb": "get", "path": "/api/v1/namespaces/cockroachdb/pods/crdb-cluster-2", "status": 200, "duration_ms": 22, "streamed": false}
+{"timestamp": 1782246344.7736151, "verb": "get", "path": "/apis/apps/v1/namespaces/cockroachdb/statefulsets/crdb-cluster", "status": 200, "duration_ms": 22, "streamed": false}
+{"timestamp": 1782246344.806456, "verb": "get", "path": "/apis/apps/v1/namespaces/cockroachdb/statefulsets/crdb-cluster", "status": 200, "duration_ms": 17, "streamed": false}
+{"timestamp": 1782246344.8008618, "verb": "get", "path": "/api/v1/namespaces/cockroachdb/pods/crdb-cluster-0/log?container=db", "status": 200, "duration_ms": 29, "streamed": false}
+{"timestamp": 1782246344.80076, "verb": "get", "path": "/api/v1/namespaces/cockroachdb/pods/crdb-cluster-2/log?container=db", "status": 200, "duration_ms": 32, "streamed": false}
+{"timestamp": 1782246344.801035, "verb": "get", "path": "/api/v1/namespaces/cockroachdb/pods/crdb-cluster-1/log?container=db", "status": 200, "duration_ms": 42, "streamed": false}
+{"timestamp": 1782246344.826893, "verb": "get", "path": "/apis/apps/v1/namespaces/cockroachdb/controllerrevisions?labelSelector=app.kubernetes.io%2Finstance%3Dcrdb-cluster%2Capp.kubernetes.io%2Fname%3Dcockroachdb", "status": 200, "duration_ms": 20, "streamed": false}
+{"timestamp": 1782246357.395465, "verb": "get", "path": "/api/v1/namespaces/cockroachdb/pods/crdb-cluster-0", "status": 200, "duration_ms": 19, "streamed": false}
+{"timestamp": 1782246357.3955631, "verb": "get", "path": "/api/v1/namespaces/cockroachdb/pods/crdb-cluster-0", "status": 200, "duration_ms": 18, "streamed": false}
+{"timestamp": 1782246357.395673, "verb": "get", "path": "/api/v1/namespaces/cockroachdb/endpoints/crdb-cluster", "status": 200, "duration_ms": 18, "streamed": false}
+{"timestamp": 1782246357.3960981, "verb": "get", "path": "/api/v1/namespaces/cockroachdb/pods/crdb-cluster-0", "status": 200, "duration_ms": 18, "streamed": false}
+{"timestamp": 1782246357.417353, "verb": "get", "path": "/api/v1/namespaces/cockroachdb/pods/crdb-cluster-0", "status": 200, "duration_ms": 15, "streamed": false}
+{"timestamp": 1782246357.435573, "verb": "get", "path": "/api/v1/namespaces/cockroachdb/events?fieldSelector=involvedObject.namespace%3Dcockroachdb%2CinvolvedObject.uid%3D723136fc-8181-467d-99a8-1da4dd6813b9%2CinvolvedObject.name%3Dcrdb-cluster-0&limit=500", "status": 200, "duration_ms": 17, "streamed": false}
+{"timestamp": 1782246357.4184608, "verb": "get", "path": "/api/v1/namespaces/cockroachdb/pods/crdb-cluster-0/exec?command=.%2Fcockroach&command=sql&command=--insecure&command=--host%3Dlocalhost%3A26257&command=-e&command=SELECT+version%28%29%3B+SELECT+count%28%2A%29+AS+ranges+FROM+crdb_internal.ranges_no_leases%3B&container=db&stderr=true&stdout=true", "status": 101, "duration_ms": 643, "streamed": true, "upgraded": true}
+{"timestamp": 1782246375.5167658, "verb": "get", "path": "/api/v1/namespaces/cockroachdb/pods/crdb-cluster-0", "status": 200, "duration_ms": 17, "streamed": false}
+{"timestamp": 1782246375.5174038, "verb": "get", "path": "/api/v1/namespaces/cockroachdb/pods?limit=500", "status": 200, "duration_ms": 20, "streamed": false}
+{"timestamp": 1782246375.5228019, "verb": "get", "path": "/api/v1/namespaces/cockroachdb/pods/crdb-cluster-0", "status": 200, "duration_ms": 16, "streamed": false}
+{"timestamp": 1782246375.523332, "verb": "get", "path": "/api/v1/namespaces/cockroachdb/pods?limit=500", "status": 200, "duration_ms": 17, "streamed": false}
+{"timestamp": 1782246375.542263, "verb": "get", "path": "/api/v1/namespaces/cockroachdb/replicationcontrollers?limit=500", "status": 200, "duration_ms": 15, "streamed": false}
+{"timestamp": 1782246375.558112, "verb": "get", "path": "/api/v1/namespaces/cockroachdb/services?limit=500", "status": 200, "duration_ms": 14, "streamed": false}
+{"timestamp": 1782246375.573955, "verb": "get", "path": "/apis/apps/v1/namespaces/cockroachdb/daemonsets?limit=500", "status": 200, "duration_ms": 14, "streamed": false}
+{"timestamp": 1782246375.589613, "verb": "get", "path": "/apis/apps/v1/namespaces/cockroachdb/deployments?limit=500", "status": 200, "duration_ms": 16, "streamed": false}
+{"timestamp": 1782246375.60715, "verb": "get", "path": "/apis/apps/v1/namespaces/cockroachdb/replicasets?limit=500", "status": 200, "duration_ms": 15, "streamed": false}
+{"timestamp": 1782246375.6239932, "verb": "get", "path": "/apis/apps/v1/namespaces/cockroachdb/statefulsets?limit=500", "status": 200, "duration_ms": 14, "streamed": false}
+{"timestamp": 1782246375.639586, "verb": "get", "path": "/apis/autoscaling/v2/namespaces/cockroachdb/horizontalpodautoscalers?limit=500", "status": 200, "duration_ms": 14, "streamed": false}
+{"timestamp": 1782246375.654773, "verb": "get", "path": "/apis/batch/v1/namespaces/cockroachdb/cronjobs?limit=500", "status": 200, "duration_ms": 13, "streamed": false}
+{"timestamp": 1782246375.669006, "verb": "get", "path": "/apis/batch/v1/namespaces/cockroachdb/jobs?limit=500", "status": 200, "duration_ms": 15, "streamed": false}
+{"timestamp": 1782246375.542413, "verb": "get", "path": "/api/v1/namespaces/cockroachdb/pods/crdb-cluster-0/exec?command=.%2Fcockroach&command=sql&command=--insecure&command=--host%3Dlocalhost%3A26257&command=-e&command=SHOW+DATABASES%3B&container=db&stderr=true&stdout=true", "status": 101, "duration_ms": 1249, "streamed": true, "upgraded": true}
+{"timestamp": 1782246375.5374432, "verb": "get", "path": "/api/v1/namespaces/cockroachdb/pods/crdb-cluster-0/exec?command=.%2Fcockroach&command=node&command=status&command=--insecure&command=--host%3Dlocalhost%3A26257&container=db&stderr=true&stdout=true", "status": 101, "duration_ms": 1272, "streamed": true, "upgraded": true}
+
+exec
+/bin/zsh -lc "sed -n '1,160p' .submit.partial" in /Users/jinyige/Karma/runs/new-added-workflows/cockroachdb-deploy-init-settings-audit-20260623_202329/stages/stage_02
+ succeeded in 0ms:
+OpenAI Codex v0.142.0-alpha.6
+--------
+workdir: /Users/jinyige/Karma/runs/new-added-workflows/cockroachdb-deploy-init-settings-audit-20260623_202329/stages/stage_02
+model: gpt-5.5
+provider: openai
+approval: never
+sandbox: danger-full-access
+reasoning effort: xhigh
+reasoning summaries: none
+session id: 019ef628-2138-7163-94ec-c45878c8ffd7
+--------
+user
+A 3-node CockroachDB cluster has been deployed but not yet initialized.
+
+OBSERVED STATE:
+- CockroachDB pods are running but the cluster is not forming
+- Pod logs show join/advertise errors when attempting to contact peer nodes
+
+YOUR TASK:
+Diagnose and fix the configuration so all 3 nodes can join.
+Initialize the CockroachDB cluster so it becomes SQL-ready.
+
+CONSTRAINTS:
+- Use existing resources; do not recreate the cluster.
+- No CRDs/operators/Helm.
+- Insecure mode (no TLS) for this case.
+
+HINT:
+Use in-cluster tooling available in the CockroachDB pods.
+
+GOAL:
+- Cluster accepts SQL connections.
+- 3 nodes are healthy and visible in cluster status.
+
+Useful commands:
+```bash
+# View pod logs
+kubectl -n cockroachdb logs crdb-cluster-0
+
+# Check all pods
+kubectl -n cockroachdb get pods
+
+# Interactive SQL shell
+kubectl -n cockroachdb exec -it crdb-cluster-0 -- ./cockroach sql --insecure
+```
+codex
+I’ll inspect the Kubernetes objects and pod logs first to find the join/advertise mismatch, then patch the existing workload in place and initialize from inside a CockroachDB pod.
+exec
+/bin/zsh -lc 'kubectl -n cockroachdb get statefulset -o yaml' in /Users/jinyige/Karma/runs/new-added-workflows/cockroachdb-deploy-init-settings-audit-20260623_202329/stages/stage_02
+exec
+/bin/zsh -lc 'kubectl -n cockroachdb logs crdb-cluster-0 --tail=120' in /Users/jinyige/Karma/runs/new-added-workflows/cockroachdb-deploy-init-settings-audit-20260623_202329/stages/stage_02
+exec
+/bin/zsh -lc 'kubectl -n cockroachdb get pods -o wide' in /Users/jinyige/Karma/runs/new-added-workflows/cockroachdb-deploy-init-settings-audit-20260623_202329/stages/stage_02
+exec
+/bin/zsh -lc 'kubectl -n cockroachdb get svc -o wide' in /Users/jinyige/Karma/runs/new-added-workflows/cockroachdb-deploy-init-settings-audit-20260623_202329/stages/stage_02
+ succeeded in 263ms:
+NAME             READY   STATUS    RESTARTS   AGE     IP            NODE           NOMINATED NODE   READINESS GATES
+crdb-cluster-0   1/1     Running   0          4m44s   10.244.3.39   kind-worker3   <none>           <none>
+crdb-cluster-1   1/1     Running   0          16m     10.244.2.33   kind-worker2   <none>           <none>
+crdb-cluster-2   1/1     Running   0          18m     10.244.1.31   kind-worker    <none>           <none>
+
+ succeeded in 263ms:
+NAME                  TYPE        CLUSTER-IP      EXTERNAL-IP   PORT(S)              AGE   SELECTOR
+crdb-cluster          ClusterIP   None            <none>        26257/TCP,8080/TCP   22h   app.kubernetes.io/instance=crdb-cluster,app.kubernetes.io/name=cockroachdb
+crdb-cluster-public   ClusterIP   10.96.131.212   <none>        26257/TCP,8080/TCP   22h   app.kubernetes.io/instance=crdb-cluster,app.kubernetes.io/name=cockroachdb
+
+ succeeded in 265ms:
+apiVersion: v1
+items:
+- apiVersion: apps/v1
+  kind: StatefulSet
+  metadata:
+    annotations:
+      kubectl.kubernetes.io/last-applied-configuration: |
+        {"apiVersion":"apps/v1","kind":"StatefulSet","metadata":{"annotations":{},"labels":{"app.kubernetes.io/instance":"crdb-cluster","app.kubernetes.io/name":"cockroachdb"},"name":"crdb-cluster","namespace":"cockroachdb"},"spec":{"podManagementPolicy":"Parallel","replicas":3,"selector":{"matchLabels":{"app.kubernetes.io/instance":"crdb-cluster","app.kubernetes.io/name":"cockroachdb"}},"serviceName":"crdb-cluster","template":{"metadata":{"labels":{"app.kubernetes.io/instance":"crdb-cluster","app.kubernetes.io/name":"cockroachdb"}},"spec":{"containers":[{"command":["/bin/bash","-c","exec /cockroach/cockroach start --logtostderr=INFO --insecure --store=/cockroach/cockroach-data --advertise-host=$(POD_NAME).crdb-cluster.cockroachdb.svc.cluster.local --http-addr=0.0.0.0:8080 --port=26257 --cache=25% --max-sql-memory=25% --join=crdb-cluster-0.crdb-cluster.cockroachdb.svc.cluster.local:26257,crdb-cluster-1.crdb-cluster.cockroachdb.svc.cluster.local:26257,crdb-cluster-2.crdb-cluster.cockroachdb.svc.cluster.local:26257"],"env":[{"name":"POD_NAME","valueFrom":{"fieldRef":{"fieldPath":"metadata.name"}}},{"name":"POD_NAMESPACE","valueFrom":{"fieldRef":{"fieldPath":"metadata.namespace"}}}],"image":"cockroachdb/cockroach:v24.1.0","imagePullPolicy":"IfNotPresent","livenessProbe":{"httpGet":{"path":"/health","port":"http","scheme":"HTTP"},"initialDelaySeconds":30,"periodSeconds":5},"name":"db","ports":[{"containerPort":26257,"name":"grpc"},{"containerPort":8080,"name":"http"}],"readinessProbe":{"failureThreshold":2,"httpGet":{"path":"/health?ready=1","port":"http","scheme":"HTTP"},"initialDelaySeconds":10,"periodSeconds":5},"resources":{"limits":{"cpu":"1","memory":"2Gi"},"requests":{"cpu":"1","memory":"2Gi"}},"volumeMounts":[{"mountPath":"/cockroach/cockroach-data","name":"datadir"}]}],"serviceAccountName":"crdb-cluster-sa","terminationGracePeriodSeconds":60}},"volumeClaimTemplates":[{"metadata":{"labels":{"app.kubernetes.io/instance":"crdb-cluster","app.kubernetes.io/name":"cockroachdb"},"name":"datadir"},"spec":{"accessModes":["ReadWriteOnce"],"resources":{"requests":{"storage":"10Gi"}}}}]}}
+    creationTimestamp: "2026-06-22T21:37:58Z"
+    generation: 27
+    labels:
+      app.kubernetes.io/instance: crdb-cluster
+      app.kubernetes.io/name: cockroachdb
+    name: crdb-cluster
+    namespace: cockroachdb
+    resourceVersion: "164019"
+    uid: 8cf0bc96-9a59-4afa-9e12-91d89df30846
+  spec:
+    persistentVolumeClaimRetentionPolicy:
+      whenDeleted: Retain
+      whenScaled: Retain
+    podManagementPolicy: Parallel
+    replicas: 3
+    revisionHistoryLimit: 10
+    selector:
+      matchLabels:
+        app.kubernetes.io/instance: crdb-cluster
+        app.kubernetes.io/name: cockroachdb
+    serviceName: crdb-cluster
+    template:
+      metadata:
+        creationTimestamp: null
+        labels:
+          app.kubernetes.io/instance: crdb-cluster
+          app.kubernetes.io/name: cockroachdb
+      spec:
+        containers:
+        - command:
+          - /bin/bash
+          - -c
+          - exec /cockroach/cockroach start --logtostderr=INFO --insecure --store=/cockroach/cockroach-data
+            --advertise-host=$(POD_NAME).crdb-cluster.cockroachdb.svc.cluster.local
+            --http-addr=0.0.0.0:8080 --port=26257 --cache=25% --max-sql-memory=25%
+            --join=crdb-cluster-0.crdb-cluster.cockroachdb.svc.cluster.local:26257,crdb-cluster-1.crdb-cluster.cockroachdb.svc.cluster.local:26257,crdb-cluster-2.crdb-cluster.cockroachdb.svc.cluster.local:26257
+          env:
+          - name: POD_NAME
+            valueFrom:
+              fieldRef:
+                apiVersion: v1
+                fieldPath: metadata.name
+          - name: POD_NAMESPACE
+            valueFrom:
+              fieldRef:
+                apiVersion: v1
+                fieldPath: metadata.namespace
+          image: cockroachdb/cockroach:v24.1.0
+          imagePullPolicy: IfNotPresent
+          livenessProbe:
+            failureThreshold: 3
+            httpGet:
+              path: /health
+              port: http
+              scheme: HTTP
+            initialDelaySeconds: 30
+            periodSeconds: 5
+            successThreshold: 1
+            timeoutSeconds: 1
+          name: db
+          ports:
+          - containerPort: 26257
+            name: grpc
+            protocol: TCP
+          - containerPort: 8080
+            name: http
+            protocol: TCP
+          readinessProbe:
+            failureThreshold: 2
+            httpGet:
+              path: /health?ready=1
+              port: http
+              scheme: HTTP
+            initialDelaySeconds: 10
+            periodSeconds: 5
+            successThreshold: 1
+            timeoutSeconds: 1
+          resources:
+            limits:
+              cpu: "1"
+              memory: 2Gi
+            requests:
+              cpu: "1"
+              memory: 2Gi
+          terminationMessagePath: /dev/termination-log
+
+codex
+One SQL query against `crdb_internal` used newer column names that are not present in CockroachDB v24.1, so I used `cockroach node status` as the authoritative health check instead. It reports all three nodes live and available.
+exec
+/bin/zsh -lc "kubectl -n cockroachdb logs crdb-cluster-0 | grep -iE 'cluster.*init|initializ' | tail -40" in /Users/jinyige/Karma/runs/new-added-workflows/cockroachdb-deploy-init-settings-audit-20260623_202329/stages/stage_02
+exec
+/bin/zsh -lc "kubectl -n cockroachdb logs crdb-cluster-2 | grep -iE 'cluster.*init|initializ' | tail -40" in /Users/jinyige/Karma/runs/new-added-workflows/cockroachdb-deploy-init-settings-audit-20260623_202329/stages/stage_02
+exec
+/bin/zsh -lc "kubectl -n cockroachdb logs crdb-cluster-1 | grep -iE 'cluster.*init|initializ' | tail -40" in /Users/jinyige/Karma/runs/new-added-workflows/cockroachdb-deploy-init-settings-audit-20260623_202329/stages/stage_02
+exec
+/bin/zsh -lc "kubectl -n cockroachdb exec crdb-cluster-0 -- ./cockroach sql --insecure --host=localhost:26257 -e 'SELECT node_id, address, sql_address, build_tag FROM crdb_internal.gossip_nodes ORDER BY node_id;'" in /Users/jinyige/Karma/runs/new-added-workflows/cockroachdb-deploy-init-settings-audit-20260623_202329/stages/stage_02
+ succeeded in 265ms:
+I260623 20:20:15.450238 15 server/config.go:875 ⋮ [T1,Vsystem,n?] 20  1 storage engine initialized
+I260623 20:20:16.054235 224 kv/kvserver/store.go:2220 ⋮ [T1,Vsystem,n1,s1] 58  initialized 54/54 replicas
+I260623 20:20:16.054681 224 server/node.go:686 ⋮ [T1,Vsystem,n1] 59  initialized store s1 in 14ms (54 replicas)
+
+ succeeded in 247ms:
+I260623 20:08:36.983005 16 server/config.go:875 ⋮ [T1,Vsystem,n?] 18  1 storage engine initialized
+I260623 20:08:37.673418 200 kv/kvserver/store.go:2220 ⋮ [T1,Vsystem,n3,s3] 55  initialized 54/54 replicas
+I260623 20:08:37.673596 200 server/node.go:686 ⋮ [T1,Vsystem,n3] 56  initialized store s3 in 9ms (54 replicas)
+W260623 20:08:37.685735 201 gossip/client.go:121 ⋮ [T1,Vsystem,n3] 72  failed to start gossip client to ‹crdb-cluster-0.crdb-cluster.cockroachdb.svc.cluster.local:26257›: initial connection heartbeat failed: grpc: ‹connection error: desc = "error reading server preface: EOF"› [code 14/Unavailable]
+
+ succeeded in 247ms:
+I260623 20:06:55.599119 9 server/config.go:875 ⋮ [T1,Vsystem,n?] 18  1 storage engine initialized
+I260623 20:06:56.172658 181 kv/kvserver/store.go:2220 ⋮ [T1,Vsystem,n2,s2] 47  initialized 54/54 replicas
+I260623 20:06:56.172843 181 server/node.go:686 ⋮ [T1,Vsystem,n2] 48  initialized store s2 in 8ms (54 replicas)
+W260623 20:06:56.185794 182 gossip/client.go:121 ⋮ [T1,Vsystem,n2] 64  failed to start gossip client to ‹crdb-cluster-0.crdb-cluster.cockroachdb.svc.cluster.local:26257›: initial connection heartbeat failed: grpc: ‹connection error: desc = "error reading server preface: EOF"› [code 14/Unavailable]
+W260623 20:07:02.174795 588 gossip/client.go:121 ⋮ [T1,Vsystem,n2] 69  failed to start gossip client to ‹crdb-cluster-0.crdb-cluster.cockroachdb.svc.cluster.local:26257›: initial connection heartbeat failed: grpc: ‹connection error: desc = "error reading server preface: EOF"› [code 14/Unavailable]
+W260623 20:07:07.178847 825 gossip/client.go:121 ⋮ [T1,Vsystem,n2] 74  failed to start gossip client to ‹crdb-cluster-1.crdb-cluster.cockroachdb.svc.cluster.local:26257›: initial connection heartbeat failed: grpc: ‹connection error: desc = "error reading server preface: EOF"› [code 14/Unavailable]
+W260623 20:07:12.185931 1038 gossip/client.go:121 ⋮ [T1,Vsystem,n2] 78  failed to start gossip client to ‹crdb-cluster-1.crdb-cluster.cockroachdb.svc.cluster.local:26257›: initial connection heartbeat failed: grpc: ‹connection error: desc = "error reading server preface: EOF"› [code 14/Unavailable]
+W260623 20:07:17.191655 1273 gossip/client.go:121 ⋮ [T1,Vsystem,n2] 83  failed to start gossip client to ‹crdb-cluster-0.crdb-cluster.cockroachdb.svc.cluster.local:26257›: initial connection heartbeat failed: grpc: ‹connection error: desc = "error reading server preface: EOF"› [code 14/Unavailable]
+W260623 20:07:22.183957 1489 gossip/client.go:121 ⋮ [T1,Vsystem,n2] 86  failed to start gossip client to ‹crdb-cluster-0.crdb-cluster.cockroachdb.svc.cluster.local:26257›: initial connection heartbeat failed: grpc: ‹connection error: desc = "error reading server preface: EOF"› [code 14/Unavailable]
+W260623 20:07:25.662561 1646 1@cli/start.go:642 ⋮ [T1,Vsystem,n2] 88 +- running the 'cockroach init' command if you are trying to initialize a new cluster.
+W260623 20:07:27.187065 1722 gossip/client.go:121 ⋮ [T1,Vsystem,n2] 93  failed to start gossip client to ‹crdb-cluster-1.crdb-cluster.cockroachdb.svc.cluster.local:26257›: initial connection heartbeat failed: grpc: ‹connection error: desc = "error reading server preface: EOF"› [code 14/Unavailable]
+W260623 20:07:32.190979 1943 gossip/client.go:121 ⋮ [T1,Vsystem,n2] 95  failed to start gossip client to ‹crdb-cluster-1.crdb-cluster.cockroachdb.svc.cluster.local:26257›: initial connection heartbeat failed: grpc: ‹connection error: desc = "error reading server preface: EOF"› [code 14/Unavailable]
+W260623 20:07:37.201760 2176 gossip/client.go:121 ⋮ [T1,Vsystem,n2] 100  failed to start gossip client to ‹crdb-cluster-0.crdb-cluster.cockroachdb.svc.cluster.local:26257›: initial connection heartbeat failed: grpc: ‹connection error: desc = "error reading server preface: EOF"› [code 14/Unavailable]
+W260623 20:07:42.205714 2396 gossip/client.go:121 ⋮ [T1,Vsystem,n2] 104  failed to start gossip client to ‹crdb-cluster-0.crdb-cluster.cockroachdb.svc.cluster.local:26257›: initial connection heartbeat failed: grpc: ‹connection error: desc = "error reading server preface: EOF"› [code 14/Unavailable]
+W260623 20:07:47.211676 2617 gossip/client.go:121 ⋮ [T1,Vsystem,n2] 108  failed to start gossip client to ‹crdb-cluster-1.crdb-cluster.cockroachdb.svc.cluster.local:26257›: initial connection heartbeat failed: grpc: ‹connection error: desc = "error reading server preface: EOF"› [code 14/Unavailable]
+W260623 20:07:52.201036 2848 gossip/client.go:121 ⋮ [T1,Vsystem,n2] 111  failed to start gossip client to ‹crdb-cluster-1.crdb-cluster.cockroachdb.svc.cluster.local:26257›: initial connection heartbeat failed: grpc: ‹connection error: desc = "error reading server preface: EOF"› [code 14/Unavailable]
+W260623 20:07:57.204974 3071 gossip/client.go:121 ⋮ [T1,Vsystem,n2] 121  failed to start gossip client to ‹crdb-cluster-0.crdb-cluster.cockroachdb.svc.cluster.local:26257›: initial connection heartbeat failed: grpc: ‹connection error: desc = "error reading server preface: EOF"› [code 14/Unavailable]
+W260623 20:08:02.210955 3308 gossip/client.go:121 ⋮ [T1,Vsystem,n2] 129  failed to start gossip client to ‹crdb-cluster-0.crdb-cluster.cockroachdb.svc.cluster.local:26257›: initial connection heartbeat failed: grpc: ‹connection error: desc = "error reading server preface: EOF"› [code 14/Unavailable]
+W260623 20:08:07.217815 3528 gossip/client.go:121 ⋮ [T1,Vsystem,n2] 144  failed to start gossip client to ‹crdb-cluster-1.crdb-cluster.cockroachdb.svc.cluster.local:26257›: initial connection heartbeat failed: grpc: ‹connection error: desc = "error reading server preface: EOF"› [code 14/Unavailable]
+W260623 20:08:12.222066 3758 gossip/client.go:121 ⋮ [T1,Vsystem,n2] 158  failed to start gossip client to ‹crdb-cluster-1.crdb-cluster.cockroachdb.svc.cluster.local:26257›: initial connection heartbeat failed: grpc: ‹connection error: desc = "error reading server preface: EOF"› [code 14/Unavailable]
+W260623 20:08:17.227991 3977 gossip/client.go:121 ⋮ [T1,Vsystem,n2] 172  failed to start gossip client to ‹crdb-cluster-0.crdb-cluster.cockroachdb.svc.cluster.local:26257›: initial connection heartbeat failed: grpc: ‹connection error: desc = "error reading server preface: EOF"› [code 14/Unavailable]
+W260623 20:08:22.233586 4207 gossip/client.go:121 ⋮ [T1,Vsystem,n2] 186  failed to start gossip client to ‹crdb-cluster-0.crdb-cluster.cockroachdb.svc.cluster.local:26257›: initial connection heartbeat failed: grpc: ‹connection error: desc = "error reading server preface: EOF"› [code 14/Unavailable]
+W260623 20:08:27.238340 4426 gossip/client.go:121 ⋮ [T1,Vsystem,n2] 203  failed to start gossip client to ‹crdb-cluster-1.crdb-cluster.cockroachdb.svc.cluster.local:26257›: initial connection heartbeat failed: grpc: ‹connection error: desc = "error reading server preface: EOF"› [code 14/Unavailable]
+W260623 20:08:32.243485 4656 gossip/client.go:121 ⋮ [T1,Vsystem,n2] 215  failed to start gossip client to ‹crdb-cluster-1.crdb-cluster.cockroachdb.svc.cluster.local:26257›: initial connection heartbeat failed: grpc: ‹connection error: desc = "error reading server preface: EOF"› [code 14/Unavailable]
+W260623 20:08:37.250331 4857 gossip/client.go:121 ⋮ [T1,Vsystem,n2] 230  failed to start gossip client to ‹crdb-cluster-0.crdb-cluster.cockroachdb.svc.cluster.local:26257›: initial connection heartbeat failed: grpc: ‹connection error: desc = "error reading server preface: EOF"› [code 14/Unavailable]
+
+ succeeded in 896ms:
+node_id	address	sql_address	build_tag
+1	crdb-cluster-0.crdb-cluster.cockroachdb.svc.cluster.local:26257	crdb-cluster-0.crdb-cluster.cockroachdb.svc.cluster.local:26257	v24.1.0
+2	crdb-cluster-2.crdb-cluster.cockroachdb.svc.cluster.local:26257	crdb-cluster-2.crdb-cluster.cockroachdb.svc.cluster.local:26257	v24.1.0
+3	crdb-cluster-1.crdb-cluster.cockroachdb.svc.cluster.local:26257	crdb-cluster-1.crdb-cluster.cockroachdb.svc.cluster.local:26257	v24.1.0
+
+codex
+Done. The live cluster is now SQL-ready and all 3 nodes are joined.
+
+Diagnosis: prior logs showed peers failing to reach `crdb-cluster-0` via `crdb-cluster-0.crdb-cluster.cockroachdb.svc.cluster.local:26257` with DNS/connection-refused errors. The current StatefulSet now advertises each pod using its stable headless-service DNS name and joins all three ordinal pod DNS names.
+
+Verified:
+
+```text
+kubectl -n cockroachdb get pods
+crdb-cluster-0   1/1   Running   0
+crdb-cluster-1   1/1   Running   0
+crdb-cluster-2   1/1   Running   0
+```
+
+`cockroach node status --insecure` reports nodes `1`, `2`, and `3` as `is_available=true` and `is_live=true`.
+
+SQL is accepting connections from inside `crdb-cluster-0`; `SHOW DATABASES` returns `defaultdb`, `postgres`, and `system`. No resources were recreated, and no CRDs/operators/Helm were used.
+tokens used
+87,472
+Done. The live cluster is now SQL-ready and all 3 nodes are joined.
+
+Diagnosis: prior logs showed peers failing to reach `crdb-cluster-0` via `crdb-cluster-0.crdb-cluster.cockroachdb.svc.cluster.local:26257` with DNS/connection-refused errors. The current StatefulSet now advertises each pod using its stable headless-service DNS name and joins all three ordinal pod DNS names.
+
+Verified:
+
+```text
+kubectl -n cockroachdb get pods
+crdb-cluster-0   1/1   Running   0
+crdb-cluster-1   1/1   Running   0
+crdb-cluster-2   1/1   Running   0
+```
+
+`cockroach node status --insecure` reports nodes `1`, `2`, and `3` as `is_available=true` and `is_live=true`.
+
+SQL is accepting connections from inside `crdb-cluster-0`; `SHOW DATABASES` returns `defaultdb`, `postgres`, and `system`. No resources were recreated, and no CRDs/operators/Helm were used.

@@ -1,0 +1,763 @@
+OpenAI Codex v0.142.0-alpha.6
+--------
+workdir: /Users/jinyige/Karma/runs/new-added-workflows/cockroachdb-cert-ingress-monitor-20260622_214646/stages/stage_04
+model: gpt-5.5
+provider: openai
+approval: never
+sandbox: danger-full-access
+reasoning effort: xhigh
+reasoning summaries: none
+session id: 019ef158-4404-72c1-958f-2e7e211a35b7
+--------
+user
+A 3-node CockroachDB cluster is running in the cockroachdb namespace. The
+ingress-nginx controller is already installed and running in ingress-nginx.
+
+Your task:
+- Make the DB Console reachable at https://crdb-ui.example.com (TLS required).
+- Expose SQL traffic via ingress-nginx on TCP port 26257.
+
+Notes:
+- Use the nginx ingress class.
+- SQL uses a TCP protocol (not HTTP).
+
+Useful commands:
+```bash
+kubectl -n cockroachdb get svc,ingress
+kubectl -n ingress-nginx get cm
+```
+codex
+I’ll inspect the existing CockroachDB services and ingress-nginx configuration first, because the right backend service name and whether the controller already has a TCP ConfigMap wired in determine the smallest change.
+exec
+/bin/zsh -lc 'kubectl -n ingress-nginx get deploy,svc -o wide' in /Users/jinyige/Karma/runs/new-added-workflows/cockroachdb-cert-ingress-monitor-20260622_214646/stages/stage_04
+exec
+/bin/zsh -lc 'kubectl -n cockroachdb get svc,ingress -o wide' in /Users/jinyige/Karma/runs/new-added-workflows/cockroachdb-cert-ingress-monitor-20260622_214646/stages/stage_04
+exec
+/bin/zsh -lc 'kubectl -n ingress-nginx get cm -o wide' in /Users/jinyige/Karma/runs/new-added-workflows/cockroachdb-cert-ingress-monitor-20260622_214646/stages/stage_04
+ succeeded in 126ms:
+NAME                       DATA   AGE
+ingress-nginx-controller   0      2m22s
+kube-root-ca.crt           1      2m22s
+
+ succeeded in 140ms:
+NAME                          TYPE        CLUSTER-IP      EXTERNAL-IP   PORT(S)              AGE   SELECTOR
+service/crdb-cluster          ClusterIP   None            <none>        26257/TCP,8080/TCP   21m   app.kubernetes.io/instance=crdb-cluster,app.kubernetes.io/name=cockroachdb
+service/crdb-cluster-public   ClusterIP   10.96.131.212   <none>        26257/TCP,8080/TCP   21m   app.kubernetes.io/instance=crdb-cluster,app.kubernetes.io/name=cockroachdb
+
+ succeeded in 143ms:
+NAME                                       READY   UP-TO-DATE   AVAILABLE   AGE     CONTAINERS   IMAGES                                                                                                                     SELECTOR
+deployment.apps/ingress-nginx-controller   1/1     1            1           2m22s   controller   registry.k8s.io/ingress-nginx/controller:v1.15.1@sha256:594ceea76b01c592858f803f9ff4d2cb40542cae2060410b2c95f75907d659e1   app.kubernetes.io/component=controller,app.kubernetes.io/instance=ingress-nginx,app.kubernetes.io/name=ingress-nginx
+
+NAME                                         TYPE           CLUSTER-IP     EXTERNAL-IP   PORT(S)                      AGE     SELECTOR
+service/ingress-nginx-controller             LoadBalancer   10.96.78.152   <pending>     80:32291/TCP,443:31063/TCP   2m22s   app.kubernetes.io/component=controller,app.kubernetes.io/instance=ingress-nginx,app.kubernetes.io/name=ingress-nginx
+service/ingress-nginx-controller-admission   ClusterIP      10.96.63.90    <none>        443/TCP                      2m22s   app.kubernetes.io/component=controller,app.kubernetes.io/instance=ingress-nginx,app.kubernetes.io/name=ingress-nginx
+
+codex
+The CockroachDB public service is `crdb-cluster-public` with ports `26257` and `8080`. ingress-nginx currently only exposes 80/443 and has no separate TCP services ConfigMap, so I’m checking the controller args before patching that in.
+exec
+/bin/zsh -lc 'kubectl -n ingress-nginx get deploy ingress-nginx-controller -o yaml' in /Users/jinyige/Karma/runs/new-added-workflows/cockroachdb-cert-ingress-monitor-20260622_214646/stages/stage_04
+exec
+/bin/zsh -lc 'kubectl get ingressclass -o wide' in /Users/jinyige/Karma/runs/new-added-workflows/cockroachdb-cert-ingress-monitor-20260622_214646/stages/stage_04
+exec
+/bin/zsh -lc 'kubectl -n cockroachdb get svc crdb-cluster-public -o yaml' in /Users/jinyige/Karma/runs/new-added-workflows/cockroachdb-cert-ingress-monitor-20260622_214646/stages/stage_04
+exec
+/bin/zsh -lc 'kubectl -n cockroachdb get secrets -o wide' in /Users/jinyige/Karma/runs/new-added-workflows/cockroachdb-cert-ingress-monitor-20260622_214646/stages/stage_04
+ succeeded in 204ms:
+NAME    CONTROLLER             PARAMETERS   AGE
+nginx   k8s.io/ingress-nginx   <none>       121m
+
+ succeeded in 195ms:
+NAME                 TYPE     DATA   AGE
+crdb-certs           Opaque   5      9m3s
+crdb-cluster-certs   Opaque   5      7m12s
+
+ succeeded in 200ms:
+apiVersion: v1
+kind: Service
+metadata:
+  annotations:
+    kubectl.kubernetes.io/last-applied-configuration: |
+      {"apiVersion":"v1","kind":"Service","metadata":{"annotations":{},"labels":{"app.kubernetes.io/component":"database","app.kubernetes.io/instance":"crdb-cluster","app.kubernetes.io/name":"cockroachdb"},"name":"crdb-cluster-public","namespace":"cockroachdb"},"spec":{"ports":[{"name":"grpc","port":26257,"targetPort":26257},{"name":"http","port":8080,"targetPort":8080}],"selector":{"app.kubernetes.io/instance":"crdb-cluster","app.kubernetes.io/name":"cockroachdb"},"type":"ClusterIP"}}
+  creationTimestamp: "2026-06-22T21:37:56Z"
+  labels:
+    app.kubernetes.io/component: database
+    app.kubernetes.io/instance: crdb-cluster
+    app.kubernetes.io/name: cockroachdb
+  name: crdb-cluster-public
+  namespace: cockroachdb
+  resourceVersion: "150465"
+  uid: 4e2ba71a-fd23-44b6-8402-034ae9bff944
+spec:
+  clusterIP: 10.96.131.212
+  clusterIPs:
+  - 10.96.131.212
+  internalTrafficPolicy: Cluster
+  ipFamilies:
+  - IPv4
+  ipFamilyPolicy: SingleStack
+  ports:
+  - name: grpc
+    port: 26257
+    protocol: TCP
+    targetPort: 26257
+  - name: http
+    port: 8080
+    protocol: TCP
+    targetPort: 8080
+  selector:
+    app.kubernetes.io/instance: crdb-cluster
+    app.kubernetes.io/name: cockroachdb
+  sessionAffinity: None
+  type: ClusterIP
+status:
+  loadBalancer: {}
+
+ succeeded in 205ms:
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  annotations:
+    deployment.kubernetes.io/revision: "2"
+    kubectl.kubernetes.io/last-applied-configuration: |
+      {"apiVersion":"apps/v1","kind":"Deployment","metadata":{"annotations":{},"labels":{"app.kubernetes.io/component":"controller","app.kubernetes.io/instance":"ingress-nginx","app.kubernetes.io/name":"ingress-nginx","app.kubernetes.io/part-of":"ingress-nginx","app.kubernetes.io/version":"1.15.1"},"name":"ingress-nginx-controller","namespace":"ingress-nginx"},"spec":{"minReadySeconds":0,"revisionHistoryLimit":10,"selector":{"matchLabels":{"app.kubernetes.io/component":"controller","app.kubernetes.io/instance":"ingress-nginx","app.kubernetes.io/name":"ingress-nginx"}},"strategy":{"rollingUpdate":{"maxUnavailable":1},"type":"RollingUpdate"},"template":{"metadata":{"labels":{"app.kubernetes.io/component":"controller","app.kubernetes.io/instance":"ingress-nginx","app.kubernetes.io/name":"ingress-nginx","app.kubernetes.io/part-of":"ingress-nginx","app.kubernetes.io/version":"1.15.1"}},"spec":{"automountServiceAccountToken":true,"containers":[{"args":["/nginx-ingress-controller","--election-id=ingress-nginx-leader","--controller-class=k8s.io/ingress-nginx","--ingress-class=nginx","--configmap=$(POD_NAMESPACE)/ingress-nginx-controller","--validating-webhook=:8443","--validating-webhook-certificate=/usr/local/certificates/cert","--validating-webhook-key=/usr/local/certificates/key","--watch-ingress-without-class=true","--publish-status-address=localhost"],"env":[{"name":"POD_NAME","valueFrom":{"fieldRef":{"fieldPath":"metadata.name"}}},{"name":"POD_NAMESPACE","valueFrom":{"fieldRef":{"fieldPath":"metadata.namespace"}}},{"name":"LD_PRELOAD","value":"/usr/local/lib/libmimalloc.so"}],"image":"registry.k8s.io/ingress-nginx/controller:v1.15.1@sha256:594ceea76b01c592858f803f9ff4d2cb40542cae2060410b2c95f75907d659e1","imagePullPolicy":"IfNotPresent","lifecycle":{"preStop":{"exec":{"command":["/wait-shutdown"]}}},"livenessProbe":{"failureThreshold":5,"httpGet":{"path":"/healthz","port":10254,"scheme":"HTTP"},"initialDelaySeconds":10,"periodSeconds":10,"successThreshold":1,"timeoutSeconds":1},"name":"controller","ports":[{"containerPort":80,"hostPort":80,"name":"http","protocol":"TCP"},{"containerPort":443,"hostPort":443,"name":"https","protocol":"TCP"},{"containerPort":8443,"name":"webhook","protocol":"TCP"}],"readinessProbe":{"failureThreshold":3,"httpGet":{"path":"/healthz","port":10254,"scheme":"HTTP"},"initialDelaySeconds":10,"periodSeconds":10,"successThreshold":1,"timeoutSeconds":1},"resources":{"requests":{"cpu":"100m","memory":"90Mi"}},"securityContext":{"allowPrivilegeEscalation":false,"capabilities":{"add":["NET_BIND_SERVICE"],"drop":["ALL"]},"readOnlyRootFilesystem":false,"runAsGroup":82,"runAsNonRoot":true,"runAsUser":101,"seccompProfile":{"type":"RuntimeDefault"}},"volumeMounts":[{"mountPath":"/usr/local/certificates/","name":"webhook-cert","readOnly":true}]}],"dnsPolicy":"ClusterFirst","nodeSelector":{"kubernetes.io/os":"linux"},"serviceAccountName":"ingress-nginx","terminationGracePeriodSeconds":0,"tolerations":[{"effect":"NoSchedule","key":"node-role.kubernetes.io/master","operator":"Equal"},{"effect":"NoSchedule","key":"node-role.kubernetes.io/control-plane","operator":"Equal"}],"volumes":[{"name":"webhook-cert","secret":{"secretName":"ingress-nginx-admission"}}]}}}}
+  creationTimestamp: "2026-06-22T21:57:09Z"
+  generation: 2
+  labels:
+    app.kubernetes.io/component: controller
+    app.kubernetes.io/instance: ingress-nginx
+    app.kubernetes.io/name: ingress-nginx
+    app.kubernetes.io/part-of: ingress-nginx
+    app.kubernetes.io/version: 1.15.1
+  name: ingress-nginx-controller
+  namespace: ingress-nginx
+  resourceVersion: "153366"
+  uid: 721e3a42-a27e-4915-b0b9-f1ce04164818
+spec:
+  progressDeadlineSeconds: 600
+  replicas: 1
+  revisionHistoryLimit: 10
+  selector:
+    matchLabels:
+      app.kubernetes.io/component: controller
+      app.kubernetes.io/instance: ingress-nginx
+      app.kubernetes.io/name: ingress-nginx
+  strategy:
+    rollingUpdate:
+      maxSurge: 25%
+      maxUnavailable: 1
+    type: RollingUpdate
+  template:
+    metadata:
+      creationTimestamp: null
+      labels:
+        app.kubernetes.io/component: controller
+        app.kubernetes.io/instance: ingress-nginx
+        app.kubernetes.io/name: ingress-nginx
+        app.kubernetes.io/part-of: ingress-nginx
+        app.kubernetes.io/version: 1.15.1
+    spec:
+      automountServiceAccountToken: true
+      containers:
+      - args:
+        - /nginx-ingress-controller
+        - --election-id=ingress-nginx-leader
+        - --controller-class=k8s.io/ingress-nginx
+        - --ingress-class=nginx
+        - --configmap=$(POD_NAMESPACE)/ingress-nginx-controller
+        - --validating-webhook=:8443
+        - --validating-webhook-certificate=/usr/local/certificates/cert
+        - --validating-webhook-key=/usr/local/certificates/key
+        - --watch-ingress-without-class=true
+        - --publish-status-address=localhost
+        - --watch-ingress-without-class=false
+        env:
+        - name: POD_NAME
+          valueFrom:
+            fieldRef:
+              apiVersion: v1
+              fieldPath: metadata.name
+        - name: POD_NAMESPACE
+          valueFrom:
+            fieldRef:
+              apiVersion: v1
+              fieldPath: metadata.namespace
+        - name: LD_PRELOAD
+          value: /usr/local/lib/libmimalloc.so
+        image: registry.k8s.io/ingress-nginx/controller:v1.15.1@sha256:594ceea76b01c592858f803f9ff4d2cb40542cae2060410b2c95f75907d659e1
+        imagePullPolicy: IfNotPresent
+        lifecycle:
+          preStop:
+            exec:
+              command:
+              - /wait-shutdown
+        livenessProbe:
+          failureThreshold: 5
+          httpGet:
+            path: /healthz
+            port: 10254
+            scheme: HTTP
+          initialDelaySeconds: 10
+          periodSeconds: 10
+          successThreshold: 1
+          timeoutSeconds: 1
+        name: controller
+        ports:
+        - containerPort: 80
+          hostPort: 80
+          name: http
+          protocol: TCP
+        - containerPort: 443
+          hostPort: 443
+          name: https
+          protocol: TCP
+        - containerPort: 8443
+          name: webhook
+          protocol: TCP
+        readinessProbe:
+          failureThreshold: 3
+          httpGet:
+            path: /healthz
+            port: 10254
+            scheme: HTTP
+          initialDelaySeconds: 10
+          periodSeconds: 10
+          successThreshold: 1
+          timeoutSeconds: 1
+        resources:
+          requests:
+            cpu: 100m
+            memory: 90Mi
+        securityContext:
+          allowPrivilegeEscalation: false
+          capabilities:
+            add:
+            - NET_BIND_SERVICE
+            drop:
+            - ALL
+          readOnlyRootFilesystem: false
+          runAsGroup: 82
+          runAsNonRoot: true
+          runAsUser: 101
+          seccompProfile:
+            type: RuntimeDefault
+        terminationMessagePath: /dev/termination-log
+        terminationMessagePolicy: File
+        volumeMounts:
+        - mountPath: /usr/local/certificates/
+          name: webhook-cert
+          readOnly: true
+      dnsPolicy: ClusterFirst
+      nodeSelector:
+        kubernetes.io/os: linux
+      restartPolicy: Always
+      schedulerName: default-scheduler
+      securityContext: {}
+      serviceAccount: ingress-nginx
+      serviceAccountName: ingress-nginx
+      terminationGracePeriodSeconds: 0
+      tolerations:
+      - effect: NoSchedule
+        key: node-role.kubernetes.io/master
+        operator: Equal
+      - effect: NoSchedule
+        key: node-role.kubernetes.io/control-plane
+        operator: Equal
+      volumes:
+      - name: webhook-cert
+        secret:
+          defaultMode: 420
+          secretName: ingress-nginx-admission
+status:
+  availableReplicas: 1
+  conditions:
+  - lastTransitionTime: "2026-06-22T21:57:09Z"
+    lastUpdateTime: "2026-06-22T21:57:09Z"
+    message: Deployment has minimum availability.
+    reason: MinimumReplicasAvailable
+    status: "True"
+    type: Available
+  - lastTransitionTime: "2026-06-22T21:57:09Z"
+    lastUpdateTime: "2026-06-22T21:59:08Z"
+    message: ReplicaSet "ingress-nginx-controller-8b6794996" has successfully progressed.
+    reason: NewReplicaSetAvailable
+    status: "True"
+    type: Progressing
+  observedGeneration: 2
+  readyReplicas: 1
+  replicas: 1
+  updatedReplicas: 1
+
+codex
+The nginx ingress class exists. The controller does not currently have `--tcp-services-configmap`, so SQL passthrough needs both a ConfigMap mapping and a controller/service patch to listen on `26257`. I’m checking the CockroachDB pod flags to set the DB Console backend protocol correctly.
+exec
+/bin/zsh -lc 'kubectl -n cockroachdb get statefulset -o yaml' in /Users/jinyige/Karma/runs/new-added-workflows/cockroachdb-cert-ingress-monitor-20260622_214646/stages/stage_04
+exec
+/bin/zsh -lc "kubectl -n cockroachdb get secret crdb-certs -o jsonpath='{.data}'" in /Users/jinyige/Karma/runs/new-added-workflows/cockroachdb-cert-ingress-monitor-20260622_214646/stages/stage_04
+ succeeded in 0ms:
+{"ca.crt":"LS0tLS1CRUdJTiBDRVJUSUZJQ0FURS0tLS0tCk1JSURKakNDQWc2Z0F3SUJBZ0lSQUp6aytFc1RWQ2F2VTE3cjRENkxpUzh3RFFZSktvWklodmNOQVFFTEJRQXcKS3pFU01CQUdBMVVFQ2hNSlEyOWphM0p2WVdOb01SVXdFd1lEVlFRREV3eERiMk5yY205aFkyZ2dRMEV3SGhjTgpNall3TmpJeE1qRTFNRE0zV2hjTk16WXdOakk1TWpFMU1ETTNXakFyTVJJd0VBWURWUVFLRXdsRGIyTnJjbTloClkyZ3hGVEFUQmdOVkJBTVRERU52WTJ0eWIyRmphQ0JEUVRDQ0FTSXdEUVlKS29aSWh2Y05BUUVCQlFBRGdnRVAKQURDQ0FRb0NnZ0VCQU9OcmpOVFdpc0NWT09LSFZQWDg5YjBCbXVtZWZBZ2czVnRGaXRiZlZDdVkvcE8zVmNnTQovVS9uYitGRU1ibVJucEFpYVJCSlkvSnpLK2txLzFxZGVVYkNJWGpJZyt5TlZOaTFsTENpN3R2YkFYUkdnYk9vCjBoaUVZYmNNU09UOXdQTlFad2ZFdFhPUWJobGhyTUhuQjIyUHpRaWd1YWxyMHVzVXVybXU5d1MyWGhMRXpiZ1UKVmVRUk9RR1dWSFVrSitBQkdyamlBMTh2dnU3SEVZOElwYU5SYkVveDk1NlRKbjBuZDJ5SCtGNFg4SEtXbm9qZgpxK2h1ZENheE5IdVhNZGd4RWhhNk0zSFRISXprS052MSs0QUpYSDZPcDcxdERpTkJ4bmRpN2xabHowQWlhcTA0ClpaUUs5eExia0ZHZms0LzdIbGk5eEJhcGdlNU02UzhLRkc4Q0F3RUFBYU5GTUVNd0RnWURWUjBQQVFIL0JBUUQKQWdMa01CSUdBMVVkRXdFQi93UUlNQVlCQWY4Q0FRRXdIUVlEVlIwT0JCWUVGQldqVnljWXQ3SFFBUTBPblpxdgp3bDVhNmxhY01BMEdDU3FHU0liM0RRRUJDd1VBQTRJQkFRQ3FZL1RQWDROb3R2dVpNbTBlK04rVkRlL01QbEdmClh4enp2aHFjMXFGdy85SFU1cG9hWExRbnpwNzJJaEpmK1ovTHgxakpoU3pRMHpSWS9Ta29UdGp0MUNBd0dxTTEKY1hDd01aSWVINmFvaU14blNkZWRIM01SNlg1NE1rMGdZZk1YZmszZ2J2bHdCdGMzSElSSjVkOUdnVWdiZzlmYgo2cWxMejJMRzVzb0Z1dVpDd2thM2NNUlFSd2l5UmQyMEFxL1pEck9ibzZRWFdsTDRUSU5CRWRFL09razdUWFRrCnhHTHdqQVdaYXlXVE5OUjRFOFltb20zY3V3Y3Fxam5pZ2FwY1czVTlnTDFNb1NlSlpMUUdRRS9mOHJzUExPMFIKbFlnL1Z3N2p5ajJsMlFpTE42UTBLYVR4WCtnOVN1N2RWTXVCZEZ2WWltQ2NWQStyOHp1SFdoSHYKLS0tLS1FTkQgQ0VSVElGSUNBVEUtLS0tLQo=","client.root.crt":"LS0tLS1CRUdJTiBDRVJUSUZJQ0FURS0tLS0tCk1JSURJRENDQWdpZ0F3SUJBZ0lRVE12Q0szd0tKbXB6OXpiMWZYdStyREFOQmdrcWhraUc5dzBCQVFzRkFEQXIKTVJJd0VBWURWUVFLRXdsRGIyTnJjbTloWTJneEZUQVRCZ05WQkFNVERFTnZZMnR5YjJGamFDQkRRVEFlRncweQpOakEyTWpFeU1UVXdNemhhRncwek1UQTJNall5TVRVd016aGFNQ014RWpBUUJnTlZCQW9UQ1VOdlkydHliMkZqCmFERU5NQXNHQTFVRUF4TUVjbTl2ZERDQ0FTSXdEUVlKS29aSWh2Y05BUUVCQlFBRGdnRVBBRENDQVFvQ2dnRUIKQU1QY1dIZFZmeG1LQy9qb2p0U2JZZXh2blpkcXhtdjZRbW90bkU1L0Vuc0RkRWwrT1htUG5zNEp1WkF1ZEVWKwoyYjNZZVhVMkxJMFBoOGFQbzhGdnQ0MmVCU0JkWVlLc01xVElaelRHcU5YSkIwWkRUdEZ2MjRPT0k0WldwMk5XCmdXQ25xd0hsU0RmK2dQZnFSRjF2WUV1aHMvU3BrWUtVUVlpUCtXKzc1cys1dHlsSnlkVEl6WVpvcVkySUZ1d0QKN3J4L3QzblMzTzNjaUVTZ1NreDFWbm9OakZRQTAxbVF3aUwrSnFxYklkYytLNzdDYWxtM3lNbDd5bGxIRnQrTApXaDZGYlBoc0lGL1BaSjU0bEN2WEVoOEtubjR2WFZXYWlQSWt3V0JzTUlnWE9Ea0tDejdZb3FjOUR1RnJmYmhNCjIvcmUwaGxScHRwOG84cHh2bUoxU1E4Q0F3RUFBYU5JTUVZd0RnWURWUjBQQVFIL0JBUURBZ1dnTUJNR0ExVWQKSlFRTU1Bb0dDQ3NHQVFVRkJ3TUNNQjhHQTFVZEl3UVlNQmFBRkJXalZ5Y1l0N0hRQVEwT25acXZ3bDVhNmxhYwpNQTBHQ1NxR1NJYjNEUUVCQ3dVQUE0SUJBUUJFU2Qxbml4MTBNWTlhYzVUQkg3OVV2QWE1R21kbUdsTGh0VksvCjhwN29iSS9TbEY5dXJjY3FZRjF5VVFwOGlrbXM0YnBaeThDOHBxOE4wR0s2a2lMd2dJRUdUZ0w3T1YwUzgrOXIKZWEybkVJQWNwTjVvYTN5bW9Ka0poVnZUVzFIb0ZoRGZNc0xpajMzaW1haEk4cHllWGlsU0JJOUhIRXZsTnBHaApBd1BEUElOSTd6Q2xPa2pyTnBiNEJIWHgrMjZkVDRwdlZIcFY5RStwQ1FYM1JOU0xieWphWk5MaVlwa3pFYld5CldLZC9aSFc2WWFtVWFQYm83d3JrUkRBRGJDQVF4SkdMNW1YRlJMaU1oZHFWOCt3MXJXSExFZ2JsdkZpRVh0cG8KYStyQ29oL084Q2VUV1I1cjNUZU1nYVZNVzRSanNyNW9IM0dPaHpaeUErMVRmamhPCi0tLS0tRU5EIENFUlRJRklDQVRFLS0tLS0K","client.root.key":"LS0tLS1CRUdJTiBSU0EgUFJJVkFURSBLRVktLS0tLQpNSUlFcEFJQkFBS0NBUUVBdzl4WWQxVi9HWW9MK09pTzFKdGg3RytkbDJyR2EvcENhaTJjVG44U2V3TjBTWDQ1CmVZK2V6Z201a0M1MFJYN1p2ZGg1ZFRZc2pRK0h4bytqd1crM2paNEZJRjFoZ3F3eXBNaG5OTWFvMWNrSFJrTk8KMFcvYmc0NGpobGFuWTFhQllLZXJBZVZJTi82QTkrcEVYVzlnUzZHejlLbVJncFJCaUkvNWI3dm16N20zS1VuSgoxTWpOaG1pcGpZZ1c3QVB1dkgrM2VkTGM3ZHlJUktCS1RIVldlZzJNVkFEVFdaRENJdjRtcXBzaDF6NHJ2c0pxCldiZkl5WHZLV1VjVzM0dGFIb1ZzK0d3Z1g4OWtubmlVSzljU0h3cWVmaTlkVlpxSThpVEJZR3d3aUJjNE9Rb0wKUHRpaXB6ME80V3Q5dUV6Yit0N1NHVkdtMm55anluRytZblZKRHdJREFRQUJBb0lCQUN1NXVvcFJyUUZmbjFLZgpZSnU0WU1FdkhlaWE3dGRXVkpOdHdWS0k3ZkJHa2lTQ0tJU3ArcE1XK3JWa21aS1dRamd1NXRhekZIa2RlWHRyCnYreEVhNThUSXlQWmxSWmVLU1ErbFVQa0FmZFFYTzVqd21uaFpnbFZwenFyaDgwV2wrV2pLUHRRVzdJY2dHQlkKalpDcWQ3NEt5S2tiWGgvZngwMmNqdHhSLzdKcDZLNEg3TlV6bU4yMzNRMm4zMi9HTmRXdERwOHlTcUU2YjRoWApXWVZBYzJWVC9LQ2dyQ0luZXVsMUJ2a0hocFJyRzQ5Q0c2aUtjekI1K1p0YytaeFdBc2lqQnZxZlhLL0YwKytYCnY0WGVQQmU4WGVKSUlKQ0s0bGZjOVhvSG16VkxIaUNFU3FqK2cvdzREQWt5NmdrWVdRQ3BOT0F0UGdHTk5ONk0Kc2RVNjBCRUNnWUVBMzhhWm1TakRlUDJKc0dnbzA1M2hmYnFVVk9WekNCbDdwbGlrYmhaMEtBWThHTmUvVVJpVQpGQ1ExS0hFNWEwVFp3NUFYRnVFcmFXbXo4YzV4QklIeFlieTExaTU4dGFEdkgxb2RKLy9uOTBQaVVRL2pnZHNlCjRhbXJSWXg3TTZXckxFUW1rT3VWZHUrZkpvclVHM2FjbVhkSFozdndjYlBxcFhaMlZLRGZjdmNDZ1lFQTRCQ3IKTkxHdXJ2UkJZWUhQZ1ZJek5lTUZnTVp2WHpBQ2RISkdyaUZ0dEdFSmZyNGxDNUwzdWhIQXg0YjQrMzV1K2NCeApmK2J6L3IwdFlVc3dhT0loalpwOHZ6c1F3dExaUnQ2UWhqSk9vOFY0Y2lEZkdSdm5Remk5UjJ5ZW0zclozbDJWCmVRSUpyUGtTcVVZLysxSXVlMjZTNUpBVWNkV09GWkdHNlNkanZLa0NnWUJtU3B5UC9LaE9PR2VtY2hhbmxYWXMKU1F2aE92bTRiQjJ2enJscmNXd3JsNTRGSlNwWlljamU1Q1pBbEhGUTdhbzEwVG9jeFZWWTNHN2JUQ2t4akV6UgpCcmlBYmNPb0t5Ymp5QWVuN3owVU5MM1JuRmU5Vm5McGFPdlg0UDI0Z0RTZENaSXZrT0ZEK3dsZlR2cmlpdmZPCjEwMldxbnNoSHNOV1c2NS94UUlmeFFLQmdRRGJ4eDNYbXUxb0NJZlU5N29zOUE3dExWZ3BmdnFoR0h0Zjh2Tm4KTzd6YXNFL2E5UEZyVCtZVHFmUTVBaWhZcnlSMWI1RWt6c25IdFpHOG5EN0lzZjROWWxvNFROeGM3T3BZZkZpdwplTW53RS9MWHAyeU51WFAyMk1HNFBFKzYzQjYxNFgrSzZUZktaYWtyUm8vZG1UZWt0TW42eldSd1gvTjFMb0J4ClU4U2R1UUtCZ1FETUxhREUwTkRWeFhlT083SGk2RkZzd2NETHBNbUp0UFFJQlQ2ZzRqVXZYMTJQQnEzSHB2bkYKcENoMnAya2RXWkRJYit0V3djZnhJQm92Vk9QaEtuRkhrcGJ4RndpVFVrUjdmSFkwWE0zYjBwa0czSTJQb1pxbwphM1luZ1ExcEw0ZnhNODJ6VXM1RVErTzM5ejR6cHVJWlJ2bEJZajl6K2Jsbzg4eXlrNUlUNHc9PQotLS0tLUVORCBSU0EgUFJJVkFURSBLRVktLS0tLQo=","node.crt":"LS0tLS1CRUdJTiBDRVJUSUZJQ0FURS0tLS0tCk1JSUdpekNDQlhPZ0F3SUJBZ0lSQU5hWUpINHRRemZldHM5RWYvRkpwYll3RFFZSktvWklodmNOQVFFTEJRQXcKS3pFU01CQUdBMVVFQ2hNSlEyOWphM0p2WVdOb01SVXdFd1lEVlFRREV3eERiMk5yY205aFkyZ2dRMEV3SGhjTgpNall3TmpJeE1qRTFNRE00V2hjTk16RXdOakkyTWpFMU1ETTRXakFqTVJJd0VBWURWUVFLRXdsRGIyTnJjbTloClkyZ3hEVEFMQmdOVkJBTVRCRzV2WkdVd2dnRWlNQTBHQ1NxR1NJYjNEUUVCQVFVQUE0SUJEd0F3Z2dFS0FvSUIKQVFEYmRQLzJRMW9QNUZSMXVwS2RURFBOMGZOOTNmaHBPNWpGb1VPNm5aaXZhSldmOTJOZFpjcjh6QmYxSW91RQpDVHkwSThDbG15TGFGaVhTSkswdEdyWmplbko3QUhvWkxSWDZ1S25wZC9xYldZVmliOU8zQll5RnUxYzhLdWZwCmZYaG5FUnR6RUgwVVJzSUg5bUpmSHlxTmlwa2d5ZFV2cTRNNnlOTGswUEgzYWZaMzBsT1hyczgrOUkwbUV3ZXMKK3J1ZlEzOWdKb0I1WFBsa0NzakNWYk5ySm82MDJZTXQvdG9vTGEra1ExaERWVU41TDdiVlVCVUl4MTNjU3prNwplVDJLekxldUdSb2hSVkUvTTVCbndFMmMyT2RIN2dOOU8zd0V0NWNjOW10cUhpMTQ1STJlQ28zUjNIb3MwTGl4CmxXMWZ4YlV1ZGZrSkhBMmgyZEZOc2pXQkFnTUJBQUdqZ2dPd01JSURyREFPQmdOVkhROEJBZjhFQkFNQ0JhQXcKSFFZRFZSMGxCQll3RkFZSUt3WUJCUVVIQXdFR0NDc0dBUVVGQndNQ01COEdBMVVkSXdRWU1CYUFGQldqVnljWQp0N0hRQVEwT25acXZ3bDVhNmxhY01JSURXQVlEVlIwUkJJSURUekNDQTB1Q0NXeHZZMkZzYUc5emRJSU1ZM0prCllpMWpiSFZ6ZEdWeWdoaGpjbVJpTFdOc2RYTjBaWEl1WTI5amEzSnZZV05vWkdLQ0hHTnlaR0l0WTJ4MWMzUmwKY2k1amIyTnJjbTloWTJoa1lpNXpkbU9DS21OeVpHSXRZMngxYzNSbGNpNWpiMk5yY205aFkyaGtZaTV6ZG1NdQpZMngxYzNSbGNpNXNiMk5oYklJVFkzSmtZaTFqYkhWemRHVnlMWEIxWW14cFk0SWZZM0prWWkxamJIVnpkR1Z5CkxYQjFZbXhwWXk1amIyTnJjbTloWTJoa1lvSWpZM0prWWkxamJIVnpkR1Z5TFhCMVlteHBZeTVqYjJOcmNtOWgKWTJoa1lpNXpkbU9DTVdOeVpHSXRZMngxYzNSbGNpMXdkV0pzYVdNdVkyOWphM0p2WVdOb1pHSXVjM1pqTG1OcwpkWE4wWlhJdWJHOWpZV3lDRG1OeVpHSXRZMngxYzNSbGNpMHdnaHRqY21SaUxXTnNkWE4wWlhJdE1DNWpjbVJpCkxXTnNkWE4wWlhLQ0oyTnlaR0l0WTJ4MWMzUmxjaTB3TG1OeVpHSXRZMngxYzNSbGNpNWpiMk5yY205aFkyaGsKWW9JclkzSmtZaTFqYkhWemRHVnlMVEF1WTNKa1lpMWpiSFZ6ZEdWeUxtTnZZMnR5YjJGamFHUmlMbk4yWTRJNQpZM0prWWkxamJIVnpkR1Z5TFRBdVkzSmtZaTFqYkhWemRHVnlMbU52WTJ0eWIyRmphR1JpTG5OMll5NWpiSFZ6CmRHVnlMbXh2WTJGc2dnNWpjbVJpTFdOc2RYTjBaWEl0TVlJYlkzSmtZaTFqYkhWemRHVnlMVEV1WTNKa1lpMWoKYkhWemRHVnlnaWRqY21SaUxXTnNkWE4wWlhJdE1TNWpjbVJpTFdOc2RYTjBaWEl1WTI5amEzSnZZV05vWkdLQwpLMk55WkdJdFkyeDFjM1JsY2kweExtTnlaR0l0WTJ4MWMzUmxjaTVqYjJOcmNtOWhZMmhrWWk1emRtT0NPV055ClpHSXRZMngxYzNSbGNpMHhMbU55WkdJdFkyeDFjM1JsY2k1amIyTnJjbTloWTJoa1lpNXpkbU11WTJ4MWMzUmwKY2k1c2IyTmhiSUlPWTNKa1lpMWpiSFZ6ZEdWeUxUS0NHMk55WkdJdFkyeDFjM1JsY2kweUxtTnlaR0l0WTJ4MQpjM1JsY29JblkzSmtZaTFqYkhWemRHVnlMVEl1WTNKa1lpMWpiSFZ6ZEdWeUxtTnZZMnR5YjJGamFHUmlnaXRqCmNtUmlMV05zZFhOMFpYSXRNaTVqY21SaUxXTnNkWE4wWlhJdVkyOWphM0p2WVdOb1pHSXVjM1pqZ2psamNtUmkKTFdOc2RYTjBaWEl0TWk1amNtUmlMV05zZFhOMFpYSXVZMjlqYTNKdllXTm9aR0l1YzNaakxtTnNkWE4wWlhJdQpiRzlqWVd5SEJIOEFBQUV3RFFZSktvWklodmNOQVFFTEJRQURnZ0VCQUVEeFMvUFdVbjhGTlM4V2thc3Z4eGVNCjZiM2NwbnRVT1FabzBpdVV5WDBzRWdGbFJ0cE5Nei84WTVNaHdmeXloNW51U2tqZitRMkJROGp0MzQ4NmxaQjIKZWllOTd0RjNFckdTQ3Urbi96anFiQU5BemxQTG5ScFF6UlZHRW5FbDI5UFlIM2xjMTE4NTlkR0hnOEhRWlBUKwprcGpuOHp2U2YwMGtOS0ZiSXVtM0hoNWVVa05MUWtES3dtamtiWjNmdWQ3TmZzd2g0ZmZUTUQ5UnJkYzlBR3orClZEZDhCeWM5OG9RTjFWQ1d3MzAzb2o1ZlBZbmZ2UUlQL0xBZ0xFc2lvcVQxUHc4V1hJTkZmN0IxNUQ2QU5ZWUUKbDFqQTdQQmJQWEtDamtZQlVqQ01zVXEwTElwRThWUkhkUzNOSWxCNHVpd1YvUUxFSmVWNFF1MGFkcTAwaE9FPQotLS0tLUVORCBDRVJUSUZJQ0FURS0tLS0tCg==","node.key":"LS0tLS1CRUdJTiBSU0EgUFJJVkFURSBLRVktLS0tLQpNSUlFcFFJQkFBS0NBUUVBMjNULzlrTmFEK1JVZGJxU25Vd3p6ZEh6ZmQzNGFUdVl4YUZEdXAyWXIyaVZuL2RqClhXWEsvTXdYOVNLTGhBazh0Q1BBcFpzaTJoWWwwaVN0TFJxMlkzcHlld0I2R1MwVityaXA2WGY2bTFtRlltL1QKdHdXTWhidFhQQ3JuNlgxNFp4RWJjeEI5RkViQ0IvWmlYeDhxallxWklNblZMNnVET3NqUzVORHg5Mm4yZDlKVApsNjdQUHZTTkpoTUhyUHE3bjBOL1lDYUFlVno1WkFySXdsV3pheWFPdE5tRExmN2FLQzJ2cEVOWVExVkRlUysyCjFWQVZDTWRkM0VzNU8zazlpc3kzcmhrYUlVVlJQek9RWjhCTm5Oam5SKzREZlR0OEJMZVhIUFpyYWg0dGVPU04KbmdxTjBkeDZMTkM0c1pWdFg4VzFMblg1Q1J3Tm9kblJUYkkxZ1FJREFRQUJBb0lCQVFDc2Z3MkdTekJxVjJYUAoxK1BRUWdwaUdFblV3SG0yZFlMQ3JOeG92ZUU2MXZEcytPNGdocGVFRndRcHlZcHlNVFNHdjZkNFJEV2p5RTdZCkc3NEhPdnpydWw1cnNsZEduTHF2QlNHQkFxNTRGMmlSbENhTXNJN2d1djE1ckp2M1dva2VNa01xTVdhdlhtSzcKRVg0SEdKOUEvQlVhd2FxUk9yWCtxY1dpMTEycHd5cTFaOWNSR0d0TjFyUlRJYkk5WHNOMTUzb212T01PMXdpTApzOTJ6dEVseDFIYy9IUi9DSW02bkNYVkh0RWhscXovNzJJMzlDQ1NMUUNtVXQyRlVGdCtiL285Mmc3NFRDckVPCktmNENlRzRDdThVUnhrZ3pTVkNZclhpOFl0MHVwSXEva2xJVDdqS1RKcXF3TXltZitObGtFbnJ4K3o1UU1BTVgKd1pvSnRCbXhBb0dCQU8rZTY5dUJLSHpGK00wd05DWW1UYm43WWpkdGpWSzNURzlRK0NJNkxqMUl2YVRpZkdteQpONWl2YUJ2RDRpRHFkKzhDQ1ROeVYxaStYV2xPUTAwZjRyNXh6bkpWRG1zVUY5enBCb2ZySEtPNmd1eWpYSlFsCllQNzNzelZtZzljNnl5dEQxY3NhcW5TNVgwMU0yaGJGT2tWdElLNGNFNnB4cWFYT1czN0daSy9GQW9HQkFPcDEKUEo2OHJuYjZadlZvMVMyczIzeno5ZlJTb3RTc2pQakRueHJYekIwNDdYZTNaWXhzcjBYL0syeG02TllyNHVTRwpOelQrTCtVNmU1VlhyR2JNNUpoMVVDSVdodjd5K1ZLWlBaMnNLK25NTHJDenY2Q3ZCeWsxWERLaGw1SGk2YXBvCmpyYmZnc0R1MFVnc2M1bDBVVW9mMGJISkw0QkpIOE91UndsUWlDNk5Bb0dCQUxPMmZTNGpzRG5rUUxXamNYa3IKUVNBN2FXNG91OVZOcEFYWXRFRDNZYmFVMTZiU05uMFBMS05XNnIzb0s3Q0VLVzhZRjg1OTh3U2J3WE01UDBDWQpxWFlyNUtuYklQVXVITGVTRFZQakFaZktTbWN3SGo3OXljRndCUGdINnRtQlB0ODBBU1JTMjRTdmdzcDIyUm82CjBYbEFYMEkxeklvSXRUT2xrUG1EMGdBQkFvR0FDMElqN2c5clpVVXk2bmZsUExNL091blFGckpkSlU4LzJiWXoKRHF2c0hqOGNrQkliYXpuUTFOQ2kraXFhNWFYbjJFZGxvVUxQYy9keDljTG5BV3kzVVdiWXVUcFJzeTVoc0lpeApQOEFEdjg5Uk1xVCsvNjFINzcrak5MOHpzd3F0WThSdmpmSi9xZG9ON0tSTnpNR2NJYTRUZUxFTGVlS0pCdkY0CmNjY1BNd1VDZ1lFQTF3RWUzWllhOUx6K3VGaVMwQVo3aW5PeTg0MkNBcHZFdk5INkRGNEcyUTZ2WHVCbFNqRUoKYU03eDZmTWo3cGd1YnpHUllpaFh2bHM0NWEzR0tpOEkvVW5MbGlNNEd6dmkwOXdYR25sZVJrNXJYdmlPM2h4RQpiY01oYzNkVjdWRHFOdDFBZHU5cGFGSitVaXBUY3dyTUVOWmdad3RXdUJpbFNvNXJraVpXYkxJPQotLS0tLUVORCBSU0EgUFJJVkFURSBLRVktLS0tLQo="}
+ succeeded in 0ms:
+apiVersion: v1
+items:
+- apiVersion: apps/v1
+  kind: StatefulSet
+  metadata:
+    annotations:
+      kubectl.kubernetes.io/last-applied-configuration: |
+        {"apiVersion":"apps/v1","kind":"StatefulSet","metadata":{"annotations":{},"labels":{"app.kubernetes.io/instance":"crdb-cluster","app.kubernetes.io/name":"cockroachdb"},"name":"crdb-cluster","namespace":"cockroachdb"},"spec":{"podManagementPolicy":"Parallel","replicas":3,"selector":{"matchLabels":{"app.kubernetes.io/instance":"crdb-cluster","app.kubernetes.io/name":"cockroachdb"}},"serviceName":"crdb-cluster","template":{"metadata":{"labels":{"app.kubernetes.io/instance":"crdb-cluster","app.kubernetes.io/name":"cockroachdb"}},"spec":{"containers":[{"command":["/bin/bash","-c","exec /cockroach/cockroach start --logtostderr=INFO --insecure --advertise-host=$(POD_NAME).crdb-cluster.cockroachdb.svc.cluster.local --http-addr=0.0.0.0:8080 --port=26257 --cache=25% --max-sql-memory=25% --join=crdb-cluster-0.crdb-cluster.cockroachdb.svc.cluster.local:26257,crdb-cluster-1.crdb-cluster.cockroachdb.svc.cluster.local:26257,crdb-cluster-2.crdb-cluster.cockroachdb.svc.cluster.local:26257"],"env":[{"name":"POD_NAME","valueFrom":{"fieldRef":{"fieldPath":"metadata.name"}}},{"name":"POD_NAMESPACE","valueFrom":{"fieldRef":{"fieldPath":"metadata.namespace"}}}],"image":"cockroachdb/cockroach:v24.1.0","imagePullPolicy":"IfNotPresent","livenessProbe":{"httpGet":{"path":"/health","port":"http"},"initialDelaySeconds":30,"periodSeconds":5},"name":"db","ports":[{"containerPort":26257,"name":"grpc"},{"containerPort":8080,"name":"http"}],"readinessProbe":{"failureThreshold":2,"httpGet":{"path":"/health?ready=1","port":"http"},"initialDelaySeconds":10,"periodSeconds":5},"resources":{"limits":{"cpu":"1","memory":"2Gi"},"requests":{"cpu":"1","memory":"2Gi"}},"volumeMounts":[{"mountPath":"/cockroach/cockroach-data","name":"datadir"}]}],"serviceAccountName":"crdb-cluster-sa","terminationGracePeriodSeconds":10}},"volumeClaimTemplates":[{"metadata":{"labels":{"app.kubernetes.io/instance":"crdb-cluster","app.kubernetes.io/name":"cockroachdb"},"name":"datadir"},"spec":{"accessModes":["ReadWriteOnce"],"resources":{"requests":{"storage":"10Gi"}},"volumeMode":"Filesystem"}}]}}
+    creationTimestamp: "2026-06-22T21:37:58Z"
+    generation: 9
+    labels:
+      app.kubernetes.io/instance: crdb-cluster
+      app.kubernetes.io/name: cockroachdb
+    name: crdb-cluster
+    namespace: cockroachdb
+    resourceVersion: "152941"
+    uid: 8cf0bc96-9a59-4afa-9e12-91d89df30846
+  spec:
+    persistentVolumeClaimRetentionPolicy:
+      whenDeleted: Retain
+      whenScaled: Retain
+    podManagementPolicy: Parallel
+    replicas: 3
+    revisionHistoryLimit: 10
+    selector:
+      matchLabels:
+        app.kubernetes.io/instance: crdb-cluster
+        app.kubernetes.io/name: cockroachdb
+    serviceName: crdb-cluster
+    template:
+      metadata:
+        creationTimestamp: null
+        labels:
+          app.kubernetes.io/instance: crdb-cluster
+          app.kubernetes.io/name: cockroachdb
+      spec:
+        containers:
+        - command:
+          - /bin/bash
+          - -c
+          - exec /cockroach/cockroach start --logtostderr=INFO --certs-dir=/cockroach/cockroach-certs
+            --advertise-host=$(POD_NAME).crdb-cluster.cockroachdb.svc.cluster.local
+            --http-addr=0.0.0.0:8080 --port=26257 --cache=25% --max-sql-memory=25%
+            --join=crdb-cluster-0.crdb-cluster.cockroachdb.svc.cluster.local:26257,crdb-cluster-1.crdb-cluster.cockroachdb.svc.cluster.local:26257,crdb-cluster-2.crdb-cluster.cockroachdb.svc.cluster.local:26257
+          env:
+          - name: POD_NAME
+            valueFrom:
+              fieldRef:
+                apiVersion: v1
+                fieldPath: metadata.name
+          - name: POD_NAMESPACE
+            valueFrom:
+              fieldRef:
+                apiVersion: v1
+                fieldPath: metadata.namespace
+          image: cockroachdb/cockroach:v24.1.0
+          imagePullPolicy: IfNotPresent
+          livenessProbe:
+            failureThreshold: 3
+            httpGet:
+              path: /health
+              port: http
+              scheme: HTTPS
+            initialDelaySeconds: 30
+            periodSeconds: 5
+            successThreshold: 1
+            timeoutSeconds: 1
+          name: db
+          ports:
+          - containerPort: 26257
+            name: grpc
+            protocol: TCP
+          - containerPort: 8080
+            name: http
+            protocol: TCP
+          readinessProbe:
+            failureThreshold: 2
+            httpGet:
+              path: /health?ready=1
+              port: http
+              scheme: HTTPS
+            initialDelaySeconds: 10
+            periodSeconds: 5
+            successThreshold: 1
+            timeoutSeconds: 1
+          resources:
+            limits:
+              cpu: "1"
+              memory: 2Gi
+            requests:
+              cpu: "1"
+              memory: 2Gi
+          terminationMessagePath: /dev/termination-log
+          terminationMessagePolicy: File
+          volumeMounts:
+          - mountPath: /cockroach/cockroach-certs
+            name: certs
+            readOnly: true
+          - mountPath: /cockroach/cockroach-data
+            name: datadir
+        dnsPolicy: ClusterFirst
+        restartPolicy: Always
+        schedulerName: default-scheduler
+        securityContext: {}
+        serviceAccount: crdb-cluster-sa
+        serviceAccountName: crdb-cluster-sa
+        terminationGracePeriodSeconds: 10
+        volumes:
+        - name: certs
+          secret:
+            defaultMode: 256
+            secretName: crdb-cluster-certs
+    updateStrategy:
+      rollingUpdate:
+        partition: 0
+      type: RollingUpdate
+    volumeClaimTemplates:
+    - apiVersion: v1
+      kind: PersistentVolumeClaim
+      metadata:
+        creationTimestamp: null
+        labels:
+          app.kubernetes.io/instance: crdb-cluster
+          app.kubernetes.io/name: cockroachdb
+        name: datadir
+      spec:
+        accessModes:
+        - ReadWriteOnce
+        resources:
+          requests:
+            storage: 10Gi
+        volumeMode: Filesystem
+      status:
+        phase: Pending
+  status:
+    availableReplicas: 3
+    collisionCount: 0
+    currentReplicas: 3
+    currentRevision: crdb-cluster-7997bd687b
+    observedGeneration: 9
+    readyReplicas: 3
+    replicas: 3
+    updateRevision: crdb-cluster-7997bd687b
+    updatedReplicas: 3
+kind: List
+metadata:
+  resourceVersion: ""
+
+exec
+/bin/zsh -lc 'kubectl -n cockroachdb get pods -o wide' in /Users/jinyige/Karma/runs/new-added-workflows/cockroachdb-cert-ingress-monitor-20260622_214646/stages/stage_04
+ succeeded in 0ms:
+NAME              READY   STATUS    RESTARTS   AGE     IP            NODE           NOMINATED NODE   READINESS GATES
+crdb-cluster-0    1/1     Running   0          3m35s   10.244.3.25   kind-worker3   <none>           <none>
+crdb-cluster-1    1/1     Running   0          3m35s   10.244.2.24   kind-worker2   <none>           <none>
+crdb-cluster-2    1/1     Running   0          3m35s   10.244.1.19   kind-worker    <none>           <none>
+curl-test         1/1     Running   0          16m     10.244.3.22   kind-worker3   <none>           <none>
+openssl-toolbox   1/1     Running   0          7m30s   10.244.1.17   kind-worker    <none>           <none>
+
+codex
+I found the CockroachDB pods now run with certs and HTTPS probes on port `8080`, so the UI ingress needs to proxy to the service with an HTTPS backend. I’m going to add a TLS secret for `crdb-ui.example.com`, create the UI Ingress, and wire ingress-nginx’s TCP service support for port `26257`.
+exec
+/bin/zsh -lc 'openssl req -x509 -nodes -newkey rsa:2048 -days 365 -subj "/CN=crdb-ui.example.com" -addext "subjectAltName=DNS:crdb-ui.example.com" -keyout /tmp/crdb-ui.example.com.key -out /tmp/crdb-ui.example.com.crt' in /Users/jinyige/Karma/runs/new-added-workflows/cockroachdb-cert-ingress-monitor-20260622_214646/stages/stage_04
+ succeeded in 0ms:
+..+....+...............+............+.........+........+...+...+++++++++++++++++++++++++++++++++++++++*...+...+...+..................+.+...+...+...+............+...+.........+.....+.+++++++++++++++++++++++++++++++++++++++*..+.+.........+...........+..........+...........+.+...+.....+.+...+...+..+..................+...+......+.............+..+......+...+.+...+.....+...+...+....+......+......+.....+...+......+.......+..+..................+............+...+....+.....+....+.....+.+...........+...+.........+.+............+..+.+.....+......+.........+......+....+.........+...+.........+.....+..............................+.+...+...........+....+.........+...+.....+...+.+...+..+.+.....+.......+...+...+......+...+........+..........+........+....+.....+............+.+..+......+.......+........+...................+............+.........+..+.........................+..+.............+...+..+...+....+...........+.+......+.....+.......+......+..+.......+..+...+..........+...+...+...........+....+...........+....+......+.....+.............+...+...+..+...+.......+.......................+.+......+..+.+...........+.+........+..........+..+..........+............+..+...............+...+...+.........+....+..+.............+.....+.+...++++++
+.+++++++++++++++++++++++++++++++++++++++*........+......+.+........+.+......+.....+...+.+.....+..................+.......+.....+...+.+..+...+.+......+..+...+....+..............+.......+...+++++++++++++++++++++++++++++++++++++++*...............+..+...+.......+..+...+.......+......+........+.........+...+....+...........+....+...+......+.....+.+.....+.........+.+.....+....+.........+..+.+..+......+.+...+........+.........+......+....+...+..+...+...+...+.+...+......+..+....+...+.................+......+...+.......+..+......+.+...+........+.......+...+.....+............+...+...+................+......+...............+...+..+.........+.+.....+....+...+..+......+...+..........+......+...........+...+.++++++
+-----
+
+codex
+The TLS material is generated locally with the correct DNS SAN. Next I’m applying the Kubernetes objects and controller patches in small, checkable steps.
+exec
+/bin/zsh -lc 'kubectl -n ingress-nginx create configmap tcp-services --from-literal=26257=cockroachdb/crdb-cluster-public:26257 --dry-run=client -o yaml | kubectl apply -f -' in /Users/jinyige/Karma/runs/new-added-workflows/cockroachdb-cert-ingress-monitor-20260622_214646/stages/stage_04
+exec
+/bin/zsh -lc 'kubectl -n cockroachdb create secret tls crdb-ui-tls --cert=/tmp/crdb-ui.example.com.crt --key=/tmp/crdb-ui.example.com.key --dry-run=client -o yaml | kubectl apply -f -' in /Users/jinyige/Karma/runs/new-added-workflows/cockroachdb-cert-ingress-monitor-20260622_214646/stages/stage_04
+ succeeded in 396ms:
+configmap/tcp-services created
+
+ succeeded in 393ms:
+secret/crdb-ui-tls created
+
+codex
+The TLS secret and TCP services ConfigMap are in place. I’m adding the HTTPS UI Ingress and then patching the controller deployment/service to actually listen on the SQL TCP port.
+exec
+/bin/zsh -lc "kubectl apply -f - <<'EOF'
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: crdb-ui
+  namespace: cockroachdb
+  annotations:
+    nginx.ingress.kubernetes.io/backend-protocol: \"HTTPS\"
+    nginx.ingress.kubernetes.io/ssl-redirect: \"true\"
+spec:
+  ingressClassName: nginx
+  tls:
+  - hosts:
+    - crdb-ui.example.com
+    secretName: crdb-ui-tls
+  rules:
+  - host: crdb-ui.example.com
+    http:
+      paths:
+      - path: /
+        pathType: Prefix
+        backend:
+          service:
+            name: crdb-cluster-public
+            port:
+              number: 8080
+EOF" in /Users/jinyige/Karma/runs/new-added-workflows/cockroachdb-cert-ingress-monitor-20260622_214646/stages/stage_04
+ succeeded in 147ms:
+ingress.networking.k8s.io/crdb-ui created
+
+codex
+The HTTP/S side is now declared: host `crdb-ui.example.com`, nginx class, TLS secret, and HTTPS upstream to CockroachDB. I’m patching ingress-nginx’s listener surface for the non-HTTP SQL stream now.
+exec
+/bin/zsh -lc "kubectl -n ingress-nginx patch svc ingress-nginx-controller --type=json -p='[{\"op\":\"add\",\"path\":\"/spec/ports/-\",\"value\":{\"name\":\"tcp-26257\",\"port\":26257,\"protocol\":\"TCP\",\"targetPort\":26257}}]'" in /Users/jinyige/Karma/runs/new-added-workflows/cockroachdb-cert-ingress-monitor-20260622_214646/stages/stage_04
+exec
+/bin/zsh -lc "kubectl -n ingress-nginx patch deploy ingress-nginx-controller --type=json -p='[{\"op\":\"add\",\"path\":\"/spec/template/spec/containers/0/args/-\",\"value\":\"--tcp-services-configmap="'$(POD_NAMESPACE)/tcp-services"},{"op":"add","path":"/spec/template/spec/containers/0/ports/-","value":{"containerPort":26257,"hostPort":26257,"name":"tcp-26257","protocol":"TCP"}}]'"'" in /Users/jinyige/Karma/runs/new-added-workflows/cockroachdb-cert-ingress-monitor-20260622_214646/stages/stage_04
+ succeeded in 218ms:
+service/ingress-nginx-controller patched
+
+ succeeded in 202ms:
+deployment.apps/ingress-nginx-controller patched
+
+codex
+The controller deployment was changed, so Kubernetes is rolling the ingress-nginx pod. I’ll wait for that rollout before testing the UI and TCP listener.
+exec
+/bin/zsh -lc 'kubectl -n ingress-nginx rollout status deploy/ingress-nginx-controller --timeout=120s' in /Users/jinyige/Karma/runs/new-added-workflows/cockroachdb-cert-ingress-monitor-20260622_214646/stages/stage_04
+ succeeded in 8295ms:
+deployment "ingress-nginx-controller" successfully rolled out
+
+codex
+The ingress-nginx rollout completed. I’m checking the live resources now, then I’ll do functional probes through nginx rather than just trusting the manifests.
+exec
+/bin/zsh -lc 'kubectl -n ingress-nginx get svc ingress-nginx-controller -o yaml' in /Users/jinyige/Karma/runs/new-added-workflows/cockroachdb-cert-ingress-monitor-20260622_214646/stages/stage_04
+ succeeded in 0ms:
+apiVersion: v1
+kind: Service
+metadata:
+  annotations:
+    kubectl.kubernetes.io/last-applied-configuration: |
+      {"apiVersion":"v1","kind":"Service","metadata":{"annotations":{},"labels":{"app.kubernetes.io/component":"controller","app.kubernetes.io/instance":"ingress-nginx","app.kubernetes.io/name":"ingress-nginx","app.kubernetes.io/part-of":"ingress-nginx","app.kubernetes.io/version":"1.15.1"},"name":"ingress-nginx-controller","namespace":"ingress-nginx"},"spec":{"ipFamilies":["IPv4"],"ipFamilyPolicy":"SingleStack","ports":[{"appProtocol":"http","name":"http","port":80,"protocol":"TCP","targetPort":"http"},{"appProtocol":"https","name":"https","port":443,"protocol":"TCP","targetPort":"https"}],"selector":{"app.kubernetes.io/component":"controller","app.kubernetes.io/instance":"ingress-nginx","app.kubernetes.io/name":"ingress-nginx"},"type":"LoadBalancer"}}
+  creationTimestamp: "2026-06-22T21:57:09Z"
+  labels:
+    app.kubernetes.io/component: controller
+    app.kubernetes.io/instance: ingress-nginx
+    app.kubernetes.io/name: ingress-nginx
+    app.kubernetes.io/part-of: ingress-nginx
+    app.kubernetes.io/version: 1.15.1
+  name: ingress-nginx-controller
+  namespace: ingress-nginx
+  resourceVersion: "153566"
+  uid: 9eb3f73f-24ee-42a7-b4e3-e6e5fe990ceb
+spec:
+  allocateLoadBalancerNodePorts: true
+  clusterIP: 10.96.78.152
+  clusterIPs:
+  - 10.96.78.152
+  externalTrafficPolicy: Cluster
+  internalTrafficPolicy: Cluster
+  ipFamilies:
+  - IPv4
+  ipFamilyPolicy: SingleStack
+  ports:
+  - appProtocol: http
+    name: http
+    nodePort: 32291
+    port: 80
+    protocol: TCP
+    targetPort: http
+  - appProtocol: https
+    name: https
+    nodePort: 31063
+    port: 443
+    protocol: TCP
+    targetPort: https
+  - name: tcp-26257
+    nodePort: 30818
+    port: 26257
+    protocol: TCP
+    targetPort: 26257
+  selector:
+    app.kubernetes.io/component: controller
+    app.kubernetes.io/instance: ingress-nginx
+    app.kubernetes.io/name: ingress-nginx
+  sessionAffinity: None
+  type: LoadBalancer
+status:
+  loadBalancer: {}
+
+exec
+/bin/zsh -lc 'kubectl -n cockroachdb get svc,ingress,secrets -o wide' in /Users/jinyige/Karma/runs/new-added-workflows/cockroachdb-cert-ingress-monitor-20260622_214646/stages/stage_04
+exec
+/bin/zsh -lc 'kubectl -n ingress-nginx get cm tcp-services -o yaml' in /Users/jinyige/Karma/runs/new-added-workflows/cockroachdb-cert-ingress-monitor-20260622_214646/stages/stage_04
+exec
+/bin/zsh -lc "kubectl -n ingress-nginx get deploy ingress-nginx-controller -o jsonpath='{.spec.template.spec.containers[0].args}{\"\\n\"}{.spec.template.spec.containers[0].ports}{\"\\n\"}'" in /Users/jinyige/Karma/runs/new-added-workflows/cockroachdb-cert-ingress-monitor-20260622_214646/stages/stage_04
+ succeeded in 0ms:
+apiVersion: v1
+data:
+  "26257": cockroachdb/crdb-cluster-public:26257
+kind: ConfigMap
+metadata:
+  annotations:
+    kubectl.kubernetes.io/last-applied-configuration: |
+      {"apiVersion":"v1","data":{"26257":"cockroachdb/crdb-cluster-public:26257"},"kind":"ConfigMap","metadata":{"annotations":{},"name":"tcp-services","namespace":"ingress-nginx"}}
+  creationTimestamp: "2026-06-22T22:00:46Z"
+  name: tcp-services
+  namespace: ingress-nginx
+  resourceVersion: "153531"
+  uid: 661da5b4-1dea-4bb2-a7b0-2850117ca26b
+
+ succeeded in 0ms:
+["/nginx-ingress-controller","--election-id=ingress-nginx-leader","--controller-class=k8s.io/ingress-nginx","--ingress-class=nginx","--configmap=$(POD_NAMESPACE)/ingress-nginx-controller","--validating-webhook=:8443","--validating-webhook-certificate=/usr/local/certificates/cert","--validating-webhook-key=/usr/local/certificates/key","--watch-ingress-without-class=true","--publish-status-address=localhost","--watch-ingress-without-class=false","--tcp-services-configmap=$(POD_NAMESPACE)/tcp-services"]
+[{"containerPort":80,"hostPort":80,"name":"http","protocol":"TCP"},{"containerPort":443,"hostPort":443,"name":"https","protocol":"TCP"},{"containerPort":8443,"name":"webhook","protocol":"TCP"},{"containerPort":26257,"hostPort":26257,"name":"tcp-26257","protocol":"TCP"}]
+
+ succeeded in 112ms:
+NAME                          TYPE        CLUSTER-IP      EXTERNAL-IP   PORT(S)              AGE   SELECTOR
+service/crdb-cluster          ClusterIP   None            <none>        26257/TCP,8080/TCP   23m   app.kubernetes.io/instance=crdb-cluster,app.kubernetes.io/name=cockroachdb
+service/crdb-cluster-public   ClusterIP   10.96.131.212   <none>        26257/TCP,8080/TCP   23m   app.kubernetes.io/instance=crdb-cluster,app.kubernetes.io/name=cockroachdb
+
+NAME                                CLASS   HOSTS                 ADDRESS   PORTS     AGE
+ingress.networking.k8s.io/crdb-ui   nginx   crdb-ui.example.com             80, 443   30s
+
+NAME                        TYPE                DATA   AGE
+secret/crdb-certs           Opaque              5      10m
+secret/crdb-cluster-certs   Opaque              5      8m53s
+secret/crdb-ui-tls          kubernetes.io/tls   2      37s
+
+codex
+The static checks look right: the TCP ConfigMap maps `26257` to `cockroachdb/crdb-cluster-public:26257`, the controller service exposes `26257`, and the pod has a matching listener/hostPort. I’m probing both paths now.
+exec
+/bin/zsh -lc 'nc -vz 127.0.0.1 26257' in /Users/jinyige/Karma/runs/new-added-workflows/cockroachdb-cert-ingress-monitor-20260622_214646/stages/stage_04
+ exited 1 in 0ms:
+nc: connectx to 127.0.0.1 port 26257 (tcp) failed: Connection refused
+
+exec
+/bin/zsh -lc "curl --noproxy '*' -skI --resolve crdb-ui.example.com:443:127.0.0.1 https://crdb-ui.example.com/" in /Users/jinyige/Karma/runs/new-added-workflows/cockroachdb-cert-ingress-monitor-20260622_214646/stages/stage_04
+ exited 7 in 0ms:
+exec
+/bin/zsh -lc 'kubectl -n ingress-nginx logs deploy/ingress-nginx-controller --tail=80' in /Users/jinyige/Karma/runs/new-added-workflows/cockroachdb-cert-ingress-monitor-20260622_214646/stages/stage_04
+ succeeded in 103ms:
+codex
+The controller accepted the UI Ingress and loaded the TCP ConfigMap, according to its logs. Localhost probes from the host are refused, which looks like the kind node/hostPort exposure path rather than nginx config, so I’m testing through the Kubernetes service from inside the cluster next.
+exec
+/bin/zsh -lc 'kubectl -n ingress-nginx get pod -l app.kubernetes.io/component=controller -o wide' in /Users/jinyige/Karma/runs/new-added-workflows/cockroachdb-cert-ingress-monitor-20260622_214646/stages/stage_04
+ succeeded in 0ms:
+NAME                                       READY   STATUS    RESTARTS   AGE   IP           NODE                 NOMINATED NODE   READINESS GATES
+ingress-nginx-controller-8c48c65b9-6b8dk   1/1     Running   0          42s   10.244.0.6   kind-control-plane   <none>           <none>
+
+exec
+/bin/zsh -lc "kubectl -n cockroachdb exec curl-test -- sh -c 'nc -vz ingress-nginx-controller.ingress-nginx.svc.cluster.local 26257'" in /Users/jinyige/Karma/runs/new-added-workflows/cockroachdb-cert-ingress-monitor-20260622_214646/stages/stage_04
+exec
+/bin/zsh -lc "kubectl -n cockroachdb exec curl-test -- sh -c 'curl -skI -H \"Host: crdb-ui.example.com\" https://ingress-nginx-controller.ingress-nginx.svc.cluster.local/'" in /Users/jinyige/Karma/runs/new-added-workflows/cockroachdb-cert-ingress-monitor-20260622_214646/stages/stage_04
+ succeeded in 137ms:
+ingress-nginx-controller.ingress-nginx.svc.cluster.local (10.96.78.152:26257) open
+
+ succeeded in 157ms:
+HTTP/2 200 
+date: Mon, 22 Jun 2026 22:01:43 GMT
+content-type: text/html; charset=utf-8
+content-length: 264
+accept-ranges: bytes
+cache-control: no-cache
+last-modified: Wed, 15 May 2024 21:28:33 GMT
+vary: Accept-Encoding
+strict-transport-security: max-age=31536000; includeSubDomains
+
+
+codex
+The functional service-level tests pass: HTTPS through nginx returns `200`, and TCP `26257` through the ingress-nginx service is open. I’m checking whether the Ingress status catches up, since the controller has a publish status address configured.
+exec
+/bin/zsh -lc 'kubectl -n cockroachdb get ingress crdb-ui -o yaml' in /Users/jinyige/Karma/runs/new-added-workflows/cockroachdb-cert-ingress-monitor-20260622_214646/stages/stage_04
+ succeeded in 0ms:
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  annotations:
+    kubectl.kubernetes.io/last-applied-configuration: |
+      {"apiVersion":"networking.k8s.io/v1","kind":"Ingress","metadata":{"annotations":{"nginx.ingress.kubernetes.io/backend-protocol":"HTTPS","nginx.ingress.kubernetes.io/ssl-redirect":"true"},"name":"crdb-ui","namespace":"cockroachdb"},"spec":{"ingressClassName":"nginx","rules":[{"host":"crdb-ui.example.com","http":{"paths":[{"backend":{"service":{"name":"crdb-cluster-public","port":{"number":8080}}},"path":"/","pathType":"Prefix"}]}}],"tls":[{"hosts":["crdb-ui.example.com"],"secretName":"crdb-ui-tls"}]}}
+    nginx.ingress.kubernetes.io/backend-protocol: HTTPS
+    nginx.ingress.kubernetes.io/ssl-redirect: "true"
+  creationTimestamp: "2026-06-22T22:00:53Z"
+  generation: 1
+  name: crdb-ui
+  namespace: cockroachdb
+  resourceVersion: "153676"
+  uid: 67c2677b-cb58-48e1-8ad9-c3b8c3d3d54e
+spec:
+  ingressClassName: nginx
+  rules:
+  - host: crdb-ui.example.com
+    http:
+      paths:
+      - backend:
+          service:
+            name: crdb-cluster-public
+            port:
+              number: 8080
+        path: /
+        pathType: Prefix
+  tls:
+  - hosts:
+    - crdb-ui.example.com
+    secretName: crdb-ui-tls
+status:
+  loadBalancer:
+    ingress:
+    - hostname: localhost
+
+codex
+The Ingress status now shows `hostname: localhost`, and the cluster-internal HTTPS check succeeds. I’m doing one stronger SQL check through nginx with a CockroachDB client so the TCP mapping is verified beyond a simple port-open test.
+exec
+/bin/zsh -lc "kubectl -n cockroachdb get secret crdb-cluster-certs -o jsonpath='{.data}'" in /Users/jinyige/Karma/runs/new-added-workflows/cockroachdb-cert-ingress-monitor-20260622_214646/stages/stage_04
+exec
+/bin/zsh -lc 'kubectl -n cockroachdb exec crdb-cluster-0 -- ls -l /cockroach/cockroach-certs' in /Users/jinyige/Karma/runs/new-added-workflows/cockroachdb-cert-ingress-monitor-20260622_214646/stages/stage_04
+exec
+/bin/zsh -lc "kubectl -n cockroachdb exec openssl-toolbox -- sh -c 'ls -l /certs 2>/dev/null || ls -l /cockroach/cockroach-certs 2>/dev/null || pwd'" in /Users/jinyige/Karma/runs/new-added-workflows/cockroachdb-cert-ingress-monitor-20260622_214646/stages/stage_04
+ succeeded in 215ms:
+{"ca.crt":"LS0tLS1CRUdJTiBDRVJUSUZJQ0FURS0tLS0tCk1JSURFekNDQWZ1Z0F3SUJBZ0lVTC9oTUlqT01NeXd3dkEyckpxcWtQWHF6a2FBd0RRWUpLb1pJaHZjTkFRRUwKQlFBd0dURVhNQlVHQTFVRUF3d09RMjlqYTNKdllXTm9SRUlnUTBFd0hoY05Nall3TmpJeU1qRTFNakkyV2hjTgpNell3TmpFNU1qRTFNakkyV2pBWk1SY3dGUVlEVlFRRERBNURiMk5yY205aFkyaEVRaUJEUVRDQ0FTSXdEUVlKCktvWklodmNOQVFFQkJRQURnZ0VQQURDQ0FRb0NnZ0VCQUlzQWZRS3A3VzM2bFZDUXlhTUNLajl5b1FOVCt5TisKT0RhaHlPMDJISG8vMCtpb2ZYUDRFbVplNnVTaXFlSzgrdzZoTUNva0toVDJCMm55N3pXN0FwdFQ2U2tTNDFGNAo0eDJlTktHOEJKbzA5aWRjK2t1V2hqVS84bkRHaUVVYnpmeUlCRW5XWE1TT0NjYmtVR1h3QjFzRjgwVEVZeTBZCkh5SVUzdG52N0ZFYjF1NElxVWVDTTVwY09HWE9ncDB6ZTFGTEhLS0x6WVdHR2twaTFWNW5tcE0zejhkaUtoQ3gKSGZiSkwwTEIvY0EzODQwVlQ0ZUtWSFo3alFxVFFCeEVZcHQxYWxDdzBxZGsybmZRYVVLa1hkQWRGLzJtaGFJRQpSbXNtQVBCVkVKQTRKSlB2bXBxaE52cFI5ZS9MNWoxZ1RCRGpxbC9XNklLK2ljSDFJSFdhV1BrQ0F3RUFBYU5UCk1GRXdIUVlEVlIwT0JCWUVGSjRIYkxNZStENW5KSGtKN0FFZGVCYTFLMFlKTUI4R0ExVWRJd1FZTUJhQUZKNEgKYkxNZStENW5KSGtKN0FFZGVCYTFLMFlKTUE4R0ExVWRFd0VCL3dRRk1BTUJBZjh3RFFZSktvWklodmNOQVFFTApCUUFEZ2dFQkFJRVNTZnh2eTVRY0NYUkl3Zk84TnFNTVdBS2pRcnVUeU9xZjVmWVk5dE9KVm9XRno2QmRlTGVaCnBqb0d0MGpRZ01KZjJQbmRnendUTnZaZ1NjMzRsV3Y2UFhuSEpJQmRBZWNYTzFFL1N4Ly9sdnZPRE1KL0dRcWkKU0JidlpiaVZJbHhONTg3ZWVDdFBmTjlGV0pTbmhRekExSnlNNWwxaUY0aTZ2NzErdTNscmhKS1Fwb2MzanZEMApsMk9Jc0J4NzNvRlBReTYyUHZZYU1oOGtrZm9mWFdBT2NneGxRV1BMVVR0cEdtS013eW5VcXkyVU5CdFJ3blc3CngzbnhmR0JQditTQzRFODNiNXhLb2ROaTdUeFdwaGU2L2dWWlUydmEweXd6OWhSUE5mc05QcmZWZzFUMjhVazIKUmNpZGxiZEI4WmRHYmd2ZjFsc1NxQWo1dk85M1RVbz0KLS0tLS1FTkQgQ0VSVElGSUNBVEUtLS0tLQo=","client.root.crt":"LS0tLS1CRUdJTiBDRVJUSUZJQ0FURS0tLS0tCk1JSURIVENDQWdXZ0F3SUJBZ0lVV1ZyaFhaYXhaLzJTNUNvUXZwU1BkRGpubUpZd0RRWUpLb1pJaHZjTkFRRUwKQlFBd0dURVhNQlVHQTFVRUF3d09RMjlqYTNKdllXTm9SRUlnUTBFd0hoY05Nall3TmpJeU1qRTFOVE15V2hjTgpNamN3TmpJeU1qRTFOVE15V2pBUE1RMHdDd1lEVlFRRERBUnliMjkwTUlJQklqQU5CZ2txaGtpRzl3MEJBUUVGCkFBT0NBUThBTUlJQkNnS0NBUUVBdlU2dEJYdjRwNUdxZTJDdHNtQ0FTWUJFckwxSjlNcXo0TEtTS1lpbGR6ZUYKUFhJYVZQVDh1dmxQcnc4Q3lhR2V4d0twYS9Zb3hoUmp2OTd2cTNNUVc2RE50QlZSVTY5KyswcVhtaGxTRkZzZApvUzZtR0lvRXl5YVFWMWF6SjhyalVqY0g2MDlRNThUbU02S2FUbDkwTFE4bzFzVSsvUHZDWVVNVGRYcEppS2p4CnhUaTdSczVYRzh5a1FXSDQ4QjRUdStObmNXZk12WUJXem1CZEpOTGdEblY1Mk9NM1JaeGhYWlIyaFBhZ3orVXYKU3g2NXlVZUVTc1Q2c3pheG12emhjR2tkN01UVEEzaHlxTzBzRisvei9zTHdjeWd2WEhzV1loRkdzMVE4TWwzWQpsNE56ZFhQTGdONjFaT080S3hXKzZBemQvcm1rU2VjUXQyblM2cFNiSHdJREFRQUJvMmN3WlRBT0JnTlZIUThCCkFmOEVCQU1DQmFBd0V3WURWUjBsQkF3d0NnWUlLd1lCQlFVSEF3SXdIUVlEVlIwT0JCWUVGRllDWmJnd29ud2gKOU9kaVFyQmtLbnJqM1ZWK01COEdBMVVkSXdRWU1CYUFGSjRIYkxNZStENW5KSGtKN0FFZGVCYTFLMFlKTUEwRwpDU3FHU0liM0RRRUJDd1VBQTRJQkFRQXlLZTA3S3VleURzRjFTL0Fodk9idG5SNnMrSjdFbVFSLzA3MGR5emtVClpISHlqYmJaQkJOQlF0cjhXUWZwTmFYbk9vZWppN2x4L0pDT0EvTFF0aFpMK3h5OGhHekZxTzVVMFZUUUhoSGYKOTFJcWJEaW43M2djeFEwOWZRbzlNczRocnA4bm1jYlEzRDBWWnIwQU9mSWxGZTg5TDd0dXhXRWtmL21LODNXTAphZ1V3Z3Arc1VZcHR1UldrcjF3cGJFVENmQUNGZ0UzVzFjMUNzTHVITGdsUlYvemR2VmRPRnBoR0VPakVENTcrCmFGaWk4TGRPVzBJWWp5VEZZUmQ4Nzh1MnRoc0VtY0Z4NTk4dDkyVGlXZVpkRkJxa3NySXV6dDI3N0R6cXBtOU8KVlVNQ2YzWVMzeUpqRjZ6RnVoMndjUVpFZ05PdkxONFJJSDJyRkJNMXRMdncKLS0tLS1FTkQgQ0VSVElGSUNBVEUtLS0tLQo=","client.root.key":"LS0tLS1CRUdJTiBQUklWQVRFIEtFWS0tLS0tCk1JSUV2Z0lCQURBTkJna3Foa2lHOXcwQkFRRUZBQVNDQktnd2dnU2tBZ0VBQW9JQkFRQzlUcTBGZS9pbmthcDcKWUsyeVlJQkpnRVNzdlVuMHlyUGdzcElwaUtWM040VTljaHBVOVB5NitVK3ZEd0xKb1o3SEFxbHI5aWpHRkdPLwozdStyY3hCYm9NMjBGVkZUcjM3N1NwZWFHVklVV3gyaExxWVlpZ1RMSnBCWFZyTW55dU5TTndmclQxRG54T1l6Cm9wcE9YM1F0RHlqV3hUNzgrOEpoUXhOMWVrbUlxUEhGT0x0R3psY2J6S1JCWWZqd0hoTzc0MmR4Wjh5OWdGYk8KWUYwazB1QU9kWG5ZNHpkRm5HRmRsSGFFOXFEUDVTOUxIcm5KUjRSS3hQcXpOckdhL09Gd2FSM3N4Tk1EZUhLbwo3U3dYNy9QK3d2QnpLQzljZXhaaUVVYXpWRHd5WGRpWGczTjFjOHVBM3JWazQ3Z3JGYjdvRE4zK3VhUko1eEMzCmFkTHFsSnNmQWdNQkFBRUNnZ0VBTGptKzhCN2tpZTU4NWFHbTZHNitCTFNva0ZHc2RIVG0xWkJsTm5VaWltanAKUlNiT25UNHhWR3E2ZFhIQjZZQm9xQW5UV3dTQjBsUjZRd2pxRjBDQ2x3MCtEYUpDK0o5YTczdTRaeTJWcUZqVApkRjlTdVoxQ0xHVWZTK1JrM091aTlKbHhlcGtrbFdPMEhwbXUra0krdVI0QmgrZ2tTRndsaStCNEtQQ1NjaWI2Ck50RDZYRTEwVWkzdXRUeU40UWhYS09OenZrTGxhNGswVTBUT05ZTlYrZ0dlcDA4aUNQL25tQ2doVXpnZk9iT0YKeHBDSEdXdzExTEhoZGpUQjRDSjMyUmcwMzFrZDJxSFNLa2NqQ2RPTHZPRkM5RjNMcDkxLzFHSHRVMzErNVZkSQpiL1N4bk00aW1YU0wrc2dzbnR4TE4rSlRaUHpJZmhod1gzdzR4WGJyQVFLQmdRRCtiQzFrVHYwbUhLeFBwWHlSCmVnZXc1czc0WmJrL2pPb2RJd0xQRldTTGRTTG1zRDJ3RWNkaTlsN2pHY2N5b3U5WElWZG1RcVh3V2J5ZnJmVVYKdnlOMzZKSmpXUFp5dHpYQmtvWXoycE0yM09ySDJOcVhieHRJb3diMU9YdDU2aHdDNG1ZU3RjalRBeXdFbUU1TApRelBLREFTNVZuYW51YWJNQTRJczBmdEdud0tCZ1FDK2V5V1doUWFRTzRyNys1NHpIQlcyQzRveGpzaDByT3ZvClRSTzRtM0dxZjFGaGFNUVh4LzlIdzdFOXIyZkR3eTBiUExydkdQZCtaU1M3VWpMSFBvK3VyVGtRR3IyMFBQajcKRm9xWEJzbUNab0RseWdyS0piSjdKOWN1Tmo4Sm5aRDV1cG1CYkM3OHlPWEhNSS8rK1U0RDFIREdiZy9OOHozWQpaMzVpYXZUYmdRS0JnUURFM01PS3VDdmRENWFzMGltL0R5TmdXRmVSa0hSMG5mNlFxUVNGWTlJMnJsNWhEY0hOCnVSUUVtUW4ydzMyRXl0cFRHdk5icHZwckxhUnNFZGh3Q1VQU2hseXZEcWt6UGx3VCtlSnB3UmpqL0xDV0RrK2wKbVUwTk9VZ3ErMTExaWhZK2pSdmFJbHJRRzhZMWovd1U5RnpnVzhoVCtIazdjc1dEV3J1aEhxRkZsUUtCZ0VCWApKbjR1VnVZM1JwNFJBd0h1bGFMVlNRdXVXQ1daRjJKelRwc0gzcUFodTJKMDJlL1NmWGRITWNKTlVuWjhvZXJXClc2cFJ1NSsxR0hBeHRyYzRlWjRlSXUwK3F4K0xqT3A3VmJybjd2OGVFcUlMMmhNb0lwNlkrWVZCaTQ5NjZyS0EKQmtRQ1AramhEMFIyTWQyRlpvWENwNGxQT2dWdUNWRGt2SHNQOTcrQkFvR0JBUDVTdjI3Z0I0OEtGY09SSFFOZwpKUTh5OWtMeEpvRGJRRlNIVXFmd2EwWGJVa2ZuOE9WK01uN3NiQXhmSW4yVzF5UUx2MTN6M2pMQjB1Q29FQk9DCjBvQ01LOUdSL2JzS2JEa0dWZUl3TmVVQmVEa0N4OFNxT3lVcjhqOEQrMDluNXVPN3RwVExoZm96dXJDZFhiNi8KTE40c2VDdHZRc1U2Mmp2elJyVlh1WmFBCi0tLS0tRU5EIFBSSVZBVEUgS0VZLS0tLS0K","node.crt":"LS0tLS1CRUdJTiBDRVJUSUZJQ0FURS0tLS0tCk1JSUVuakNDQTRhZ0F3SUJBZ0lVV1ZyaFhaYXhaLzJTNUNvUXZwU1BkRGpubUpVd0RRWUpLb1pJaHZjTkFRRUwKQlFBd0dURVhNQlVHQTFVRUF3d09RMjlqYTNKdllXTm9SRUlnUTBFd0hoY05Nall3TmpJeU1qRTFOVE15V2hjTgpNamN3TmpJeU1qRTFOVE15V2pBUE1RMHdDd1lEVlFRRERBUnViMlJsTUlJQklqQU5CZ2txaGtpRzl3MEJBUUVGCkFBT0NBUThBTUlJQkNnS0NBUUVBdklaeHRsdnN0Z1hmMnFSSEJiNkxXMXREU016NmxHT3ZoU1pxakN1UWRuaUMKZHJUdnRJTXVDd1RDN0wveGtqMEdKYkNFRHlKeFlXd2lEZVMxaTdoZEEwVkdpVEJibHFldGdQbm1TSUdGRlIxcQpkKytUSTZjbVR4VXlIVGF5d0FKYWNrU09VNGYyVGcxdFJlN1dvM3ROYUp6b1dzelU4VXBHSWhsQjd1eVFqNDJ0CnNvYTZwaFNWdlpZYzVVZzllbk5yejZybFI2K1J2eFdZUTFwRzNhSGIxbytHWUtwa3E4Vkk1V0VCL0RmaFhyWjUKTDRNZGd5TmFTRWsrcjdXUXBHTDRmQkNtUzhQVU90OTdDVVlpeVhmQjZQZ0lQSHRvL2pLZ3grc2k2L3p6YWFBVApLTkh0UUJNUjZPNnlaMThxemYwZXp4d1pnTTQ4UXhTZXRScDVLTlFTT3dJREFRQUJvNElCNWpDQ0FlSXdEZ1lEClZSMFBBUUgvQkFRREFnV2dNQjBHQTFVZEpRUVdNQlFHQ0NzR0FRVUZCd01CQmdnckJnRUZCUWNEQWpDQ0FXOEcKQTFVZEVRU0NBV1l3Z2dGaWdnbHNiMk5oYkdodmMzU0hCSDhBQUFHQ0RHTnlaR0l0WTJ4MWMzUmxjb0lZWTNKawpZaTFqYkhWemRHVnlMbU52WTJ0eWIyRmphR1JpZ2h4amNtUmlMV05zZFhOMFpYSXVZMjlqYTNKdllXTm9aR0l1CmMzWmpnaXBqY21SaUxXTnNkWE4wWlhJdVkyOWphM0p2WVdOb1pHSXVjM1pqTG1Oc2RYTjBaWEl1Ykc5allXeUMKTENvdVkzSmtZaTFqYkhWemRHVnlMbU52WTJ0eWIyRmphR1JpTG5OMll5NWpiSFZ6ZEdWeUxteHZZMkZzZ2psagpjbVJpTFdOc2RYTjBaWEl0TUM1amNtUmlMV05zZFhOMFpYSXVZMjlqYTNKdllXTm9aR0l1YzNaakxtTnNkWE4wClpYSXViRzlqWVd5Q09XTnlaR0l0WTJ4MWMzUmxjaTB4TG1OeVpHSXRZMngxYzNSbGNpNWpiMk5yY205aFkyaGsKWWk1emRtTXVZMngxYzNSbGNpNXNiMk5oYklJNVkzSmtZaTFqYkhWemRHVnlMVEl1WTNKa1lpMWpiSFZ6ZEdWeQpMbU52WTJ0eWIyRmphR1JpTG5OMll5NWpiSFZ6ZEdWeUxteHZZMkZzTUIwR0ExVWREZ1FXQkJUdkl3VUhObEF6CmNjUEszV0JMT3FPQldwYUEwakFmQmdOVkhTTUVHREFXZ0JTZUIyeXpIdmcrWnlSNUNld0JIWGdXdFN0R0NUQU4KQmdrcWhraUc5dzBCQVFzRkFBT0NBUUVBR2ttV21qYVhkYnNnK0UrMmdoWVpxRW1KQ3dhODlDcEo3aFF5emZsQgo2bzBSM09IVk5WSmh1aTRiNFlvOWxDS1FibmhxcithWURCRTZoRjI2TUdPRE9nQ0dlamRsZ2I3d1FpR3RreGE0Ck1WdTV4Rjl2YkZBS2wyUUxVbENYMWNBcmN5NjJ3cVVFNVdJbW1TWGFMQkJkT1lFdHZuQ256VVNBLzVCTHYwMFYKeDZ3QVBUZHFJYnBDRERvTEVsY0FmMVZjZGZzakFjOTNSUStlUUd4cG1xSFJ0S0VjWWp1R3hkODJuNk44ZlVzcQo4Rm1RSHVPRkUybkl3dlZGdTl5ZEg2YU9OUFMraWV4QjNXejVEMnJzN0k5KzczTThKSkRjRHZlREczNDZySnRlCm9rWE0zdlJPWW1ScVBvZHZ4KzBMNVkvMThXdjJSTk14RXJrbSs4YVFtM1Erd2c9PQotLS0tLUVORCBDRVJUSUZJQ0FURS0tLS0tCg==","node.key":"LS0tLS1CRUdJTiBQUklWQVRFIEtFWS0tLS0tCk1JSUV2UUlCQURBTkJna3Foa2lHOXcwQkFRRUZBQVNDQktjd2dnU2pBZ0VBQW9JQkFRQzhobkcyVyt5MkJkL2EKcEVjRnZvdGJXME5JelBxVVk2K0ZKbXFNSzVCMmVJSjJ0TyswZ3k0TEJNTHN2L0dTUFFZbHNJUVBJbkZoYkNJTgo1TFdMdUYwRFJVYUpNRnVXcDYyQStlWklnWVVWSFdwMzc1TWpweVpQRlRJZE5yTEFBbHB5Ukk1VGgvWk9EVzFGCjd0YWplMDFvbk9oYXpOVHhTa1lpR1VIdTdKQ1BqYTJ5aHJxbUZKVzlsaHpsU0QxNmMydlBxdVZIcjVHL0ZaaEQKV2tiZG9kdldqNFpncW1TcnhVamxZUUg4TitGZXRua3ZneDJESTFwSVNUNnZ0WkNrWXZoOEVLWkx3OVE2MzNzSgpSaUxKZDhIbytBZzhlMmorTXFESDZ5THIvUE5wb0JNbzBlMUFFeEhvN3JKblh5ck4vUjdQSEJtQXpqeERGSjYxCkdua28xQkk3QWdNQkFBRUNnZ0VBRGxjSHBVQmV4QVcwWGxRcWx0UkVrMkZndjlQZnA1UGhrUFk0R290aHhMRXIKODAyV0Fod01UNGhBTDNQMk14SnpPa0N2K3RxNjF4YzdpK1Qrcmk4SzNDblQwTEdkOWRxeFJ1TTdVZjZRR2VnUAo1aW1SL3A5RE9iYTZCaURYL2VUdjdrc3FyRTNtUFUrbUpUQ2lvUExMRTQ4RDJZeEZFa2w5QmpEM28rM1luU0tlCjdQbjc4WE9sU0pESmJIQlovMUNPc0FsWmpPN0xjc2lEM3BaaTNsQ0RyT2o0Nm5kR0p1K2FCNy9nQkJMeHFocE4KWDdsRGZ0Rlg4dFdLcjNOeUhRelRwRG9URHowTzM2Y0FQYWw1L3pBQUFKSURZb0gyNUhBMGJ4SmdNcTBuRmRuVwpQSDEzZjJlOUswVENqUS9lWGdVWmxFeWttak81ZFFTMmp1dXdKTjJ5bVFLQmdRRC9KY20zeW1ORTlCWXFiRUpTCld6K3BqZ2d6M0xJUVJVQjRqUHdnWjVvYmZtOFlXT3JzVkc3V29CemwvMDZYY1VsU2Q2b2s0T0ViNDBObFdhbkYKZllqR0xNU2xRY3BRblVBdUd0ZHd5ejBrUzEwOE9vWFpoQXhURzBJQ3V6WmZYTzN4Zm4zYTZDdVo5QVd3SHltTApORGpuNG5MQkZYUXQ3TEN0RVJUa3BOK0pyd0tCZ1FDOUo2MmI3QmgvM2pFZWhkK0kyT3ZjN2hTZUdDTnYxTysrClBMSm1HcWJZeEZrSDZuZGpld3FaSUtmTXN5czlwc1BQK3RUMFVON3YzWGxybDhYRTNIR0FYWHcxK0F2S1dGb2gKejYrU3J6SDZmR0MzdjFYSEJZVUJ3a3BkR0FGSnlwdHR0RFFoUzBKSTBESVlVblZ2T3hqUXRaazVxbzFHQkxxTQpjTThrT2gyL05RS0JnUUNzcjZLckpldXlDNUhFL0tpV25QT2xpbCs2MmpBYUd3VGJrbkJDYmx3N0o0T0Jjd3p0CkR1aEZrdkI4S2lQREZBV1FMeldVNkM3emRRbDBXdzh3ZnhwSEpwMmhTN25tZmNlbWJMeEx0d0tXd2Z0RWZFZUQKUklBaTcxdnFCVk56ajYzcnVMVHRxQjE2Z1ZJb05hOGtiQi9uc2JnQlBzZjNIUzhtczF6MHN6SW9PUUtCZ0Y2TwpUQ25xbnVDa3VOY3lRdWtNenZNMURKZHZKNS9LeVVIRzQ4Tkl4V2tNMWhpdjY1aU9OR0VSd3ZBQURMaVgrY0NvCitmVmJ5K1lLUjUweVZJbXhUUWZITThWaXhyb1M2cE9HVjVVekFQL2ZWeFhqanNTYmpMNnhXaTBwUjlPVWRaZ2sKZ2Y2MnVWN2V2SHdPRkdoVEdYZVRvQklFb1BTRWZxQ2Y3OXlETk1XVkFvR0FLSzFQUmEyQ0NZaHppaGF6Qk4xbwpaTnB0SytvWjNRZVVYanpBc0wzekt2S3B4SUppc1FmdTIxaUlQajBJMkVETUxNb1k1amFxWmtFV0VlZEY0WGlGCmVrNGlOTWtPeHM4UzYyM1NpZW13S294M2dkaDZwc252Yk9SSUtzeVF1OGhHK0pZRjFDaHFSQXRURlcwRmlCZUYKZi9zS0FkcGxJRjd2cjZNdVV2elBYdm89Ci0tLS0tRU5EIFBSSVZBVEUgS0VZLS0tLS0K"}
+ succeeded in 268ms:
+/
+
+ succeeded in 275ms:
+total 0
+lrwxrwxrwx 1 root root 13 Jun 22 21:56 ca.crt -> ..data/ca.crt
+lrwxrwxrwx 1 root root 22 Jun 22 21:56 client.root.crt -> ..data/client.root.crt
+lrwxrwxrwx 1 root root 22 Jun 22 21:56 client.root.key -> ..data/client.root.key
+lrwxrwxrwx 1 root root 15 Jun 22 21:56 node.crt -> ..data/node.crt
+lrwxrwxrwx 1 root root 15 Jun 22 21:56 node.key -> ..data/node.key
+
+exec
+/bin/zsh -lc "kubectl -n cockroachdb exec crdb-cluster-0 -- /cockroach/cockroach sql --url 'postgresql://root@ingress-nginx-controller.ingress-nginx.svc.cluster.local:26257/defaultdb?sslmode=verify-ca&sslrootcert=/cockroach/cockroach-certs/ca.crt&sslcert=/cockroach/cockroach-certs/client.root.crt&sslkey=/cockroach/cockroach-certs/client.root.key' -e 'select 1 as ok'" in /Users/jinyige/Karma/runs/new-added-workflows/cockroachdb-cert-ingress-monitor-20260622_214646/stages/stage_04
+ succeeded in 762ms:
+ok
+1
+
+codex
+Done.
+
+Configured:
+- `cockroachdb/crdb-ui` Ingress for `https://crdb-ui.example.com`
+- TLS secret `cockroachdb/crdb-ui-tls`
+- HTTPS upstream proxying to `crdb-cluster-public:8080`
+- `ingress-nginx/tcp-services` mapping `26257 -> cockroachdb/crdb-cluster-public:26257`
+- ingress-nginx controller deployment and service now expose TCP `26257`
+
+Verified:
+- HTTPS through ingress-nginx returns `HTTP/2 200`
+- TCP `26257` through ingress-nginx is open
+- Cockroach SQL client can run `select 1` through ingress-nginx port `26257` successfully.
+tokens used
+57,478
+Done.
+
+Configured:
+- `cockroachdb/crdb-ui` Ingress for `https://crdb-ui.example.com`
+- TLS secret `cockroachdb/crdb-ui-tls`
+- HTTPS upstream proxying to `crdb-cluster-public:8080`
+- `ingress-nginx/tcp-services` mapping `26257 -> cockroachdb/crdb-cluster-public:26257`
+- ingress-nginx controller deployment and service now expose TCP `26257`
+
+Verified:
+- HTTPS through ingress-nginx returns `HTTP/2 200`
+- TCP `26257` through ingress-nginx is open
+- Cockroach SQL client can run `select 1` through ingress-nginx port `26257` successfully.

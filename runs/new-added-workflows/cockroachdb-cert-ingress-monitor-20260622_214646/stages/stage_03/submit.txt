@@ -1,0 +1,857 @@
+OpenAI Codex v0.142.0-alpha.6
+--------
+workdir: /Users/jinyige/Karma/runs/new-added-workflows/cockroachdb-cert-ingress-monitor-20260622_214646/stages/stage_03
+model: gpt-5.5
+provider: openai
+approval: never
+sandbox: danger-full-access
+reasoning effort: xhigh
+reasoning summaries: none
+session id: 019ef152-ac33-73e0-96c7-18ae13c666cc
+--------
+user
+Rotate the TLS certificates for the running CockroachDB cluster.
+The new certificates should be valid for about 1 year.
+The existing CA key and cert are available in the openssl-toolbox pod at
+/tmp/certs/ca.key and /tmp/certs/ca.crt.
+
+Verification:
+1. Secure SQL works:
+   kubectl -n cockroachdb exec crdb-cluster-0 -- \
+     ./cockroach sql --certs-dir=/cockroach/cockroach-certs -e "SELECT 1;"
+
+2. Node cert rotated:
+   kubectl -n cockroachdb get secret crdb-cluster-certs -o jsonpath='{.data.node\.crt}' | base64 -d | \
+     openssl x509 -noout -fingerprint -sha256
+
+3. New cert validity about 1 year:
+   kubectl -n cockroachdb get secret crdb-cluster-certs -o jsonpath='{.data.node\.crt}' | base64 -d | \
+     openssl x509 -noout -enddate
+codex
+I’ll inspect the namespace, current secrets, and pod layout first so the rotation matches how this cluster is mounted and avoids breaking the running nodes.
+exec
+/bin/zsh -lc "pwd && rg --files -g '"'!node_modules'"' | head -200" in /Users/jinyige/Karma/runs/new-added-workflows/cockroachdb-cert-ingress-monitor-20260622_214646/stages/stage_03
+ succeeded in 0ms:
+/Users/jinyige/Karma/runs/new-added-workflows/cockroachdb-cert-ingress-monitor-20260622_214646/stages/stage_03
+proxy-client.crt
+agent.log
+precondition.log
+prompt.txt
+proxy-client.key
+
+exec
+/bin/zsh -lc 'kubectl -n cockroachdb get secrets' in /Users/jinyige/Karma/runs/new-added-workflows/cockroachdb-cert-ingress-monitor-20260622_214646/stages/stage_03
+exec
+/bin/zsh -lc 'kubectl -n cockroachdb get pods -o wide' in /Users/jinyige/Karma/runs/new-added-workflows/cockroachdb-cert-ingress-monitor-20260622_214646/stages/stage_03
+exec
+/bin/zsh -lc 'kubectl -n cockroachdb get statefulset,svc,ingress -o wide' in /Users/jinyige/Karma/runs/new-added-workflows/cockroachdb-cert-ingress-monitor-20260622_214646/stages/stage_03
+ succeeded in 261ms:
+NAME              READY   STATUS    RESTARTS   AGE     IP            NODE           NOMINATED NODE   READINESS GATES
+crdb-cluster-0    1/1     Running   0          37s     10.244.3.24   kind-worker3   <none>           <none>
+crdb-cluster-1    1/1     Running   0          37s     10.244.2.23   kind-worker2   <none>           <none>
+crdb-cluster-2    1/1     Running   0          37s     10.244.1.18   kind-worker    <none>           <none>
+curl-test         1/1     Running   0          9m48s   10.244.3.22   kind-worker3   <none>           <none>
+openssl-toolbox   1/1     Running   0          61s     10.244.1.17   kind-worker    <none>           <none>
+
+ succeeded in 261ms:
+NAME                 TYPE     DATA   AGE
+crdb-certs           Opaque   5      2m42s
+crdb-cluster-certs   Opaque   5      51s
+
+ succeeded in 290ms:
+NAME                            READY   AGE   CONTAINERS   IMAGES
+statefulset.apps/crdb-cluster   3/3     15m   db           cockroachdb/cockroach:v24.1.0
+
+NAME                          TYPE        CLUSTER-IP      EXTERNAL-IP   PORT(S)              AGE   SELECTOR
+service/crdb-cluster          ClusterIP   None            <none>        26257/TCP,8080/TCP   15m   app.kubernetes.io/instance=crdb-cluster,app.kubernetes.io/name=cockroachdb
+service/crdb-cluster-public   ClusterIP   10.96.131.212   <none>        26257/TCP,8080/TCP   15m   app.kubernetes.io/instance=crdb-cluster,app.kubernetes.io/name=cockroachdb
+
+codex
+The cluster is a 3-node StatefulSet with a `crdb-cluster-certs` secret mounted into the pods. I’m checking the current certificate contents and SANs now so the replacement cert has the same identities.
+exec
+/bin/zsh -lc "kubectl -n cockroachdb get secret crdb-cluster-certs -o jsonpath='{.data}'" in /Users/jinyige/Karma/runs/new-added-workflows/cockroachdb-cert-ingress-monitor-20260622_214646/stages/stage_03
+exec
+/bin/zsh -lc 'kubectl -n cockroachdb get statefulset crdb-cluster -o yaml' in /Users/jinyige/Karma/runs/new-added-workflows/cockroachdb-cert-ingress-monitor-20260622_214646/stages/stage_03
+exec
+/bin/zsh -lc 'kubectl -n cockroachdb exec crdb-cluster-0 -- ls -l /cockroach/cockroach-certs' in /Users/jinyige/Karma/runs/new-added-workflows/cockroachdb-cert-ingress-monitor-20260622_214646/stages/stage_03
+exec
+/bin/zsh -lc 'kubectl -n cockroachdb exec openssl-toolbox -- ls -l /tmp/certs' in /Users/jinyige/Karma/runs/new-added-workflows/cockroachdb-cert-ingress-monitor-20260622_214646/stages/stage_03
+ succeeded in 162ms:
+{"ca.crt":"LS0tLS1CRUdJTiBDRVJUSUZJQ0FURS0tLS0tCk1JSURFekNDQWZ1Z0F3SUJBZ0lVTC9oTUlqT01NeXd3dkEyckpxcWtQWHF6a2FBd0RRWUpLb1pJaHZjTkFRRUwKQlFBd0dURVhNQlVHQTFVRUF3d09RMjlqYTNKdllXTm9SRUlnUTBFd0hoY05Nall3TmpJeU1qRTFNakkyV2hjTgpNell3TmpFNU1qRTFNakkyV2pBWk1SY3dGUVlEVlFRRERBNURiMk5yY205aFkyaEVRaUJEUVRDQ0FTSXdEUVlKCktvWklodmNOQVFFQkJRQURnZ0VQQURDQ0FRb0NnZ0VCQUlzQWZRS3A3VzM2bFZDUXlhTUNLajl5b1FOVCt5TisKT0RhaHlPMDJISG8vMCtpb2ZYUDRFbVplNnVTaXFlSzgrdzZoTUNva0toVDJCMm55N3pXN0FwdFQ2U2tTNDFGNAo0eDJlTktHOEJKbzA5aWRjK2t1V2hqVS84bkRHaUVVYnpmeUlCRW5XWE1TT0NjYmtVR1h3QjFzRjgwVEVZeTBZCkh5SVUzdG52N0ZFYjF1NElxVWVDTTVwY09HWE9ncDB6ZTFGTEhLS0x6WVdHR2twaTFWNW5tcE0zejhkaUtoQ3gKSGZiSkwwTEIvY0EzODQwVlQ0ZUtWSFo3alFxVFFCeEVZcHQxYWxDdzBxZGsybmZRYVVLa1hkQWRGLzJtaGFJRQpSbXNtQVBCVkVKQTRKSlB2bXBxaE52cFI5ZS9MNWoxZ1RCRGpxbC9XNklLK2ljSDFJSFdhV1BrQ0F3RUFBYU5UCk1GRXdIUVlEVlIwT0JCWUVGSjRIYkxNZStENW5KSGtKN0FFZGVCYTFLMFlKTUI4R0ExVWRJd1FZTUJhQUZKNEgKYkxNZStENW5KSGtKN0FFZGVCYTFLMFlKTUE4R0ExVWRFd0VCL3dRRk1BTUJBZjh3RFFZSktvWklodmNOQVFFTApCUUFEZ2dFQkFJRVNTZnh2eTVRY0NYUkl3Zk84TnFNTVdBS2pRcnVUeU9xZjVmWVk5dE9KVm9XRno2QmRlTGVaCnBqb0d0MGpRZ01KZjJQbmRnendUTnZaZ1NjMzRsV3Y2UFhuSEpJQmRBZWNYTzFFL1N4Ly9sdnZPRE1KL0dRcWkKU0JidlpiaVZJbHhONTg3ZWVDdFBmTjlGV0pTbmhRekExSnlNNWwxaUY0aTZ2NzErdTNscmhKS1Fwb2MzanZEMApsMk9Jc0J4NzNvRlBReTYyUHZZYU1oOGtrZm9mWFdBT2NneGxRV1BMVVR0cEdtS013eW5VcXkyVU5CdFJ3blc3CngzbnhmR0JQditTQzRFODNiNXhLb2ROaTdUeFdwaGU2L2dWWlUydmEweXd6OWhSUE5mc05QcmZWZzFUMjhVazIKUmNpZGxiZEI4WmRHYmd2ZjFsc1NxQWo1dk85M1RVbz0KLS0tLS1FTkQgQ0VSVElGSUNBVEUtLS0tLQo=","client.root.crt":"LS0tLS1CRUdJTiBDRVJUSUZJQ0FURS0tLS0tCk1JSUMrRENDQWVDZ0F3SUJBZ0lVV1ZyaFhaYXhaLzJTNUNvUXZwU1BkRGpubUpRd0RRWUpLb1pJaHZjTkFRRUwKQlFBd0dURVhNQlVHQTFVRUF3d09RMjlqYTNKdllXTm9SRUlnUTBFd0hoY05Nall3TmpJeU1qRTFNakkzV2hjTgpNall3TmpJME1qRTFNakkzV2pBUE1RMHdDd1lEVlFRRERBUnliMjkwTUlJQklqQU5CZ2txaGtpRzl3MEJBUUVGCkFBT0NBUThBTUlJQkNnS0NBUUVBczRtekV0bTg3SVlpeVdZRDdSVXpjMzRyUkVMV3gwVFpSYnJBRkhlWkdrV0gKMm9DWk1kbXozUlFHcGVLYU9qbHd2SEVoZ3dQakZJMHZFeWZWQnVPYVk5OEVISGJydlZOYXBBcHFxY3FaNVdmMAozZWNSMlZoNnhhQkJCaGJ1WEtiRDBhTHMrYTlmWWkzUi9VaFhVZ29kelhqQ1dxRzhqMUttR0ZvMUREMDRVWUdHClBkK0NuVDl6eE5HRUtDV1pLWmVON2w5bU5QTEFZS3p4cFpneUxJZGNpcXpBT1NtbXZ1YVI5RmpRWDBZb1BWcTQKUzZjU0RoL0N6eXVnUnBpbzBxTXlNM2xtMVFESUtkak1nSTlNVmt0TlVFaExENUNvS0lDbFY0RWlsYU1UdmZ3egpvQVNPSXdTOHExZmxJdzNJMno5Nk1QbjF6TjdncmtXQSsyNHhLY0ZhOHdJREFRQUJvMEl3UURBZEJnTlZIUTRFCkZnUVV3V2hVV3ZRU0lDdnZWZ2lmWk8zWDc2blo1Mll3SHdZRFZSMGpCQmd3Rm9BVW5nZHNzeDc0UG1ja2VRbnMKQVIxNEZyVXJSZ2t3RFFZSktvWklodmNOQVFFTEJRQURnZ0VCQUQ2blB5aXpwMFVoRW5lS1VYcnZrVk1MTVp1SwpwdTUrajk2b2prRGJkb0FwS2Z4Z01YZmJlZ3VhT01ITjVUZVVibENuaCsycy9Cb1RZd2dyU2pvY05FNkNlY3RSCjlCOGpOcVJlV2M3MzBHQ2NoKzN1eEx0eDZuY2gvTzg3RDRMeVh3K1dQZWRCazUzRFlJK3JBdTlYRTVxWkY1emsKak9UUlVKbitZKzNWZFFNQXdxWnpsY3FjT0IrZ3U4RGJuNTJxcWF0NTdvN0haUFJDS3QwRWkzV2Y2bDI1WFRUTAp6TDdpcC9PaEtPbTdoWHZQWjNqMjYyemY2WDQrWHZ0YjJTOHIrbWJ5VFJ2NzFWa2lDbWlxWHV3TjZvRXRKZWpTCmV0Z29WSFJvem5zd1piNUpIbXQ4eTBOYjNFTVlFK0lPTUlYcm4wZml1bFdRc2FXTll1NEVlRk1Dbks4PQotLS0tLUVORCBDRVJUSUZJQ0FURS0tLS0tCg==","client.root.key":"LS0tLS1CRUdJTiBQUklWQVRFIEtFWS0tLS0tCk1JSUV2d0lCQURBTkJna3Foa2lHOXcwQkFRRUZBQVNDQktrd2dnU2xBZ0VBQW9JQkFRQ3ppYk1TMmJ6c2hpTEoKWmdQdEZUTnpmaXRFUXRiSFJObEZ1c0FVZDVrYVJZZmFnSmt4MmJQZEZBYWw0cG82T1hDOGNTR0RBK01ValM4VApKOVVHNDVwajN3UWNkdXU5VTFxa0NtcXB5cG5sWi9UZDV4SFpXSHJGb0VFR0Z1NWNwc1BSb3V6NXIxOWlMZEg5ClNGZFNDaDNOZU1KYW9ieVBVcVlZV2pVTVBUaFJnWVk5MzRLZFAzUEUwWVFvSlprcGw0M3VYMlkwOHNCZ3JQR2wKbURJc2gxeUtyTUE1S2FhKzVwSDBXTkJmUmlnOVdyaExweElPSDhMUEs2QkdtS2pTb3pJemVXYlZBTWdwMk15QQpqMHhXUzAxUVNFc1BrS2dvZ0tWWGdTS1ZveE85L0RPZ0JJNGpCTHlyVitVakRjamJQM293K2ZYTTN1Q3VSWUQ3CmJqRXB3VnJ6QWdNQkFBRUNnZ0VBU3BRWEltdjNPZ3NvTlIvZTNxTnhhWGJPRXo5dWgzMFdnZ3dtMFBtelRBSDUKQW05cjg1UzZ6Y21OVDJnM1o1dEh0TWVMdzZnZ01uL0pQN3hLbGQrQzJSeWhVUStuTWxDSE5PQXMyWllTNG9RUgo2QUdkM1BxUG1UdE45M0VjRjdtZ1d4dENOQi9BMEFBM20rNXFjMlpIWmZ4VlE1K3V1NXg1NldERGEyK2N6dUg4CkhsaFlZTmdOTTVpVGxOazdKY21wNHM5WmdrTWN1bDc5R0o4RkNPZ3V4cjl2dzFKVzJjSXl3T1FDYXZwMkFRRTQKRnlSUVBCNXFYUW5UbitPK0N4OSt2TUg2UlJkZmNmR1kwV1hxOHRseU53dmMyTmVXUHdrczlmZkFLcmhmY3JQZQpVNjllNS9sSnlEcjg1bS9Yc2JNVkk0NzI0L1k0M3ZNdXBjenBpbCszU1FLQmdRRGgzNUxWcHhDeUhnV3JxVktBClNBMU5VOW42OUZGQkVpVVBCSEVqUkYycWlOdEI0UmxKNHpoRmhtcExaR3BsRG1QdklnNlpYL1ZrenJHYktVSjkKRE5oc0VrS2NqVG9hZTdRLzVpN3QwNHBrdXNhMVc3OWpXQ1hOSXVUK3labU9HdmFQZ3haTmtqOThMTjZqNXFBNgpDZ2kzWW8yWUtxREsxTDR4QU56NzNDY0lXUUtCZ1FETGZBR0dPeUY3bDlHQUZCRWNDbHU3SFU0R0dMRkViUS80CmFYajNtSkJQa3owcVJMRURUVGhPWjBIaWNDZm9tSjNUa3RqRDU4ZTZWaTM4UFgrUkFqOXJBc05VL2ltOW9XdFQKOWRNYXZIZ3BUekNTeTNWMTBkNmM4NnFZdnVQNTlZazNiaEE4Y1llZ29jbFc5ci9aRURPYmlSRFhNZi9ta1F5cwpobDJwNVd3VUt3S0JnUUNsbWRZOHdJVDBJaURFTDVzbUpDMWtnVkt5dEVlU2Jxd3U2M0hMaW9jbHpicjYvUDhlCmRmRyt2NExWRGFVWHZFbzJmQUM2SUdsNDVEWEE3YW9xcHExUjVyMWhyQVZxZjBHekM1OWlqSkxOc1VhWWx0Q20KRkcxNmpkZlltWlAwWlA1YVQ2Q2RkTmtJd0pqbkQrSnZTd1lDOWNXY1I3eWxtUDVzVFJhM3JUd00yUUtCZ1FDUQpBM2pVdHA3UTZUY1Z6WjM2V1g1b3BLbm0rS3psUDhjUXloMGFKempqaU5LK1NwVjVQN3E5Q3FsL2lGOUdhRlV6Ck8zZjgxdHJ0anpiR2tnUHA3a3hTQVVlYnJMS0FDbkY2bjczRDYyV2ozdThDeGNxaEUyTFpkRDdtRWh3cGVWU2YKRFYraVY3dGt2WHhROXh2NmxWUGhIWlgwcCtkMEdHNSs0QzRFSTJKbHR3S0JnUUM2cG9vWFR1b0IzLzhoVG55VgplU0JSTVlPTHFubGJJRWh2RkpObTdyWGxQNnVjbnk2TlJSTkVjSUs5bnEydmI3RE9HYUpmM1g5bmRLeGJCcWdxClJoRW1XekpRYlFGOVJwNFJUeUVCZ2h0Q0luM1JjK0RCYjJuL3AvbFowY3ZaS2toRU1SUnZHTHhOdmRRUllYV3kKZURwNHBtTkRTR0xWZUdLVXVPakRNUStSSXc9PQotLS0tLUVORCBQUklWQVRFIEtFWS0tLS0tCg==","node.crt":"LS0tLS1CRUdJTiBDRVJUSUZJQ0FURS0tLS0tCk1JSUVuakNDQTRhZ0F3SUJBZ0lVV1ZyaFhaYXhaLzJTNUNvUXZwU1BkRGpubUpNd0RRWUpLb1pJaHZjTkFRRUwKQlFBd0dURVhNQlVHQTFVRUF3d09RMjlqYTNKdllXTm9SRUlnUTBFd0hoY05Nall3TmpJeU1qRTFNakkyV2hjTgpNall3TmpJME1qRTFNakkyV2pBUE1RMHdDd1lEVlFRRERBUnViMlJsTUlJQklqQU5CZ2txaGtpRzl3MEJBUUVGCkFBT0NBUThBTUlJQkNnS0NBUUVBcDVTa1ZxamJBSlJTM1dPRDE3NTc0TzlOekl3YktUQy9mNlFkbzZxR2VPTjkKK0NqSmRYRXZxQkdIaEl4VlczOTZwa1RWVGZZWUhjT05mTmxGbVJiWDlrQXZFNEQrb0ozK21NUFU2YnlzVnlJdgp1OFJGZ0c4ZHNFcm01YlZjZWs0V2tiODZjTGNSdHJrSWtoRHdrNVFCd1ArdndRZTZydk1iTGlhdXZQbEliWFcxCjk2My9rd2ZGMDJCS3o3Ymx4ckpiVzhicVM5SlFwSmNRS3E4NkxXbDBJNnJCRkRCT1Z3d0gxWlF1ZCtjRm5sbi8KZW40eUNqVk9BNHo5ckdUMXNIckhEb0JyZ2padlM5azYxNzhnalA1cm9DSVV3NCtwdzM1aC9TOE1PMlVoSEJicgpYd01BenlpMzVnUGt0NFBMOGFQZWNaNkkxV3lWdzZHSHRuZEtpS0xkYVFJREFRQUJvNElCNWpDQ0FlSXdEZ1lEClZSMFBBUUgvQkFRREFnV2dNQjBHQTFVZEpRUVdNQlFHQ0NzR0FRVUZCd01CQmdnckJnRUZCUWNEQWpDQ0FXOEcKQTFVZEVRU0NBV1l3Z2dGaWdnbHNiMk5oYkdodmMzU0hCSDhBQUFHQ0RHTnlaR0l0WTJ4MWMzUmxjb0lZWTNKawpZaTFqYkhWemRHVnlMbU52WTJ0eWIyRmphR1JpZ2h4amNtUmlMV05zZFhOMFpYSXVZMjlqYTNKdllXTm9aR0l1CmMzWmpnaXBqY21SaUxXTnNkWE4wWlhJdVkyOWphM0p2WVdOb1pHSXVjM1pqTG1Oc2RYTjBaWEl1Ykc5allXeUMKTENvdVkzSmtZaTFqYkhWemRHVnlMbU52WTJ0eWIyRmphR1JpTG5OMll5NWpiSFZ6ZEdWeUxteHZZMkZzZ2psagpjbVJpTFdOc2RYTjBaWEl0TUM1amNtUmlMV05zZFhOMFpYSXVZMjlqYTNKdllXTm9aR0l1YzNaakxtTnNkWE4wClpYSXViRzlqWVd5Q09XTnlaR0l0WTJ4MWMzUmxjaTB4TG1OeVpHSXRZMngxYzNSbGNpNWpiMk5yY205aFkyaGsKWWk1emRtTXVZMngxYzNSbGNpNXNiMk5oYklJNVkzSmtZaTFqYkhWemRHVnlMVEl1WTNKa1lpMWpiSFZ6ZEdWeQpMbU52WTJ0eWIyRmphR1JpTG5OMll5NWpiSFZ6ZEdWeUxteHZZMkZzTUIwR0ExVWREZ1FXQkJUOFBENzF1dy9iCjUwVGJKejBNV1pldnN3RFFaekFmQmdOVkhTTUVHREFXZ0JTZUIyeXpIdmcrWnlSNUNld0JIWGdXdFN0R0NUQU4KQmdrcWhraUc5dzBCQVFzRkFBT0NBUUVBaGRXZmo2ZlREQ2h3dlBTS1M3KzZDWXBGTWpJTG8rN0FlRXlFR0ltOQpMU3JhNkpkcDhBM2J3NVFSVmxxL2JidGxBNjVkZzJtV2YwazJIZ29pVDFyZGo4RUNibFI5RnRDejBqaU1SdlRKCjdhNjcxZE9PVDErTmwvbjV2WmVEQnFXb1pndUxrQUdveldDdms4ckZ2bXJheVdOTlJhOW01Q25UdzdoaTVsMGUKdVVZT1Eybk1EMTBFV3diWTJLM2UwVDdBazlSNXBoYzdhQTl6dy95WnRSeDNqcExvQzQ2V3dhQmZQc2I4UW9sQgovSEpYLzBNc05kVFAzMGNLaFNlQ3dqY3o2b3RTV2JkcFpySlVKRTJNZk8rMmtoQ0FuS210T08xejdBWUdGRW5wClE2UHFyQlVjbHZKZGdZTGI5a3hyQ2hFQVA1YWNvaXIxLzRxMDhBMStCRjRkdlE9PQotLS0tLUVORCBDRVJUSUZJQ0FURS0tLS0tCg==","node.key":"LS0tLS1CRUdJTiBQUklWQVRFIEtFWS0tLS0tCk1JSUV2Z0lCQURBTkJna3Foa2lHOXcwQkFRRUZBQVNDQktnd2dnU2tBZ0VBQW9JQkFRQ25sS1JXcU5zQWxGTGQKWTRQWHZudmc3MDNNakJzcE1MOS9wQjJqcW9aNDQzMzRLTWwxY1Mrb0VZZUVqRlZiZjNxbVJOVk45aGdkdzQxOAoyVVdaRnRmMlFDOFRnUDZnbmY2WXc5VHB2S3hYSWkrN3hFV0FieDJ3U3VibHRWeDZUaGFSdnpwd3R4RzJ1UWlTCkVQQ1RsQUhBLzYvQkI3cXU4eHN1SnE2OCtVaHRkYlgzcmYrVEI4WFRZRXJQdHVYR3NsdGJ4dXBMMGxDa2x4QXEKcnpvdGFYUWpxc0VVTUU1WERBZlZsQzUzNXdXZVdmOTZmaklLTlU0RGpQMnNaUFd3ZXNjT2dHdUNObTlMMlRyWAp2eUNNL211Z0loVERqNm5EZm1IOUx3dzdaU0VjRnV0ZkF3RFBLTGZtQStTM2c4dnhvOTV4bm9qVmJKWERvWWUyCmQwcUlvdDFwQWdNQkFBRUNnZ0VBQVRrNkcvSGVxM25wd3ZrTGlPTTRwMU5IOTZMY1BlZy90YkJla1FmWk5IL0EKdHpPaENPejdJcGlDSzBzVkFuYURVRHgzYkRyTVFVZGd2SlVmaDNjZHU0d0xhL0tJcVdhTjZkS2dOdGFzVVhTTAo4YXlFcjJQZ1RSMjI0dDE0bitIN0V6Ull1bUx6eTZnOU1rZlNZZGwyUzlEeUdSQXo0andmS2k2Wkh3TVk3c2VtCnRIdHI4S2dKMitvckRwQ2FYQnl3UUdMeGJjSDBUQTZZUWFkN1N4cFhpSC9yWGZ1M2JWa1VWdE1jVTdqMzIzZW0KNmN1QkpPcUYzYjJBT0VSSDUxYitUZjRwbnBaaDJkZ25EYlhKeXcyK1BJU1NFOFUyZjBVTE00dTQxL1phKzBSZwpwUjBWU0JXU0dpZHpLNzlGRkZKOU16T1A3cmxuYlNOTGI1eFExZUo0d3dLQmdRRGZWYkt5OUdHN2FYN2V1YndTClhqcWlQMmJKV1VJYlpkMEYzMkFtc3dDS3YrQ2VFVTI3UGtyQUljS2RIaWtHcWJDVVZDVnFEaHZsRWQvUkIxUnIKNjQrREQ0TTE2Ukl2RGY4cGd1akhIdDNTSnBMNDkrYzlkaFJlMzAzVFNVd0dJbkc1TEczaFBuOEdoeHRHbEFKTgpTb21Xak1oRm9kTGhLVHlqVDNPWVNCVWFOd0tCZ1FEQUYxajNneHQzVCtzUlJ4MWZ1MTRkcHRaMnRWNG4zU1ZvCmx1Si9nUVpsM1A1ZSsrS2ZYZ2plNUlmc1pBUk9jRDQydjJiOXk1ZUZLSlhzVFE1T2xpay91VEErQmtnaEZ3L2oKN2U3MU00WmM0UytQTEpzc0hIQnluZzMwWGN1UFJmVitjTW5nbk1lTnJEQm03WUNFZlJGdy9NV2JEb0ZJUGZ6TApUczMxQlVWMVh3S0JnUUN5VmRBNExnVE1qbFVNck91TkQwbHF2WTNxUWlnVGtLZUpSUEdXZFdGOWFmS0d4Zko0CkRpbktlaXJaSTNoSEpjRW04SHBmMFp4Y3NvVXllTlBreVZqem9yTjNuUUUwS2MwUzdNSE1IczJxUGJzbXEyNHYKR2RieVd3WGVMYTFUU0xYZTA2ZDZNVmxsY1FWS3VtMk1JblR6anI5dE91Y1ZmTVE2OC9xdUl3RVd5UUtCZ1FDNQpuRlhOSkpSL24ydUdrRzdqdUFyakgva1BUNFVoZytESHhUUXEvQ09RZmhBVSs5TXBKeFh2T21mVWxYaEx5czF5CjNWUEpYTmFXUm5kSGs5V0ZQamV4YVdJaUxMTzV0YTBYRXl2Wkp1Wm9EUGVGb3haMWN5MThzeGpNelcwS2poRC8KRWtFZmxwNkVXS09VY1YzRHA0NFkzVWFiNDFJczJpalEwdDdVS1RuS2hRS0JnQ1RMNkhNY2pGa0ZaaTFZeUZ2YQp5c0M3ZndWT3FCY2Vjcnc2dk1lNklnSnRmc3R3QlEyZ2pycCs0bVNoL0ZzV0hqQ0ZtZURLNGd6TE1CVDJNYTNkClo2eFJVY05LdFV5SjRkVm9CUGZIYVZWc2tTaGY3bng4SnRFVGVMQkhZTHhBSDlQU3FZMHZDMVY0SFVqcmJwRFQKVzYwK0FkcldwLzV4Ym16VGhQcjF2VjVTCi0tLS0tRU5EIFBSSVZBVEUgS0VZLS0tLS0K"}
+ succeeded in 163ms:
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  annotations:
+    kubectl.kubernetes.io/last-applied-configuration: |
+      {"apiVersion":"apps/v1","kind":"StatefulSet","metadata":{"annotations":{},"labels":{"app.kubernetes.io/instance":"crdb-cluster","app.kubernetes.io/name":"cockroachdb"},"name":"crdb-cluster","namespace":"cockroachdb"},"spec":{"podManagementPolicy":"Parallel","replicas":3,"selector":{"matchLabels":{"app.kubernetes.io/instance":"crdb-cluster","app.kubernetes.io/name":"cockroachdb"}},"serviceName":"crdb-cluster","template":{"metadata":{"labels":{"app.kubernetes.io/instance":"crdb-cluster","app.kubernetes.io/name":"cockroachdb"}},"spec":{"containers":[{"command":["/bin/bash","-c","exec /cockroach/cockroach start --logtostderr=INFO --insecure --advertise-host=$(POD_NAME).crdb-cluster.cockroachdb.svc.cluster.local --http-addr=0.0.0.0:8080 --port=26257 --cache=25% --max-sql-memory=25% --join=crdb-cluster-0.crdb-cluster.cockroachdb.svc.cluster.local:26257,crdb-cluster-1.crdb-cluster.cockroachdb.svc.cluster.local:26257,crdb-cluster-2.crdb-cluster.cockroachdb.svc.cluster.local:26257"],"env":[{"name":"POD_NAME","valueFrom":{"fieldRef":{"fieldPath":"metadata.name"}}},{"name":"POD_NAMESPACE","valueFrom":{"fieldRef":{"fieldPath":"metadata.namespace"}}}],"image":"cockroachdb/cockroach:v24.1.0","imagePullPolicy":"IfNotPresent","livenessProbe":{"httpGet":{"path":"/health","port":"http"},"initialDelaySeconds":30,"periodSeconds":5},"name":"db","ports":[{"containerPort":26257,"name":"grpc"},{"containerPort":8080,"name":"http"}],"readinessProbe":{"failureThreshold":2,"httpGet":{"path":"/health?ready=1","port":"http"},"initialDelaySeconds":10,"periodSeconds":5},"resources":{"limits":{"cpu":"1","memory":"2Gi"},"requests":{"cpu":"1","memory":"2Gi"}},"volumeMounts":[{"mountPath":"/cockroach/cockroach-data","name":"datadir"}]}],"serviceAccountName":"crdb-cluster-sa","terminationGracePeriodSeconds":10}},"volumeClaimTemplates":[{"metadata":{"labels":{"app.kubernetes.io/instance":"crdb-cluster","app.kubernetes.io/name":"cockroachdb"},"name":"datadir"},"spec":{"accessModes":["ReadWriteOnce"],"resources":{"requests":{"storage":"10Gi"}},"volumeMode":"Filesystem"}}]}}
+  creationTimestamp: "2026-06-22T21:37:58Z"
+  generation: 6
+  labels:
+    app.kubernetes.io/instance: crdb-cluster
+    app.kubernetes.io/name: cockroachdb
+  name: crdb-cluster
+  namespace: cockroachdb
+  resourceVersion: "152488"
+  uid: 8cf0bc96-9a59-4afa-9e12-91d89df30846
+spec:
+  persistentVolumeClaimRetentionPolicy:
+    whenDeleted: Retain
+    whenScaled: Retain
+  podManagementPolicy: Parallel
+  replicas: 3
+  revisionHistoryLimit: 10
+  selector:
+    matchLabels:
+      app.kubernetes.io/instance: crdb-cluster
+      app.kubernetes.io/name: cockroachdb
+  serviceName: crdb-cluster
+  template:
+    metadata:
+      creationTimestamp: null
+      labels:
+        app.kubernetes.io/instance: crdb-cluster
+        app.kubernetes.io/name: cockroachdb
+    spec:
+      containers:
+      - command:
+        - /bin/bash
+        - -c
+        - exec /cockroach/cockroach start --logtostderr=INFO --certs-dir=/cockroach/cockroach-certs
+          --advertise-host=$(POD_NAME).crdb-cluster.cockroachdb.svc.cluster.local
+          --http-addr=0.0.0.0:8080 --port=26257 --cache=25% --max-sql-memory=25% --join=crdb-cluster-0.crdb-cluster.cockroachdb.svc.cluster.local:26257,crdb-cluster-1.crdb-cluster.cockroachdb.svc.cluster.local:26257,crdb-cluster-2.crdb-cluster.cockroachdb.svc.cluster.local:26257
+        env:
+        - name: POD_NAME
+          valueFrom:
+            fieldRef:
+              apiVersion: v1
+              fieldPath: metadata.name
+        - name: POD_NAMESPACE
+          valueFrom:
+            fieldRef:
+              apiVersion: v1
+              fieldPath: metadata.namespace
+        image: cockroachdb/cockroach:v24.1.0
+        imagePullPolicy: IfNotPresent
+        livenessProbe:
+          failureThreshold: 3
+          httpGet:
+            path: /health
+            port: http
+            scheme: HTTPS
+          initialDelaySeconds: 30
+          periodSeconds: 5
+          successThreshold: 1
+          timeoutSeconds: 1
+        name: db
+        ports:
+        - containerPort: 26257
+          name: grpc
+          protocol: TCP
+        - containerPort: 8080
+          name: http
+          protocol: TCP
+        readinessProbe:
+          failureThreshold: 2
+          httpGet:
+            path: /health?ready=1
+            port: http
+            scheme: HTTPS
+          initialDelaySeconds: 10
+          periodSeconds: 5
+          successThreshold: 1
+          timeoutSeconds: 1
+        resources:
+          limits:
+            cpu: "1"
+            memory: 2Gi
+          requests:
+            cpu: "1"
+            memory: 2Gi
+        terminationMessagePath: /dev/termination-log
+        terminationMessagePolicy: File
+        volumeMounts:
+        - mountPath: /cockroach/cockroach-certs
+          name: certs
+          readOnly: true
+        - mountPath: /cockroach/cockroach-data
+          name: datadir
+      dnsPolicy: ClusterFirst
+      restartPolicy: Always
+      schedulerName: default-scheduler
+      securityContext: {}
+      serviceAccount: crdb-cluster-sa
+      serviceAccountName: crdb-cluster-sa
+      terminationGracePeriodSeconds: 10
+      volumes:
+      - name: certs
+        secret:
+          defaultMode: 256
+          secretName: crdb-certs
+  updateStrategy:
+    rollingUpdate:
+      partition: 0
+    type: RollingUpdate
+  volumeClaimTemplates:
+  - apiVersion: v1
+    kind: PersistentVolumeClaim
+    metadata:
+      creationTimestamp: null
+      labels:
+        app.kubernetes.io/instance: crdb-cluster
+        app.kubernetes.io/name: cockroachdb
+      name: datadir
+    spec:
+      accessModes:
+      - ReadWriteOnce
+      resources:
+        requests:
+          storage: 10Gi
+      volumeMode: Filesystem
+    status:
+      phase: Pending
+status:
+  availableReplicas: 3
+  collisionCount: 0
+  currentReplicas: 3
+  currentRevision: crdb-cluster-5598677b4c
+  observedGeneration: 6
+  readyReplicas: 3
+  replicas: 3
+  updateRevision: crdb-cluster-5598677b4c
+  updatedReplicas: 3
+
+ succeeded in 213ms:
+total 40
+-rw-r--r--    1 root     root          1127 Jun 22 21:52 ca.crt
+-rw-------    1 root     root          1704 Jun 22 21:52 ca.key
+-rw-r--r--    1 root     root            41 Jun 22 21:52 ca.srl
+-rw-r--r--    1 root     root          1090 Jun 22 21:52 client.root.crt
+-rw-r--r--    1 root     root           883 Jun 22 21:52 client.root.csr
+-rw-------    1 root     root          1708 Jun 22 21:52 client.root.key
+-rw-r--r--    1 root     root           692 Jun 22 21:52 node.cnf
+-rw-r--r--    1 root     root          1663 Jun 22 21:52 node.crt
+-rw-r--r--    1 root     root          1484 Jun 22 21:52 node.csr
+-rw-------    1 root     root          1704 Jun 22 21:52 node.key
+
+ succeeded in 214ms:
+total 0
+lrwxrwxrwx 1 root root 13 Jun 22 21:52 ca.crt -> ..data/ca.crt
+lrwxrwxrwx 1 root root 22 Jun 22 21:52 client.root.crt -> ..data/client.root.crt
+lrwxrwxrwx 1 root root 22 Jun 22 21:52 client.root.key -> ..data/client.root.key
+lrwxrwxrwx 1 root root 15 Jun 22 21:52 node.crt -> ..data/node.crt
+lrwxrwxrwx 1 root root 15 Jun 22 21:52 node.key -> ..data/node.key
+
+codex
+One important detail: the running StatefulSet currently mounts `crdb-certs`, while your verification command checks `crdb-cluster-certs`. I’m comparing both secrets before changing anything, because rotating only the checked secret would not affect the live pods.
+exec
+/bin/zsh -lc "kubectl -n cockroachdb get secret crdb-certs -o jsonpath='{.data.node\\.crt}' | base64 -d | openssl x509 -noout -subject -issuer -startdate -enddate -fingerprint -sha256 -ext subjectAltName" in /Users/jinyige/Karma/runs/new-added-workflows/cockroachdb-cert-ingress-monitor-20260622_214646/stages/stage_03
+exec
+/bin/zsh -lc "kubectl -n cockroachdb get secret crdb-cluster-certs -o jsonpath='{.data.node\\.crt}' | base64 -d | openssl x509 -noout -subject -issuer -startdate -enddate -fingerprint -sha256 -ext subjectAltName" in /Users/jinyige/Karma/runs/new-added-workflows/cockroachdb-cert-ingress-monitor-20260622_214646/stages/stage_03
+exec
+/bin/zsh -lc "kubectl -n cockroachdb get secret crdb-certs -o jsonpath='{.data}'" in /Users/jinyige/Karma/runs/new-added-workflows/cockroachdb-cert-ingress-monitor-20260622_214646/stages/stage_03
+exec
+/bin/zsh -lc 'kubectl -n cockroachdb exec openssl-toolbox -- cat /tmp/certs/node.cnf' in /Users/jinyige/Karma/runs/new-added-workflows/cockroachdb-cert-ingress-monitor-20260622_214646/stages/stage_03
+ succeeded in 179ms:
+{"ca.crt":"LS0tLS1CRUdJTiBDRVJUSUZJQ0FURS0tLS0tCk1JSURKakNDQWc2Z0F3SUJBZ0lSQUp6aytFc1RWQ2F2VTE3cjRENkxpUzh3RFFZSktvWklodmNOQVFFTEJRQXcKS3pFU01CQUdBMVVFQ2hNSlEyOWphM0p2WVdOb01SVXdFd1lEVlFRREV3eERiMk5yY205aFkyZ2dRMEV3SGhjTgpNall3TmpJeE1qRTFNRE0zV2hjTk16WXdOakk1TWpFMU1ETTNXakFyTVJJd0VBWURWUVFLRXdsRGIyTnJjbTloClkyZ3hGVEFUQmdOVkJBTVRERU52WTJ0eWIyRmphQ0JEUVRDQ0FTSXdEUVlKS29aSWh2Y05BUUVCQlFBRGdnRVAKQURDQ0FRb0NnZ0VCQU9OcmpOVFdpc0NWT09LSFZQWDg5YjBCbXVtZWZBZ2czVnRGaXRiZlZDdVkvcE8zVmNnTQovVS9uYitGRU1ibVJucEFpYVJCSlkvSnpLK2txLzFxZGVVYkNJWGpJZyt5TlZOaTFsTENpN3R2YkFYUkdnYk9vCjBoaUVZYmNNU09UOXdQTlFad2ZFdFhPUWJobGhyTUhuQjIyUHpRaWd1YWxyMHVzVXVybXU5d1MyWGhMRXpiZ1UKVmVRUk9RR1dWSFVrSitBQkdyamlBMTh2dnU3SEVZOElwYU5SYkVveDk1NlRKbjBuZDJ5SCtGNFg4SEtXbm9qZgpxK2h1ZENheE5IdVhNZGd4RWhhNk0zSFRISXprS052MSs0QUpYSDZPcDcxdERpTkJ4bmRpN2xabHowQWlhcTA0ClpaUUs5eExia0ZHZms0LzdIbGk5eEJhcGdlNU02UzhLRkc4Q0F3RUFBYU5GTUVNd0RnWURWUjBQQVFIL0JBUUQKQWdMa01CSUdBMVVkRXdFQi93UUlNQVlCQWY4Q0FRRXdIUVlEVlIwT0JCWUVGQldqVnljWXQ3SFFBUTBPblpxdgp3bDVhNmxhY01BMEdDU3FHU0liM0RRRUJDd1VBQTRJQkFRQ3FZL1RQWDROb3R2dVpNbTBlK04rVkRlL01QbEdmClh4enp2aHFjMXFGdy85SFU1cG9hWExRbnpwNzJJaEpmK1ovTHgxakpoU3pRMHpSWS9Ta29UdGp0MUNBd0dxTTEKY1hDd01aSWVINmFvaU14blNkZWRIM01SNlg1NE1rMGdZZk1YZmszZ2J2bHdCdGMzSElSSjVkOUdnVWdiZzlmYgo2cWxMejJMRzVzb0Z1dVpDd2thM2NNUlFSd2l5UmQyMEFxL1pEck9ibzZRWFdsTDRUSU5CRWRFL09razdUWFRrCnhHTHdqQVdaYXlXVE5OUjRFOFltb20zY3V3Y3Fxam5pZ2FwY1czVTlnTDFNb1NlSlpMUUdRRS9mOHJzUExPMFIKbFlnL1Z3N2p5ajJsMlFpTE42UTBLYVR4WCtnOVN1N2RWTXVCZEZ2WWltQ2NWQStyOHp1SFdoSHYKLS0tLS1FTkQgQ0VSVElGSUNBVEUtLS0tLQo=","client.root.crt":"LS0tLS1CRUdJTiBDRVJUSUZJQ0FURS0tLS0tCk1JSURJRENDQWdpZ0F3SUJBZ0lRVE12Q0szd0tKbXB6OXpiMWZYdStyREFOQmdrcWhraUc5dzBCQVFzRkFEQXIKTVJJd0VBWURWUVFLRXdsRGIyTnJjbTloWTJneEZUQVRCZ05WQkFNVERFTnZZMnR5YjJGamFDQkRRVEFlRncweQpOakEyTWpFeU1UVXdNemhhRncwek1UQTJNall5TVRVd016aGFNQ014RWpBUUJnTlZCQW9UQ1VOdlkydHliMkZqCmFERU5NQXNHQTFVRUF4TUVjbTl2ZERDQ0FTSXdEUVlKS29aSWh2Y05BUUVCQlFBRGdnRVBBRENDQVFvQ2dnRUIKQU1QY1dIZFZmeG1LQy9qb2p0U2JZZXh2blpkcXhtdjZRbW90bkU1L0Vuc0RkRWwrT1htUG5zNEp1WkF1ZEVWKwoyYjNZZVhVMkxJMFBoOGFQbzhGdnQ0MmVCU0JkWVlLc01xVElaelRHcU5YSkIwWkRUdEZ2MjRPT0k0WldwMk5XCmdXQ25xd0hsU0RmK2dQZnFSRjF2WUV1aHMvU3BrWUtVUVlpUCtXKzc1cys1dHlsSnlkVEl6WVpvcVkySUZ1d0QKN3J4L3QzblMzTzNjaUVTZ1NreDFWbm9OakZRQTAxbVF3aUwrSnFxYklkYytLNzdDYWxtM3lNbDd5bGxIRnQrTApXaDZGYlBoc0lGL1BaSjU0bEN2WEVoOEtubjR2WFZXYWlQSWt3V0JzTUlnWE9Ea0tDejdZb3FjOUR1RnJmYmhNCjIvcmUwaGxScHRwOG84cHh2bUoxU1E4Q0F3RUFBYU5JTUVZd0RnWURWUjBQQVFIL0JBUURBZ1dnTUJNR0ExVWQKSlFRTU1Bb0dDQ3NHQVFVRkJ3TUNNQjhHQTFVZEl3UVlNQmFBRkJXalZ5Y1l0N0hRQVEwT25acXZ3bDVhNmxhYwpNQTBHQ1NxR1NJYjNEUUVCQ3dVQUE0SUJBUUJFU2Qxbml4MTBNWTlhYzVUQkg3OVV2QWE1R21kbUdsTGh0VksvCjhwN29iSS9TbEY5dXJjY3FZRjF5VVFwOGlrbXM0YnBaeThDOHBxOE4wR0s2a2lMd2dJRUdUZ0w3T1YwUzgrOXIKZWEybkVJQWNwTjVvYTN5bW9Ka0poVnZUVzFIb0ZoRGZNc0xpajMzaW1haEk4cHllWGlsU0JJOUhIRXZsTnBHaApBd1BEUElOSTd6Q2xPa2pyTnBiNEJIWHgrMjZkVDRwdlZIcFY5RStwQ1FYM1JOU0xieWphWk5MaVlwa3pFYld5CldLZC9aSFc2WWFtVWFQYm83d3JrUkRBRGJDQVF4SkdMNW1YRlJMaU1oZHFWOCt3MXJXSExFZ2JsdkZpRVh0cG8KYStyQ29oL084Q2VUV1I1cjNUZU1nYVZNVzRSanNyNW9IM0dPaHpaeUErMVRmamhPCi0tLS0tRU5EIENFUlRJRklDQVRFLS0tLS0K","client.root.key":"LS0tLS1CRUdJTiBSU0EgUFJJVkFURSBLRVktLS0tLQpNSUlFcEFJQkFBS0NBUUVBdzl4WWQxVi9HWW9MK09pTzFKdGg3RytkbDJyR2EvcENhaTJjVG44U2V3TjBTWDQ1CmVZK2V6Z201a0M1MFJYN1p2ZGg1ZFRZc2pRK0h4bytqd1crM2paNEZJRjFoZ3F3eXBNaG5OTWFvMWNrSFJrTk8KMFcvYmc0NGpobGFuWTFhQllLZXJBZVZJTi82QTkrcEVYVzlnUzZHejlLbVJncFJCaUkvNWI3dm16N20zS1VuSgoxTWpOaG1pcGpZZ1c3QVB1dkgrM2VkTGM3ZHlJUktCS1RIVldlZzJNVkFEVFdaRENJdjRtcXBzaDF6NHJ2c0pxCldiZkl5WHZLV1VjVzM0dGFIb1ZzK0d3Z1g4OWtubmlVSzljU0h3cWVmaTlkVlpxSThpVEJZR3d3aUJjNE9Rb0wKUHRpaXB6ME80V3Q5dUV6Yit0N1NHVkdtMm55anluRytZblZKRHdJREFRQUJBb0lCQUN1NXVvcFJyUUZmbjFLZgpZSnU0WU1FdkhlaWE3dGRXVkpOdHdWS0k3ZkJHa2lTQ0tJU3ArcE1XK3JWa21aS1dRamd1NXRhekZIa2RlWHRyCnYreEVhNThUSXlQWmxSWmVLU1ErbFVQa0FmZFFYTzVqd21uaFpnbFZwenFyaDgwV2wrV2pLUHRRVzdJY2dHQlkKalpDcWQ3NEt5S2tiWGgvZngwMmNqdHhSLzdKcDZLNEg3TlV6bU4yMzNRMm4zMi9HTmRXdERwOHlTcUU2YjRoWApXWVZBYzJWVC9LQ2dyQ0luZXVsMUJ2a0hocFJyRzQ5Q0c2aUtjekI1K1p0YytaeFdBc2lqQnZxZlhLL0YwKytYCnY0WGVQQmU4WGVKSUlKQ0s0bGZjOVhvSG16VkxIaUNFU3FqK2cvdzREQWt5NmdrWVdRQ3BOT0F0UGdHTk5ONk0Kc2RVNjBCRUNnWUVBMzhhWm1TakRlUDJKc0dnbzA1M2hmYnFVVk9WekNCbDdwbGlrYmhaMEtBWThHTmUvVVJpVQpGQ1ExS0hFNWEwVFp3NUFYRnVFcmFXbXo4YzV4QklIeFlieTExaTU4dGFEdkgxb2RKLy9uOTBQaVVRL2pnZHNlCjRhbXJSWXg3TTZXckxFUW1rT3VWZHUrZkpvclVHM2FjbVhkSFozdndjYlBxcFhaMlZLRGZjdmNDZ1lFQTRCQ3IKTkxHdXJ2UkJZWUhQZ1ZJek5lTUZnTVp2WHpBQ2RISkdyaUZ0dEdFSmZyNGxDNUwzdWhIQXg0YjQrMzV1K2NCeApmK2J6L3IwdFlVc3dhT0loalpwOHZ6c1F3dExaUnQ2UWhqSk9vOFY0Y2lEZkdSdm5Remk5UjJ5ZW0zclozbDJWCmVRSUpyUGtTcVVZLysxSXVlMjZTNUpBVWNkV09GWkdHNlNkanZLa0NnWUJtU3B5UC9LaE9PR2VtY2hhbmxYWXMKU1F2aE92bTRiQjJ2enJscmNXd3JsNTRGSlNwWlljamU1Q1pBbEhGUTdhbzEwVG9jeFZWWTNHN2JUQ2t4akV6UgpCcmlBYmNPb0t5Ymp5QWVuN3owVU5MM1JuRmU5Vm5McGFPdlg0UDI0Z0RTZENaSXZrT0ZEK3dsZlR2cmlpdmZPCjEwMldxbnNoSHNOV1c2NS94UUlmeFFLQmdRRGJ4eDNYbXUxb0NJZlU5N29zOUE3dExWZ3BmdnFoR0h0Zjh2Tm4KTzd6YXNFL2E5UEZyVCtZVHFmUTVBaWhZcnlSMWI1RWt6c25IdFpHOG5EN0lzZjROWWxvNFROeGM3T3BZZkZpdwplTW53RS9MWHAyeU51WFAyMk1HNFBFKzYzQjYxNFgrSzZUZktaYWtyUm8vZG1UZWt0TW42eldSd1gvTjFMb0J4ClU4U2R1UUtCZ1FETUxhREUwTkRWeFhlT083SGk2RkZzd2NETHBNbUp0UFFJQlQ2ZzRqVXZYMTJQQnEzSHB2bkYKcENoMnAya2RXWkRJYit0V3djZnhJQm92Vk9QaEtuRkhrcGJ4RndpVFVrUjdmSFkwWE0zYjBwa0czSTJQb1pxbwphM1luZ1ExcEw0ZnhNODJ6VXM1RVErTzM5ejR6cHVJWlJ2bEJZajl6K2Jsbzg4eXlrNUlUNHc9PQotLS0tLUVORCBSU0EgUFJJVkFURSBLRVktLS0tLQo=","node.crt":"LS0tLS1CRUdJTiBDRVJUSUZJQ0FURS0tLS0tCk1JSUdpekNDQlhPZ0F3SUJBZ0lSQU5hWUpINHRRemZldHM5RWYvRkpwYll3RFFZSktvWklodmNOQVFFTEJRQXcKS3pFU01CQUdBMVVFQ2hNSlEyOWphM0p2WVdOb01SVXdFd1lEVlFRREV3eERiMk5yY205aFkyZ2dRMEV3SGhjTgpNall3TmpJeE1qRTFNRE00V2hjTk16RXdOakkyTWpFMU1ETTRXakFqTVJJd0VBWURWUVFLRXdsRGIyTnJjbTloClkyZ3hEVEFMQmdOVkJBTVRCRzV2WkdVd2dnRWlNQTBHQ1NxR1NJYjNEUUVCQVFVQUE0SUJEd0F3Z2dFS0FvSUIKQVFEYmRQLzJRMW9QNUZSMXVwS2RURFBOMGZOOTNmaHBPNWpGb1VPNm5aaXZhSldmOTJOZFpjcjh6QmYxSW91RQpDVHkwSThDbG15TGFGaVhTSkswdEdyWmplbko3QUhvWkxSWDZ1S25wZC9xYldZVmliOU8zQll5RnUxYzhLdWZwCmZYaG5FUnR6RUgwVVJzSUg5bUpmSHlxTmlwa2d5ZFV2cTRNNnlOTGswUEgzYWZaMzBsT1hyczgrOUkwbUV3ZXMKK3J1ZlEzOWdKb0I1WFBsa0NzakNWYk5ySm82MDJZTXQvdG9vTGEra1ExaERWVU41TDdiVlVCVUl4MTNjU3prNwplVDJLekxldUdSb2hSVkUvTTVCbndFMmMyT2RIN2dOOU8zd0V0NWNjOW10cUhpMTQ1STJlQ28zUjNIb3MwTGl4CmxXMWZ4YlV1ZGZrSkhBMmgyZEZOc2pXQkFnTUJBQUdqZ2dPd01JSURyREFPQmdOVkhROEJBZjhFQkFNQ0JhQXcKSFFZRFZSMGxCQll3RkFZSUt3WUJCUVVIQXdFR0NDc0dBUVVGQndNQ01COEdBMVVkSXdRWU1CYUFGQldqVnljWQp0N0hRQVEwT25acXZ3bDVhNmxhY01JSURXQVlEVlIwUkJJSURUekNDQTB1Q0NXeHZZMkZzYUc5emRJSU1ZM0prCllpMWpiSFZ6ZEdWeWdoaGpjbVJpTFdOc2RYTjBaWEl1WTI5amEzSnZZV05vWkdLQ0hHTnlaR0l0WTJ4MWMzUmwKY2k1amIyTnJjbTloWTJoa1lpNXpkbU9DS21OeVpHSXRZMngxYzNSbGNpNWpiMk5yY205aFkyaGtZaTV6ZG1NdQpZMngxYzNSbGNpNXNiMk5oYklJVFkzSmtZaTFqYkhWemRHVnlMWEIxWW14cFk0SWZZM0prWWkxamJIVnpkR1Z5CkxYQjFZbXhwWXk1amIyTnJjbTloWTJoa1lvSWpZM0prWWkxamJIVnpkR1Z5TFhCMVlteHBZeTVqYjJOcmNtOWgKWTJoa1lpNXpkbU9DTVdOeVpHSXRZMngxYzNSbGNpMXdkV0pzYVdNdVkyOWphM0p2WVdOb1pHSXVjM1pqTG1OcwpkWE4wWlhJdWJHOWpZV3lDRG1OeVpHSXRZMngxYzNSbGNpMHdnaHRqY21SaUxXTnNkWE4wWlhJdE1DNWpjbVJpCkxXTnNkWE4wWlhLQ0oyTnlaR0l0WTJ4MWMzUmxjaTB3TG1OeVpHSXRZMngxYzNSbGNpNWpiMk5yY205aFkyaGsKWW9JclkzSmtZaTFqYkhWemRHVnlMVEF1WTNKa1lpMWpiSFZ6ZEdWeUxtTnZZMnR5YjJGamFHUmlMbk4yWTRJNQpZM0prWWkxamJIVnpkR1Z5TFRBdVkzSmtZaTFqYkhWemRHVnlMbU52WTJ0eWIyRmphR1JpTG5OMll5NWpiSFZ6CmRHVnlMbXh2WTJGc2dnNWpjbVJpTFdOc2RYTjBaWEl0TVlJYlkzSmtZaTFqYkhWemRHVnlMVEV1WTNKa1lpMWoKYkhWemRHVnlnaWRqY21SaUxXTnNkWE4wWlhJdE1TNWpjbVJpTFdOc2RYTjBaWEl1WTI5amEzSnZZV05vWkdLQwpLMk55WkdJdFkyeDFjM1JsY2kweExtTnlaR0l0WTJ4MWMzUmxjaTVqYjJOcmNtOWhZMmhrWWk1emRtT0NPV055ClpHSXRZMngxYzNSbGNpMHhMbU55WkdJdFkyeDFjM1JsY2k1amIyTnJjbTloWTJoa1lpNXpkbU11WTJ4MWMzUmwKY2k1c2IyTmhiSUlPWTNKa1lpMWpiSFZ6ZEdWeUxUS0NHMk55WkdJdFkyeDFjM1JsY2kweUxtTnlaR0l0WTJ4MQpjM1JsY29JblkzSmtZaTFqYkhWemRHVnlMVEl1WTNKa1lpMWpiSFZ6ZEdWeUxtTnZZMnR5YjJGamFHUmlnaXRqCmNtUmlMV05zZFhOMFpYSXRNaTVqY21SaUxXTnNkWE4wWlhJdVkyOWphM0p2WVdOb1pHSXVjM1pqZ2psamNtUmkKTFdOc2RYTjBaWEl0TWk1amNtUmlMV05zZFhOMFpYSXVZMjlqYTNKdllXTm9aR0l1YzNaakxtTnNkWE4wWlhJdQpiRzlqWVd5SEJIOEFBQUV3RFFZSktvWklodmNOQVFFTEJRQURnZ0VCQUVEeFMvUFdVbjhGTlM4V2thc3Z4eGVNCjZiM2NwbnRVT1FabzBpdVV5WDBzRWdGbFJ0cE5Nei84WTVNaHdmeXloNW51U2tqZitRMkJROGp0MzQ4NmxaQjIKZWllOTd0RjNFckdTQ3Urbi96anFiQU5BemxQTG5ScFF6UlZHRW5FbDI5UFlIM2xjMTE4NTlkR0hnOEhRWlBUKwprcGpuOHp2U2YwMGtOS0ZiSXVtM0hoNWVVa05MUWtES3dtamtiWjNmdWQ3TmZzd2g0ZmZUTUQ5UnJkYzlBR3orClZEZDhCeWM5OG9RTjFWQ1d3MzAzb2o1ZlBZbmZ2UUlQL0xBZ0xFc2lvcVQxUHc4V1hJTkZmN0IxNUQ2QU5ZWUUKbDFqQTdQQmJQWEtDamtZQlVqQ01zVXEwTElwRThWUkhkUzNOSWxCNHVpd1YvUUxFSmVWNFF1MGFkcTAwaE9FPQotLS0tLUVORCBDRVJUSUZJQ0FURS0tLS0tCg==","node.key":"LS0tLS1CRUdJTiBSU0EgUFJJVkFURSBLRVktLS0tLQpNSUlFcFFJQkFBS0NBUUVBMjNULzlrTmFEK1JVZGJxU25Vd3p6ZEh6ZmQzNGFUdVl4YUZEdXAyWXIyaVZuL2RqClhXWEsvTXdYOVNLTGhBazh0Q1BBcFpzaTJoWWwwaVN0TFJxMlkzcHlld0I2R1MwVityaXA2WGY2bTFtRlltL1QKdHdXTWhidFhQQ3JuNlgxNFp4RWJjeEI5RkViQ0IvWmlYeDhxallxWklNblZMNnVET3NqUzVORHg5Mm4yZDlKVApsNjdQUHZTTkpoTUhyUHE3bjBOL1lDYUFlVno1WkFySXdsV3pheWFPdE5tRExmN2FLQzJ2cEVOWVExVkRlUysyCjFWQVZDTWRkM0VzNU8zazlpc3kzcmhrYUlVVlJQek9RWjhCTm5Oam5SKzREZlR0OEJMZVhIUFpyYWg0dGVPU04KbmdxTjBkeDZMTkM0c1pWdFg4VzFMblg1Q1J3Tm9kblJUYkkxZ1FJREFRQUJBb0lCQVFDc2Z3MkdTekJxVjJYUAoxK1BRUWdwaUdFblV3SG0yZFlMQ3JOeG92ZUU2MXZEcytPNGdocGVFRndRcHlZcHlNVFNHdjZkNFJEV2p5RTdZCkc3NEhPdnpydWw1cnNsZEduTHF2QlNHQkFxNTRGMmlSbENhTXNJN2d1djE1ckp2M1dva2VNa01xTVdhdlhtSzcKRVg0SEdKOUEvQlVhd2FxUk9yWCtxY1dpMTEycHd5cTFaOWNSR0d0TjFyUlRJYkk5WHNOMTUzb212T01PMXdpTApzOTJ6dEVseDFIYy9IUi9DSW02bkNYVkh0RWhscXovNzJJMzlDQ1NMUUNtVXQyRlVGdCtiL285Mmc3NFRDckVPCktmNENlRzRDdThVUnhrZ3pTVkNZclhpOFl0MHVwSXEva2xJVDdqS1RKcXF3TXltZitObGtFbnJ4K3o1UU1BTVgKd1pvSnRCbXhBb0dCQU8rZTY5dUJLSHpGK00wd05DWW1UYm43WWpkdGpWSzNURzlRK0NJNkxqMUl2YVRpZkdteQpONWl2YUJ2RDRpRHFkKzhDQ1ROeVYxaStYV2xPUTAwZjRyNXh6bkpWRG1zVUY5enBCb2ZySEtPNmd1eWpYSlFsCllQNzNzelZtZzljNnl5dEQxY3NhcW5TNVgwMU0yaGJGT2tWdElLNGNFNnB4cWFYT1czN0daSy9GQW9HQkFPcDEKUEo2OHJuYjZadlZvMVMyczIzeno5ZlJTb3RTc2pQakRueHJYekIwNDdYZTNaWXhzcjBYL0syeG02TllyNHVTRwpOelQrTCtVNmU1VlhyR2JNNUpoMVVDSVdodjd5K1ZLWlBaMnNLK25NTHJDenY2Q3ZCeWsxWERLaGw1SGk2YXBvCmpyYmZnc0R1MFVnc2M1bDBVVW9mMGJISkw0QkpIOE91UndsUWlDNk5Bb0dCQUxPMmZTNGpzRG5rUUxXamNYa3IKUVNBN2FXNG91OVZOcEFYWXRFRDNZYmFVMTZiU05uMFBMS05XNnIzb0s3Q0VLVzhZRjg1OTh3U2J3WE01UDBDWQpxWFlyNUtuYklQVXVITGVTRFZQakFaZktTbWN3SGo3OXljRndCUGdINnRtQlB0ODBBU1JTMjRTdmdzcDIyUm82CjBYbEFYMEkxeklvSXRUT2xrUG1EMGdBQkFvR0FDMElqN2c5clpVVXk2bmZsUExNL091blFGckpkSlU4LzJiWXoKRHF2c0hqOGNrQkliYXpuUTFOQ2kraXFhNWFYbjJFZGxvVUxQYy9keDljTG5BV3kzVVdiWXVUcFJzeTVoc0lpeApQOEFEdjg5Uk1xVCsvNjFINzcrak5MOHpzd3F0WThSdmpmSi9xZG9ON0tSTnpNR2NJYTRUZUxFTGVlS0pCdkY0CmNjY1BNd1VDZ1lFQTF3RWUzWllhOUx6K3VGaVMwQVo3aW5PeTg0MkNBcHZFdk5INkRGNEcyUTZ2WHVCbFNqRUoKYU03eDZmTWo3cGd1YnpHUllpaFh2bHM0NWEzR0tpOEkvVW5MbGlNNEd6dmkwOXdYR25sZVJrNXJYdmlPM2h4RQpiY01oYzNkVjdWRHFOdDFBZHU5cGFGSitVaXBUY3dyTUVOWmdad3RXdUJpbFNvNXJraVpXYkxJPQotLS0tLUVORCBSU0EgUFJJVkFURSBLRVktLS0tLQo="}
+ succeeded in 201ms:
+subject=O=Cockroach, CN=node
+issuer=O=Cockroach, CN=Cockroach CA
+notBefore=Jun 21 21:50:38 2026 GMT
+notAfter=Jun 26 21:50:38 2031 GMT
+sha256 Fingerprint=55:25:9D:24:6E:3D:9C:FA:14:3D:1F:D8:7A:52:A1:59:6F:42:03:8F:8B:2C:68:D3:1E:33:31:22:AC:2F:5A:BB
+X509v3 Subject Alternative Name: 
+    DNS:localhost, DNS:crdb-cluster, DNS:crdb-cluster.cockroachdb, DNS:crdb-cluster.cockroachdb.svc, DNS:crdb-cluster.cockroachdb.svc.cluster.local, DNS:crdb-cluster-public, DNS:crdb-cluster-public.cockroachdb, DNS:crdb-cluster-public.cockroachdb.svc, DNS:crdb-cluster-public.cockroachdb.svc.cluster.local, DNS:crdb-cluster-0, DNS:crdb-cluster-0.crdb-cluster, DNS:crdb-cluster-0.crdb-cluster.cockroachdb, DNS:crdb-cluster-0.crdb-cluster.cockroachdb.svc, DNS:crdb-cluster-0.crdb-cluster.cockroachdb.svc.cluster.local, DNS:crdb-cluster-1, DNS:crdb-cluster-1.crdb-cluster, DNS:crdb-cluster-1.crdb-cluster.cockroachdb, DNS:crdb-cluster-1.crdb-cluster.cockroachdb.svc, DNS:crdb-cluster-1.crdb-cluster.cockroachdb.svc.cluster.local, DNS:crdb-cluster-2, DNS:crdb-cluster-2.crdb-cluster, DNS:crdb-cluster-2.crdb-cluster.cockroachdb, DNS:crdb-cluster-2.crdb-cluster.cockroachdb.svc, DNS:crdb-cluster-2.crdb-cluster.cockroachdb.svc.cluster.local, IP Address:127.0.0.1
+
+ succeeded in 197ms:
+subject=CN=node
+issuer=CN=CockroachDB CA
+notBefore=Jun 22 21:52:26 2026 GMT
+notAfter=Jun 24 21:52:26 2026 GMT
+sha256 Fingerprint=54:A2:97:FA:A7:E0:79:45:6D:49:CE:E3:C2:C1:B2:EC:88:1D:A7:06:D0:1E:6F:1E:C5:5D:93:D0:1D:57:C4:A9
+X509v3 Subject Alternative Name: 
+    DNS:localhost, IP Address:127.0.0.1, DNS:crdb-cluster, DNS:crdb-cluster.cockroachdb, DNS:crdb-cluster.cockroachdb.svc, DNS:crdb-cluster.cockroachdb.svc.cluster.local, DNS:*.crdb-cluster.cockroachdb.svc.cluster.local, DNS:crdb-cluster-0.crdb-cluster.cockroachdb.svc.cluster.local, DNS:crdb-cluster-1.crdb-cluster.cockroachdb.svc.cluster.local, DNS:crdb-cluster-2.crdb-cluster.cockroachdb.svc.cluster.local
+
+ succeeded in 229ms:
+[req]
+distinguished_name = req_distinguished_name
+req_extensions = v3_req
+prompt = no
+[req_distinguished_name]
+CN = node
+[v3_req]
+keyUsage = critical,digitalSignature,keyEncipherment
+extendedKeyUsage = serverAuth,clientAuth
+subjectAltName = @alt_names
+[alt_names]
+DNS.1 = localhost
+IP.1 = 127.0.0.1
+DNS.2 = crdb-cluster
+DNS.3 = crdb-cluster.cockroachdb
+DNS.4 = crdb-cluster.cockroachdb.svc
+DNS.5 = crdb-cluster.cockroachdb.svc.cluster.local
+DNS.6 = *.crdb-cluster.cockroachdb.svc.cluster.local
+DNS.7 = crdb-cluster-0.crdb-cluster.cockroachdb.svc.cluster.local
+DNS.8 = crdb-cluster-1.crdb-cluster.cockroachdb.svc.cluster.local
+DNS.9 = crdb-cluster-2.crdb-cluster.cockroachdb.svc.cluster.local
+
+codex
+The mounted `crdb-certs` secret and the `openssl-toolbox` CA do not match; the toolbox CA matches `crdb-cluster-certs`. I’m going to verify the live SQL path and then decide whether the StatefulSet needs to be pointed at the rotated secret as part of the rotation.
+exec
+/bin/zsh -lc 'kubectl -n cockroachdb exec crdb-cluster-0 -- ./cockroach sql --certs-dir=/cockroach/cockroach-certs -e "SELECT 1;"' in /Users/jinyige/Karma/runs/new-added-workflows/cockroachdb-cert-ingress-monitor-20260622_214646/stages/stage_03
+exec
+/bin/zsh -lc "kubectl -n cockroachdb get secret crdb-certs -o jsonpath='{.data.ca\\.crt}' | base64 -d | openssl x509 -noout -subject -fingerprint -sha256 -enddate" in /Users/jinyige/Karma/runs/new-added-workflows/cockroachdb-cert-ingress-monitor-20260622_214646/stages/stage_03
+exec
+/bin/zsh -lc "kubectl -n cockroachdb get secret crdb-cluster-certs -o jsonpath='{.data.ca\\.crt}' | base64 -d | openssl x509 -noout -subject -fingerprint -sha256 -enddate" in /Users/jinyige/Karma/runs/new-added-workflows/cockroachdb-cert-ingress-monitor-20260622_214646/stages/stage_03
+exec
+/bin/zsh -lc 'kubectl -n cockroachdb exec openssl-toolbox -- openssl x509 -in /tmp/certs/ca.crt -noout -subject -fingerprint -sha256 -enddate' in /Users/jinyige/Karma/runs/new-added-workflows/cockroachdb-cert-ingress-monitor-20260622_214646/stages/stage_03
+ succeeded in 194ms:
+subject=CN=CockroachDB CA
+sha256 Fingerprint=AA:DD:EE:79:9F:29:28:4A:08:CA:EF:AA:3A:87:42:4F:CE:6A:DA:E0:E5:26:97:F3:97:14:69:57:58:FA:1E:66
+notAfter=Jun 19 21:52:26 2036 GMT
+
+ succeeded in 198ms:
+subject=O=Cockroach, CN=Cockroach CA
+sha256 Fingerprint=55:06:A0:CF:94:97:D1:DD:73:12:69:89:E6:31:58:72:20:7E:6A:85:27:93:21:A0:4D:4E:FD:5C:A5:84:44:56
+notAfter=Jun 29 21:50:37 2036 GMT
+
+ succeeded in 260ms:
+subject=CN=CockroachDB CA
+sha256 Fingerprint=AA:DD:EE:79:9F:29:28:4A:08:CA:EF:AA:3A:87:42:4F:CE:6A:DA:E0:E5:26:97:F3:97:14:69:57:58:FA:1E:66
+notAfter=Jun 19 21:52:26 2036 GMT
+
+ succeeded in 765ms:
+?column?
+1
+
+codex
+Secure SQL is currently working. The toolbox CA is authoritative for `crdb-cluster-certs`, but not for the secret presently mounted by the StatefulSet, so I’m checking the stage setup logs to avoid applying the right cert to the wrong object.
+exec
+/bin/zsh -lc "sed -n '1,220p' prompt.txt" in /Users/jinyige/Karma/runs/new-added-workflows/cockroachdb-cert-ingress-monitor-20260622_214646/stages/stage_03
+ succeeded in 0ms:
+Rotate the TLS certificates for the running CockroachDB cluster.
+The new certificates should be valid for about 1 year.
+The existing CA key and cert are available in the openssl-toolbox pod at
+/tmp/certs/ca.key and /tmp/certs/ca.crt.
+
+Verification:
+1. Secure SQL works:
+   kubectl -n cockroachdb exec crdb-cluster-0 -- \
+     ./cockroach sql --certs-dir=/cockroach/cockroach-certs -e "SELECT 1;"
+
+2. Node cert rotated:
+   kubectl -n cockroachdb get secret crdb-cluster-certs -o jsonpath='{.data.node\.crt}' | base64 -d | \
+     openssl x509 -noout -fingerprint -sha256
+
+3. New cert validity about 1 year:
+   kubectl -n cockroachdb get secret crdb-cluster-certs -o jsonpath='{.data.node\.crt}' | base64 -d | \
+     openssl x509 -noout -enddate
+exec
+/bin/zsh -lc "sed -n '1,260p' agent.log" in /Users/jinyige/Karma/runs/new-added-workflows/cockroachdb-cert-ingress-monitor-20260622_214646/stages/stage_03
+exec
+/bin/zsh -lc "sed -n '1,260p' precondition.log" in /Users/jinyige/Karma/runs/new-added-workflows/cockroachdb-cert-ingress-monitor-20260622_214646/stages/stage_03
+ succeeded in 0ms:
+[precondition:crdb_env_ready:preconditionUnits[0] 'crdb_env_ready':probe] $ kubectl -n cockroachdb get pods 2>/dev/null | grep -c Running
+4
+
+[precondition:establish_cert_baseline:preconditionUnits[1] 'establish_cert_baseline':probe] $ kubectl -n cockroachdb get configmap crdb-old-cert
+Error from server (NotFound): configmaps "crdb-old-cert" not found
+
+[precondition:establish_cert_baseline:preconditionUnits[1] 'establish_cert_baseline':apply] $ /bin/sh -c 'kubectl -n cockroachdb get pod openssl-toolbox >/dev/null 2>&1 || kubectl -n cockroachdb apply -f cases/cockroachdb/certificate-rotation/resource/openssl-toolbox.yaml'
+pod/openssl-toolbox created
+
+[precondition:establish_cert_baseline:preconditionUnits[1] 'establish_cert_baseline':apply] $ kubectl -n cockroachdb wait --for=condition=ready pod/openssl-toolbox --timeout=120s
+pod/openssl-toolbox condition met
+
+[precondition:establish_cert_baseline:preconditionUnits[1] 'establish_cert_baseline':apply] $ kubectl -n cockroachdb exec -i openssl-toolbox -- sh -s < cases/cockroachdb/certificate-rotation/resource/gen-old-certs.sh
+Certificate request self-signature ok
+subject=CN=node
+Certificate request self-signature ok
+subject=CN=root
+
+[precondition:establish_cert_baseline:preconditionUnits[1] 'establish_cert_baseline':apply] $ /bin/sh -c 'rm -rf /tmp/crdb-old-certs; kubectl -n cockroachdb cp openssl-toolbox:/tmp/certs /tmp/crdb-old-certs'
+tar: removing leading '/' from member names
+
+[precondition:establish_cert_baseline:preconditionUnits[1] 'establish_cert_baseline':apply] $ /bin/sh -c 'kubectl -n cockroachdb create secret generic crdb-cluster-certs --from-file=ca.crt=/tmp/crdb-old-certs/ca.crt --from-file=node.crt=/tmp/crdb-old-certs/node.crt --from-file=node.key=/tmp/crdb-old-certs/node.key --from-file=client.root.crt=/tmp/crdb-old-certs/client.root.crt --from-file=client.root.key=/tmp/crdb-old-certs/client.root.key --dry-run=client -o yaml | kubectl apply -f -'
+secret/crdb-cluster-certs created
+
+[precondition:establish_cert_baseline:preconditionUnits[1] 'establish_cert_baseline':apply] $ /bin/sh -c 'kubectl -n cockroachdb scale statefulset/crdb-cluster --replicas=0 || true'
+statefulset.apps/crdb-cluster scaled
+
+[precondition:establish_cert_baseline:preconditionUnits[1] 'establish_cert_baseline':apply] $ /bin/sh -c 'kubectl -n cockroachdb wait --for=delete pod -l app.kubernetes.io/name=cockroachdb --timeout=150s || true'
+pod/crdb-cluster-0 condition met
+pod/crdb-cluster-2 condition met
+
+[precondition:establish_cert_baseline:preconditionUnits[1] 'establish_cert_baseline':apply] $ /bin/sh -c 'kubectl -n cockroachdb scale statefulset/crdb-cluster --replicas=3 || true'
+statefulset.apps/crdb-cluster scaled
+
+[precondition:establish_cert_baseline:preconditionUnits[1] 'establish_cert_baseline':apply] $ /bin/sh -c 'kubectl -n cockroachdb rollout status statefulset/crdb-cluster --timeout=420s || true'
+Waiting for 3 pods to be ready...
+Waiting for 2 pods to be ready...
+Waiting for 1 pods to be ready...
+partitioned roll out complete: 3 new pods have been updated...
+
+[precondition:establish_cert_baseline:preconditionUnits[1] 'establish_cert_baseline':apply] $ /bin/sh -c 'for i in $(seq 1 45); do kubectl -n cockroachdb exec crdb-cluster-0 -- ./cockroach sql --certs-dir=/cockroach/cockroach-certs --host=crdb-cluster-0.crdb-cluster.cockroachdb.svc.cluster.local -e "SELECT 1;" && exit 0; sleep 4; done; exit 1'
+?column?
+1
+
+[precondition:establish_cert_baseline:preconditionUnits[1] 'establish_cert_baseline':apply] $ /bin/sh -c 'fingerprint=$(openssl x509 -noout -fingerprint -sha256 -in /tmp/crdb-old-certs/node.crt | sed "s/.*=//"); ca_fingerprint=$(openssl x509 -noout -fingerprint -sha256 -in /tmp/crdb-old-certs/ca.crt | sed "s/.*=//"); not_after=$(openssl x509 -noout -enddate -in /tmp/crdb-old-certs/node.crt | sed "s/notAfter=//"); kubectl -n cockroachdb create configmap crdb-old-cert --from-literal=fingerprint="$fingerprint" --from-literal=ca_fingerprint="$ca_fingerprint" --from-literal=not_after="$not_after" --dry-run=client -o yaml | kubectl apply -f -'
+configmap/crdb-old-cert created
+
+[precondition:establish_cert_baseline:preconditionUnits[1] 'establish_cert_baseline':verify] $ kubectl -n cockroachdb get configmap crdb-old-cert -o jsonpath='{.data.not_after}'
+Jun 24 21:52:26 2026 GMT
+
+ succeeded in 0ms:
+OpenAI Codex v0.142.0-alpha.6
+--------
+workdir: /Users/jinyige/Karma/runs/new-added-workflows/cockroachdb-cert-ingress-monitor-20260622_214646/stages/stage_03
+model: gpt-5.5
+provider: openai
+approval: never
+sandbox: danger-full-access
+reasoning effort: xhigh
+reasoning summaries: none
+session id: 019ef152-ac33-73e0-96c7-18ae13c666cc
+--------
+user
+Rotate the TLS certificates for the running CockroachDB cluster.
+The new certificates should be valid for about 1 year.
+The existing CA key and cert are available in the openssl-toolbox pod at
+/tmp/certs/ca.key and /tmp/certs/ca.crt.
+
+Verification:
+1. Secure SQL works:
+   kubectl -n cockroachdb exec crdb-cluster-0 -- \
+     ./cockroach sql --certs-dir=/cockroach/cockroach-certs -e "SELECT 1;"
+
+2. Node cert rotated:
+   kubectl -n cockroachdb get secret crdb-cluster-certs -o jsonpath='{.data.node\.crt}' | base64 -d | \
+     openssl x509 -noout -fingerprint -sha256
+
+3. New cert validity about 1 year:
+   kubectl -n cockroachdb get secret crdb-cluster-certs -o jsonpath='{.data.node\.crt}' | base64 -d | \
+     openssl x509 -noout -enddate
+codex
+I’ll inspect the namespace, current secrets, and pod layout first so the rotation matches how this cluster is mounted and avoids breaking the running nodes.
+exec
+/bin/zsh -lc "pwd && rg --files -g '"'!node_modules'"' | head -200" in /Users/jinyige/Karma/runs/new-added-workflows/cockroachdb-cert-ingress-monitor-20260622_214646/stages/stage_03
+ succeeded in 0ms:
+/Users/jinyige/Karma/runs/new-added-workflows/cockroachdb-cert-ingress-monitor-20260622_214646/stages/stage_03
+proxy-client.crt
+agent.log
+precondition.log
+prompt.txt
+proxy-client.key
+
+exec
+/bin/zsh -lc 'kubectl -n cockroachdb get secrets' in /Users/jinyige/Karma/runs/new-added-workflows/cockroachdb-cert-ingress-monitor-20260622_214646/stages/stage_03
+exec
+/bin/zsh -lc 'kubectl -n cockroachdb get pods -o wide' in /Users/jinyige/Karma/runs/new-added-workflows/cockroachdb-cert-ingress-monitor-20260622_214646/stages/stage_03
+exec
+/bin/zsh -lc 'kubectl -n cockroachdb get statefulset,svc,ingress -o wide' in /Users/jinyige/Karma/runs/new-added-workflows/cockroachdb-cert-ingress-monitor-20260622_214646/stages/stage_03
+ succeeded in 261ms:
+NAME              READY   STATUS    RESTARTS   AGE     IP            NODE           NOMINATED NODE   READINESS GATES
+crdb-cluster-0    1/1     Running   0          37s     10.244.3.24   kind-worker3   <none>           <none>
+crdb-cluster-1    1/1     Running   0          37s     10.244.2.23   kind-worker2   <none>           <none>
+crdb-cluster-2    1/1     Running   0          37s     10.244.1.18   kind-worker    <none>           <none>
+curl-test         1/1     Running   0          9m48s   10.244.3.22   kind-worker3   <none>           <none>
+openssl-toolbox   1/1     Running   0          61s     10.244.1.17   kind-worker    <none>           <none>
+
+ succeeded in 261ms:
+NAME                 TYPE     DATA   AGE
+crdb-certs           Opaque   5      2m42s
+crdb-cluster-certs   Opaque   5      51s
+
+ succeeded in 290ms:
+NAME                            READY   AGE   CONTAINERS   IMAGES
+statefulset.apps/crdb-cluster   3/3     15m   db           cockroachdb/cockroach:v24.1.0
+
+NAME                          TYPE        CLUSTER-IP      EXTERNAL-IP   PORT(S)              AGE   SELECTOR
+service/crdb-cluster          ClusterIP   None            <none>        26257/TCP,8080/TCP   15m   app.kubernetes.io/instance=crdb-cluster,app.kubernetes.io/name=cockroachdb
+service/crdb-cluster-public   ClusterIP   10.96.131.212   <none>        26257/TCP,8080/TCP   15m   app.kubernetes.io/instance=crdb-cluster,app.kubernetes.io/name=cockroachdb
+
+codex
+The cluster is a 3-node StatefulSet with a `crdb-cluster-certs` secret mounted into the pods. I’m checking the current certificate contents and SANs now so the replacement cert has the same identities.
+exec
+/bin/zsh -lc "kubectl -n cockroachdb get secret crdb-cluster-certs -o jsonpath='{.data}'" in /Users/jinyige/Karma/runs/new-added-workflows/cockroachdb-cert-ingress-monitor-20260622_214646/stages/stage_03
+exec
+/bin/zsh -lc 'kubectl -n cockroachdb get statefulset crdb-cluster -o yaml' in /Users/jinyige/Karma/runs/new-added-workflows/cockroachdb-cert-ingress-monitor-20260622_214646/stages/stage_03
+exec
+/bin/zsh -lc 'kubectl -n cockroachdb exec crdb-cluster-0 -- ls -l /cockroach/cockroach-certs' in /Users/jinyige/Karma/runs/new-added-workflows/cockroachdb-cert-ingress-monitor-20260622_214646/stages/stage_03
+exec
+/bin/zsh -lc 'kubectl -n cockroachdb exec openssl-toolbox -- ls -l /tmp/certs' in /Users/jinyige/Karma/runs/new-added-workflows/cockroachdb-cert-ingress-monitor-20260622_214646/stages/stage_03
+ succeeded in 162ms:
+{"ca.crt":"LS0tLS1CRUdJTiBDRVJUSUZJQ0FURS0tLS0tCk1JSURFekNDQWZ1Z0F3SUJBZ0lVTC9oTUlqT01NeXd3dkEyckpxcWtQWHF6a2FBd0RRWUpLb1pJaHZjTkFRRUwKQlFBd0dURVhNQlVHQTFVRUF3d09RMjlqYTNKdllXTm9SRUlnUTBFd0hoY05Nall3TmpJeU1qRTFNakkyV2hjTgpNell3TmpFNU1qRTFNakkyV2pBWk1SY3dGUVlEVlFRRERBNURiMk5yY205aFkyaEVRaUJEUVRDQ0FTSXdEUVlKCktvWklodmNOQVFFQkJRQURnZ0VQQURDQ0FRb0NnZ0VCQUlzQWZRS3A3VzM2bFZDUXlhTUNLajl5b1FOVCt5TisKT0RhaHlPMDJISG8vMCtpb2ZYUDRFbVplNnVTaXFlSzgrdzZoTUNva0toVDJCMm55N3pXN0FwdFQ2U2tTNDFGNAo0eDJlTktHOEJKbzA5aWRjK2t1V2hqVS84bkRHaUVVYnpmeUlCRW5XWE1TT0NjYmtVR1h3QjFzRjgwVEVZeTBZCkh5SVUzdG52N0ZFYjF1NElxVWVDTTVwY09HWE9ncDB6ZTFGTEhLS0x6WVdHR2twaTFWNW5tcE0zejhkaUtoQ3gKSGZiSkwwTEIvY0EzODQwVlQ0ZUtWSFo3alFxVFFCeEVZcHQxYWxDdzBxZGsybmZRYVVLa1hkQWRGLzJtaGFJRQpSbXNtQVBCVkVKQTRKSlB2bXBxaE52cFI5ZS9MNWoxZ1RCRGpxbC9XNklLK2ljSDFJSFdhV1BrQ0F3RUFBYU5UCk1GRXdIUVlEVlIwT0JCWUVGSjRIYkxNZStENW5KSGtKN0FFZGVCYTFLMFlKTUI4R0ExVWRJd1FZTUJhQUZKNEgKYkxNZStENW5KSGtKN0FFZGVCYTFLMFlKTUE4R0ExVWRFd0VCL3dRRk1BTUJBZjh3RFFZSktvWklodmNOQVFFTApCUUFEZ2dFQkFJRVNTZnh2eTVRY0NYUkl3Zk84TnFNTVdBS2pRcnVUeU9xZjVmWVk5dE9KVm9XRno2QmRlTGVaCnBqb0d0MGpRZ01KZjJQbmRnendUTnZaZ1NjMzRsV3Y2UFhuSEpJQmRBZWNYTzFFL1N4Ly9sdnZPRE1KL0dRcWkKU0JidlpiaVZJbHhONTg3ZWVDdFBmTjlGV0pTbmhRekExSnlNNWwxaUY0aTZ2NzErdTNscmhKS1Fwb2MzanZEMApsMk9Jc0J4NzNvRlBReTYyUHZZYU1oOGtrZm9mWFdBT2NneGxRV1BMVVR0cEdtS013eW5VcXkyVU5CdFJ3blc3CngzbnhmR0JQditTQzRFODNiNXhLb2ROaTdUeFdwaGU2L2dWWlUydmEweXd6OWhSUE5mc05QcmZWZzFUMjhVazIKUmNpZGxiZEI4WmRHYmd2ZjFsc1NxQWo1dk85M1RVbz0KLS0tLS1FTkQgQ0VSVElGSUNBVEUtLS0tLQo=","client.root.crt":"LS0tLS1CRUdJTiBDRVJUSUZJQ0FURS0tLS0tCk1JSUMrRENDQWVDZ0F3SUJBZ0lVV1ZyaFhaYXhaLzJTNUNvUXZwU1BkRGpubUpRd0RRWUpLb1pJaHZjTkFRRUwKQlFBd0dURVhNQlVHQTFVRUF3d09RMjlqYTNKdllXTm9SRUlnUTBFd0hoY05Nall3TmpJeU1qRTFNakkzV2hjTgpNall3TmpJME1qRTFNakkzV2pBUE1RMHdDd1lEVlFRRERBUnliMjkwTUlJQklqQU5CZ2txaGtpRzl3MEJBUUVGCkFBT0NBUThBTUlJQkNnS0NBUUVBczRtekV0bTg3SVlpeVdZRDdSVXpjMzRyUkVMV3gwVFpSYnJBRkhlWkdrV0gKMm9DWk1kbXozUlFHcGVLYU9qbHd2SEVoZ3dQakZJMHZFeWZWQnVPYVk5OEVISGJydlZOYXBBcHFxY3FaNVdmMAozZWNSMlZoNnhhQkJCaGJ1WEtiRDBhTHMrYTlmWWkzUi9VaFhVZ29kelhqQ1dxRzhqMUttR0ZvMUREMDRVWUdHClBkK0NuVDl6eE5HRUtDV1pLWmVON2w5bU5QTEFZS3p4cFpneUxJZGNpcXpBT1NtbXZ1YVI5RmpRWDBZb1BWcTQKUzZjU0RoL0N6eXVnUnBpbzBxTXlNM2xtMVFESUtkak1nSTlNVmt0TlVFaExENUNvS0lDbFY0RWlsYU1UdmZ3egpvQVNPSXdTOHExZmxJdzNJMno5Nk1QbjF6TjdncmtXQSsyNHhLY0ZhOHdJREFRQUJvMEl3UURBZEJnTlZIUTRFCkZnUVV3V2hVV3ZRU0lDdnZWZ2lmWk8zWDc2blo1Mll3SHdZRFZSMGpCQmd3Rm9BVW5nZHNzeDc0UG1ja2VRbnMKQVIxNEZyVXJSZ2t3RFFZSktvWklodmNOQVFFTEJRQURnZ0VCQUQ2blB5aXpwMFVoRW5lS1VYcnZrVk1MTVp1SwpwdTUrajk2b2prRGJkb0FwS2Z4Z01YZmJlZ3VhT01ITjVUZVVibENuaCsycy9Cb1RZd2dyU2pvY05FNkNlY3RSCjlCOGpOcVJlV2M3MzBHQ2NoKzN1eEx0eDZuY2gvTzg3RDRMeVh3K1dQZWRCazUzRFlJK3JBdTlYRTVxWkY1emsKak9UUlVKbitZKzNWZFFNQXdxWnpsY3FjT0IrZ3U4RGJuNTJxcWF0NTdvN0haUFJDS3QwRWkzV2Y2bDI1WFRUTAp6TDdpcC9PaEtPbTdoWHZQWjNqMjYyemY2WDQrWHZ0YjJTOHIrbWJ5VFJ2NzFWa2lDbWlxWHV3TjZvRXRKZWpTCmV0Z29WSFJvem5zd1piNUpIbXQ4eTBOYjNFTVlFK0lPTUlYcm4wZml1bFdRc2FXTll1NEVlRk1Dbks4PQotLS0tLUVORCBDRVJUSUZJQ0FURS0tLS0tCg==","client.root.key":"LS0tLS1CRUdJTiBQUklWQVRFIEtFWS0tLS0tCk1JSUV2d0lCQURBTkJna3Foa2lHOXcwQkFRRUZBQVNDQktrd2dnU2xBZ0VBQW9JQkFRQ3ppYk1TMmJ6c2hpTEoKWmdQdEZUTnpmaXRFUXRiSFJObEZ1c0FVZDVrYVJZZmFnSmt4MmJQZEZBYWw0cG82T1hDOGNTR0RBK01ValM4VApKOVVHNDVwajN3UWNkdXU5VTFxa0NtcXB5cG5sWi9UZDV4SFpXSHJGb0VFR0Z1NWNwc1BSb3V6NXIxOWlMZEg5ClNGZFNDaDNOZU1KYW9ieVBVcVlZV2pVTVBUaFJnWVk5MzRLZFAzUEUwWVFvSlprcGw0M3VYMlkwOHNCZ3JQR2wKbURJc2gxeUtyTUE1S2FhKzVwSDBXTkJmUmlnOVdyaExweElPSDhMUEs2QkdtS2pTb3pJemVXYlZBTWdwMk15QQpqMHhXUzAxUVNFc1BrS2dvZ0tWWGdTS1ZveE85L0RPZ0JJNGpCTHlyVitVakRjamJQM293K2ZYTTN1Q3VSWUQ3CmJqRXB3VnJ6QWdNQkFBRUNnZ0VBU3BRWEltdjNPZ3NvTlIvZTNxTnhhWGJPRXo5dWgzMFdnZ3dtMFBtelRBSDUKQW05cjg1UzZ6Y21OVDJnM1o1dEh0TWVMdzZnZ01uL0pQN3hLbGQrQzJSeWhVUStuTWxDSE5PQXMyWllTNG9RUgo2QUdkM1BxUG1UdE45M0VjRjdtZ1d4dENOQi9BMEFBM20rNXFjMlpIWmZ4VlE1K3V1NXg1NldERGEyK2N6dUg4CkhsaFlZTmdOTTVpVGxOazdKY21wNHM5WmdrTWN1bDc5R0o4RkNPZ3V4cjl2dzFKVzJjSXl3T1FDYXZwMkFRRTQKRnlSUVBCNXFYUW5UbitPK0N4OSt2TUg2UlJkZmNmR1kwV1hxOHRseU53dmMyTmVXUHdrczlmZkFLcmhmY3JQZQpVNjllNS9sSnlEcjg1bS9Yc2JNVkk0NzI0L1k0M3ZNdXBjenBpbCszU1FLQmdRRGgzNUxWcHhDeUhnV3JxVktBClNBMU5VOW42OUZGQkVpVVBCSEVqUkYycWlOdEI0UmxKNHpoRmhtcExaR3BsRG1QdklnNlpYL1ZrenJHYktVSjkKRE5oc0VrS2NqVG9hZTdRLzVpN3QwNHBrdXNhMVc3OWpXQ1hOSXVUK3labU9HdmFQZ3haTmtqOThMTjZqNXFBNgpDZ2kzWW8yWUtxREsxTDR4QU56NzNDY0lXUUtCZ1FETGZBR0dPeUY3bDlHQUZCRWNDbHU3SFU0R0dMRkViUS80CmFYajNtSkJQa3owcVJMRURUVGhPWjBIaWNDZm9tSjNUa3RqRDU4ZTZWaTM4UFgrUkFqOXJBc05VL2ltOW9XdFQKOWRNYXZIZ3BUekNTeTNWMTBkNmM4NnFZdnVQNTlZazNiaEE4Y1llZ29jbFc5ci9aRURPYmlSRFhNZi9ta1F5cwpobDJwNVd3VUt3S0JnUUNsbWRZOHdJVDBJaURFTDVzbUpDMWtnVkt5dEVlU2Jxd3U2M0hMaW9jbHpicjYvUDhlCmRmRyt2NExWRGFVWHZFbzJmQUM2SUdsNDVEWEE3YW9xcHExUjVyMWhyQVZxZjBHekM1OWlqSkxOc1VhWWx0Q20KRkcxNmpkZlltWlAwWlA1YVQ2Q2RkTmtJd0pqbkQrSnZTd1lDOWNXY1I3eWxtUDVzVFJhM3JUd00yUUtCZ1FDUQpBM2pVdHA3UTZUY1Z6WjM2V1g1b3BLbm0rS3psUDhjUXloMGFKempqaU5LK1NwVjVQN3E5Q3FsL2lGOUdhRlV6Ck8zZjgxdHJ0anpiR2tnUHA3a3hTQVVlYnJMS0FDbkY2bjczRDYyV2ozdThDeGNxaEUyTFpkRDdtRWh3cGVWU2YKRFYraVY3dGt2WHhROXh2NmxWUGhIWlgwcCtkMEdHNSs0QzRFSTJKbHR3S0JnUUM2cG9vWFR1b0IzLzhoVG55VgplU0JSTVlPTHFubGJJRWh2RkpObTdyWGxQNnVjbnk2TlJSTkVjSUs5bnEydmI3RE9HYUpmM1g5bmRLeGJCcWdxClJoRW1XekpRYlFGOVJwNFJUeUVCZ2h0Q0luM1JjK0RCYjJuL3AvbFowY3ZaS2toRU1SUnZHTHhOdmRRUllYV3kKZURwNHBtTkRTR0xWZUdLVXVPakRNUStSSXc9PQotLS0tLUVORCBQUklWQVRFIEtFWS0tLS0tCg==","node.crt":"LS0tLS1CRUdJTiBDRVJUSUZJQ0FURS0tLS0tCk1JSUVuakNDQTRhZ0F3SUJBZ0lVV1ZyaFhaYXhaLzJTNUNvUXZwU1BkRGpubUpNd0RRWUpLb1pJaHZjTkFRRUwKQlFBd0dURVhNQlVHQTFVRUF3d09RMjlqYTNKdllXTm9SRUlnUTBFd0hoY05Nall3TmpJeU1qRTFNakkyV2hjTgpNall3TmpJME1qRTFNakkyV2pBUE1RMHdDd1lEVlFRRERBUnViMlJsTUlJQklqQU5CZ2txaGtpRzl3MEJBUUVGCkFBT0NBUThBTUlJQkNnS0NBUUVBcDVTa1ZxamJBSlJTM1dPRDE3NTc0TzlOekl3YktUQy9mNlFkbzZxR2VPTjkKK0NqSmRYRXZxQkdIaEl4VlczOTZwa1RWVGZZWUhjT05mTmxGbVJiWDlrQXZFNEQrb0ozK21NUFU2YnlzVnlJdgp1OFJGZ0c4ZHNFcm01YlZjZWs0V2tiODZjTGNSdHJrSWtoRHdrNVFCd1ArdndRZTZydk1iTGlhdXZQbEliWFcxCjk2My9rd2ZGMDJCS3o3Ymx4ckpiVzhicVM5SlFwSmNRS3E4NkxXbDBJNnJCRkRCT1Z3d0gxWlF1ZCtjRm5sbi8KZW40eUNqVk9BNHo5ckdUMXNIckhEb0JyZ2padlM5azYxNzhnalA1cm9DSVV3NCtwdzM1aC9TOE1PMlVoSEJicgpYd01BenlpMzVnUGt0NFBMOGFQZWNaNkkxV3lWdzZHSHRuZEtpS0xkYVFJREFRQUJvNElCNWpDQ0FlSXdEZ1lEClZSMFBBUUgvQkFRREFnV2dNQjBHQTFVZEpRUVdNQlFHQ0NzR0FRVUZCd01CQmdnckJnRUZCUWNEQWpDQ0FXOEcKQTFVZEVRU0NBV1l3Z2dGaWdnbHNiMk5oYkdodmMzU0hCSDhBQUFHQ0RHTnlaR0l0WTJ4MWMzUmxjb0lZWTNKawpZaTFqYkhWemRHVnlMbU52WTJ0eWIyRmphR1JpZ2h4amNtUmlMV05zZFhOMFpYSXVZMjlqYTNKdllXTm9aR0l1CmMzWmpnaXBqY21SaUxXTnNkWE4wWlhJdVkyOWphM0p2WVdOb1pHSXVjM1pqTG1Oc2RYTjBaWEl1Ykc5allXeUMKTENvdVkzSmtZaTFqYkhWemRHVnlMbU52WTJ0eWIyRmphR1JpTG5OMll5NWpiSFZ6ZEdWeUxteHZZMkZzZ2psagpjbVJpTFdOc2RYTjBaWEl0TUM1amNtUmlMV05zZFhOMFpYSXVZMjlqYTNKdllXTm9aR0l1YzNaakxtTnNkWE4wClpYSXViRzlqWVd5Q09XTnlaR0l0WTJ4MWMzUmxjaTB4TG1OeVpHSXRZMngxYzNSbGNpNWpiMk5yY205aFkyaGsKWWk1emRtTXVZMngxYzNSbGNpNXNiMk5oYklJNVkzSmtZaTFqYkhWemRHVnlMVEl1WTNKa1lpMWpiSFZ6ZEdWeQpMbU52WTJ0eWIyRmphR1JpTG5OMll5NWpiSFZ6ZEdWeUxteHZZMkZzTUIwR0ExVWREZ1FXQkJUOFBENzF1dy9iCjUwVGJKejBNV1pldnN3RFFaekFmQmdOVkhTTUVHREFXZ0JTZUIyeXpIdmcrWnlSNUNld0JIWGdXdFN0R0NUQU4KQmdrcWhraUc5dzBCQVFzRkFBT0NBUUVBaGRXZmo2ZlREQ2h3dlBTS1M3KzZDWXBGTWpJTG8rN0FlRXlFR0ltOQpMU3JhNkpkcDhBM2J3NVFSVmxxL2JidGxBNjVkZzJtV2YwazJIZ29pVDFyZGo4RUNibFI5RnRDejBqaU1SdlRKCjdhNjcxZE9PVDErTmwvbjV2WmVEQnFXb1pndUxrQUdveldDdms4ckZ2bXJheVdOTlJhOW01Q25UdzdoaTVsMGUKdVVZT1Eybk1EMTBFV3diWTJLM2UwVDdBazlSNXBoYzdhQTl6dy95WnRSeDNqcExvQzQ2V3dhQmZQc2I4UW9sQgovSEpYLzBNc05kVFAzMGNLaFNlQ3dqY3o2b3RTV2JkcFpySlVKRTJNZk8rMmtoQ0FuS210T08xejdBWUdGRW5wClE2UHFyQlVjbHZKZGdZTGI5a3hyQ2hFQVA1YWNvaXIxLzRxMDhBMStCRjRkdlE9PQotLS0tLUVORCBDRVJUSUZJQ0FURS0tLS0tCg==","node.key":"LS0tLS1CRUdJTiBQUklWQVRFIEtFWS0tLS0tCk1JSUV2Z0lCQURBTkJna3Foa2lHOXcwQkFRRUZBQVNDQktnd2dnU2tBZ0VBQW9JQkFRQ25sS1JXcU5zQWxGTGQKWTRQWHZudmc3MDNNakJzcE1MOS9wQjJqcW9aNDQzMzRLTWwxY1Mrb0VZZUVqRlZiZjNxbVJOVk45aGdkdzQxOAoyVVdaRnRmMlFDOFRnUDZnbmY2WXc5VHB2S3hYSWkrN3hFV0FieDJ3U3VibHRWeDZUaGFSdnpwd3R4RzJ1UWlTCkVQQ1RsQUhBLzYvQkI3cXU4eHN1SnE2OCtVaHRkYlgzcmYrVEI4WFRZRXJQdHVYR3NsdGJ4dXBMMGxDa2x4QXEKcnpvdGFYUWpxc0VVTUU1WERBZlZsQzUzNXdXZVdmOTZmaklLTlU0RGpQMnNaUFd3ZXNjT2dHdUNObTlMMlRyWAp2eUNNL211Z0loVERqNm5EZm1IOUx3dzdaU0VjRnV0ZkF3RFBLTGZtQStTM2c4dnhvOTV4bm9qVmJKWERvWWUyCmQwcUlvdDFwQWdNQkFBRUNnZ0VBQVRrNkcvSGVxM25wd3ZrTGlPTTRwMU5IOTZMY1BlZy90YkJla1FmWk5IL0EKdHpPaENPejdJcGlDSzBzVkFuYURVRHgzYkRyTVFVZGd2SlVmaDNjZHU0d0xhL0tJcVdhTjZkS2dOdGFzVVhTTAo4YXlFcjJQZ1RSMjI0dDE0bitIN0V6Ull1bUx6eTZnOU1rZlNZZGwyUzlEeUdSQXo0andmS2k2Wkh3TVk3c2VtCnRIdHI4S2dKMitvckRwQ2FYQnl3UUdMeGJjSDBUQTZZUWFkN1N4cFhpSC9yWGZ1M2JWa1VWdE1jVTdqMzIzZW0KNmN1QkpPcUYzYjJBT0VSSDUxYitUZjRwbnBaaDJkZ25EYlhKeXcyK1BJU1NFOFUyZjBVTE00dTQxL1phKzBSZwpwUjBWU0JXU0dpZHpLNzlGRkZKOU16T1A3cmxuYlNOTGI1eFExZUo0d3dLQmdRRGZWYkt5OUdHN2FYN2V1YndTClhqcWlQMmJKV1VJYlpkMEYzMkFtc3dDS3YrQ2VFVTI3UGtyQUljS2RIaWtHcWJDVVZDVnFEaHZsRWQvUkIxUnIKNjQrREQ0TTE2Ukl2RGY4cGd1akhIdDNTSnBMNDkrYzlkaFJlMzAzVFNVd0dJbkc1TEczaFBuOEdoeHRHbEFKTgpTb21Xak1oRm9kTGhLVHlqVDNPWVNCVWFOd0tCZ1FEQUYxajNneHQzVCtzUlJ4MWZ1MTRkcHRaMnRWNG4zU1ZvCmx1Si9nUVpsM1A1ZSsrS2ZYZ2plNUlmc1pBUk9jRDQydjJiOXk1ZUZLSlhzVFE1T2xpay91VEErQmtnaEZ3L2oKN2U3MU00WmM0UytQTEpzc0hIQnluZzMwWGN1UFJmVitjTW5nbk1lTnJEQm03WUNFZlJGdy9NV2JEb0ZJUGZ6TApUczMxQlVWMVh3S0JnUUN5VmRBNExnVE1qbFVNck91TkQwbHF2WTNxUWlnVGtLZUpSUEdXZFdGOWFmS0d4Zko0CkRpbktlaXJaSTNoSEpjRW04SHBmMFp4Y3NvVXllTlBreVZqem9yTjNuUUUwS2MwUzdNSE1IczJxUGJzbXEyNHYKR2RieVd3WGVMYTFUU0xYZTA2ZDZNVmxsY1FWS3VtMk1JblR6anI5dE91Y1ZmTVE2OC9xdUl3RVd5UUtCZ1FDNQpuRlhOSkpSL24ydUdrRzdqdUFyakgva1BUNFVoZytESHhUUXEvQ09RZmhBVSs5TXBKeFh2T21mVWxYaEx5czF5CjNWUEpYTmFXUm5kSGs5V0ZQamV4YVdJaUxMTzV0YTBYRXl2Wkp1Wm9EUGVGb3haMWN5MThzeGpNelcwS2poRC8KRWtFZmxwNkVXS09VY1YzRHA0NFkzVWFiNDFJczJpalEwdDdVS1RuS2hRS0JnQ1RMNkhNY2pGa0ZaaTFZeUZ2YQp5c0M3ZndWT3FCY2Vjcnc2dk1lNklnSnRmc3R3QlEyZ2pycCs0bVNoL0ZzV0hqQ0ZtZURLNGd6TE1CVDJNYTNkClo2eFJVY05LdFV5SjRkVm9CUGZIYVZWc2tTaGY3bng4SnRFVGVMQkhZTHhBSDlQU3FZMHZDMVY0SFVqcmJwRFQKVzYwK0FkcldwLzV4Ym16VGhQcjF2VjVTCi0tLS0tRU5EIFBSSVZBVEUgS0VZLS0tLS0K"}
+ succeeded in 163ms:
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  annotations:
+    kubectl.kubernetes.io/last-applied-configuration: |
+      {"apiVersion":"apps/v1","kind":"StatefulSet","metadata":{"annotations":{},"labels":{"app.kubernetes.io/instance":"crdb-cluster","app.kubernetes.io/name":"cockroachdb"},"name":"crdb-cluster","namespace":"cockroachdb"},"spec":{"podManagementPolicy":"Parallel","replicas":3,"selector":{"matchLabels":{"app.kubernetes.io/instance":"crdb-cluster","app.kubernetes.io/name":"cockroachdb"}},"serviceName":"crdb-cluster","template":{"metadata":{"labels":{"app.kubernetes.io/instance":"crdb-cluster","app.kubernetes.io/name":"cockroachdb"}},"spec":{"containers":[{"command":["/bin/bash","-c","exec /cockroach/cockroach start --logtostderr=INFO --insecure --advertise-host=$(POD_NAME).crdb-cluster.cockroachdb.svc.cluster.local --http-addr=0.0.0.0:8080 --port=26257 --cache=25% --max-sql-memory=25% --join=crdb-cluster-0.crdb-cluster.cockroachdb.svc.cluster.local:26257,crdb-cluster-1.crdb-cluster.cockroachdb.svc.cluster.local:26257,crdb-cluster-2.crdb-cluster.cockroachdb.svc.cluster.local:26257"],"env":[{"name":"POD_NAME","valueFrom":{"fieldRef":{"fieldPath":"metadata.name"}}},{"name":"POD_NAMESPACE","valueFrom":{"fieldRef":{"fieldPath":"metadata.namespace"}}}],"image":"cockroachdb/cockroach:v24.1.0","imagePullPolicy":"IfNotPresent","livenessProbe":{"httpGet":{"path":"/health","port":"http"},"initialDelaySeconds":30,"periodSeconds":5},"name":"db","ports":[{"containerPort":26257,"name":"grpc"},{"containerPort":8080,"name":"http"}],"readinessProbe":{"failureThreshold":2,"httpGet":{"path":"/health?ready=1","port":"http"},"initialDelaySeconds":10,"periodSeconds":5},"resources":{"limits":{"cpu":"1","memory":"2Gi"},"requests":{"cpu":"1","memory":"2Gi"}},"volumeMounts":[{"mountPath":"/cockroach/cockroach-data","name":"datadir"}]}],"serviceAccountName":"crdb-cluster-sa","terminationGracePeriodSeconds":10}},"volumeClaimTemplates":[{"metadata":{"labels":{"app.kubernetes.io/instance":"crdb-cluster","app.kubernetes.io/name":"cockroachdb"},"name":"datadir"},"spec":{"accessModes":["ReadWriteOnce"],"resources":{"requests":{"storage":"10Gi"}},"volumeMode":"Filesystem"}}]}}
+  creationTimestamp: "2026-06-22T21:37:58Z"
+  generation: 6
+  labels:
+    app.kubernetes.io/instance: crdb-cluster
+    app.kubernetes.io/name: cockroachdb
+  name: crdb-cluster
+  namespace: cockroachdb
+  resourceVersion: "152488"
+  uid: 8cf0bc96-9a59-4afa-9e12-91d89df30846
+spec:
+  persistentVolumeClaimRetentionPolicy:
+    whenDeleted: Retain
+    whenScaled: Retain
+  podManagementPolicy: Parallel
+  replicas: 3
+  revisionHistoryLimit: 10
+  selector:
+    matchLabels:
+      app.kubernetes.io/instance: crdb-cluster
+      app.kubernetes.io/name: cockroachdb
+  serviceName: crdb-cluster
+  template:
+    metadata:
+      creationTimestamp: null
+      labels:
+        app.kubernetes.io/instance: crdb-cluster
+        app.kubernetes.io/name: cockroachdb
+    spec:
+      containers:
+      - command:
+        - /bin/bash
+        - -c
+        - exec /cockroach/cockroach start --logtostderr=INFO --certs-dir=/cockroach/cockroach-certs
+          --advertise-host=$(POD_NAME).crdb-cluster.cockroachdb.svc.cluster.local
+          --http-addr=0.0.0.0:8080 --port=26257 --cache=25% --max-sql-memory=25% --join=crdb-cluster-0.crdb-cluster.cockroachdb.svc.cluster.local:26257,crdb-cluster-1.crdb-cluster.cockroachdb.svc.cluster.local:26257,crdb-cluster-2.crdb-cluster.cockroachdb.svc.cluster.local:26257
+        env:
+        - name: POD_NAME
+          valueFrom:
+            fieldRef:
+              apiVersion: v1
+              fieldPath: metadata.name
+        - name: POD_NAMESPACE
+          valueFrom:
+            fieldRef:
+              apiVersion: v1
+              fieldPath: metadata.namespace
+        image: cockroachdb/cockroach:v24.1.0
+        imagePullPolicy: IfNotPresent
+        livenessProbe:
+          failureThreshold: 3
+          httpGet:
+            path: /health
+            port: http
+            scheme: HTTPS
+          initialDelaySeconds: 30
+          periodSeconds: 5
+          successThreshold: 1
+          timeoutSeconds: 1
+        name: db
+        ports:
+        - containerPort: 26257
+          name: grpc
+          protocol: TCP
+        - containerPort: 8080
+          name: http
+          protocol: TCP
+        readinessProbe:
+          failureThreshold: 2
+          httpGet:
+            path: /health?ready=1
+            port: http
+            scheme: HTTPS
+          initialDelaySeconds: 10
+          periodSeconds: 5
+          successThreshold: 1
+          timeoutSeconds: 1
+        resources:
+          limits:
+            cpu: "1"
+            memory: 2Gi
+          requests:
+            cpu: "1"
+            memory: 2Gi
+        terminationMessagePath: /dev/termination-log
+        terminationMessagePolicy: File
+        volumeMounts:
+        - mountPath: /cockroach/cockroach-certs
+          name: certs
+          readOnly: true
+        - mountPath: /cockroach/cockroach-data
+          name: datadir
+      dnsPolicy: ClusterFirst
+      restartPolicy: Always
+      schedulerName: default-scheduler
+      securityContext: {}
+      serviceAccount: crdb-cluster-sa
+      serviceAccountName: crdb-cluster-sa
+      terminationGracePeriodSeconds: 10
+      volumes:
+      - name: certs
+        secret:
+          defaultMode: 256
+          secretName: crdb-certs
+  updateStrategy:
+    rollingUpdate:
+      partition: 0
+    type: RollingUpdate
+  volumeClaimTemplates:
+  - apiVersion: v1
+    kind: PersistentVolumeClaim
+    metadata:
+      creationTimestamp: null
+      labels:
+        app.kubernetes.io/instance: crdb-cluster
+        app.kubernetes.io/name: cockroachdb
+      name: datadir
+    spec:
+      accessModes:
+      - ReadWriteOnce
+      resources:
+        requests:
+          storage: 10Gi
+      volumeMode: Filesystem
+    status:
+      phase: Pending
+status:
+  availableReplicas: 3
+  collisionCount: 0
+  currentReplicas: 3
+  currentRevision: crdb-cluster-5598677b4c
+  observedGeneration: 6
+  readyReplicas: 3
+  replicas: 3
+  updateRevision: crdb-cluster-5598677b4c
+  updatedReplicas: 3
+
+ succeeded in 213ms:
+total 40
+-rw-r--r--    1 root     root          1127 Jun 22 21:52 ca.crt
+-rw-------    1 root     root          1704 Jun 22 21:52 ca.key
+-rw-r--r--    1 root     root            41 Jun 22 21:52 ca.srl
+-rw-r--r--    1 root     root          1090 Jun 22 21:52 client.root.crt
+-rw-r--r--    1 root     root           883 Jun 22 21:52 client.root.csr
+-rw-------    1 root     root          1708 Jun 22 21:52 client.root.key
+-rw-r--r--    1 root     root           692 Jun 22 21:52 node.cnf
+-rw-r--r--    1 root     root          1663 Jun 22 21:52 node.crt
+-rw-r--r--    1 root     root          1484 Jun 22 21:52 node.csr
+-rw-------    1 root     root          1704 Jun 22 21:52 node.key
+
+ succeeded in 214ms:
+total 0
+lrwxrwxrwx 1 root root 13 Jun 22 21:52 ca.crt -> ..data/ca.crt
+lrwxrwxrwx 1 root root 22 Jun 22 21:52 client.root.crt -> ..data/client.root.crt
+lrwxrwxrwx 1 root root 22 Jun 22 21:52 client.root.key -> ..data/client.root.key
+lrwxrwxrwx 1 root root 15 Jun 22 21:52 node.crt -> ..data/node.crt
+lrwxrwxrwx 1 root root 15 Jun 22 21:52 node.key -> ..data/node.key
+
+codex
+One important detail: the running StatefulSet currently mounts `crdb-certs`, while your verification command checks `crdb-cluster-certs`. I’m comparing both secrets before changing anything, because rotating only the checked secret would not affect the live pods.
+exec
+/bin/zsh -lc "kubectl -n cockroachdb get secret crdb-certs -o jsonpath='{.data.node\\.crt}' | base64 -d | openssl x509 -noout -subject -issuer -startdate -enddate -fingerprint -sha256 -ext subjectAltName" in /Users/jinyige/Karma/runs/new-added-workflows/cockroachdb-cert-ingress-monitor-20260622_214646/stages/stage_03
+exec
+/bin/zsh -lc "kubectl -n cockroachdb get secret crdb-cluster-certs -o jsonpath='{.data.node\\.crt}' | base64 -d | openssl x509 -noout -subject -issuer -startdate -enddate -fingerprint -sha256 -ext subjectAltName" in /Users/jinyige/Karma/runs/new-added-workflows/cockroachdb-cert-ingress-monitor-20260622_214646/stages/stage_03
+exec
+/bin/zsh -lc "kubectl -n cockroachdb get secret crdb-certs -o jsonpath='{.data}'" in /Users/jinyige/Karma/runs/new-added-workflows/cockroachdb-cert-ingress-monitor-20260622_214646/stages/stage_03
+exec
+/bin/zsh -lc 'kubectl -n cockroachdb exec openssl-toolbox -- cat /tmp/certs/node.cnf' in /Users/jinyige/Karma/runs/new-added-workflows/cockroachdb-cert-ingress-monitor-20260622_214646/stages/stage_03
+ succeeded in 179ms:
+{"ca.crt":"LS0tLS1CRUdJTiBDRVJUSUZJQ0FURS0tLS0tCk1JSURKakNDQWc2Z0F3SUJBZ0lSQUp6aytFc1RWQ2F2VTE3cjRENkxpUzh3RFFZSktvWklodmNOQVFFTEJRQXcKS3pFU01CQUdBMVVFQ2hNSlEyOWphM0p2WVdOb01SVXdFd1lEVlFRREV3eERiMk5yY205aFkyZ2dRMEV3SGhjTgpNall3TmpJeE1qRTFNRE0zV2hjTk16WXdOakk1TWpFMU1ETTNXakFyTVJJd0VBWURWUVFLRXdsRGIyTnJjbTloClkyZ3hGVEFUQmdOVkJBTVRERU52WTJ0eWIyRmphQ0JEUVRDQ0FTSXdEUVlKS29aSWh2Y05BUUVCQlFBRGdnRVAKQURDQ0FRb0NnZ0VCQU9OcmpOVFdpc0NWT09LSFZQWDg5YjBCbXVtZWZBZ2czVnRGaXRiZlZDdVkvcE8zVmNnTQovVS9uYitGRU1ibVJucEFpYVJCSlkvSnpLK2txLzFxZGVVYkNJWGpJZyt5TlZOaTFsTENpN3R2YkFYUkdnYk9vCjBoaUVZYmNNU09UOXdQTlFad2ZFdFhPUWJobGhyTUhuQjIyUHpRaWd1YWxyMHVzVXVybXU5d1MyWGhMRXpiZ1UKVmVRUk9RR1dWSFVrSitBQkdyamlBMTh2dnU3SEVZOElwYU5SYkVveDk1NlRKbjBuZDJ5SCtGNFg4SEtXbm9qZgpxK2h1ZENheE5IdVhNZGd4RWhhNk0zSFRISXprS052MSs0QUpYSDZPcDcxdERpTkJ4bmRpN2xabHowQWlhcTA0ClpaUUs5eExia0ZHZms0LzdIbGk5eEJhcGdlNU02UzhLRkc4Q0F3RUFBYU5GTUVNd0RnWURWUjBQQVFIL0JBUUQKQWdMa01CSUdBMVVkRXdFQi93UUlNQVlCQWY4Q0FRRXdIUVlEVlIwT0JCWUVGQldqVnljWXQ3SFFBUTBPblpxdgp3bDVhNmxhY01BMEdDU3FHU0liM0RRRUJDd1VBQTRJQkFRQ3FZL1RQWDROb3R2dVpNbTBlK04rVkRlL01QbEdmClh4enp2aHFjMXFGdy85SFU1cG9hWExRbnpwNzJJaEpmK1ovTHgxakpoU3pRMHpSWS9Ta29UdGp0MUNBd0dxTTEKY1hDd01aSWVINmFvaU14blNkZWRIM01SNlg1NE1rMGdZZk1YZmszZ2J2bHdCdGMzSElSSjVkOUdnVWdiZzlmYgo2cWxMejJMRzVzb0Z1dVpDd2thM2NNUlFSd2l5UmQyMEFxL1pEck9ibzZRWFdsTDRUSU5CRWRFL09razdUWFRrCnhHTHdqQVdaYXlXVE5OUjRFOFltb20zY3V3Y3Fxam5pZ2FwY1czVTlnTDFNb1NlSlpMUUdRRS9mOHJzUExPMFIKbFlnL1Z3N2p5ajJsMlFpTE42UTBLYVR4WCtnOVN1N2RWTXVCZEZ2WWltQ2NWQStyOHp1SFdoSHYKLS0tLS1FTkQgQ0VSVElGSUNBVEUtLS0tLQo=","client.root.crt":"LS0tLS1CRUdJTiBDRVJUSUZJQ0FURS0tLS0tCk1JSURJRENDQWdpZ0F3SUJBZ0lRVE12Q0szd0tKbXB6OXpiMWZYdStyREFOQmdrcWhraUc5dzBCQVFzRkFEQXIKTVJJd0VBWURWUVFLRXdsRGIyTnJjbTloWTJneEZUQVRCZ05WQkFNVERFTnZZMnR5YjJGamFDQkRRVEFlRncweQpOakEyTWpFeU1UVXdNemhhRncwek1UQTJNall5TVRVd016aGFNQ014RWpBUUJnTlZCQW9UQ1VOdlkydHliMkZqCmFERU5NQXNHQTFVRUF4TUVjbTl2ZERDQ0FTSXdEUVlKS29aSWh2Y05BUUVCQlFBRGdnRVBBRENDQVFvQ2dnRUIKQU1QY1dIZFZmeG1LQy9qb2p0U2JZZXh2blpkcXhtdjZRbW90bkU1L0Vuc0RkRWwrT1htUG5zNEp1WkF1ZEVWKwoyYjNZZVhVMkxJMFBoOGFQbzhGdnQ0MmVCU0JkWVlLc01xVElaelRHcU5YSkIwWkRUdEZ2MjRPT0k0WldwMk5XCmdXQ25xd0hsU0RmK2dQZnFSRjF2WUV1aHMvU3BrWUtVUVlpUCtXKzc1cys1dHlsSnlkVEl6WVpvcVkySUZ1d0QKN3J4L3QzblMzTzNjaUVTZ1NreDFWbm9OakZRQTAxbVF3aUwrSnFxYklkYytLNzdDYWxtM3lNbDd5bGxIRnQrTApXaDZGYlBoc0lGL1BaSjU0bEN2WEVoOEtubjR2WFZXYWlQSWt3V0JzTUlnWE9Ea0tDejdZb3FjOUR1RnJmYmhNCjIvcmUwaGxScHRwOG84cHh2bUoxU1E4Q0F3RUFBYU5JTUVZd0RnWURWUjBQQVFIL0JBUURBZ1dnTUJNR0ExVWQKSlFRTU1Bb0dDQ3NHQVFVRkJ3TUNNQjhHQTFVZEl3UVlNQmFBRkJXalZ5Y1l0N0hRQVEwT25acXZ3bDVhNmxhYwpNQTBHQ1NxR1NJYjNEUUVCQ3dVQUE0SUJBUUJFU2Qxbml4MTBNWTlhYzVUQkg3OVV2QWE1R21kbUdsTGh0VksvCjhwN29iSS9TbEY5dXJjY3FZRjF5VVFwOGlrbXM0YnBaeThDOHBxOE4wR0s2a2lMd2dJRUdUZ0w3T1YwUzgrOXIKZWEybkVJQWNwTjVvYTN5bW9Ka0poVnZUVzFIb0ZoRGZNc0xpajMzaW1haEk4cHllWGlsU0JJOUhIRXZsTnBHaApBd1BEUElOSTd6Q2xPa2pyTnBiNEJIWHgrMjZkVDRwdlZIcFY5RStwQ1FYM1JOU0xieWphWk5MaVlwa3pFYld5CldLZC9aSFc2WWFtVWFQYm83d3JrUkRBRGJDQVF4SkdMNW1YRlJMaU1oZHFWOCt3MXJXSExFZ2JsdkZpRVh0cG8KYStyQ29oL084Q2VUV1I1cjNUZU1nYVZNVzRSanNyNW9IM0dPaHpaeUErMVRmamhPCi0tLS0tRU5EIENFUlRJRklDQVRFLS0tLS0K","client.root.key":"LS0tLS1CRUdJTiBSU0EgUFJJVkFURSBLRVktLS0tLQpNSUlFcEFJQkFBS0NBUUVBdzl4WWQxVi9HWW9MK09pTzFKdGg3RytkbDJyR2EvcENhaTJjVG44U2V3TjBTWDQ1CmVZK2V6Z201a0M1MFJYN1p2ZGg1ZFRZc2pRK0h4bytqd1crM2paNEZJRjFoZ3F3eXBNaG5OTWFvMWNrSFJrTk8KMFcvYmc0NGpobGFuWTFhQllLZXJBZVZJTi82QTkrcEVYVzlnUzZHejlLbVJncFJCaUkvNWI3dm16N20zS1VuSgoxTWpOaG1pcGpZZ1c3QVB1dkgrM2VkTGM3ZHlJUktCS1RIVldlZzJNVkFEVFdaRENJdjRtcXBzaDF6NHJ2c0pxCldiZkl5WHZLV1VjVzM0dGFIb1ZzK0d3Z1g4OWtubmlVSzljU0h3cWVmaTlkVlpxSThpVEJZR3d3aUJjNE9Rb0wKUHRpaXB6ME80V3Q5dUV6Yit0N1NHVkdtMm55anluRytZblZKRHdJREFRQUJBb0lCQUN1NXVvcFJyUUZmbjFLZgpZSnU0WU1FdkhlaWE3dGRXVkpOdHdWS0k3ZkJHa2lTQ0tJU3ArcE1XK3JWa21aS1dRamd1NXRhekZIa2RlWHRyCnYreEVhNThUSXlQWmxSWmVLU1ErbFVQa0FmZFFYTzVqd21uaFpnbFZwenFyaDgwV2wrV2pLUHRRVzdJY2dHQlkKalpDcWQ3NEt5S2tiWGgvZngwMmNqdHhSLzdKcDZLNEg3TlV6bU4yMzNRMm4zMi9HTmRXdERwOHlTcUU2YjRoWApXWVZBYzJWVC9LQ2dyQ0luZXVsMUJ2a0hocFJyRzQ5Q0c2aUtjekI1K1p0YytaeFdBc2lqQnZxZlhLL0YwKytYCnY0WGVQQmU4WGVKSUlKQ0s0bGZjOVhvSG16VkxIaUNFU3FqK2cvdzREQWt5NmdrWVdRQ3BOT0F0UGdHTk5ONk0Kc2RVNjBCRUNnWUVBMzhhWm1TakRlUDJKc0dnbzA1M2hmYnFVVk9WekNCbDdwbGlrYmhaMEtBWThHTmUvVVJpVQpGQ1ExS0hFNWEwVFp3NUFYRnVFcmFXbXo4YzV4QklIeFlieTExaTU4dGFEdkgxb2RKLy9uOTBQaVVRL2pnZHNlCjRhbXJSWXg3TTZXckxFUW1rT3VWZHUrZkpvclVHM2FjbVhkSFozdndjYlBxcFhaMlZLRGZjdmNDZ1lFQTRCQ3IKTkxHdXJ2UkJZWUhQZ1ZJek5lTUZnTVp2WHpBQ2RISkdyaUZ0dEdFSmZyNGxDNUwzdWhIQXg0YjQrMzV1K2NCeApmK2J6L3IwdFlVc3dhT0loalpwOHZ6c1F3dExaUnQ2UWhqSk9vOFY0Y2lEZkdSdm5Remk5UjJ5ZW0zclozbDJWCmVRSUpyUGtTcVVZLysxSXVlMjZTNUpBVWNkV09GWkdHNlNkanZLa0NnWUJtU3B5UC9LaE9PR2VtY2hhbmxYWXMKU1F2aE92bTRiQjJ2enJscmNXd3JsNTRGSlNwWlljamU1Q1pBbEhGUTdhbzEwVG9jeFZWWTNHN2JUQ2t4akV6UgpCcmlBYmNPb0t5Ymp5QWVuN3owVU5MM1JuRmU5Vm5McGFPdlg0UDI0Z0RTZENaSXZrT0ZEK3dsZlR2cmlpdmZPCjEwMldxbnNoSHNOV1c2NS94UUlmeFFLQmdRRGJ4eDNYbXUxb0NJZlU5N29zOUE3dExWZ3BmdnFoR0h0Zjh2Tm4KTzd6YXNFL2E5UEZyVCtZVHFmUTVBaWhZcnlSMWI1RWt6c25IdFpHOG5EN0lzZjROWWxvNFROeGM3T3BZZkZpdwplTW53RS9MWHAyeU51WFAyMk1HNFBFKzYzQjYxNFgrSzZUZktaYWtyUm8vZG1UZWt0TW42eldSd1gvTjFMb0J4ClU4U2R1UUtCZ1FETUxhREUwTkRWeFhlT083SGk2RkZzd2NETHBNbUp0UFFJQlQ2ZzRqVXZYMTJQQnEzSHB2bkYKcENoMnAya2RXWkRJYit0V3djZnhJQm92Vk9QaEtuRkhrcGJ4RndpVFVrUjdmSFkwWE0zYjBwa0czSTJQb1pxbwphM1luZ1ExcEw0ZnhNODJ6VXM1RVErTzM5ejR6cHVJWlJ2bEJZajl6K2Jsbzg4eXlrNUlUNHc9PQotLS0tLUVORCBSU0EgUFJJVkFURSBLRVktLS0tLQo=","node.crt":"LS0tLS1CRUdJTiBDRVJUSUZJQ0FURS0tLS0tCk1JSUdpekNDQlhPZ0F3SUJBZ0lSQU5hWUpINHRRemZldHM5RWYvRkpwYll3RFFZSktvWklodmNOQVFFTEJRQXcKS3pFU01CQUdBMVVFQ2hNSlEyOWphM0p2WVdOb01SVXdFd1lEVlFRREV3eERiMk5yY205aFkyZ2dRMEV3SGhjTgpNall3TmpJeE1qRTFNRE00V2hjTk16RXdOakkyTWpFMU1ETTRXakFqTVJJd0VBWURWUVFLRXdsRGIyTnJjbTloClkyZ3hEVEFMQmdOVkJBTVRCRzV2WkdVd2dnRWlNQTBHQ1NxR1NJYjNEUUVCQVFVQUE0SUJEd0F3Z2dFS0FvSUIKQVFEYmRQLzJRMW9QNUZSMXVwS2RURFBOMGZOOTNmaHBPNWpGb1VPNm5aaXZhSldmOTJOZFpjcjh6QmYxSW91RQpDVHkwSThDbG15TGFGaVhTSkswdEdyWmplbko3QUhvWkxSWDZ1S25wZC9xYldZVmliOU8zQll5RnUxYzhLdWZwCmZYaG5FUnR6RUgwVVJzSUg5bUpmSHlxTmlwa2d5ZFV2cTRNNnlOTGswUEgzYWZaMzBsT1hyczgrOUkwbUV3ZXMKK3J1ZlEzOWdKb0I1WFBsa0NzakNWYk5ySm82MDJZTXQvdG9vTGEra1ExaERWVU41TDdiVlVCVUl4MTNjU3prNwplVDJLekxldUdSb2hSVkUvTTVCbndFMmMyT2RIN2dOOU8zd0V0NWNjOW10cUhpMTQ1STJlQ28zUjNIb3MwTGl4CmxXMWZ4YlV1ZGZrSkhBMmgyZEZOc2pXQkFnTUJBQUdqZ2dPd01JSURyREFPQmdOVkhROEJBZjhFQkFNQ0JhQXcKSFFZRFZSMGxCQll3RkFZSUt3WUJCUVVIQXdFR0NDc0dBUVVGQndNQ01COEdBMVVkSXdRWU1CYUFGQldqVnljWQp0N0hRQVEwT25acXZ3bDVhNmxhY01JSURXQVlEVlIwUkJJSURUekNDQTB1Q0NXeHZZMkZzYUc5emRJSU1ZM0prCllpMWpiSFZ6ZEdWeWdoaGpjbVJpTFdOc2RYTjBaWEl1WTI5amEzSnZZV05vWkdLQ0hHTnlaR0l0WTJ4MWMzUmwKY2k1amIyTnJjbTloWTJoa1lpNXpkbU9DS21OeVpHSXRZMngxYzNSbGNpNWpiMk5yY205aFkyaGtZaTV6ZG1NdQpZMngxYzNSbGNpNXNiMk5oYklJVFkzSmtZaTFqYkhWemRHVnlMWEIxWW14cFk0SWZZM0prWWkxamJIVnpkR1Z5CkxYQjFZbXhwWXk1amIyTnJjbTloWTJoa1lvSWpZM0prWWkxamJIVnpkR1Z5TFhCMVlteHBZeTVqYjJOcmNtOWgKWTJoa1lpNXpkbU9DTVdOeVpHSXRZMngxYzNSbGNpMXdkV0pzYVdNdVkyOWphM0p2WVdOb1pHSXVjM1pqTG1OcwpkWE4wWlhJdWJHOWpZV3lDRG1OeVpHSXRZMngxYzNSbGNpMHdnaHRqY21SaUxXTnNkWE4wWlhJdE1DNWpjbVJpCkxXTnNkWE4wWlhLQ0oyTnlaR0l0WTJ4MWMzUmxjaTB3TG1OeVpHSXRZMngxYzNSbGNpNWpiMk5yY205aFkyaGsKWW9JclkzSmtZaTFqYkhWemRHVnlMVEF1WTNKa1lpMWpiSFZ6ZEdWeUxtTnZZMnR5YjJGamFHUmlMbk4yWTRJNQpZM0prWWkxamJIVnpkR1Z5TFRBdVkzSmtZaTFqYkhWemRHVnlMbU52WTJ0eWIyRmphR1JpTG5OMll5NWpiSFZ6CmRHVnlMbXh2WTJGc2dnNWpjbVJpTFdOc2RYTjBaWEl0TVlJYlkzSmtZaTFqYkhWemRHVnlMVEV1WTNKa1lpMWoKYkhWemRHVnlnaWRqY21SaUxXTnNkWE4wWlhJdE1TNWpjbVJpTFdOc2RYTjBaWEl1WTI5amEzSnZZV05vWkdLQwpLMk55WkdJdFkyeDFjM1JsY2kweExtTnlaR0l0WTJ4MWMzUmxjaTVqYjJOcmNtOWhZMmhrWWk1emRtT0NPV055ClpHSXRZMngxYzNSbGNpMHhMbU55WkdJdFkyeDFjM1JsY2k1amIyTnJjbTloWTJoa1lpNXpkbU11WTJ4MWMzUmwKY2k1c2IyTmhiSUlPWTNKa1lpMWpiSFZ6ZEdWeUxUS0NHMk55WkdJdFkyeDFjM1JsY2kweUxtTnlaR0l0WTJ4MQpjM1JsY29JblkzSmtZaTFqYkhWemRHVnlMVEl1WTNKa1lpMWpiSFZ6ZEdWeUxtTnZZMnR5YjJGamFHUmlnaXRqCmNtUmlMV05zZFhOMFpYSXRNaTVqY21SaUxXTnNkWE4wWlhJdVkyOWphM0p2WVdOb1pHSXVjM1pqZ2psamNtUmkKTFdOc2RYTjBaWEl0TWk1amNtUmlMV05zZFhOMFpYSXVZMjlqYTNKdllXTm9aR0l1YzNaakxtTnNkWE4wWlhJdQpiRzlqWVd5SEJIOEFBQUV3RFFZSktvWklodmNOQVFFTEJRQURnZ0VCQUVEeFMvUFdVbjhGTlM4V2thc3Z4eGVNCjZiM2NwbnRVT1FabzBpdVV5WDBzRWdGbFJ0cE5Nei84WTVNaHdmeXloNW51U2tqZitRMkJROGp0MzQ4NmxaQjIKZWllOTd0RjNFckdTQ3Urbi96anFiQU5BemxQTG5ScFF6UlZHRW5FbDI5UFlIM2xjMTE4NTlkR0hnOEhRWlBUKwprcGpuOHp2U2YwMGtOS0ZiSXVtM0hoNWVVa05MUWtES3dtamtiWjNmdWQ3TmZzd2g0ZmZUTUQ5UnJkYzlBR3orClZEZDhCeWM5OG9RTjFWQ1d3MzAzb2o1ZlBZbmZ2UUlQL0xBZ0xFc2lvcVQxUHc4V1hJTkZmN0IxNUQ2QU5ZWUUKbDFqQTdQQmJQWEtDamtZQlVqQ01zVXEwTElwRThWUkhkUzNOSWxCNHVpd1YvUUxFSmVWNFF1MGFkcTAwaE9FPQotLS0tLUVORCBDRVJUSUZJQ0FURS0tLS0tCg==","node.key":"LS0tLS1CRUdJTiBSU0EgUFJJVkFURSBLRVktLS0tLQpNSUlFcFFJQkFBS0NBUUVBMjNULzlrTmFEK1JVZGJxU25Vd3p6ZEh6ZmQzNGFUdVl4YUZEdXAyWXIyaVZuL2RqClhXWEsvTXdYOVNLTGhBazh0Q1BBcFpzaTJoWWwwaVN0TFJxMlkzcHlld0I2R1MwVityaXA2WGY2bTFtRlltL1QKdHdXTWhidFhQQ3JuNlgxNFp4RWJjeEI5RkViQ0IvWmlYeDhxallxWklNblZMNnVET3NqUzVORHg5Mm4yZDlKVApsNjdQUHZTTkpoTUhyUHE3bjBOL1lDYUFlVno1WkFySXdsV3pheWFPdE5tRExmN2FLQzJ2cEVOWVExVkRlUysyCjFWQVZDTWRkM0VzNU8zazlpc3kzcmhrYUlVVlJQek9RWjhCTm5Oam5SKzREZlR0OEJMZVhIUFpyYWg0dGVPU04KbmdxTjBkeDZMTkM0c1pWdFg4VzFMblg1Q1J3Tm9kblJUYkkxZ1FJREFRQUJBb0lCQVFDc2Z3MkdTekJxVjJYUAoxK1BRUWdwaUdFblV3SG0yZFlMQ3JOeG92ZUU2MXZEcytPNGdocGVFRndRcHlZcHlNVFNHdjZkNFJEV2p5RTdZCkc3NEhPdnpydWw1cnNsZEduTHF2QlNHQkFxNTRGMmlSbENhTXNJN2d1djE1ckp2M1dva2VNa01xTVdhdlhtSzcKRVg0SEdKOUEvQlVhd2FxUk9yWCtxY1dpMTEycHd5cTFaOWNSR0d0TjFyUlRJYkk5WHNOMTUzb212T01PMXdpTApzOTJ6dEVseDFIYy9IUi9DSW02bkNYVkh0RWhscXovNzJJMzlDQ1NMUUNtVXQyRlVGdCtiL285Mmc3NFRDckVPCktmNENlRzRDdThVUnhrZ3pTVkNZclhpOFl0MHVwSXEva2xJVDdqS1RKcXF3TXltZitObGtFbnJ4K3o1UU1BTVgKd1pvSnRCbXhBb0dCQU8rZTY5dUJLSHpGK00wd05DWW1UYm43WWpkdGpWSzNURzlRK0NJNkxqMUl2YVRpZkdteQpONWl2YUJ2RDRpRHFkKzhDQ1ROeVYxaStYV2xPUTAwZjRyNXh6bkpWRG1zVUY5enBCb2ZySEtPNmd1eWpYSlFsCllQNzNzelZtZzljNnl5dEQxY3NhcW5TNVgwMU0yaGJGT2tWdElLNGNFNnB4cWFYT1czN0daSy9GQW9HQkFPcDEKUEo2OHJuYjZadlZvMVMyczIzeno5ZlJTb3RTc2pQakRueHJYekIwNDdYZTNaWXhzcjBYL0syeG02TllyNHVTRwpOelQrTCtVNmU1VlhyR2JNNUpoMVVDSVdodjd5K1ZLWlBaMnNLK25NTHJDenY2Q3ZCeWsxWERLaGw1SGk2YXBvCmpyYmZnc0R1MFVnc2M1bDBVVW9mMGJISkw0QkpIOE91UndsUWlDNk5Bb0dCQUxPMmZTNGpzRG5rUUxXamNYa3IKUVNBN2FXNG91OVZOcEFYWXRFRDNZYmFVMTZiU05uMFBMS05XNnIzb0s3Q0VLVzhZRjg1OTh3U2J3WE01UDBDWQpxWFlyNUtuYklQVXVITGVTRFZQakFaZktTbWN3SGo3OXljRndCUGdINnRtQlB0ODBBU1JTMjRTdmdzcDIyUm82CjBYbEFYMEkxeklvSXRUT2xrUG1EMGdBQkFvR0FDMElqN2c5clpVVXk2bmZsUExNL091blFGckpkSlU4LzJiWXoKRHF2c0hqOGNrQkliYXpuUTFOQ2kraXFhNWFYbjJFZGxvVUxQYy9keDljTG5BV3kzVVdiWXVUcFJzeTVoc0lpeApQOEFEdjg5Uk1xVCsvNjFINzcrak5MOHpzd3F0WThSdmpmSi9xZG9ON0tSTnpNR2NJYTRUZUxFTGVlS0pCdkY0CmNjY1BNd1VDZ1lFQTF3RWUzWllhOUx6K3VGaVMwQVo3aW5PeTg0MkNBcHZFdk5INkRGNEcyUTZ2WHVCbFNqRUoKYU03eDZmTWo3cGd1YnpHUllpaFh2bHM0NWEzR0tpOEkvVW5MbGlNNEd6dmkwOXdYR25sZVJrNXJYdmlPM2h4RQpiY01oYzNkVjdWRHFOdDFBZHU5cGFGSitVaXBUY3dyTUVOWmdad3RXdUJpbFNvNXJraVpXYkxJPQotLS0tLUVORCBSU0EgUFJJVkFURSBLRVktLS0tLQo="}
+ succeeded in 201ms:
+subject=O=Cockroach, CN=node
+issuer=O=Cockroach, CN=Cockroach CA
+notBefore=Jun 21 21:50:38 2026 GMT
+
+exec
+/bin/zsh -lc 'kubectl -n cockroachdb get secret crdb-cluster-certs -o yaml' in /Users/jinyige/Karma/runs/new-added-workflows/cockroachdb-cert-ingress-monitor-20260622_214646/stages/stage_03
+ succeeded in 250ms:
+apiVersion: v1
+data:
+  ca.crt: LS0tLS1CRUdJTiBDRVJUSUZJQ0FURS0tLS0tCk1JSURFekNDQWZ1Z0F3SUJBZ0lVTC9oTUlqT01NeXd3dkEyckpxcWtQWHF6a2FBd0RRWUpLb1pJaHZjTkFRRUwKQlFBd0dURVhNQlVHQTFVRUF3d09RMjlqYTNKdllXTm9SRUlnUTBFd0hoY05Nall3TmpJeU1qRTFNakkyV2hjTgpNell3TmpFNU1qRTFNakkyV2pBWk1SY3dGUVlEVlFRRERBNURiMk5yY205aFkyaEVRaUJEUVRDQ0FTSXdEUVlKCktvWklodmNOQVFFQkJRQURnZ0VQQURDQ0FRb0NnZ0VCQUlzQWZRS3A3VzM2bFZDUXlhTUNLajl5b1FOVCt5TisKT0RhaHlPMDJISG8vMCtpb2ZYUDRFbVplNnVTaXFlSzgrdzZoTUNva0toVDJCMm55N3pXN0FwdFQ2U2tTNDFGNAo0eDJlTktHOEJKbzA5aWRjK2t1V2hqVS84bkRHaUVVYnpmeUlCRW5XWE1TT0NjYmtVR1h3QjFzRjgwVEVZeTBZCkh5SVUzdG52N0ZFYjF1NElxVWVDTTVwY09HWE9ncDB6ZTFGTEhLS0x6WVdHR2twaTFWNW5tcE0zejhkaUtoQ3gKSGZiSkwwTEIvY0EzODQwVlQ0ZUtWSFo3alFxVFFCeEVZcHQxYWxDdzBxZGsybmZRYVVLa1hkQWRGLzJtaGFJRQpSbXNtQVBCVkVKQTRKSlB2bXBxaE52cFI5ZS9MNWoxZ1RCRGpxbC9XNklLK2ljSDFJSFdhV1BrQ0F3RUFBYU5UCk1GRXdIUVlEVlIwT0JCWUVGSjRIYkxNZStENW5KSGtKN0FFZGVCYTFLMFlKTUI4R0ExVWRJd1FZTUJhQUZKNEgKYkxNZStENW5KSGtKN0FFZGVCYTFLMFlKTUE4R0ExVWRFd0VCL3dRRk1BTUJBZjh3RFFZSktvWklodmNOQVFFTApCUUFEZ2dFQkFJRVNTZnh2eTVRY0NYUkl3Zk84TnFNTVdBS2pRcnVUeU9xZjVmWVk5dE9KVm9XRno2QmRlTGVaCnBqb0d0MGpRZ01KZjJQbmRnendUTnZaZ1NjMzRsV3Y2UFhuSEpJQmRBZWNYTzFFL1N4Ly9sdnZPRE1KL0dRcWkKU0JidlpiaVZJbHhONTg3ZWVDdFBmTjlGV0pTbmhRekExSnlNNWwxaUY0aTZ2NzErdTNscmhKS1Fwb2MzanZEMApsMk9Jc0J4NzNvRlBReTYyUHZZYU1oOGtrZm9mWFdBT2NneGxRV1BMVVR0cEdtS013eW5VcXkyVU5CdFJ3blc3CngzbnhmR0JQditTQzRFODNiNXhLb2ROaTdUeFdwaGU2L2dWWlUydmEweXd6OWhSUE5mc05QcmZWZzFUMjhVazIKUmNpZGxiZEI4WmRHYmd2ZjFsc1NxQWo1dk85M1RVbz0KLS0tLS1FTkQgQ0VSVElGSUNBVEUtLS0tLQo=
+  client.root.crt: LS0tLS1CRUdJTiBDRVJUSUZJQ0FURS0tLS0tCk1JSUMrRENDQWVDZ0F3SUJBZ0lVV1ZyaFhaYXhaLzJTNUNvUXZwU1BkRGpubUpRd0RRWUpLb1pJaHZjTkFRRUwKQlFBd0dURVhNQlVHQTFVRUF3d09RMjlqYTNKdllXTm9SRUlnUTBFd0hoY05Nall3TmpJeU1qRTFNakkzV2hjTgpNall3TmpJME1qRTFNakkzV2pBUE1RMHdDd1lEVlFRRERBUnliMjkwTUlJQklqQU5CZ2txaGtpRzl3MEJBUUVGCkFBT0NBUThBTUlJQkNnS0NBUUVBczRtekV0bTg3SVlpeVdZRDdSVXpjMzRyUkVMV3gwVFpSYnJBRkhlWkdrV0gKMm9DWk1kbXozUlFHcGVLYU9qbHd2SEVoZ3dQakZJMHZFeWZWQnVPYVk5OEVISGJydlZOYXBBcHFxY3FaNVdmMAozZWNSMlZoNnhhQkJCaGJ1WEtiRDBhTHMrYTlmWWkzUi9VaFhVZ29kelhqQ1dxRzhqMUttR0ZvMUREMDRVWUdHClBkK0NuVDl6eE5HRUtDV1pLWmVON2w5bU5QTEFZS3p4cFpneUxJZGNpcXpBT1NtbXZ1YVI5RmpRWDBZb1BWcTQKUzZjU0RoL0N6eXVnUnBpbzBxTXlNM2xtMVFESUtkak1nSTlNVmt0TlVFaExENUNvS0lDbFY0RWlsYU1UdmZ3egpvQVNPSXdTOHExZmxJdzNJMno5Nk1QbjF6TjdncmtXQSsyNHhLY0ZhOHdJREFRQUJvMEl3UURBZEJnTlZIUTRFCkZnUVV3V2hVV3ZRU0lDdnZWZ2lmWk8zWDc2blo1Mll3SHdZRFZSMGpCQmd3Rm9BVW5nZHNzeDc0UG1ja2VRbnMKQVIxNEZyVXJSZ2t3RFFZSktvWklodmNOQVFFTEJRQURnZ0VCQUQ2blB5aXpwMFVoRW5lS1VYcnZrVk1MTVp1SwpwdTUrajk2b2prRGJkb0FwS2Z4Z01YZmJlZ3VhT01ITjVUZVVibENuaCsycy9Cb1RZd2dyU2pvY05FNkNlY3RSCjlCOGpOcVJlV2M3MzBHQ2NoKzN1eEx0eDZuY2gvTzg3RDRMeVh3K1dQZWRCazUzRFlJK3JBdTlYRTVxWkY1emsKak9UUlVKbitZKzNWZFFNQXdxWnpsY3FjT0IrZ3U4RGJuNTJxcWF0NTdvN0haUFJDS3QwRWkzV2Y2bDI1WFRUTAp6TDdpcC9PaEtPbTdoWHZQWjNqMjYyemY2WDQrWHZ0YjJTOHIrbWJ5VFJ2NzFWa2lDbWlxWHV3TjZvRXRKZWpTCmV0Z29WSFJvem5zd1piNUpIbXQ4eTBOYjNFTVlFK0lPTUlYcm4wZml1bFdRc2FXTll1NEVlRk1Dbks4PQotLS0tLUVORCBDRVJUSUZJQ0FURS0tLS0tCg==
+  client.root.key: LS0tLS1CRUdJTiBQUklWQVRFIEtFWS0tLS0tCk1JSUV2d0lCQURBTkJna3Foa2lHOXcwQkFRRUZBQVNDQktrd2dnU2xBZ0VBQW9JQkFRQ3ppYk1TMmJ6c2hpTEoKWmdQdEZUTnpmaXRFUXRiSFJObEZ1c0FVZDVrYVJZZmFnSmt4MmJQZEZBYWw0cG82T1hDOGNTR0RBK01ValM4VApKOVVHNDVwajN3UWNkdXU5VTFxa0NtcXB5cG5sWi9UZDV4SFpXSHJGb0VFR0Z1NWNwc1BSb3V6NXIxOWlMZEg5ClNGZFNDaDNOZU1KYW9ieVBVcVlZV2pVTVBUaFJnWVk5MzRLZFAzUEUwWVFvSlprcGw0M3VYMlkwOHNCZ3JQR2wKbURJc2gxeUtyTUE1S2FhKzVwSDBXTkJmUmlnOVdyaExweElPSDhMUEs2QkdtS2pTb3pJemVXYlZBTWdwMk15QQpqMHhXUzAxUVNFc1BrS2dvZ0tWWGdTS1ZveE85L0RPZ0JJNGpCTHlyVitVakRjamJQM293K2ZYTTN1Q3VSWUQ3CmJqRXB3VnJ6QWdNQkFBRUNnZ0VBU3BRWEltdjNPZ3NvTlIvZTNxTnhhWGJPRXo5dWgzMFdnZ3dtMFBtelRBSDUKQW05cjg1UzZ6Y21OVDJnM1o1dEh0TWVMdzZnZ01uL0pQN3hLbGQrQzJSeWhVUStuTWxDSE5PQXMyWllTNG9RUgo2QUdkM1BxUG1UdE45M0VjRjdtZ1d4dENOQi9BMEFBM20rNXFjMlpIWmZ4VlE1K3V1NXg1NldERGEyK2N6dUg4CkhsaFlZTmdOTTVpVGxOazdKY21wNHM5WmdrTWN1bDc5R0o4RkNPZ3V4cjl2dzFKVzJjSXl3T1FDYXZwMkFRRTQKRnlSUVBCNXFYUW5UbitPK0N4OSt2TUg2UlJkZmNmR1kwV1hxOHRseU53dmMyTmVXUHdrczlmZkFLcmhmY3JQZQpVNjllNS9sSnlEcjg1bS9Yc2JNVkk0NzI0L1k0M3ZNdXBjenBpbCszU1FLQmdRRGgzNUxWcHhDeUhnV3JxVktBClNBMU5VOW42OUZGQkVpVVBCSEVqUkYycWlOdEI0UmxKNHpoRmhtcExaR3BsRG1QdklnNlpYL1ZrenJHYktVSjkKRE5oc0VrS2NqVG9hZTdRLzVpN3QwNHBrdXNhMVc3OWpXQ1hOSXVUK3labU9HdmFQZ3haTmtqOThMTjZqNXFBNgpDZ2kzWW8yWUtxREsxTDR4QU56NzNDY0lXUUtCZ1FETGZBR0dPeUY3bDlHQUZCRWNDbHU3SFU0R0dMRkViUS80CmFYajNtSkJQa3owcVJMRURUVGhPWjBIaWNDZm9tSjNUa3RqRDU4ZTZWaTM4UFgrUkFqOXJBc05VL2ltOW9XdFQKOWRNYXZIZ3BUekNTeTNWMTBkNmM4NnFZdnVQNTlZazNiaEE4Y1llZ29jbFc5ci9aRURPYmlSRFhNZi9ta1F5cwpobDJwNVd3VUt3S0JnUUNsbWRZOHdJVDBJaURFTDVzbUpDMWtnVkt5dEVlU2Jxd3U2M0hMaW9jbHpicjYvUDhlCmRmRyt2NExWRGFVWHZFbzJmQUM2SUdsNDVEWEE3YW9xcHExUjVyMWhyQVZxZjBHekM1OWlqSkxOc1VhWWx0Q20KRkcxNmpkZlltWlAwWlA1YVQ2Q2RkTmtJd0pqbkQrSnZTd1lDOWNXY1I3eWxtUDVzVFJhM3JUd00yUUtCZ1FDUQpBM2pVdHA3UTZUY1Z6WjM2V1g1b3BLbm0rS3psUDhjUXloMGFKempqaU5LK1NwVjVQN3E5Q3FsL2lGOUdhRlV6Ck8zZjgxdHJ0anpiR2tnUHA3a3hTQVVlYnJMS0FDbkY2bjczRDYyV2ozdThDeGNxaEUyTFpkRDdtRWh3cGVWU2YKRFYraVY3dGt2WHhROXh2NmxWUGhIWlgwcCtkMEdHNSs0QzRFSTJKbHR3S0JnUUM2cG9vWFR1b0IzLzhoVG55VgplU0JSTVlPTHFubGJJRWh2RkpObTdyWGxQNnVjbnk2TlJSTkVjSUs5bnEydmI3RE9HYUpmM1g5bmRLeGJCcWdxClJoRW1XekpRYlFGOVJwNFJUeUVCZ2h0Q0luM1JjK0RCYjJuL3AvbFowY3ZaS2toRU1SUnZHTHhOdmRRUllYV3kKZURwNHBtTkRTR0xWZUdLVXVPakRNUStSSXc9PQotLS0tLUVORCBQUklWQVRFIEtFWS0tLS0tCg==
+  node.crt: LS0tLS1CRUdJTiBDRVJUSUZJQ0FURS0tLS0tCk1JSUVuakNDQTRhZ0F3SUJBZ0lVV1ZyaFhaYXhaLzJTNUNvUXZwU1BkRGpubUpNd0RRWUpLb1pJaHZjTkFRRUwKQlFBd0dURVhNQlVHQTFVRUF3d09RMjlqYTNKdllXTm9SRUlnUTBFd0hoY05Nall3TmpJeU1qRTFNakkyV2hjTgpNall3TmpJME1qRTFNakkyV2pBUE1RMHdDd1lEVlFRRERBUnViMlJsTUlJQklqQU5CZ2txaGtpRzl3MEJBUUVGCkFBT0NBUThBTUlJQkNnS0NBUUVBcDVTa1ZxamJBSlJTM1dPRDE3NTc0TzlOekl3YktUQy9mNlFkbzZxR2VPTjkKK0NqSmRYRXZxQkdIaEl4VlczOTZwa1RWVGZZWUhjT05mTmxGbVJiWDlrQXZFNEQrb0ozK21NUFU2YnlzVnlJdgp1OFJGZ0c4ZHNFcm01YlZjZWs0V2tiODZjTGNSdHJrSWtoRHdrNVFCd1ArdndRZTZydk1iTGlhdXZQbEliWFcxCjk2My9rd2ZGMDJCS3o3Ymx4ckpiVzhicVM5SlFwSmNRS3E4NkxXbDBJNnJCRkRCT1Z3d0gxWlF1ZCtjRm5sbi8KZW40eUNqVk9BNHo5ckdUMXNIckhEb0JyZ2padlM5azYxNzhnalA1cm9DSVV3NCtwdzM1aC9TOE1PMlVoSEJicgpYd01BenlpMzVnUGt0NFBMOGFQZWNaNkkxV3lWdzZHSHRuZEtpS0xkYVFJREFRQUJvNElCNWpDQ0FlSXdEZ1lEClZSMFBBUUgvQkFRREFnV2dNQjBHQTFVZEpRUVdNQlFHQ0NzR0FRVUZCd01CQmdnckJnRUZCUWNEQWpDQ0FXOEcKQTFVZEVRU0NBV1l3Z2dGaWdnbHNiMk5oYkdodmMzU0hCSDhBQUFHQ0RHTnlaR0l0WTJ4MWMzUmxjb0lZWTNKawpZaTFqYkhWemRHVnlMbU52WTJ0eWIyRmphR1JpZ2h4amNtUmlMV05zZFhOMFpYSXVZMjlqYTNKdllXTm9aR0l1CmMzWmpnaXBqY21SaUxXTnNkWE4wWlhJdVkyOWphM0p2WVdOb1pHSXVjM1pqTG1Oc2RYTjBaWEl1Ykc5allXeUMKTENvdVkzSmtZaTFqYkhWemRHVnlMbU52WTJ0eWIyRmphR1JpTG5OMll5NWpiSFZ6ZEdWeUxteHZZMkZzZ2psagpjbVJpTFdOc2RYTjBaWEl0TUM1amNtUmlMV05zZFhOMFpYSXVZMjlqYTNKdllXTm9aR0l1YzNaakxtTnNkWE4wClpYSXViRzlqWVd5Q09XTnlaR0l0WTJ4MWMzUmxjaTB4TG1OeVpHSXRZMngxYzNSbGNpNWpiMk5yY205aFkyaGsKWWk1emRtTXVZMngxYzNSbGNpNXNiMk5oYklJNVkzSmtZaTFqYkhWemRHVnlMVEl1WTNKa1lpMWpiSFZ6ZEdWeQpMbU52WTJ0eWIyRmphR1JpTG5OMll5NWpiSFZ6ZEdWeUxteHZZMkZzTUIwR0ExVWREZ1FXQkJUOFBENzF1dy9iCjUwVGJKejBNV1pldnN3RFFaekFmQmdOVkhTTUVHREFXZ0JTZUIyeXpIdmcrWnlSNUNld0JIWGdXdFN0R0NUQU4KQmdrcWhraUc5dzBCQVFzRkFBT0NBUUVBaGRXZmo2ZlREQ2h3dlBTS1M3KzZDWXBGTWpJTG8rN0FlRXlFR0ltOQpMU3JhNkpkcDhBM2J3NVFSVmxxL2JidGxBNjVkZzJtV2YwazJIZ29pVDFyZGo4RUNibFI5RnRDejBqaU1SdlRKCjdhNjcxZE9PVDErTmwvbjV2WmVEQnFXb1pndUxrQUdveldDdms4ckZ2bXJheVdOTlJhOW01Q25UdzdoaTVsMGUKdVVZT1Eybk1EMTBFV3diWTJLM2UwVDdBazlSNXBoYzdhQTl6dy95WnRSeDNqcExvQzQ2V3dhQmZQc2I4UW9sQgovSEpYLzBNc05kVFAzMGNLaFNlQ3dqY3o2b3RTV2JkcFpySlVKRTJNZk8rMmtoQ0FuS210T08xejdBWUdGRW5wClE2UHFyQlVjbHZKZGdZTGI5a3hyQ2hFQVA1YWNvaXIxLzRxMDhBMStCRjRkdlE9PQotLS0tLUVORCBDRVJUSUZJQ0FURS0tLS0tCg==
+  node.key: LS0tLS1CRUdJTiBQUklWQVRFIEtFWS0tLS0tCk1JSUV2Z0lCQURBTkJna3Foa2lHOXcwQkFRRUZBQVNDQktnd2dnU2tBZ0VBQW9JQkFRQ25sS1JXcU5zQWxGTGQKWTRQWHZudmc3MDNNakJzcE1MOS9wQjJqcW9aNDQzMzRLTWwxY1Mrb0VZZUVqRlZiZjNxbVJOVk45aGdkdzQxOAoyVVdaRnRmMlFDOFRnUDZnbmY2WXc5VHB2S3hYSWkrN3hFV0FieDJ3U3VibHRWeDZUaGFSdnpwd3R4RzJ1UWlTCkVQQ1RsQUhBLzYvQkI3cXU4eHN1SnE2OCtVaHRkYlgzcmYrVEI4WFRZRXJQdHVYR3NsdGJ4dXBMMGxDa2x4QXEKcnpvdGFYUWpxc0VVTUU1WERBZlZsQzUzNXdXZVdmOTZmaklLTlU0RGpQMnNaUFd3ZXNjT2dHdUNObTlMMlRyWAp2eUNNL211Z0loVERqNm5EZm1IOUx3dzdaU0VjRnV0ZkF3RFBLTGZtQStTM2c4dnhvOTV4bm9qVmJKWERvWWUyCmQwcUlvdDFwQWdNQkFBRUNnZ0VBQVRrNkcvSGVxM25wd3ZrTGlPTTRwMU5IOTZMY1BlZy90YkJla1FmWk5IL0EKdHpPaENPejdJcGlDSzBzVkFuYURVRHgzYkRyTVFVZGd2SlVmaDNjZHU0d0xhL0tJcVdhTjZkS2dOdGFzVVhTTAo4YXlFcjJQZ1RSMjI0dDE0bitIN0V6Ull1bUx6eTZnOU1rZlNZZGwyUzlEeUdSQXo0andmS2k2Wkh3TVk3c2VtCnRIdHI4S2dKMitvckRwQ2FYQnl3UUdMeGJjSDBUQTZZUWFkN1N4cFhpSC9yWGZ1M2JWa1VWdE1jVTdqMzIzZW0KNmN1QkpPcUYzYjJBT0VSSDUxYitUZjRwbnBaaDJkZ25EYlhKeXcyK1BJU1NFOFUyZjBVTE00dTQxL1phKzBSZwpwUjBWU0JXU0dpZHpLNzlGRkZKOU16T1A3cmxuYlNOTGI1eFExZUo0d3dLQmdRRGZWYkt5OUdHN2FYN2V1YndTClhqcWlQMmJKV1VJYlpkMEYzMkFtc3dDS3YrQ2VFVTI3UGtyQUljS2RIaWtHcWJDVVZDVnFEaHZsRWQvUkIxUnIKNjQrREQ0TTE2Ukl2RGY4cGd1akhIdDNTSnBMNDkrYzlkaFJlMzAzVFNVd0dJbkc1TEczaFBuOEdoeHRHbEFKTgpTb21Xak1oRm9kTGhLVHlqVDNPWVNCVWFOd0tCZ1FEQUYxajNneHQzVCtzUlJ4MWZ1MTRkcHRaMnRWNG4zU1ZvCmx1Si9nUVpsM1A1ZSsrS2ZYZ2plNUlmc1pBUk9jRDQydjJiOXk1ZUZLSlhzVFE1T2xpay91VEErQmtnaEZ3L2oKN2U3MU00WmM0UytQTEpzc0hIQnluZzMwWGN1UFJmVitjTW5nbk1lTnJEQm03WUNFZlJGdy9NV2JEb0ZJUGZ6TApUczMxQlVWMVh3S0JnUUN5VmRBNExnVE1qbFVNck91TkQwbHF2WTNxUWlnVGtLZUpSUEdXZFdGOWFmS0d4Zko0CkRpbktlaXJaSTNoSEpjRW04SHBmMFp4Y3NvVXllTlBreVZqem9yTjNuUUUwS2MwUzdNSE1IczJxUGJzbXEyNHYKR2RieVd3WGVMYTFUU0xYZTA2ZDZNVmxsY1FWS3VtMk1JblR6anI5dE91Y1ZmTVE2OC9xdUl3RVd5UUtCZ1FDNQpuRlhOSkpSL24ydUdrRzdqdUFyakgva1BUNFVoZytESHhUUXEvQ09RZmhBVSs5TXBKeFh2T21mVWxYaEx5czF5CjNWUEpYTmFXUm5kSGs5V0ZQamV4YVdJaUxMTzV0YTBYRXl2Wkp1Wm9EUGVGb3haMWN5MThzeGpNelcwS2poRC8KRWtFZmxwNkVXS09VY1YzRHA0NFkzVWFiNDFJczJpalEwdDdVS1RuS2hRS0JnQ1RMNkhNY2pGa0ZaaTFZeUZ2YQp5c0M3ZndWT3FCY2Vjcnc2dk1lNklnSnRmc3R3QlEyZ2pycCs0bVNoL0ZzV0hqQ0ZtZURLNGd6TE1CVDJNYTNkClo2eFJVY05LdFV5SjRkVm9CUGZIYVZWc2tTaGY3bng4SnRFVGVMQkhZTHhBSDlQU3FZMHZDMVY0SFVqcmJwRFQKVzYwK0FkcldwLzV4Ym16VGhQcjF2VjVTCi0tLS0tRU5EIFBSSVZBVEUgS0VZLS0tLS0K
+kind: Secret
+metadata:
+  annotations:
+    kubectl.kubernetes.io/last-applied-configuration: |
+      {"apiVersion":"v1","data":{"ca.crt":"LS0tLS1CRUdJTiBDRVJUSUZJQ0FURS0tLS0tCk1JSURFekNDQWZ1Z0F3SUJBZ0lVTC9oTUlqT01NeXd3dkEyckpxcWtQWHF6a2FBd0RRWUpLb1pJaHZjTkFRRUwKQlFBd0dURVhNQlVHQTFVRUF3d09RMjlqYTNKdllXTm9SRUlnUTBFd0hoY05Nall3TmpJeU1qRTFNakkyV2hjTgpNell3TmpFNU1qRTFNakkyV2pBWk1SY3dGUVlEVlFRRERBNURiMk5yY205aFkyaEVRaUJEUVRDQ0FTSXdEUVlKCktvWklodmNOQVFFQkJRQURnZ0VQQURDQ0FRb0NnZ0VCQUlzQWZRS3A3VzM2bFZDUXlhTUNLajl5b1FOVCt5TisKT0RhaHlPMDJISG8vMCtpb2ZYUDRFbVplNnVTaXFlSzgrdzZoTUNva0toVDJCMm55N3pXN0FwdFQ2U2tTNDFGNAo0eDJlTktHOEJKbzA5aWRjK2t1V2hqVS84bkRHaUVVYnpmeUlCRW5XWE1TT0NjYmtVR1h3QjFzRjgwVEVZeTBZCkh5SVUzdG52N0ZFYjF1NElxVWVDTTVwY09HWE9ncDB6ZTFGTEhLS0x6WVdHR2twaTFWNW5tcE0zejhkaUtoQ3gKSGZiSkwwTEIvY0EzODQwVlQ0ZUtWSFo3alFxVFFCeEVZcHQxYWxDdzBxZGsybmZRYVVLa1hkQWRGLzJtaGFJRQpSbXNtQVBCVkVKQTRKSlB2bXBxaE52cFI5ZS9MNWoxZ1RCRGpxbC9XNklLK2ljSDFJSFdhV1BrQ0F3RUFBYU5UCk1GRXdIUVlEVlIwT0JCWUVGSjRIYkxNZStENW5KSGtKN0FFZGVCYTFLMFlKTUI4R0ExVWRJd1FZTUJhQUZKNEgKYkxNZStENW5KSGtKN0FFZGVCYTFLMFlKTUE4R0ExVWRFd0VCL3dRRk1BTUJBZjh3RFFZSktvWklodmNOQVFFTApCUUFEZ2dFQkFJRVNTZnh2eTVRY0NYUkl3Zk84TnFNTVdBS2pRcnVUeU9xZjVmWVk5dE9KVm9XRno2QmRlTGVaCnBqb0d0MGpRZ01KZjJQbmRnendUTnZaZ1NjMzRsV3Y2UFhuSEpJQmRBZWNYTzFFL1N4Ly9sdnZPRE1KL0dRcWkKU0JidlpiaVZJbHhONTg3ZWVDdFBmTjlGV0pTbmhRekExSnlNNWwxaUY0aTZ2NzErdTNscmhKS1Fwb2MzanZEMApsMk9Jc0J4NzNvRlBReTYyUHZZYU1oOGtrZm9mWFdBT2NneGxRV1BMVVR0cEdtS013eW5VcXkyVU5CdFJ3blc3CngzbnhmR0JQditTQzRFODNiNXhLb2ROaTdUeFdwaGU2L2dWWlUydmEweXd6OWhSUE5mc05QcmZWZzFUMjhVazIKUmNpZGxiZEI4WmRHYmd2ZjFsc1NxQWo1dk85M1RVbz0KLS0tLS1FTkQgQ0VSVElGSUNBVEUtLS0tLQo=","client.root.crt":"LS0tLS1CRUdJTiBDRVJUSUZJQ0FURS0tLS0tCk1JSUMrRENDQWVDZ0F3SUJBZ0lVV1ZyaFhaYXhaLzJTNUNvUXZwU1BkRGpubUpRd0RRWUpLb1pJaHZjTkFRRUwKQlFBd0dURVhNQlVHQTFVRUF3d09RMjlqYTNKdllXTm9SRUlnUTBFd0hoY05Nall3TmpJeU1qRTFNakkzV2hjTgpNall3TmpJME1qRTFNakkzV2pBUE1RMHdDd1lEVlFRRERBUnliMjkwTUlJQklqQU5CZ2txaGtpRzl3MEJBUUVGCkFBT0NBUThBTUlJQkNnS0NBUUVBczRtekV0bTg3SVlpeVdZRDdSVXpjMzRyUkVMV3gwVFpSYnJBRkhlWkdrV0gKMm9DWk1kbXozUlFHcGVLYU9qbHd2SEVoZ3dQakZJMHZFeWZWQnVPYVk5OEVISGJydlZOYXBBcHFxY3FaNVdmMAozZWNSMlZoNnhhQkJCaGJ1WEtiRDBhTHMrYTlmWWkzUi9VaFhVZ29kelhqQ1dxRzhqMUttR0ZvMUREMDRVWUdHClBkK0NuVDl6eE5HRUtDV1pLWmVON2w5bU5QTEFZS3p4cFpneUxJZGNpcXpBT1NtbXZ1YVI5RmpRWDBZb1BWcTQKUzZjU0RoL0N6eXVnUnBpbzBxTXlNM2xtMVFESUtkak1nSTlNVmt0TlVFaExENUNvS0lDbFY0RWlsYU1UdmZ3egpvQVNPSXdTOHExZmxJdzNJMno5Nk1QbjF6TjdncmtXQSsyNHhLY0ZhOHdJREFRQUJvMEl3UURBZEJnTlZIUTRFCkZnUVV3V2hVV3ZRU0lDdnZWZ2lmWk8zWDc2blo1Mll3SHdZRFZSMGpCQmd3Rm9BVW5nZHNzeDc0UG1ja2VRbnMKQVIxNEZyVXJSZ2t3RFFZSktvWklodmNOQVFFTEJRQURnZ0VCQUQ2blB5aXpwMFVoRW5lS1VYcnZrVk1MTVp1SwpwdTUrajk2b2prRGJkb0FwS2Z4Z01YZmJlZ3VhT01ITjVUZVVibENuaCsycy9Cb1RZd2dyU2pvY05FNkNlY3RSCjlCOGpOcVJlV2M3MzBHQ2NoKzN1eEx0eDZuY2gvTzg3RDRMeVh3K1dQZWRCazUzRFlJK3JBdTlYRTVxWkY1emsKak9UUlVKbitZKzNWZFFNQXdxWnpsY3FjT0IrZ3U4RGJuNTJxcWF0NTdvN0haUFJDS3QwRWkzV2Y2bDI1WFRUTAp6TDdpcC9PaEtPbTdoWHZQWjNqMjYyemY2WDQrWHZ0YjJTOHIrbWJ5VFJ2NzFWa2lDbWlxWHV3TjZvRXRKZWpTCmV0Z29WSFJvem5zd1piNUpIbXQ4eTBOYjNFTVlFK0lPTUlYcm4wZml1bFdRc2FXTll1NEVlRk1Dbks4PQotLS0tLUVORCBDRVJUSUZJQ0FURS0tLS0tCg==","client.root.key":"LS0tLS1CRUdJTiBQUklWQVRFIEtFWS0tLS0tCk1JSUV2d0lCQURBTkJna3Foa2lHOXcwQkFRRUZBQVNDQktrd2dnU2xBZ0VBQW9JQkFRQ3ppYk1TMmJ6c2hpTEoKWmdQdEZUTnpmaXRFUXRiSFJObEZ1c0FVZDVrYVJZZmFnSmt4MmJQZEZBYWw0cG82T1hDOGNTR0RBK01ValM4VApKOVVHNDVwajN3UWNkdXU5VTFxa0NtcXB5cG5sWi9UZDV4SFpXSHJGb0VFR0Z1NWNwc1BSb3V6NXIxOWlMZEg5ClNGZFNDaDNOZU1KYW9ieVBVcVlZV2pVTVBUaFJnWVk5MzRLZFAzUEUwWVFvSlprcGw0M3VYMlkwOHNCZ3JQR2wKbURJc2gxeUtyTUE1S2FhKzVwSDBXTkJmUmlnOVdyaExweElPSDhMUEs2QkdtS2pTb3pJemVXYlZBTWdwMk15QQpqMHhXUzAxUVNFc1BrS2dvZ0tWWGdTS1ZveE85L0RPZ0JJNGpCTHlyVitVakRjamJQM293K2ZYTTN1Q3VSWUQ3CmJqRXB3VnJ6QWdNQkFBRUNnZ0VBU3BRWEltdjNPZ3NvTlIvZTNxTnhhWGJPRXo5dWgzMFdnZ3dtMFBtelRBSDUKQW05cjg1UzZ6Y21OVDJnM1o1dEh0TWVMdzZnZ01uL0pQN3hLbGQrQzJSeWhVUStuTWxDSE5PQXMyWllTNG9RUgo2QUdkM1BxUG1UdE45M0VjRjdtZ1d4dENOQi9BMEFBM20rNXFjMlpIWmZ4VlE1K3V1NXg1NldERGEyK2N6dUg4CkhsaFlZTmdOTTVpVGxOazdKY21wNHM5WmdrTWN1bDc5R0o4RkNPZ3V4cjl2dzFKVzJjSXl3T1FDYXZwMkFRRTQKRnlSUVBCNXFYUW5UbitPK0N4OSt2TUg2UlJkZmNmR1kwV1hxOHRseU53dmMyTmVXUHdrczlmZkFLcmhmY3JQZQpVNjllNS9sSnlEcjg1bS9Yc2JNVkk0NzI0L1k0M3ZNdXBjenBpbCszU1FLQmdRRGgzNUxWcHhDeUhnV3JxVktBClNBMU5VOW42OUZGQkVpVVBCSEVqUkYycWlOdEI0UmxKNHpoRmhtcExaR3BsRG1QdklnNlpYL1ZrenJHYktVSjkKRE5oc0VrS2NqVG9hZTdRLzVpN3QwNHBrdXNhMVc3OWpXQ1hOSXVUK3labU9HdmFQZ3haTmtqOThMTjZqNXFBNgpDZ2kzWW8yWUtxREsxTDR4QU56NzNDY0lXUUtCZ1FETGZBR0dPeUY3bDlHQUZCRWNDbHU3SFU0R0dMRkViUS80CmFYajNtSkJQa3owcVJMRURUVGhPWjBIaWNDZm9tSjNUa3RqRDU4ZTZWaTM4UFgrUkFqOXJBc05VL2ltOW9XdFQKOWRNYXZIZ3BUekNTeTNWMTBkNmM4NnFZdnVQNTlZazNiaEE4Y1llZ29jbFc5ci9aRURPYmlSRFhNZi9ta1F5cwpobDJwNVd3VUt3S0JnUUNsbWRZOHdJVDBJaURFTDVzbUpDMWtnVkt5dEVlU2Jxd3U2M0hMaW9jbHpicjYvUDhlCmRmRyt2NExWRGFVWHZFbzJmQUM2SUdsNDVEWEE3YW9xcHExUjVyMWhyQVZxZjBHekM1OWlqSkxOc1VhWWx0Q20KRkcxNmpkZlltWlAwWlA1YVQ2Q2RkTmtJd0pqbkQrSnZTd1lDOWNXY1I3eWxtUDVzVFJhM3JUd00yUUtCZ1FDUQpBM2pVdHA3UTZUY1Z6WjM2V1g1b3BLbm0rS3psUDhjUXloMGFKempqaU5LK1NwVjVQN3E5Q3FsL2lGOUdhRlV6Ck8zZjgxdHJ0anpiR2tnUHA3a3hTQVVlYnJMS0FDbkY2bjczRDYyV2ozdThDeGNxaEUyTFpkRDdtRWh3cGVWU2YKRFYraVY3dGt2WHhROXh2NmxWUGhIWlgwcCtkMEdHNSs0QzRFSTJKbHR3S0JnUUM2cG9vWFR1b0IzLzhoVG55VgplU0JSTVlPTHFubGJJRWh2RkpObTdyWGxQNnVjbnk2TlJSTkVjSUs5bnEydmI3RE9HYUpmM1g5bmRLeGJCcWdxClJoRW1XekpRYlFGOVJwNFJUeUVCZ2h0Q0luM1JjK0RCYjJuL3AvbFowY3ZaS2toRU1SUnZHTHhOdmRRUllYV3kKZURwNHBtTkRTR0xWZUdLVXVPakRNUStSSXc9PQotLS0tLUVORCBQUklWQVRFIEtFWS0tLS0tCg==","node.crt":"LS0tLS1CRUdJTiBDRVJUSUZJQ0FURS0tLS0tCk1JSUVuakNDQTRhZ0F3SUJBZ0lVV1ZyaFhaYXhaLzJTNUNvUXZwU1BkRGpubUpNd0RRWUpLb1pJaHZjTkFRRUwKQlFBd0dURVhNQlVHQTFVRUF3d09RMjlqYTNKdllXTm9SRUlnUTBFd0hoY05Nall3TmpJeU1qRTFNakkyV2hjTgpNall3TmpJME1qRTFNakkyV2pBUE1RMHdDd1lEVlFRRERBUnViMlJsTUlJQklqQU5CZ2txaGtpRzl3MEJBUUVGCkFBT0NBUThBTUlJQkNnS0NBUUVBcDVTa1ZxamJBSlJTM1dPRDE3NTc0TzlOekl3YktUQy9mNlFkbzZxR2VPTjkKK0NqSmRYRXZxQkdIaEl4VlczOTZwa1RWVGZZWUhjT05mTmxGbVJiWDlrQXZFNEQrb0ozK21NUFU2YnlzVnlJdgp1OFJGZ0c4ZHNFcm01YlZjZWs0V2tiODZjTGNSdHJrSWtoRHdrNVFCd1ArdndRZTZydk1iTGlhdXZQbEliWFcxCjk2My9rd2ZGMDJCS3o3Ymx4ckpiVzhicVM5SlFwSmNRS3E4NkxXbDBJNnJCRkRCT1Z3d0gxWlF1ZCtjRm5sbi8KZW40eUNqVk9BNHo5ckdUMXNIckhEb0JyZ2padlM5azYxNzhnalA1cm9DSVV3NCtwdzM1aC9TOE1PMlVoSEJicgpYd01BenlpMzVnUGt0NFBMOGFQZWNaNkkxV3lWdzZHSHRuZEtpS0xkYVFJREFRQUJvNElCNWpDQ0FlSXdEZ1lEClZSMFBBUUgvQkFRREFnV2dNQjBHQTFVZEpRUVdNQlFHQ0NzR0FRVUZCd01CQmdnckJnRUZCUWNEQWpDQ0FXOEcKQTFVZEVRU0NBV1l3Z2dGaWdnbHNiMk5oYkdodmMzU0hCSDhBQUFHQ0RHTnlaR0l0WTJ4MWMzUmxjb0lZWTNKawpZaTFqYkhWemRHVnlMbU52WTJ0eWIyRmphR1JpZ2h4amNtUmlMV05zZFhOMFpYSXVZMjlqYTNKdllXTm9aR0l1CmMzWmpnaXBqY21SaUxXTnNkWE4wWlhJdVkyOWphM0p2WVdOb1pHSXVjM1pqTG1Oc2RYTjBaWEl1Ykc5allXeUMKTENvdVkzSmtZaTFqYkhWemRHVnlMbU52WTJ0eWIyRmphR1JpTG5OMll5NWpiSFZ6ZEdWeUxteHZZMkZzZ2psagpjbVJpTFdOc2RYTjBaWEl0TUM1amNtUmlMV05zZFhOMFpYSXVZMjlqYTNKdllXTm9aR0l1YzNaakxtTnNkWE4wClpYSXViRzlqWVd5Q09XTnlaR0l0WTJ4MWMzUmxjaTB4TG1OeVpHSXRZMngxYzNSbGNpNWpiMk5yY205aFkyaGsKWWk1emRtTXVZMngxYzNSbGNpNXNiMk5oYklJNVkzSmtZaTFqYkhWemRHVnlMVEl1WTNKa1lpMWpiSFZ6ZEdWeQpMbU52WTJ0eWIyRmphR1JpTG5OMll5NWpiSFZ6ZEdWeUxteHZZMkZzTUIwR0ExVWREZ1FXQkJUOFBENzF1dy9iCjUwVGJKejBNV1pldnN3RFFaekFmQmdOVkhTTUVHREFXZ0JTZUIyeXpIdmcrWnlSNUNld0JIWGdXdFN0R0NUQU4KQmdrcWhraUc5dzBCQVFzRkFBT0NBUUVBaGRXZmo2ZlREQ2h3dlBTS1M3KzZDWXBGTWpJTG8rN0FlRXlFR0ltOQpMU3JhNkpkcDhBM2J3NVFSVmxxL2JidGxBNjVkZzJtV2YwazJIZ29pVDFyZGo4RUNibFI5RnRDejBqaU1SdlRKCjdhNjcxZE9PVDErTmwvbjV2WmVEQnFXb1pndUxrQUdveldDdms4ckZ2bXJheVdOTlJhOW01Q25UdzdoaTVsMGUKdVVZT1Eybk1EMTBFV3diWTJLM2UwVDdBazlSNXBoYzdhQTl6dy95WnRSeDNqcExvQzQ2V3dhQmZQc2I4UW9sQgovSEpYLzBNc05kVFAzMGNLaFNlQ3dqY3o2b3RTV2JkcFpySlVKRTJNZk8rMmtoQ0FuS210T08xejdBWUdGRW5wClE2UHFyQlVjbHZKZGdZTGI5a3hyQ2hFQVA1YWNvaXIxLzRxMDhBMStCRjRkdlE9PQotLS0tLUVORCBDRVJUSUZJQ0FURS0tLS0tCg==","node.key":"LS0tLS1CRUdJTiBQUklWQVRFIEtFWS0tLS0tCk1JSUV2Z0lCQURBTkJna3Foa2lHOXcwQkFRRUZBQVNDQktnd2dnU2tBZ0VBQW9JQkFRQ25sS1JXcU5zQWxGTGQKWTRQWHZudmc3MDNNakJzcE1MOS9wQjJqcW9aNDQzMzRLTWwxY1Mrb0VZZUVqRlZiZjNxbVJOVk45aGdkdzQxOAoyVVdaRnRmMlFDOFRnUDZnbmY2WXc5VHB2S3hYSWkrN3hFV0FieDJ3U3VibHRWeDZUaGFSdnpwd3R4RzJ1UWlTCkVQQ1RsQUhBLzYvQkI3cXU4eHN1SnE2OCtVaHRkYlgzcmYrVEI4WFRZRXJQdHVYR3NsdGJ4dXBMMGxDa2x4QXEKcnpvdGFYUWpxc0VVTUU1WERBZlZsQzUzNXdXZVdmOTZmaklLTlU0RGpQMnNaUFd3ZXNjT2dHdUNObTlMMlRyWAp2eUNNL211Z0loVERqNm5EZm1IOUx3dzdaU0VjRnV0ZkF3RFBLTGZtQStTM2c4dnhvOTV4bm9qVmJKWERvWWUyCmQwcUlvdDFwQWdNQkFBRUNnZ0VBQVRrNkcvSGVxM25wd3ZrTGlPTTRwMU5IOTZMY1BlZy90YkJla1FmWk5IL0EKdHpPaENPejdJcGlDSzBzVkFuYURVRHgzYkRyTVFVZGd2SlVmaDNjZHU0d0xhL0tJcVdhTjZkS2dOdGFzVVhTTAo4YXlFcjJQZ1RSMjI0dDE0bitIN0V6Ull1bUx6eTZnOU1rZlNZZGwyUzlEeUdSQXo0andmS2k2Wkh3TVk3c2VtCnRIdHI4S2dKMitvckRwQ2FYQnl3UUdMeGJjSDBUQTZZUWFkN1N4cFhpSC9yWGZ1M2JWa1VWdE1jVTdqMzIzZW0KNmN1QkpPcUYzYjJBT0VSSDUxYitUZjRwbnBaaDJkZ25EYlhKeXcyK1BJU1NFOFUyZjBVTE00dTQxL1phKzBSZwpwUjBWU0JXU0dpZHpLNzlGRkZKOU16T1A3cmxuYlNOTGI1eFExZUo0d3dLQmdRRGZWYkt5OUdHN2FYN2V1YndTClhqcWlQMmJKV1VJYlpkMEYzMkFtc3dDS3YrQ2VFVTI3UGtyQUljS2RIaWtHcWJDVVZDVnFEaHZsRWQvUkIxUnIKNjQrREQ0TTE2Ukl2RGY4cGd1akhIdDNTSnBMNDkrYzlkaFJlMzAzVFNVd0dJbkc1TEczaFBuOEdoeHRHbEFKTgpTb21Xak1oRm9kTGhLVHlqVDNPWVNCVWFOd0tCZ1FEQUYxajNneHQzVCtzUlJ4MWZ1MTRkcHRaMnRWNG4zU1ZvCmx1Si9nUVpsM1A1ZSsrS2ZYZ2plNUlmc1pBUk9jRDQydjJiOXk1ZUZLSlhzVFE1T2xpay91VEErQmtnaEZ3L2oKN2U3MU00WmM0UytQTEpzc0hIQnluZzMwWGN1UFJmVitjTW5nbk1lTnJEQm03WUNFZlJGdy9NV2JEb0ZJUGZ6TApUczMxQlVWMVh3S0JnUUN5VmRBNExnVE1qbFVNck91TkQwbHF2WTNxUWlnVGtLZUpSUEdXZFdGOWFmS0d4Zko0CkRpbktlaXJaSTNoSEpjRW04SHBmMFp4Y3NvVXllTlBreVZqem9yTjNuUUUwS2MwUzdNSE1IczJxUGJzbXEyNHYKR2RieVd3WGVMYTFUU0xYZTA2ZDZNVmxsY1FWS3VtMk1JblR6anI5dE91Y1ZmTVE2OC9xdUl3RVd5UUtCZ1FDNQpuRlhOSkpSL24ydUdrRzdqdUFyakgva1BUNFVoZytESHhUUXEvQ09RZmhBVSs5TXBKeFh2T21mVWxYaEx5czF5CjNWUEpYTmFXUm5kSGs5V0ZQamV4YVdJaUxMTzV0YTBYRXl2Wkp1Wm9EUGVGb3haMWN5MThzeGpNelcwS2poRC8KRWtFZmxwNkVXS09VY1YzRHA0NFkzVWFiNDFJczJpalEwdDdVS1RuS2hRS0JnQ1RMNkhNY2pGa0ZaaTFZeUZ2YQp5c0M3ZndWT3FCY2Vjcnc2dk1lNklnSnRmc3R3QlEyZ2pycCs0bVNoL0ZzV0hqQ0ZtZURLNGd6TE1CVDJNYTNkClo2eFJVY05LdFV5SjRkVm9CUGZIYVZWc2tTaGY3bng4SnRFVGVMQkhZTHhBSDlQU3FZMHZDMVY0SFVqcmJwRFQKVzYwK0FkcldwLzV4Ym16VGhQcjF2VjVTCi0tLS0tRU5EIFBSSVZBVEUgS0VZLS0tLS0K"},"kind":"Secret","metadata":{"annotations":{},"name":"crdb-cluster-certs","namespace":"cockroachdb"}}
+  creationTimestamp: "2026-06-22T21:52:30Z"
+  name: crdb-cluster-certs
+  namespace: cockroachdb
+  resourceVersion: "152325"
+  uid: f4f3ce9b-76ef-430f-9be0-282fcfef95be
+type: Opaque
+
+codex
+The precondition created `crdb-cluster-certs` from the toolbox CA and recorded its old two-day fingerprint, but the live StatefulSet was already using a separate `crdb-certs` secret. I’m going to rotate `crdb-cluster-certs` with the provided CA, then verify the requested checks without disrupting the already-healthy Cockroach pods.
+codex
+I’m generating a fresh node cert and root client cert in the toolbox with the existing `/tmp/certs/ca.key` and `/tmp/certs/ca.crt`, using `-days 365` and the existing node SAN config. Then I’ll apply those files to `crdb-cluster-certs`.
+exec
+/bin/zsh -lc "kubectl -n cockroachdb exec -i openssl-toolbox -- sh -s <<'EOF'
+set -eu
+cd /tmp/certs
+backup_dir=\"backup-"'$(date +%Y%m%d%H%M%S)"
+mkdir -p "$backup_dir"
+cp -p ca.crt ca.key ca.srl node.cnf node.crt node.key node.csr client.root.crt client.root.key client.root.csr "$backup_dir" 2>/dev/null || true
+cat > client.root.cnf <<'"'CNF'
+[req]
+distinguished_name = req_distinguished_name
+req_extensions = v3_req
+prompt = no
+[req_distinguished_name]
+CN = root
+[v3_req]
+keyUsage = critical,digitalSignature,keyEncipherment
+extendedKeyUsage = clientAuth
+CNF
+openssl genrsa -out node.key 2048 >/dev/null 2>&1
+openssl req -new -key node.key -out node.csr -config node.cnf
+openssl x509 -req -in node.csr -CA ca.crt -CAkey ca.key -CAcreateserial -out node.crt -days 365 -sha256 -extfile node.cnf -extensions v3_req
+openssl genrsa -out client.root.key 2048 >/dev/null 2>&1
+openssl req -new -key client.root.key -out client.root.csr -config client.root.cnf
+openssl x509 -req -in client.root.csr -CA ca.crt -CAkey ca.key -CAcreateserial -out client.root.crt -days 365 -sha256 -extfile client.root.cnf -extensions v3_req
+chmod 600 node.key client.root.key ca.key
+openssl x509 -in node.crt -noout -subject -issuer -startdate -enddate -fingerprint -sha256
+openssl x509 -in client.root.crt -noout -subject -issuer -startdate -enddate -fingerprint -sha256
+EOF" in /Users/jinyige/Karma/runs/new-added-workflows/cockroachdb-cert-ingress-monitor-20260622_214646/stages/stage_03
+ succeeded in 320ms:
+Certificate request self-signature ok
+subject=CN=node
+Certificate request self-signature ok
+subject=CN=root
+subject=CN=node
+issuer=CN=CockroachDB CA
+notBefore=Jun 22 21:55:32 2026 GMT
+notAfter=Jun 22 21:55:32 2027 GMT
+sha256 Fingerprint=86:4D:C0:2E:E5:EE:A4:DC:CF:5F:25:17:B8:79:60:8F:6B:F8:4C:D7:FC:77:54:4E:D7:76:DA:70:E9:0C:3C:B3
+subject=CN=root
+issuer=CN=CockroachDB CA
+notBefore=Jun 22 21:55:32 2026 GMT
+notAfter=Jun 22 21:55:32 2027 GMT
+sha256 Fingerprint=48:BA:54:14:CE:6B:E8:B9:D3:6F:DF:50:E0:EE:B4:3E:62:BA:A3:E1:94:AB:A9:F1:86:88:4C:4E:D0:8C:D1:77
+
+codex
+The new certs were created with `notAfter=Jun 22 2027`. I’m applying them to the Kubernetes secret now, then I’ll restart the StatefulSet onto that rotated secret so the live pods and the requested secret are in sync.
+exec
+/bin/zsh -lc 'rm -rf /tmp/crdb-rotated-certs && kubectl -n cockroachdb cp openssl-toolbox:/tmp/certs /tmp/crdb-rotated-certs && kubectl -n cockroachdb create secret generic crdb-cluster-certs --from-file=ca.crt=/tmp/crdb-rotated-certs/ca.crt --from-file=node.crt=/tmp/crdb-rotated-certs/node.crt --from-file=node.key=/tmp/crdb-rotated-certs/node.key --from-file=client.root.crt=/tmp/crdb-rotated-certs/client.root.crt --from-file=client.root.key=/tmp/crdb-rotated-certs/client.root.key --dry-run=client -o yaml | kubectl apply -f -' in /Users/jinyige/Karma/runs/new-added-workflows/cockroachdb-cert-ingress-monitor-20260622_214646/stages/stage_03
+ succeeded in 294ms:
+secret/crdb-cluster-certs configured
+
+exec
+/bin/zsh -lc "kubectl -n cockroachdb get statefulset crdb-cluster -o jsonpath='{.spec.template.spec.volumes[?(@.name==\"certs\")].secret.secretName}'" in /Users/jinyige/Karma/runs/new-added-workflows/cockroachdb-cert-ingress-monitor-20260622_214646/stages/stage_03
+exec
+/bin/zsh -lc "kubectl -n cockroachdb get configmap crdb-old-cert -o jsonpath='{.data.fingerprint}'" in /Users/jinyige/Karma/runs/new-added-workflows/cockroachdb-cert-ingress-monitor-20260622_214646/stages/stage_03
+ succeeded in 0ms:
+crdb-certs
+ succeeded in 0ms:
+54:A2:97:FA:A7:E0:79:45:6D:49:CE:E3:C2:C1:B2:EC:88:1D:A7:06:D0:1E:6F:1E:C5:5D:93:D0:1D:57:C4:A9
+exec
+/bin/zsh -lc "kubectl -n cockroachdb get secret crdb-cluster-certs -o jsonpath='{.data.node\\.crt}' | base64 -d | openssl x509 -noout -fingerprint -sha256 -enddate -subject -issuer -ext subjectAltName" in /Users/jinyige/Karma/runs/new-added-workflows/cockroachdb-cert-ingress-monitor-20260622_214646/stages/stage_03
+ succeeded in 0ms:
+sha256 Fingerprint=86:4D:C0:2E:E5:EE:A4:DC:CF:5F:25:17:B8:79:60:8F:6B:F8:4C:D7:FC:77:54:4E:D7:76:DA:70:E9:0C:3C:B3
+notAfter=Jun 22 21:55:32 2027 GMT
+subject=CN=node
+issuer=CN=CockroachDB CA
+X509v3 Subject Alternative Name: 
+    DNS:localhost, IP Address:127.0.0.1, DNS:crdb-cluster, DNS:crdb-cluster.cockroachdb, DNS:crdb-cluster.cockroachdb.svc, DNS:crdb-cluster.cockroachdb.svc.cluster.local, DNS:*.crdb-cluster.cockroachdb.svc.cluster.local, DNS:crdb-cluster-0.crdb-cluster.cockroachdb.svc.cluster.local, DNS:crdb-cluster-1.crdb-cluster.cockroachdb.svc.cluster.local, DNS:crdb-cluster-2.crdb-cluster.cockroachdb.svc.cluster.local
+
+codex
+The rotated `crdb-cluster-certs` fingerprint is now different from the recorded old fingerprint and expires in June 2027. I’m taking the StatefulSet down briefly, pointing its cert volume at `crdb-cluster-certs`, and bringing it back up so the running nodes use the rotated material.
+exec
+/bin/zsh -lc "kubectl -n cockroachdb scale statefulset/crdb-cluster --replicas=0 && kubectl -n cockroachdb wait --for=delete pod -l app.kubernetes.io/instance=crdb-cluster,app.kubernetes.io/name=cockroachdb --timeout=180s && kubectl -n cockroachdb patch statefulset crdb-cluster --type=strategic -p '{\"spec\":{\"template\":{\"spec\":{\"volumes\":[{\"name\":\"certs\",\"secret\":{\"secretName\":\"crdb-cluster-certs\",\"defaultMode\":256}}]}}}}' && kubectl -n cockroachdb scale statefulset/crdb-cluster --replicas=3 && kubectl -n cockroachdb rollout status statefulset/crdb-cluster --timeout=420s" in /Users/jinyige/Karma/runs/new-added-workflows/cockroachdb-cert-ingress-monitor-20260622_214646/stages/stage_03
+ succeeded in 23560ms:
+statefulset.apps/crdb-cluster scaled
+pod/crdb-cluster-0 condition met
+pod/crdb-cluster-1 condition met
+pod/crdb-cluster-2 condition met
+statefulset.apps/crdb-cluster patched
+statefulset.apps/crdb-cluster scaled
+Waiting for 3 pods to be ready...
+Waiting for 1 pods to be ready...
+partitioned roll out complete: 3 new pods have been updated...
+
+codex
+The StatefulSet restarted cleanly and is ready again. I’m running the exact SQL and certificate checks from the prompt, plus one mount check to confirm pod certs match the rotated secret.
+exec
+/bin/zsh -lc 'kubectl -n cockroachdb exec crdb-cluster-0 -- ./cockroach sql --certs-dir=/cockroach/cockroach-certs -e "SELECT 1;"' in /Users/jinyige/Karma/runs/new-added-workflows/cockroachdb-cert-ingress-monitor-20260622_214646/stages/stage_03
+exec
+/bin/zsh -lc "kubectl -n cockroachdb get pods -o wide && kubectl -n cockroachdb get statefulset crdb-cluster -o jsonpath='{.spec.template.spec.volumes[?(@.name==\"certs\")].secret.secretName}'" in /Users/jinyige/Karma/runs/new-added-workflows/cockroachdb-cert-ingress-monitor-20260622_214646/stages/stage_03
+exec
+/bin/zsh -lc "kubectl -n cockroachdb get secret crdb-cluster-certs -o jsonpath='{.data.node\\.crt}' | base64 -d | openssl x509 -noout -fingerprint -sha256" in /Users/jinyige/Karma/runs/new-added-workflows/cockroachdb-cert-ingress-monitor-20260622_214646/stages/stage_03
+exec
+/bin/zsh -lc "kubectl -n cockroachdb get secret crdb-cluster-certs -o jsonpath='{.data.node\\.crt}' | base64 -d | openssl x509 -noout -enddate" in /Users/jinyige/Karma/runs/new-added-workflows/cockroachdb-cert-ingress-monitor-20260622_214646/stages/stage_03
+exec
+/bin/zsh -lc 'kubectl -n cockroachdb exec crdb-cluster-0 -- openssl x509 -in /cockroach/cockroach-certs/node.crt -noout -fingerprint -sha256 -enddate' in /Users/jinyige/Karma/runs/new-added-workflows/cockroachdb-cert-ingress-monitor-20260622_214646/stages/stage_03
+ succeeded in 234ms:
+sha256 Fingerprint=86:4D:C0:2E:E5:EE:A4:DC:CF:5F:25:17:B8:79:60:8F:6B:F8:4C:D7:FC:77:54:4E:D7:76:DA:70:E9:0C:3C:B3
+
+ succeeded in 233ms:
+notAfter=Jun 22 21:55:32 2027 GMT
+
+ succeeded in 293ms:
+NAME              READY   STATUS    RESTARTS   AGE     IP            NODE           NOMINATED NODE   READINESS GATES
+crdb-cluster-0    1/1     Running   0          26s     10.244.3.25   kind-worker3   <none>           <none>
+crdb-cluster-1    1/1     Running   0          26s     10.244.2.24   kind-worker2   <none>           <none>
+crdb-cluster-2    1/1     Running   0          26s     10.244.1.19   kind-worker    <none>           <none>
+curl-test         1/1     Running   0          13m     10.244.3.22   kind-worker3   <none>           <none>
+openssl-toolbox   1/1     Running   0          4m21s   10.244.1.17   kind-worker    <none>           <none>
+crdb-cluster-certs
+ exited 1 in 277ms:
+error: Internal error occurred: Internal error occurred: error executing command in container: failed to exec in container: failed to start exec "3cf60a23de8b6b0a7a61723e33410c733f9bf5b4cf3687775a0b912f10bfb50d": OCI runtime exec failed: exec failed: unable to start container process: exec: "openssl": executable file not found in $PATH
+
+ succeeded in 866ms:
+?column?
+1
+
+codex
+The requested checks pass. The Cockroach image does not include `openssl`, so I’m doing the mounted-cert comparison by streaming `/cockroach/cockroach-certs/node.crt` out of the pod into local `openssl`.
+exec
+/bin/zsh -lc 'kubectl -n cockroachdb exec crdb-cluster-0 -- cat /cockroach/cockroach-certs/node.crt | openssl x509 -noout -fingerprint -sha256 -enddate' in /Users/jinyige/Karma/runs/new-added-workflows/cockroachdb-cert-ingress-monitor-20260622_214646/stages/stage_03
+exec
+/bin/zsh -lc 'kubectl -n cockroachdb exec crdb-cluster-0 -- ./cockroach node status --certs-dir=/cockroach/cockroach-certs --format=tsv' in /Users/jinyige/Karma/runs/new-added-workflows/cockroachdb-cert-ingress-monitor-20260622_214646/stages/stage_03
+exec
+/bin/zsh -lc "kubectl -n cockroachdb get statefulset crdb-cluster -o jsonpath='{.status.readyReplicas}/{.spec.replicas} ready, certSecret={.spec.template.spec.volumes[?(@.name==\"certs\")].secret.secretName}'" in /Users/jinyige/Karma/runs/new-added-workflows/cockroachdb-cert-ingress-monitor-20260622_214646/stages/stage_03
+ succeeded in 163ms:
+3/3 ready, certSecret=crdb-cluster-certs
+ succeeded in 235ms:
+sha256 Fingerprint=86:4D:C0:2E:E5:EE:A4:DC:CF:5F:25:17:B8:79:60:8F:6B:F8:4C:D7:FC:77:54:4E:D7:76:DA:70:E9:0C:3C:B3
+notAfter=Jun 22 21:55:32 2027 GMT
+
+ succeeded in 704ms:
+id	address	sql_address	build	started_at	updated_at	locality	is_available	is_live
+1	crdb-cluster-0.crdb-cluster.cockroachdb.svc.cluster.local:26257	crdb-cluster-0.crdb-cluster.cockroachdb.svc.cluster.local:26257	v24.1.0	2026-06-22 21:56:17.648997 +0000 UTC	2026-06-22 21:56:59.743059 +0000 UTC		true	true
+2	crdb-cluster-2.crdb-cluster.cockroachdb.svc.cluster.local:26257	crdb-cluster-2.crdb-cluster.cockroachdb.svc.cluster.local:26257	v24.1.0	2026-06-22 21:56:17.704095 +0000 UTC	2026-06-22 21:56:59.749003 +0000 UTC		true	true
+3	crdb-cluster-1.crdb-cluster.cockroachdb.svc.cluster.local:26257	crdb-cluster-1.crdb-cluster.cockroachdb.svc.cluster.local:26257	v24.1.0	2026-06-22 21:56:17.66372 +0000 UTC	2026-06-22 21:56:59.738642 +0000 UTC		true	true
+
+codex
+Rotated the CockroachDB TLS material in `crdb-cluster-certs` using the existing CA from `openssl-toolbox`, with new node and root client certs valid for 365 days.
+
+I also restarted the StatefulSet onto `crdb-cluster-certs`; it is now `3/3` ready and mounted to the rotated secret.
+
+Verification passed:
+
+```text
+SELECT 1 -> 1
+node fingerprint: 86:4D:C0:2E:E5:EE:A4:DC:CF:5F:25:17:B8:79:60:8F:6B:F8:4C:D7:FC:77:54:4E:D7:76:DA:70:E9:0C:3C:B3
+node expiry: notAfter=Jun 22 21:55:32 2027 GMT
+```
+
+All three CockroachDB nodes report `is_available=true` and `is_live=true`.
+tokens used
+115,704
+Rotated the CockroachDB TLS material in `crdb-cluster-certs` using the existing CA from `openssl-toolbox`, with new node and root client certs valid for 365 days.
+
+I also restarted the StatefulSet onto `crdb-cluster-certs`; it is now `3/3` ready and mounted to the rotated secret.
+
+Verification passed:
+
+```text
+SELECT 1 -> 1
+node fingerprint: 86:4D:C0:2E:E5:EE:A4:DC:CF:5F:25:17:B8:79:60:8F:6B:F8:4C:D7:FC:77:54:4E:D7:76:DA:70:E9:0C:3C:B3
+node expiry: notAfter=Jun 22 21:55:32 2027 GMT
+```
+
+All three CockroachDB nodes report `is_available=true` and `is_live=true`.

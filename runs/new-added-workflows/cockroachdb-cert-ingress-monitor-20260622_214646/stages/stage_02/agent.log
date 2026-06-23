@@ -1,0 +1,1079 @@
+OpenAI Codex v0.142.0-alpha.6
+--------
+workdir: /Users/jinyige/Karma/runs/new-added-workflows/cockroachdb-cert-ingress-monitor-20260622_214646/stages/stage_02
+model: gpt-5.5
+provider: openai
+approval: never
+sandbox: danger-full-access
+reasoning effort: xhigh
+reasoning summaries: none
+session id: 019ef14e-2e54-7d63-a4f5-78b05fb3ce8d
+--------
+user
+Enable TLS for the running CockroachDB cluster in the cockroachdb namespace.
+
+The cluster is currently running in insecure mode. An openssl-toolbox pod
+is available for certificate generation.
+
+GOAL:
+1. Insecure access is rejected:
+   ```bash
+   kubectl -n cockroachdb exec crdb-cluster-0 -- \
+     ./cockroach sql --insecure -e "SELECT 1;"
+   ```
+2. Secure access succeeds:
+   ```bash
+   kubectl -n cockroachdb exec crdb-cluster-0 -- \
+     ./cockroach sql --certs-dir=/cockroach/cockroach-certs -e "SELECT 1;"
+   ```
+codex
+I’ll inspect the workspace and the live Kubernetes objects first so I can change the cluster in the same shape it is currently deployed. Then I’ll generate/mount certs, restart as needed, and verify both requested commands.
+exec
+/bin/zsh -lc 'pwd && rg --files -uu' in /Users/jinyige/Karma/runs/new-added-workflows/cockroachdb-cert-ingress-monitor-20260622_214646/stages/stage_02
+ succeeded in 0ms:
+/Users/jinyige/Karma/runs/new-added-workflows/cockroachdb-cert-ingress-monitor-20260622_214646/stages/stage_02
+proxy-client.crt
+agent.log
+precondition.log
+prompt.txt
+proxy.pid
+.submit.partial
+proxy-client.key
+
+exec
+/bin/zsh -lc 'kubectl -n cockroachdb get pods,svc,sts,deploy,cm,secret -o wide' in /Users/jinyige/Karma/runs/new-added-workflows/cockroachdb-cert-ingress-monitor-20260622_214646/stages/stage_02
+ succeeded in 191ms:
+NAME                 READY   STATUS    RESTARTS   AGE     IP            NODE           NOMINATED NODE   READINESS GATES
+pod/crdb-cluster-0   1/1     Running   0          10m     10.244.3.20   kind-worker3   <none>           <none>
+pod/crdb-cluster-1   1/1     Running   0          10m     10.244.2.21   kind-worker2   <none>           <none>
+pod/crdb-cluster-2   1/1     Running   0          10m     10.244.1.14   kind-worker    <none>           <none>
+pod/curl-test        1/1     Running   0          4m54s   10.244.3.22   kind-worker3   <none>           <none>
+
+NAME                          TYPE        CLUSTER-IP      EXTERNAL-IP   PORT(S)              AGE   SELECTOR
+service/crdb-cluster          ClusterIP   None            <none>        26257/TCP,8080/TCP   10m   app.kubernetes.io/instance=crdb-cluster,app.kubernetes.io/name=cockroachdb
+service/crdb-cluster-public   ClusterIP   10.96.131.212   <none>        26257/TCP,8080/TCP   10m   app.kubernetes.io/instance=crdb-cluster,app.kubernetes.io/name=cockroachdb
+
+NAME                            READY   AGE   CONTAINERS   IMAGES
+statefulset.apps/crdb-cluster   3/3     10m   db           cockroachdb/cockroach:v24.1.0
+
+NAME                         DATA   AGE
+configmap/kube-root-ca.crt   1      10m
+
+codex
+The cluster is a 3-node StatefulSet using `cockroachdb/cockroach:v24.1.0`, currently with no cert secret present in the namespace. I’m checking the StatefulSet args and locating the certificate toolbox pod before making changes.
+exec
+/bin/zsh -lc 'kubectl -n cockroachdb get statefulset crdb-cluster -o yaml' in /Users/jinyige/Karma/runs/new-added-workflows/cockroachdb-cert-ingress-monitor-20260622_214646/stages/stage_02
+ succeeded in 0ms:
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  annotations:
+    kubectl.kubernetes.io/last-applied-configuration: |
+      {"apiVersion":"apps/v1","kind":"StatefulSet","metadata":{"annotations":{},"labels":{"app.kubernetes.io/instance":"crdb-cluster","app.kubernetes.io/name":"cockroachdb"},"name":"crdb-cluster","namespace":"cockroachdb"},"spec":{"podManagementPolicy":"Parallel","replicas":3,"selector":{"matchLabels":{"app.kubernetes.io/instance":"crdb-cluster","app.kubernetes.io/name":"cockroachdb"}},"serviceName":"crdb-cluster","template":{"metadata":{"labels":{"app.kubernetes.io/instance":"crdb-cluster","app.kubernetes.io/name":"cockroachdb"}},"spec":{"containers":[{"command":["/bin/bash","-c","exec /cockroach/cockroach start --logtostderr=INFO --insecure --advertise-host=$(POD_NAME).crdb-cluster.cockroachdb.svc.cluster.local --http-addr=0.0.0.0:8080 --port=26257 --cache=25% --max-sql-memory=25% --join=crdb-cluster-0.crdb-cluster.cockroachdb.svc.cluster.local:26257,crdb-cluster-1.crdb-cluster.cockroachdb.svc.cluster.local:26257,crdb-cluster-2.crdb-cluster.cockroachdb.svc.cluster.local:26257"],"env":[{"name":"POD_NAME","valueFrom":{"fieldRef":{"fieldPath":"metadata.name"}}},{"name":"POD_NAMESPACE","valueFrom":{"fieldRef":{"fieldPath":"metadata.namespace"}}}],"image":"cockroachdb/cockroach:v24.1.0","imagePullPolicy":"IfNotPresent","livenessProbe":{"httpGet":{"path":"/health","port":"http"},"initialDelaySeconds":30,"periodSeconds":5},"name":"db","ports":[{"containerPort":26257,"name":"grpc"},{"containerPort":8080,"name":"http"}],"readinessProbe":{"failureThreshold":2,"httpGet":{"path":"/health?ready=1","port":"http"},"initialDelaySeconds":10,"periodSeconds":5},"resources":{"limits":{"cpu":"1","memory":"2Gi"},"requests":{"cpu":"1","memory":"2Gi"}},"volumeMounts":[{"mountPath":"/cockroach/cockroach-data","name":"datadir"}]}],"serviceAccountName":"crdb-cluster-sa","terminationGracePeriodSeconds":10}},"volumeClaimTemplates":[{"metadata":{"labels":{"app.kubernetes.io/instance":"crdb-cluster","app.kubernetes.io/name":"cockroachdb"},"name":"datadir"},"spec":{"accessModes":["ReadWriteOnce"],"resources":{"requests":{"storage":"10Gi"}},"volumeMode":"Filesystem"}}]}}
+  creationTimestamp: "2026-06-22T21:37:58Z"
+  generation: 1
+  labels:
+    app.kubernetes.io/instance: crdb-cluster
+    app.kubernetes.io/name: cockroachdb
+  name: crdb-cluster
+  namespace: cockroachdb
+  resourceVersion: "150796"
+  uid: 8cf0bc96-9a59-4afa-9e12-91d89df30846
+spec:
+  persistentVolumeClaimRetentionPolicy:
+    whenDeleted: Retain
+    whenScaled: Retain
+  podManagementPolicy: Parallel
+  replicas: 3
+  revisionHistoryLimit: 10
+  selector:
+    matchLabels:
+      app.kubernetes.io/instance: crdb-cluster
+      app.kubernetes.io/name: cockroachdb
+  serviceName: crdb-cluster
+  template:
+    metadata:
+      creationTimestamp: null
+      labels:
+        app.kubernetes.io/instance: crdb-cluster
+        app.kubernetes.io/name: cockroachdb
+    spec:
+      containers:
+      - command:
+        - /bin/bash
+        - -c
+        - exec /cockroach/cockroach start --logtostderr=INFO --insecure --advertise-host=$(POD_NAME).crdb-cluster.cockroachdb.svc.cluster.local
+          --http-addr=0.0.0.0:8080 --port=26257 --cache=25% --max-sql-memory=25% --join=crdb-cluster-0.crdb-cluster.cockroachdb.svc.cluster.local:26257,crdb-cluster-1.crdb-cluster.cockroachdb.svc.cluster.local:26257,crdb-cluster-2.crdb-cluster.cockroachdb.svc.cluster.local:26257
+        env:
+        - name: POD_NAME
+          valueFrom:
+            fieldRef:
+              apiVersion: v1
+              fieldPath: metadata.name
+        - name: POD_NAMESPACE
+          valueFrom:
+            fieldRef:
+              apiVersion: v1
+              fieldPath: metadata.namespace
+        image: cockroachdb/cockroach:v24.1.0
+        imagePullPolicy: IfNotPresent
+        livenessProbe:
+          failureThreshold: 3
+          httpGet:
+            path: /health
+            port: http
+            scheme: HTTP
+          initialDelaySeconds: 30
+          periodSeconds: 5
+          successThreshold: 1
+          timeoutSeconds: 1
+        name: db
+        ports:
+        - containerPort: 26257
+          name: grpc
+          protocol: TCP
+        - containerPort: 8080
+          name: http
+          protocol: TCP
+        readinessProbe:
+          failureThreshold: 2
+          httpGet:
+            path: /health?ready=1
+            port: http
+            scheme: HTTP
+          initialDelaySeconds: 10
+          periodSeconds: 5
+          successThreshold: 1
+          timeoutSeconds: 1
+        resources:
+          limits:
+            cpu: "1"
+            memory: 2Gi
+          requests:
+            cpu: "1"
+            memory: 2Gi
+        terminationMessagePath: /dev/termination-log
+        terminationMessagePolicy: File
+        volumeMounts:
+        - mountPath: /cockroach/cockroach-data
+          name: datadir
+      dnsPolicy: ClusterFirst
+      restartPolicy: Always
+      schedulerName: default-scheduler
+      securityContext: {}
+      serviceAccount: crdb-cluster-sa
+      serviceAccountName: crdb-cluster-sa
+      terminationGracePeriodSeconds: 10
+  updateStrategy:
+    rollingUpdate:
+      partition: 0
+    type: RollingUpdate
+  volumeClaimTemplates:
+  - apiVersion: v1
+    kind: PersistentVolumeClaim
+    metadata:
+      creationTimestamp: null
+      labels:
+        app.kubernetes.io/instance: crdb-cluster
+        app.kubernetes.io/name: cockroachdb
+      name: datadir
+    spec:
+      accessModes:
+      - ReadWriteOnce
+      resources:
+        requests:
+          storage: 10Gi
+      volumeMode: Filesystem
+    status:
+      phase: Pending
+status:
+  availableReplicas: 3
+  collisionCount: 0
+  currentReplicas: 3
+  currentRevision: crdb-cluster-76646fb9b9
+  observedGeneration: 1
+  readyReplicas: 3
+  replicas: 3
+  updateRevision: crdb-cluster-76646fb9b9
+  updatedReplicas: 3
+
+exec
+/bin/zsh -lc "kubectl -n cockroachdb get pod crdb-cluster-0 -o jsonpath='{.spec.containers[0].command}{\"\\n\"}{.spec.containers[0].args}{\"\\n\"}{.spec.containers[0].volumeMounts}{\"\\n\"}{.spec.volumes}{\"\\n\"}'" in /Users/jinyige/Karma/runs/new-added-workflows/cockroachdb-cert-ingress-monitor-20260622_214646/stages/stage_02
+ succeeded in 0ms:
+["/bin/bash","-c","exec /cockroach/cockroach start --logtostderr=INFO --insecure --advertise-host=$(POD_NAME).crdb-cluster.cockroachdb.svc.cluster.local --http-addr=0.0.0.0:8080 --port=26257 --cache=25% --max-sql-memory=25% --join=crdb-cluster-0.crdb-cluster.cockroachdb.svc.cluster.local:26257,crdb-cluster-1.crdb-cluster.cockroachdb.svc.cluster.local:26257,crdb-cluster-2.crdb-cluster.cockroachdb.svc.cluster.local:26257"]
+
+[{"mountPath":"/cockroach/cockroach-data","name":"datadir"},{"mountPath":"/var/run/secrets/kubernetes.io/serviceaccount","name":"kube-api-access-tkrtv","readOnly":true}]
+[{"name":"datadir","persistentVolumeClaim":{"claimName":"datadir-crdb-cluster-0"}},{"name":"kube-api-access-tkrtv","projected":{"defaultMode":420,"sources":[{"serviceAccountToken":{"expirationSeconds":3607,"path":"token"}},{"configMap":{"items":[{"key":"ca.crt","path":"ca.crt"}],"name":"kube-root-ca.crt"}},{"downwardAPI":{"items":[{"fieldRef":{"apiVersion":"v1","fieldPath":"metadata.namespace"},"path":"namespace"}]}}]}}]
+
+exec
+/bin/zsh -lc "kubectl get pods -A -o wide | rg -i 'openssl|toolbox|cert|cockroach|crdb'" in /Users/jinyige/Karma/runs/new-added-workflows/cockroachdb-cert-ingress-monitor-20260622_214646/stages/stage_02
+ succeeded in 0ms:
+cockroachdb                                                crdb-cluster-0                               1/1     Running     0             10m    10.244.3.20   kind-worker3         <none>           <none>
+cockroachdb                                                crdb-cluster-1                               1/1     Running     0             10m    10.244.2.21   kind-worker2         <none>           <none>
+cockroachdb                                                crdb-cluster-2                               1/1     Running     0             10m    10.244.1.14   kind-worker          <none>           <none>
+cockroachdb                                                curl-test                                    1/1     Running     0             5m6s   10.244.3.22   kind-worker3         <none>           <none>
+
+exec
+/bin/zsh -lc 'kubectl -n cockroachdb get all -l app.kubernetes.io/instance=crdb-cluster -o wide' in /Users/jinyige/Karma/runs/new-added-workflows/cockroachdb-cert-ingress-monitor-20260622_214646/stages/stage_02
+ succeeded in 197ms:
+NAME                 READY   STATUS    RESTARTS   AGE   IP            NODE           NOMINATED NODE   READINESS GATES
+pod/crdb-cluster-0   1/1     Running   0          10m   10.244.3.20   kind-worker3   <none>           <none>
+pod/crdb-cluster-1   1/1     Running   0          10m   10.244.2.21   kind-worker2   <none>           <none>
+pod/crdb-cluster-2   1/1     Running   0          10m   10.244.1.14   kind-worker    <none>           <none>
+
+NAME                          TYPE        CLUSTER-IP      EXTERNAL-IP   PORT(S)              AGE   SELECTOR
+service/crdb-cluster          ClusterIP   None            <none>        26257/TCP,8080/TCP   10m   app.kubernetes.io/instance=crdb-cluster,app.kubernetes.io/name=cockroachdb
+service/crdb-cluster-public   ClusterIP   10.96.131.212   <none>        26257/TCP,8080/TCP   10m   app.kubernetes.io/instance=crdb-cluster,app.kubernetes.io/name=cockroachdb
+
+NAME                            READY   AGE   CONTAINERS   IMAGES
+statefulset.apps/crdb-cluster   3/3     10m   db           cockroachdb/cockroach:v24.1.0
+
+codex
+I don’t see an `openssl-toolbox` pod in the current namespace or across namespaces, so I’m checking the task logs and local files for how it was provisioned. The StatefulSet is a straightforward insecure start command, which means the main work is cert generation, a Secret volume, and replacing `--insecure` with `--certs-dir`.
+exec
+/bin/zsh -lc "sed -n '1,220p' prompt.txt" in /Users/jinyige/Karma/runs/new-added-workflows/cockroachdb-cert-ingress-monitor-20260622_214646/stages/stage_02
+ succeeded in 0ms:
+Enable TLS for the running CockroachDB cluster in the cockroachdb namespace.
+
+The cluster is currently running in insecure mode. An openssl-toolbox pod
+is available for certificate generation.
+
+GOAL:
+1. Insecure access is rejected:
+   ```bash
+   kubectl -n cockroachdb exec crdb-cluster-0 -- \
+     ./cockroach sql --insecure -e "SELECT 1;"
+   ```
+2. Secure access succeeds:
+   ```bash
+   kubectl -n cockroachdb exec crdb-cluster-0 -- \
+     ./cockroach sql --certs-dir=/cockroach/cockroach-certs -e "SELECT 1;"
+   ```
+exec
+/bin/zsh -lc "sed -n '1,260p' agent.log" in /Users/jinyige/Karma/runs/new-added-workflows/cockroachdb-cert-ingress-monitor-20260622_214646/stages/stage_02
+ succeeded in 0ms:
+OpenAI Codex v0.142.0-alpha.6
+--------
+workdir: /Users/jinyige/Karma/runs/new-added-workflows/cockroachdb-cert-ingress-monitor-20260622_214646/stages/stage_02
+model: gpt-5.5
+provider: openai
+approval: never
+sandbox: danger-full-access
+reasoning effort: xhigh
+reasoning summaries: none
+session id: 019ef14e-2e54-7d63-a4f5-78b05fb3ce8d
+--------
+user
+Enable TLS for the running CockroachDB cluster in the cockroachdb namespace.
+
+The cluster is currently running in insecure mode. An openssl-toolbox pod
+is available for certificate generation.
+
+GOAL:
+1. Insecure access is rejected:
+   ```bash
+   kubectl -n cockroachdb exec crdb-cluster-0 -- \
+     ./cockroach sql --insecure -e "SELECT 1;"
+   ```
+2. Secure access succeeds:
+   ```bash
+   kubectl -n cockroachdb exec crdb-cluster-0 -- \
+     ./cockroach sql --certs-dir=/cockroach/cockroach-certs -e "SELECT 1;"
+   ```
+codex
+I’ll inspect the workspace and the live Kubernetes objects first so I can change the cluster in the same shape it is currently deployed. Then I’ll generate/mount certs, restart as needed, and verify both requested commands.
+exec
+/bin/zsh -lc 'pwd && rg --files -uu' in /Users/jinyige/Karma/runs/new-added-workflows/cockroachdb-cert-ingress-monitor-20260622_214646/stages/stage_02
+ succeeded in 0ms:
+/Users/jinyige/Karma/runs/new-added-workflows/cockroachdb-cert-ingress-monitor-20260622_214646/stages/stage_02
+proxy-client.crt
+agent.log
+precondition.log
+prompt.txt
+proxy.pid
+.submit.partial
+proxy-client.key
+
+exec
+/bin/zsh -lc 'kubectl -n cockroachdb get pods,svc,sts,deploy,cm,secret -o wide' in /Users/jinyige/Karma/runs/new-added-workflows/cockroachdb-cert-ingress-monitor-20260622_214646/stages/stage_02
+ succeeded in 191ms:
+NAME                 READY   STATUS    RESTARTS   AGE     IP            NODE           NOMINATED NODE   READINESS GATES
+pod/crdb-cluster-0   1/1     Running   0          10m     10.244.3.20   kind-worker3   <none>           <none>
+pod/crdb-cluster-1   1/1     Running   0          10m     10.244.2.21   kind-worker2   <none>           <none>
+pod/crdb-cluster-2   1/1     Running   0          10m     10.244.1.14   kind-worker    <none>           <none>
+pod/curl-test        1/1     Running   0          4m54s   10.244.3.22   kind-worker3   <none>           <none>
+
+NAME                          TYPE        CLUSTER-IP      EXTERNAL-IP   PORT(S)              AGE   SELECTOR
+service/crdb-cluster          ClusterIP   None            <none>        26257/TCP,8080/TCP   10m   app.kubernetes.io/instance=crdb-cluster,app.kubernetes.io/name=cockroachdb
+service/crdb-cluster-public   ClusterIP   10.96.131.212   <none>        26257/TCP,8080/TCP   10m   app.kubernetes.io/instance=crdb-cluster,app.kubernetes.io/name=cockroachdb
+
+NAME                            READY   AGE   CONTAINERS   IMAGES
+statefulset.apps/crdb-cluster   3/3     10m   db           cockroachdb/cockroach:v24.1.0
+
+NAME                         DATA   AGE
+configmap/kube-root-ca.crt   1      10m
+
+codex
+The cluster is a 3-node StatefulSet using `cockroachdb/cockroach:v24.1.0`, currently with no cert secret present in the namespace. I’m checking the StatefulSet args and locating the certificate toolbox pod before making changes.
+exec
+/bin/zsh -lc 'kubectl -n cockroachdb get statefulset crdb-cluster -o yaml' in /Users/jinyige/Karma/runs/new-added-workflows/cockroachdb-cert-ingress-monitor-20260622_214646/stages/stage_02
+ succeeded in 0ms:
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  annotations:
+    kubectl.kubernetes.io/last-applied-configuration: |
+      {"apiVersion":"apps/v1","kind":"StatefulSet","metadata":{"annotations":{},"labels":{"app.kubernetes.io/instance":"crdb-cluster","app.kubernetes.io/name":"cockroachdb"},"name":"crdb-cluster","namespace":"cockroachdb"},"spec":{"podManagementPolicy":"Parallel","replicas":3,"selector":{"matchLabels":{"app.kubernetes.io/instance":"crdb-cluster","app.kubernetes.io/name":"cockroachdb"}},"serviceName":"crdb-cluster","template":{"metadata":{"labels":{"app.kubernetes.io/instance":"crdb-cluster","app.kubernetes.io/name":"cockroachdb"}},"spec":{"containers":[{"command":["/bin/bash","-c","exec /cockroach/cockroach start --logtostderr=INFO --insecure --advertise-host=$(POD_NAME).crdb-cluster.cockroachdb.svc.cluster.local --http-addr=0.0.0.0:8080 --port=26257 --cache=25% --max-sql-memory=25% --join=crdb-cluster-0.crdb-cluster.cockroachdb.svc.cluster.local:26257,crdb-cluster-1.crdb-cluster.cockroachdb.svc.cluster.local:26257,crdb-cluster-2.crdb-cluster.cockroachdb.svc.cluster.local:26257"],"env":[{"name":"POD_NAME","valueFrom":{"fieldRef":{"fieldPath":"metadata.name"}}},{"name":"POD_NAMESPACE","valueFrom":{"fieldRef":{"fieldPath":"metadata.namespace"}}}],"image":"cockroachdb/cockroach:v24.1.0","imagePullPolicy":"IfNotPresent","livenessProbe":{"httpGet":{"path":"/health","port":"http"},"initialDelaySeconds":30,"periodSeconds":5},"name":"db","ports":[{"containerPort":26257,"name":"grpc"},{"containerPort":8080,"name":"http"}],"readinessProbe":{"failureThreshold":2,"httpGet":{"path":"/health?ready=1","port":"http"},"initialDelaySeconds":10,"periodSeconds":5},"resources":{"limits":{"cpu":"1","memory":"2Gi"},"requests":{"cpu":"1","memory":"2Gi"}},"volumeMounts":[{"mountPath":"/cockroach/cockroach-data","name":"datadir"}]}],"serviceAccountName":"crdb-cluster-sa","terminationGracePeriodSeconds":10}},"volumeClaimTemplates":[{"metadata":{"labels":{"app.kubernetes.io/instance":"crdb-cluster","app.kubernetes.io/name":"cockroachdb"},"name":"datadir"},"spec":{"accessModes":["ReadWriteOnce"],"resources":{"requests":{"storage":"10Gi"}},"volumeMode":"Filesystem"}}]}}
+  creationTimestamp: "2026-06-22T21:37:58Z"
+  generation: 1
+  labels:
+    app.kubernetes.io/instance: crdb-cluster
+    app.kubernetes.io/name: cockroachdb
+  name: crdb-cluster
+  namespace: cockroachdb
+  resourceVersion: "150796"
+  uid: 8cf0bc96-9a59-4afa-9e12-91d89df30846
+spec:
+  persistentVolumeClaimRetentionPolicy:
+    whenDeleted: Retain
+    whenScaled: Retain
+  podManagementPolicy: Parallel
+  replicas: 3
+  revisionHistoryLimit: 10
+  selector:
+    matchLabels:
+      app.kubernetes.io/instance: crdb-cluster
+      app.kubernetes.io/name: cockroachdb
+  serviceName: crdb-cluster
+  template:
+    metadata:
+      creationTimestamp: null
+      labels:
+        app.kubernetes.io/instance: crdb-cluster
+        app.kubernetes.io/name: cockroachdb
+    spec:
+      containers:
+      - command:
+        - /bin/bash
+        - -c
+        - exec /cockroach/cockroach start --logtostderr=INFO --insecure --advertise-host=$(POD_NAME).crdb-cluster.cockroachdb.svc.cluster.local
+          --http-addr=0.0.0.0:8080 --port=26257 --cache=25% --max-sql-memory=25% --join=crdb-cluster-0.crdb-cluster.cockroachdb.svc.cluster.local:26257,crdb-cluster-1.crdb-cluster.cockroachdb.svc.cluster.local:26257,crdb-cluster-2.crdb-cluster.cockroachdb.svc.cluster.local:26257
+        env:
+        - name: POD_NAME
+          valueFrom:
+            fieldRef:
+              apiVersion: v1
+              fieldPath: metadata.name
+        - name: POD_NAMESPACE
+          valueFrom:
+            fieldRef:
+              apiVersion: v1
+              fieldPath: metadata.namespace
+        image: cockroachdb/cockroach:v24.1.0
+        imagePullPolicy: IfNotPresent
+        livenessProbe:
+          failureThreshold: 3
+          httpGet:
+            path: /health
+            port: http
+            scheme: HTTP
+          initialDelaySeconds: 30
+          periodSeconds: 5
+          successThreshold: 1
+          timeoutSeconds: 1
+        name: db
+        ports:
+        - containerPort: 26257
+          name: grpc
+          protocol: TCP
+        - containerPort: 8080
+          name: http
+          protocol: TCP
+        readinessProbe:
+          failureThreshold: 2
+          httpGet:
+            path: /health?ready=1
+            port: http
+            scheme: HTTP
+          initialDelaySeconds: 10
+          periodSeconds: 5
+          successThreshold: 1
+          timeoutSeconds: 1
+        resources:
+          limits:
+            cpu: "1"
+            memory: 2Gi
+          requests:
+            cpu: "1"
+            memory: 2Gi
+        terminationMessagePath: /dev/termination-log
+        terminationMessagePolicy: File
+        volumeMounts:
+        - mountPath: /cockroach/cockroach-data
+          name: datadir
+      dnsPolicy: ClusterFirst
+      restartPolicy: Always
+      schedulerName: default-scheduler
+      securityContext: {}
+      serviceAccount: crdb-cluster-sa
+      serviceAccountName: crdb-cluster-sa
+      terminationGracePeriodSeconds: 10
+  updateStrategy:
+    rollingUpdate:
+      partition: 0
+    type: RollingUpdate
+  volumeClaimTemplates:
+  - apiVersion: v1
+    kind: PersistentVolumeClaim
+    metadata:
+      creationTimestamp: null
+      labels:
+        app.kubernetes.io/instance: crdb-cluster
+        app.kubernetes.io/name: cockroachdb
+      name: datadir
+    spec:
+      accessModes:
+      - ReadWriteOnce
+      resources:
+        requests:
+          storage: 10Gi
+      volumeMode: Filesystem
+    status:
+      phase: Pending
+status:
+  availableReplicas: 3
+  collisionCount: 0
+  currentReplicas: 3
+  currentRevision: crdb-cluster-76646fb9b9
+  observedGeneration: 1
+  readyReplicas: 3
+  replicas: 3
+  updateRevision: crdb-cluster-76646fb9b9
+  updatedReplicas: 3
+
+exec
+/bin/zsh -lc "kubectl -n cockroachdb get pod crdb-cluster-0 -o jsonpath='{.spec.containers[0].command}{\"\\n\"}{.spec.containers[0].args}{\"\\n\"}{.spec.containers[0].volumeMounts}{\"\\n\"}{.spec.volumes}{\"\\n\"}'" in /Users/jinyige/Karma/runs/new-added-workflows/cockroachdb-cert-ingress-monitor-20260622_214646/stages/stage_02
+ succeeded in 0ms:
+["/bin/bash","-c","exec /cockroach/cockroach start --logtostderr=INFO --insecure --advertise-host=$(POD_NAME).crdb-cluster.cockroachdb.svc.cluster.local --http-addr=0.0.0.0:8080 --port=26257 --cache=25% --max-sql-memory=25% --join=crdb-cluster-0.crdb-cluster.cockroachdb.svc.cluster.local:26257,crdb-cluster-1.crdb-cluster.cockroachdb.svc.cluster.local:26257,crdb-cluster-2.crdb-cluster.cockroachdb.svc.cluster.local:26257"]
+
+[{"mountPath":"/cockroach/cockroach-data","name":"datadir"},{"mountPath":"/var/run/secrets/kubernetes.io/serviceaccount","name":"kube-api-access-tkrtv","readOnly":true}]
+[{"name":"datadir","persistentVolumeClaim":{"claimName":"datadir-crdb-cluster-0"}},{"name":"kube-api-access-tkrtv","projected":{"defaultMode":420,"sources":[{"serviceAccountToken":{"expirationSeconds":3607,"path":"token"}},{"configMap":{"items":[{"key":"ca.crt","path":"ca.crt"}],"name":"kube-root-ca.crt"}},{"downwardAPI":{"items":[{"fieldRef":{"apiVersion":"v1","fieldPath":"metadata.namespace"},"path":"namespace"}]}}]}}]
+
+exec
+/bin/zsh -lc "kubectl get pods -A -o wide | rg -i 'openssl|toolbox|cert|cockroach|crdb'" in /Users/jinyige/Karma/runs/new-added-workflows/cockroachdb-cert-ingress-monitor-20260622_214646/stages/stage_02
+ succeeded in 0ms:
+cockroachdb                                                crdb-cluster-0                               1/1     Running     0             10m    10.244.3.20   kind-worker3         <none>           <none>
+cockroachdb                                                crdb-cluster-1                               1/1     Running     0             10m    10.244.2.21   kind-worker2         <none>           <none>
+cockroachdb                                                crdb-cluster-2                               1/1     Running     0             10m    10.244.1.14   kind-worker          <none>           <none>
+cockroachdb                                                curl-test                                    1/1     Running     0             5m6s   10.244.3.22   kind-worker3         <none>           <none>
+
+exec
+/bin/zsh -lc 'kubectl -n cockroachdb get all -l app.kubernetes.io/instance=crdb-cluster -o wide' in /Users/jinyige/Karma/runs/new-added-workflows/cockroachdb-cert-ingress-monitor-20260622_214646/stages/stage_02
+ succeeded in 197ms:
+NAME                 READY   STATUS    RESTARTS   AGE   IP            NODE           NOMINATED NODE   READINESS GATES
+pod/crdb-cluster-0   1/1     Running   0          10m   10.244.3.20   kind-worker3   <none>           <none>
+pod/crdb-cluster-1   1/1     Running   0          10m   10.244.2.21   kind-worker2   <none>           <none>
+pod/crdb-cluster-2   1/1     Running   0          10m   10.244.1.14   kind-worker    <none>           <none>
+
+NAME                          TYPE        CLUSTER-IP      EXTERNAL-IP   PORT(S)              AGE   SELECTOR
+service/crdb-cluster          ClusterIP   None            <none>        26257/TCP,8080/TCP   10m   app.kubernetes.io/instance=crdb-cluster,app.kubernetes.io/name=cockroachdb
+service/crdb-cluster-public   ClusterIP   10.96.131.212   <none>        26257/TCP,8080/TCP   10m   app.kubernetes.io/instance=crdb-cluster,app.kubernetes.io/name=cockroachdb
+
+NAME                            READY   AGE   CONTAINERS   IMAGES
+statefulset.apps/crdb-cluster   3/3     10m   db           cockroachdb/cockroach:v24.1.0
+
+codex
+I don’t see an `openssl-toolbox` pod in the current namespace or across namespaces, so I’m checking the task logs and local files for how it was provisioned. The StatefulSet is a straightforward insecure start command, which means the main work is cert generation, a Secret volume, and replacing `--insecure` with `--certs-dir`.
+exec
+/bin/zsh -lc "sed -n '1,220p' prompt.txt" in /Users/jinyige/Karma/runs/new-added-workflows/cockroachdb-cert-ingress-monitor-20260622_214646/stages/stage_02
+ succeeded in 0ms:
+Enable TLS for the running CockroachDB cluster in the cockroachdb namespace.
+
+The cluster is currently running in insecure mode. An openssl-toolbox pod
+is available for certificate generation.
+
+GOAL:
+1. Insecure access is rejected:
+   ```bash
+   kubectl -n cockroachdb exec crdb-cluster-0 -- \
+     ./cockroach sql --insecure -e "SELECT 1;"
+   ```
+2. Secure access succeeds:
+   ```bash
+   kubectl -n cockroachdb exec crdb-cluster-0 -- \
+     ./cockroach sql --certs-dir=/cockroach/cockroach-certs -e "SELECT 1;"
+   ```
+
+exec
+/bin/zsh -lc "sed -n '1,260p' precondition.log" in /Users/jinyige/Karma/runs/new-added-workflows/cockroachdb-cert-ingress-monitor-20260622_214646/stages/stage_02
+ succeeded in 0ms:
+[precondition:crdb_env_ready:preconditionUnits[0] 'crdb_env_ready':probe] $ /bin/sh -c 'flag=--insecure; kubectl -n cockroachdb exec crdb-cluster-0 -- ls /cockroach/cockroach-certs/ca.crt >/dev/null 2>&1 && flag=--certs-dir=/cockroach/cockroach-certs; kubectl -n cockroachdb exec crdb-cluster-0 -- ./cockroach sql $flag -e "SELECT 1;" 2>/dev/null || kubectl -n cockroachdb get pods 2>/dev/null | grep -q Running'
+?column?
+1
+
+
+exec
+/bin/zsh -lc 'kubectl get ns && kubectl get pods -A --show-labels' in /Users/jinyige/Karma/runs/new-added-workflows/cockroachdb-cert-ingress-monitor-20260622_214646/stages/stage_02
+ succeeded in 244ms:
+NAME                                                       STATUS   AGE
+cockroachdb                                                Active   10m
+default                                                    Active   10d
+karma-rabbitmq-security-marathon-2026-e9526b7b-cluster-a   Active   32m
+kube-node-lease                                            Active   10d
+kube-public                                                Active   10d
+kube-system                                                Active   10d
+local-path-storage                                         Active   10d
+NAMESPACE                                                  NAME                                         READY   STATUS      RESTARTS      AGE     LABELS
+cockroachdb                                                crdb-cluster-0                               1/1     Running     0             10m     app.kubernetes.io/instance=crdb-cluster,app.kubernetes.io/name=cockroachdb,apps.kubernetes.io/pod-index=0,controller-revision-hash=crdb-cluster-76646fb9b9,statefulset.kubernetes.io/pod-name=crdb-cluster-0
+cockroachdb                                                crdb-cluster-1                               1/1     Running     0             10m     app.kubernetes.io/instance=crdb-cluster,app.kubernetes.io/name=cockroachdb,apps.kubernetes.io/pod-index=1,controller-revision-hash=crdb-cluster-76646fb9b9,statefulset.kubernetes.io/pod-name=crdb-cluster-1
+cockroachdb                                                crdb-cluster-2                               1/1     Running     0             10m     app.kubernetes.io/instance=crdb-cluster,app.kubernetes.io/name=cockroachdb,apps.kubernetes.io/pod-index=2,controller-revision-hash=crdb-cluster-76646fb9b9,statefulset.kubernetes.io/pod-name=crdb-cluster-2
+cockroachdb                                                curl-test                                    1/1     Running     0             5m16s   <none>
+karma-rabbitmq-security-marathon-2026-e9526b7b-cluster-a   app-client-5b47685ddb-hvgq5                  1/1     Running     0             21m     app=app-client,pod-template-hash=5b47685ddb
+karma-rabbitmq-security-marathon-2026-e9526b7b-cluster-a   app-producer-77696467c6-wg7z9                1/1     Running     0             28m     app=app-producer,pod-template-hash=77696467c6
+karma-rabbitmq-security-marathon-2026-e9526b7b-cluster-a   curl-test                                    1/1     Running     0             30m     app=curl-test
+karma-rabbitmq-security-marathon-2026-e9526b7b-cluster-a   ops-client-8467495d-pst7r                    1/1     Running     0             21m     app=ops-client,pod-template-hash=8467495d
+karma-rabbitmq-security-marathon-2026-e9526b7b-cluster-a   rabbitmq-0                                   1/1     Running     0             32m     app=rabbitmq,apps.kubernetes.io/pod-index=0,controller-revision-hash=rabbitmq-5c5b457675,statefulset.kubernetes.io/pod-name=rabbitmq-0
+karma-rabbitmq-security-marathon-2026-e9526b7b-cluster-a   rabbitmq-1                                   1/1     Running     0             32m     app=rabbitmq,apps.kubernetes.io/pod-index=1,controller-revision-hash=rabbitmq-5c5b457675,statefulset.kubernetes.io/pod-name=rabbitmq-1
+karma-rabbitmq-security-marathon-2026-e9526b7b-cluster-a   rabbitmq-2                                   1/1     Running     0             31m     app=rabbitmq,apps.kubernetes.io/pod-index=2,controller-revision-hash=rabbitmq-5c5b457675,statefulset.kubernetes.io/pod-name=rabbitmq-2
+karma-rabbitmq-security-marathon-2026-e9526b7b-cluster-a   rabbitmq-setup-8cbf8                         0/1     Completed   0             26m     batch.kubernetes.io/controller-uid=a1ccc495-12e4-45d5-a645-cd2e4457225b,batch.kubernetes.io/job-name=rabbitmq-setup,controller-uid=a1ccc495-12e4-45d5-a645-cd2e4457225b,job-name=rabbitmq-setup
+kube-system                                                coredns-668d6bf9bc-6plsl                     1/1     Running     1 (35m ago)   10d     k8s-app=kube-dns,pod-template-hash=668d6bf9bc
+kube-system                                                coredns-668d6bf9bc-zvnh5                     1/1     Running     1 (35m ago)   10d     k8s-app=kube-dns,pod-template-hash=668d6bf9bc
+kube-system                                                etcd-kind-control-plane                      1/1     Running     0             34m     component=etcd,tier=control-plane
+kube-system                                                kindnet-fl6rj                                1/1     Running     1 (35m ago)   10d     app=kindnet,controller-revision-hash=5494cdbb46,k8s-app=kindnet,pod-template-generation=1,tier=node
+kube-system                                                kindnet-jr8b4                                1/1     Running     0             10d     app=kindnet,controller-revision-hash=5494cdbb46,k8s-app=kindnet,pod-template-generation=1,tier=node
+kube-system                                                kindnet-sgtbd                                1/1     Running     1 (35m ago)   10d     app=kindnet,controller-revision-hash=5494cdbb46,k8s-app=kindnet,pod-template-generation=1,tier=node
+kube-system                                                kindnet-znrw6                                1/1     Running     0             10d     app=kindnet,controller-revision-hash=5494cdbb46,k8s-app=kindnet,pod-template-generation=1,tier=node
+kube-system                                                kube-apiserver-kind-control-plane            1/1     Running     0             34m     component=kube-apiserver,tier=control-plane
+kube-system                                                kube-controller-manager-kind-control-plane   1/1     Running     1 (35m ago)   10d     component=kube-controller-manager,tier=control-plane
+kube-system                                                kube-proxy-db7bb                             1/1     Running     0             10d     controller-revision-hash=566d7b9f85,k8s-app=kube-proxy,pod-template-generation=1
+kube-system                                                kube-proxy-gtj4l                             1/1     Running     1 (35m ago)   10d     controller-revision-hash=566d7b9f85,k8s-app=kube-proxy,pod-template-generation=1
+kube-system                                                kube-proxy-mk9l2                             1/1     Running     0             10d     controller-revision-hash=566d7b9f85,k8s-app=kube-proxy,pod-template-generation=1
+kube-system                                                kube-proxy-t5f4z                             1/1     Running     1 (35m ago)   10d     controller-revision-hash=566d7b9f85,k8s-app=kube-proxy,pod-template-generation=1
+kube-system                                                kube-scheduler-kind-control-plane            1/1     Running     1 (35m ago)   10d     component=kube-scheduler,tier=control-plane
+local-path-storage                                         local-path-provisioner-58cc7856b6-zfzps      1/1     Running     2 (34m ago)   10d     app=local-path-provisioner,pod-template-hash=58cc7856b6
+
+codex
+Since the toolbox pod is not present in the API, I’m going to use the Cockroach binary’s built-in certificate tooling from an existing pod if it is available. That produces the exact file names and certificate subjects Cockroach expects, and I can then store those in a Kubernetes Secret.
+exec
+/bin/zsh -lc 'kubectl -n cockroachdb get pod openssl-toolbox -o wide' in /Users/jinyige/Karma/runs/new-added-workflows/cockroachdb-cert-ingress-monitor-20260622_214646/stages/stage_02
+ exited 1 in 231ms:
+Error from server (NotFound): pods "openssl-toolbox" not found
+
+exec
+/bin/zsh -lc 'openssl version' in /Users/jinyige/Karma/runs/new-added-workflows/cockroachdb-cert-ingress-monitor-20260622_214646/stages/stage_02
+exec
+/bin/zsh -lc 'kubectl -n cockroachdb exec crdb-cluster-0 -- ./cockroach cert --help' in /Users/jinyige/Karma/runs/new-added-workflows/cockroachdb-cert-ingress-monitor-20260622_214646/stages/stage_02
+exec
+/bin/zsh -lc "kubectl -n cockroachdb exec crdb-cluster-0 -- id && kubectl -n cockroachdb exec crdb-cluster-0 -- sh -c 'ls -ld /tmp /cockroach /cockroach/cockroach-data && touch /tmp/cert-test && rm /tmp/cert-test'" in /Users/jinyige/Karma/runs/new-added-workflows/cockroachdb-cert-ingress-monitor-20260622_214646/stages/stage_02
+ succeeded in 240ms:
+OpenSSL 3.6.1 27 Jan 2026 (Library: OpenSSL 3.6.1 27 Jan 2026)
+
+ succeeded in 297ms:
+uid=0(root) gid=0(root) groups=0(root)
+drwxr-xr-x 1 root root 4096 Jun 22 21:38 /cockroach
+drwxrwxrwx 5 root root 4096 Jun 22 21:45 /cockroach/cockroach-data
+drwxrwxrwt 2 root root 4096 May  2  2024 /tmp
+
+ succeeded in 770ms:
+create ca, node, and client certs
+
+Usage:
+  cockroach cert [flags]
+  cockroach cert [command]
+
+Available Commands:
+  create-ca               create CA certificate and key
+  create-client-ca        create client CA certificate and key
+  create-tenant-client-ca create tenant client CA certificate and key
+  create-node             create node certificate and key
+  create-client           create client certificate and key
+  create-tenant-client    create tenant client certificate and key
+  create-tenant-signing   create tenant signing certificate and key
+  list                    list certs in --certs-dir
+
+Flags:
+  -h, --help   help for cert
+
+Global Flags:
+      --enterprise-require-fips-ready      abort if FIPS readiness checks fail
+      --log <string>                       
+                                            Logging configuration, expressed using YAML syntax. For example, you can
+                                            change the default logging directory with: --log='file-defaults: {dir: ...}'.
+                                            See the documentation for more options and details.  To preview how the log
+                                            configuration is applied, or preview the default configuration, you can use
+                                            the 'cockroach debug check-log-config' sub-command.
+                                           
+      --log-config-file <file>             
+                                            File name to read the logging configuration from. This has the same effect as
+                                            passing the content of the file via the --log flag.
+                                            (default <unset>)
+      --log-config-vars strings            
+                                            Environment variables that will be expanded if present in the body of the
+                                            logging configuration.
+                                           
+      --log-dir <string>                   
+                                            --log-dir=XXX is an alias for --log='file-defaults: {dir: XXX}'.
+                                           
+      --logtostderr <severity>[=DEFAULT]   
+                                            --logtostderr=XXX is an alias for --log='sinks: {stderr: {filter: XXX}}'. If
+                                            no value is specified, the default value for the command is inferred: INFO for
+                                            server commands, WARNING for client commands.
+                                            (default UNKNOWN)
+      --redactable-logs                    
+                                            --redactable-logs=XXX is an alias for --log='file-defaults: {redactable:
+                                            XXX}}'.
+                                           
+      --vmodule moduleSpec                 comma-separated list of pattern=N settings for file-filtered logging (significantly hurts performance)
+
+Use "cockroach cert [command] --help" for more information about a command.
+
+codex
+The Cockroach cert commands are available inside `crdb-cluster-0`, so I don’t need to pull another image. I’m generating a single node certificate with every pod/service DNS name plus localhost, then I’ll mount it as a Secret at `/cockroach/cockroach-certs`.
+exec
+/bin/zsh -lc 'kubectl -n cockroachdb exec crdb-cluster-0 -- ./cockroach cert create-node --help' in /Users/jinyige/Karma/runs/new-added-workflows/cockroachdb-cert-ingress-monitor-20260622_214646/stages/stage_02
+exec
+/bin/zsh -lc "kubectl -n cockroachdb exec crdb-cluster-0 -- sh -c 'command -v tar && tar --version | head -1'" in /Users/jinyige/Karma/runs/new-added-workflows/cockroachdb-cert-ingress-monitor-20260622_214646/stages/stage_02
+exec
+/bin/zsh -lc 'kubectl -n cockroachdb exec crdb-cluster-0 -- ./cockroach cert list --certs-dir=/tmp/empty-certs 2>&1 || true' in /Users/jinyige/Karma/runs/new-added-workflows/cockroachdb-cert-ingress-monitor-20260622_214646/stages/stage_02
+exec
+/bin/zsh -lc 'kubectl -n cockroachdb exec crdb-cluster-0 -- ./cockroach cert create-client --help' in /Users/jinyige/Karma/runs/new-added-workflows/cockroachdb-cert-ingress-monitor-20260622_214646/stages/stage_02
+ succeeded in 178ms:
+/usr/bin/tar
+tar (GNU tar) 1.34
+
+ succeeded in 3162ms:
+Certificate directory: /tmp/empty-certs
+Usage	Certificate File	Key File	Expires	Notes	Error
+
+ succeeded in 3176ms:
+
+Generate a client certificate "<certs-dir>/client.<username>.crt" and key
+"<certs-dir>/client.<username>.key".
+
+If --overwrite is true, any existing files are overwritten.
+
+Requires a CA cert in "<certs-dir>/ca.crt" and matching key in "--ca-key".
+If "ca.crt" contains more than one certificate, the first is used.
+Creation fails if the CA expiration time is before the desired certificate expiration.
+
+Usage:
+  cockroach cert create-client --certs-dir=<path to cockroach certs dir> --ca-key=<path-to-ca-key> <username> [flags]
+
+Flags:
+      --also-generate-pkcs8-key               
+                                               Also write the key in pkcs8 format to <certs-dir>/client.<username>.key.pk8.
+                                              
+      --ca-key string                         
+                                               Path to the CA key.
+                                               Environment variable: COCKROACH_CA_KEY
+                                              
+      --cert-principal-map strings            
+                                               A comma separated list of <cert-principal>:<db-principal> mappings. This
+                                               allows mapping the principal in a cert to a DB principal such as "node" or
+                                               "root" or any SQL user. This is intended for use in situations where the
+                                               certificate management system places restrictions on the Subject.CommonName or
+                                               SubjectAlternateName fields in the certificate (e.g. disallowing a CommonName
+                                               such as "node" or "root"). If multiple mappings are provided for the same
+                                               <cert-principal>, the last one specified in the list takes precedence. A
+                                               principal not specified in the map is passed through as-is via the identity
+                                               function. A cert is allowed to authenticate a DB principal if the DB principal
+                                               name is contained in the mapped CommonName or DNS-type SubjectAlternateName
+                                               fields. It is permissible for the <cert-principal> string to contain colons.
+                                              
+      --certs-dir string                      
+                                               Path to the directory containing SSL certificates and keys.
+                                               Environment variable: COCKROACH_CERTS_DIR
+                                               (default "/root/.cockroach-certs")
+      --disable-username-validation           
+                                               Do not validate that the provided identity has a valid structure for a SQL
+                                               identifier. If passed, and the identity is not a valid SQL identifier, the
+                                               generated certificate can only be used if an identity map has been configured
+                                               server-side.
+                                              
+  -h, --help                                  help for create-client
+      --key-size int                          
+                                               Key size in bits for CA/Node/Client certificates.
+                                               (default 2048)
+      --lifetime duration                     
+                                               Certificate lifetime.
+                                               (default 43920h0m0s)
+      --node-cert-distinguished-name string   
+                                               A string of comma separated list of distinguished-name
+                                               <attribute-type>=<attribute-value> mappings in accordance with RFC4514 for
+                                               the node user. This strictly needs to match the DN subject in the client
+                                               certificate provided for node user if this flag is set.
+                                              
+      --overwrite                             
+                                               Certificate and key files are overwritten if they exist.
+                                              
+      --root-cert-distinguished-name string   
+                                               A string of comma separated list of distinguished-name
+                                               <attribute-type>=<attribute-value> mappings in accordance with RFC4514 for
+                                               the root user. This strictly needs to match the DN subject in the client
+                                               certificate provided for root user if this flag is set.
+                                              
+      --tenant-scope <[]TenantID>             
+                                               Assign a tenant scope to the certificate. This will restrict the certificate
+                                               to only be valid for the specified tenants. This flag is optional. When
+                                               omitted, the certificate is not scoped; i.e. it can be used with all tenants.
+
+Global Flags:
+      --enterprise-require-fips-ready      abort if FIPS readiness checks fail
+      --log <string>                       
+                                            Logging configuration, expressed using YAML syntax. For example, you can
+                                            change the default logging directory with: --log='file-defaults: {dir: ...}'.
+                                            See the documentation for more options and details.  To preview how the log
+                                            configuration is applied, or preview the default configuration, you can use
+                                            the 'cockroach debug check-log-config' sub-command.
+                                           
+      --log-config-file <file>             
+                                            File name to read the logging configuration from. This has the same effect as
+                                            passing the content of the file via the --log flag.
+                                            (default <unset>)
+      --log-config-vars strings            
+                                            Environment variables that will be expanded if present in the body of the
+                                            logging configuration.
+                                           
+      --log-dir <string>                   
+                                            --log-dir=XXX is an alias for --log='file-defaults: {dir: XXX}'.
+                                           
+      --logtostderr <severity>[=DEFAULT]   
+                                            --logtostderr=XXX is an alias for --log='sinks: {stderr: {filter: XXX}}'. If
+                                            no value is specified, the default value for the command is inferred: INFO for
+                                            server commands, WARNING for client commands.
+                                            (default UNKNOWN)
+      --redactable-logs                    
+                                            --redactable-logs=XXX is an alias for --log='file-defaults: {redactable:
+                                            XXX}}'.
+                                           
+      --vmodule moduleSpec                 comma-separated list of pattern=N settings for file-filtered logging (significantly hurts performance)
+
+ succeeded in 3353ms:
+
+Generate a node certificate "<certs-dir>/node.crt" and key "<certs-dir>/node.key".
+
+If --overwrite is true, any existing files are overwritten.
+
+At least one host should be passed in (either IP address or dns name).
+
+Requires a CA cert in "<certs-dir>/ca.crt" and matching key in "--ca-key".
+If "ca.crt" contains more than one certificate, the first is used.
+Creation fails if the CA expiration time is before the desired certificate expiration.
+
+Usage:
+  cockroach cert create-node --certs-dir=<path to cockroach certs dir> --ca-key=<path-to-ca-key> <host 1> <host 2> ... <host N> [flags]
+
+Flags:
+      --ca-key string                         
+                                               Path to the CA key.
+                                               Environment variable: COCKROACH_CA_KEY
+                                              
+      --cert-principal-map strings            
+                                               A comma separated list of <cert-principal>:<db-principal> mappings. This
+                                               allows mapping the principal in a cert to a DB principal such as "node" or
+                                               "root" or any SQL user. This is intended for use in situations where the
+                                               certificate management system places restrictions on the Subject.CommonName or
+                                               SubjectAlternateName fields in the certificate (e.g. disallowing a CommonName
+                                               such as "node" or "root"). If multiple mappings are provided for the same
+                                               <cert-principal>, the last one specified in the list takes precedence. A
+                                               principal not specified in the map is passed through as-is via the identity
+                                               function. A cert is allowed to authenticate a DB principal if the DB principal
+                                               name is contained in the mapped CommonName or DNS-type SubjectAlternateName
+                                               fields. It is permissible for the <cert-principal> string to contain colons.
+                                              
+      --certs-dir string                      
+                                               Path to the directory containing SSL certificates and keys.
+                                               Environment variable: COCKROACH_CERTS_DIR
+                                               (default "/root/.cockroach-certs")
+  -h, --help                                  help for create-node
+      --key-size int                          
+                                               Key size in bits for CA/Node/Client certificates.
+                                               (default 2048)
+      --lifetime duration                     
+                                               Certificate lifetime.
+                                               (default 43920h0m0s)
+      --node-cert-distinguished-name string   
+                                               A string of comma separated list of distinguished-name
+                                               <attribute-type>=<attribute-value> mappings in accordance with RFC4514 for
+                                               the node user. This strictly needs to match the DN subject in the client
+                                               certificate provided for node user if this flag is set.
+                                              
+      --overwrite                             
+                                               Certificate and key files are overwritten if they exist.
+                                              
+      --root-cert-distinguished-name string   
+                                               A string of comma separated list of distinguished-name
+                                               <attribute-type>=<attribute-value> mappings in accordance with RFC4514 for
+                                               the root user. This strictly needs to match the DN subject in the client
+                                               certificate provided for root user if this flag is set.
+
+Global Flags:
+      --enterprise-require-fips-ready      abort if FIPS readiness checks fail
+      --log <string>                       
+                                            Logging configuration, expressed using YAML syntax. For example, you can
+                                            change the default logging directory with: --log='file-defaults: {dir: ...}'.
+                                            See the documentation for more options and details.  To preview how the log
+                                            configuration is applied, or preview the default configuration, you can use
+                                            the 'cockroach debug check-log-config' sub-command.
+                                           
+      --log-config-file <file>             
+                                            File name to read the logging configuration from. This has the same effect as
+                                            passing the content of the file via the --log flag.
+                                            (default <unset>)
+      --log-config-vars strings            
+                                            Environment variables that will be expanded if present in the body of the
+                                            logging configuration.
+                                           
+      --log-dir <string>                   
+                                            --log-dir=XXX is an alias for --log='file-defaults: {dir: XXX}'.
+                                           
+      --logtostderr <severity>[=DEFAULT]   
+                                            --logtostderr=XXX is an alias for --log='sinks: {stderr: {filter: XXX}}'. If
+                                            no value is specified, the default value for the command is inferred: INFO for
+                                            server commands, WARNING for client commands.
+                                            (default UNKNOWN)
+      --redactable-logs                    
+                                            --redactable-logs=XXX is an alias for --log='file-defaults: {redactable:
+                                            XXX}}'.
+                                           
+      --vmodule moduleSpec                 comma-separated list of pattern=N settings for file-filtered logging (significantly hurts performance)
+
+codex
+I’m about to create the cert Secret, then I’ll scale the StatefulSet down before changing the start flags. That avoids a mixed insecure/secure cluster during the transition, which Cockroach nodes generally cannot tolerate.
+exec
+/bin/zsh -lc "set -euo pipefail
+kubectl -n cockroachdb exec crdb-cluster-0 -- sh -ceu '
+  rm -rf /tmp/crdb-certs /tmp/crdb-ca
+  mkdir -p /tmp/crdb-certs /tmp/crdb-ca
+  ./cockroach cert create-ca --certs-dir=/tmp/crdb-certs --ca-key=/tmp/crdb-ca/ca.key --overwrite
+  ./cockroach cert create-node \\
+    localhost 127.0.0.1 \\
+    crdb-cluster crdb-cluster.cockroachdb crdb-cluster.cockroachdb.svc crdb-cluster.cockroachdb.svc.cluster.local \\
+    crdb-cluster-public crdb-cluster-public.cockroachdb crdb-cluster-public.cockroachdb.svc crdb-cluster-public.cockroachdb.svc.cluster.local \\
+    crdb-cluster-0 crdb-cluster-0.crdb-cluster crdb-cluster-0.crdb-cluster.cockroachdb crdb-cluster-0.crdb-cluster.cockroachdb.svc crdb-cluster-0.crdb-cluster.cockroachdb.svc.cluster.local \\
+    crdb-cluster-1 crdb-cluster-1.crdb-cluster crdb-cluster-1.crdb-cluster.cockroachdb crdb-cluster-1.crdb-cluster.cockroachdb.svc crdb-cluster-1.crdb-cluster.cockroachdb.svc.cluster.local \\
+    crdb-cluster-2 crdb-cluster-2.crdb-cluster crdb-cluster-2.crdb-cluster.cockroachdb crdb-cluster-2.crdb-cluster.cockroachdb.svc crdb-cluster-2.crdb-cluster.cockroachdb.svc.cluster.local \\
+    --certs-dir=/tmp/crdb-certs --ca-key=/tmp/crdb-ca/ca.key --overwrite
+  ./cockroach cert create-client root --certs-dir=/tmp/crdb-certs --ca-key=/tmp/crdb-ca/ca.key --overwrite
+  chmod 0400 /tmp/crdb-certs/*.key
+  chmod 0444 /tmp/crdb-certs/*.crt
+  ./cockroach cert list --certs-dir=/tmp/crdb-certs
+'
+CERT_TMP="'$(mktemp -d /tmp/crdb-certs.XXXXXX)
+for f in ca.crt node.crt node.key client.root.crt client.root.key; do
+  kubectl -n cockroachdb cp "crdb-cluster-0:/tmp/crdb-certs/$f" "$CERT_TMP/$f"
+done
+kubectl -n cockroachdb create secret generic crdb-certs '"\\
+  --from-file=ca.crt=\""'$CERT_TMP/ca.crt" '"\\
+  --from-file=node.crt=\""'$CERT_TMP/node.crt" '"\\
+  --from-file=node.key=\""'$CERT_TMP/node.key" '"\\
+  --from-file=client.root.crt=\""'$CERT_TMP/client.root.crt" '"\\
+  --from-file=client.root.key=\""'$CERT_TMP/client.root.key" '"\\
+  --dry-run=client -o yaml | kubectl apply -f -
+kubectl -n cockroachdb get secret crdb-certs -o jsonpath='{.metadata.name}{\"\\t\"}{.type}{\"\\t\"}{.data}'
+rm -rf \""'$CERT_TMP"' in /Users/jinyige/Karma/runs/new-added-workflows/cockroachdb-cert-ingress-monitor-20260622_214646/stages/stage_02
+ succeeded in 3646ms:
+Certificate directory: /tmp/crdb-certs
+Usage	Certificate File	Key File	Expires	Notes	Error
+CA	ca.crt		2036/06/29	num certs: 1	
+Node	node.crt	node.key	2031/06/26	addresses: localhost,crdb-cluster,crdb-cluster.cockroachdb,crdb-cluster.cockroachdb.svc,crdb-cluster.cockroachdb.svc.cluster.local,crdb-cluster-public,crdb-cluster-public.cockroachdb,crdb-cluster-public.cockroachdb.svc,crdb-cluster-public.cockroachdb.svc.cluster.local,crdb-cluster-0,crdb-cluster-0.crdb-cluster,crdb-cluster-0.crdb-cluster.cockroachdb,crdb-cluster-0.crdb-cluster.cockroachdb.svc,crdb-cluster-0.crdb-cluster.cockroachdb.svc.cluster.local,crdb-cluster-1,crdb-cluster-1.crdb-cluster,crdb-cluster-1.crdb-cluster.cockroachdb,crdb-cluster-1.crdb-cluster.cockroachdb.svc,crdb-cluster-1.crdb-cluster.cockroachdb.svc.cluster.local,crdb-cluster-2,crdb-cluster-2.crdb-cluster,crdb-cluster-2.crdb-cluster.cockroachdb,crdb-cluster-2.crdb-cluster.cockroachdb.svc,crdb-cluster-2.crdb-cluster.cockroachdb.svc.cluster.local,127.0.0.1	
+Client	client.root.crt	client.root.key	2031/06/26	user: root	
+tar: Removing leading `/' from member names
+tar: Removing leading `/' from member names
+tar: Removing leading `/' from member names
+tar: Removing leading `/' from member names
+tar: Removing leading `/' from member names
+secret/crdb-certs created
+crdb-certs	Opaque	{"ca.crt":"LS0tLS1CRUdJTiBDRVJUSUZJQ0FURS0tLS0tCk1JSURKakNDQWc2Z0F3SUJBZ0lSQUp6aytFc1RWQ2F2VTE3cjRENkxpUzh3RFFZSktvWklodmNOQVFFTEJRQXcKS3pFU01CQUdBMVVFQ2hNSlEyOWphM0p2WVdOb01SVXdFd1lEVlFRREV3eERiMk5yY205aFkyZ2dRMEV3SGhjTgpNall3TmpJeE1qRTFNRE0zV2hjTk16WXdOakk1TWpFMU1ETTNXakFyTVJJd0VBWURWUVFLRXdsRGIyTnJjbTloClkyZ3hGVEFUQmdOVkJBTVRERU52WTJ0eWIyRmphQ0JEUVRDQ0FTSXdEUVlKS29aSWh2Y05BUUVCQlFBRGdnRVAKQURDQ0FRb0NnZ0VCQU9OcmpOVFdpc0NWT09LSFZQWDg5YjBCbXVtZWZBZ2czVnRGaXRiZlZDdVkvcE8zVmNnTQovVS9uYitGRU1ibVJucEFpYVJCSlkvSnpLK2txLzFxZGVVYkNJWGpJZyt5TlZOaTFsTENpN3R2YkFYUkdnYk9vCjBoaUVZYmNNU09UOXdQTlFad2ZFdFhPUWJobGhyTUhuQjIyUHpRaWd1YWxyMHVzVXVybXU5d1MyWGhMRXpiZ1UKVmVRUk9RR1dWSFVrSitBQkdyamlBMTh2dnU3SEVZOElwYU5SYkVveDk1NlRKbjBuZDJ5SCtGNFg4SEtXbm9qZgpxK2h1ZENheE5IdVhNZGd4RWhhNk0zSFRISXprS052MSs0QUpYSDZPcDcxdERpTkJ4bmRpN2xabHowQWlhcTA0ClpaUUs5eExia0ZHZms0LzdIbGk5eEJhcGdlNU02UzhLRkc4Q0F3RUFBYU5GTUVNd0RnWURWUjBQQVFIL0JBUUQKQWdMa01CSUdBMVVkRXdFQi93UUlNQVlCQWY4Q0FRRXdIUVlEVlIwT0JCWUVGQldqVnljWXQ3SFFBUTBPblpxdgp3bDVhNmxhY01BMEdDU3FHU0liM0RRRUJDd1VBQTRJQkFRQ3FZL1RQWDROb3R2dVpNbTBlK04rVkRlL01QbEdmClh4enp2aHFjMXFGdy85SFU1cG9hWExRbnpwNzJJaEpmK1ovTHgxakpoU3pRMHpSWS9Ta29UdGp0MUNBd0dxTTEKY1hDd01aSWVINmFvaU14blNkZWRIM01SNlg1NE1rMGdZZk1YZmszZ2J2bHdCdGMzSElSSjVkOUdnVWdiZzlmYgo2cWxMejJMRzVzb0Z1dVpDd2thM2NNUlFSd2l5UmQyMEFxL1pEck9ibzZRWFdsTDRUSU5CRWRFL09razdUWFRrCnhHTHdqQVdaYXlXVE5OUjRFOFltb20zY3V3Y3Fxam5pZ2FwY1czVTlnTDFNb1NlSlpMUUdRRS9mOHJzUExPMFIKbFlnL1Z3N2p5ajJsMlFpTE42UTBLYVR4WCtnOVN1N2RWTXVCZEZ2WWltQ2NWQStyOHp1SFdoSHYKLS0tLS1FTkQgQ0VSVElGSUNBVEUtLS0tLQo=","client.root.crt":"LS0tLS1CRUdJTiBDRVJUSUZJQ0FURS0tLS0tCk1JSURJRENDQWdpZ0F3SUJBZ0lRVE12Q0szd0tKbXB6OXpiMWZYdStyREFOQmdrcWhraUc5dzBCQVFzRkFEQXIKTVJJd0VBWURWUVFLRXdsRGIyTnJjbTloWTJneEZUQVRCZ05WQkFNVERFTnZZMnR5YjJGamFDQkRRVEFlRncweQpOakEyTWpFeU1UVXdNemhhRncwek1UQTJNall5TVRVd016aGFNQ014RWpBUUJnTlZCQW9UQ1VOdlkydHliMkZqCmFERU5NQXNHQTFVRUF4TUVjbTl2ZERDQ0FTSXdEUVlKS29aSWh2Y05BUUVCQlFBRGdnRVBBRENDQVFvQ2dnRUIKQU1QY1dIZFZmeG1LQy9qb2p0U2JZZXh2blpkcXhtdjZRbW90bkU1L0Vuc0RkRWwrT1htUG5zNEp1WkF1ZEVWKwoyYjNZZVhVMkxJMFBoOGFQbzhGdnQ0MmVCU0JkWVlLc01xVElaelRHcU5YSkIwWkRUdEZ2MjRPT0k0WldwMk5XCmdXQ25xd0hsU0RmK2dQZnFSRjF2WUV1aHMvU3BrWUtVUVlpUCtXKzc1cys1dHlsSnlkVEl6WVpvcVkySUZ1d0QKN3J4L3QzblMzTzNjaUVTZ1NreDFWbm9OakZRQTAxbVF3aUwrSnFxYklkYytLNzdDYWxtM3lNbDd5bGxIRnQrTApXaDZGYlBoc0lGL1BaSjU0bEN2WEVoOEtubjR2WFZXYWlQSWt3V0JzTUlnWE9Ea0tDejdZb3FjOUR1RnJmYmhNCjIvcmUwaGxScHRwOG84cHh2bUoxU1E4Q0F3RUFBYU5JTUVZd0RnWURWUjBQQVFIL0JBUURBZ1dnTUJNR0ExVWQKSlFRTU1Bb0dDQ3NHQVFVRkJ3TUNNQjhHQTFVZEl3UVlNQmFBRkJXalZ5Y1l0N0hRQVEwT25acXZ3bDVhNmxhYwpNQTBHQ1NxR1NJYjNEUUVCQ3dVQUE0SUJBUUJFU2Qxbml4MTBNWTlhYzVUQkg3OVV2QWE1R21kbUdsTGh0VksvCjhwN29iSS9TbEY5dXJjY3FZRjF5VVFwOGlrbXM0YnBaeThDOHBxOE4wR0s2a2lMd2dJRUdUZ0w3T1YwUzgrOXIKZWEybkVJQWNwTjVvYTN5bW9Ka0poVnZUVzFIb0ZoRGZNc0xpajMzaW1haEk4cHllWGlsU0JJOUhIRXZsTnBHaApBd1BEUElOSTd6Q2xPa2pyTnBiNEJIWHgrMjZkVDRwdlZIcFY5RStwQ1FYM1JOU0xieWphWk5MaVlwa3pFYld5CldLZC9aSFc2WWFtVWFQYm83d3JrUkRBRGJDQVF4SkdMNW1YRlJMaU1oZHFWOCt3MXJXSExFZ2JsdkZpRVh0cG8KYStyQ29oL084Q2VUV1I1cjNUZU1nYVZNVzRSanNyNW9IM0dPaHpaeUErMVRmamhPCi0tLS0tRU5EIENFUlRJRklDQVRFLS0tLS0K","client.root.key":"LS0tLS1CRUdJTiBSU0EgUFJJVkFURSBLRVktLS0tLQpNSUlFcEFJQkFBS0NBUUVBdzl4WWQxVi9HWW9MK09pTzFKdGg3RytkbDJyR2EvcENhaTJjVG44U2V3TjBTWDQ1CmVZK2V6Z201a0M1MFJYN1p2ZGg1ZFRZc2pRK0h4bytqd1crM2paNEZJRjFoZ3F3eXBNaG5OTWFvMWNrSFJrTk8KMFcvYmc0NGpobGFuWTFhQllLZXJBZVZJTi82QTkrcEVYVzlnUzZHejlLbVJncFJCaUkvNWI3dm16N20zS1VuSgoxTWpOaG1pcGpZZ1c3QVB1dkgrM2VkTGM3ZHlJUktCS1RIVldlZzJNVkFEVFdaRENJdjRtcXBzaDF6NHJ2c0pxCldiZkl5WHZLV1VjVzM0dGFIb1ZzK0d3Z1g4OWtubmlVSzljU0h3cWVmaTlkVlpxSThpVEJZR3d3aUJjNE9Rb0wKUHRpaXB6ME80V3Q5dUV6Yit0N1NHVkdtMm55anluRytZblZKRHdJREFRQUJBb0lCQUN1NXVvcFJyUUZmbjFLZgpZSnU0WU1FdkhlaWE3dGRXVkpOdHdWS0k3ZkJHa2lTQ0tJU3ArcE1XK3JWa21aS1dRamd1NXRhekZIa2RlWHRyCnYreEVhNThUSXlQWmxSWmVLU1ErbFVQa0FmZFFYTzVqd21uaFpnbFZwenFyaDgwV2wrV2pLUHRRVzdJY2dHQlkKalpDcWQ3NEt5S2tiWGgvZngwMmNqdHhSLzdKcDZLNEg3TlV6bU4yMzNRMm4zMi9HTmRXdERwOHlTcUU2YjRoWApXWVZBYzJWVC9LQ2dyQ0luZXVsMUJ2a0hocFJyRzQ5Q0c2aUtjekI1K1p0YytaeFdBc2lqQnZxZlhLL0YwKytYCnY0WGVQQmU4WGVKSUlKQ0s0bGZjOVhvSG16VkxIaUNFU3FqK2cvdzREQWt5NmdrWVdRQ3BOT0F0UGdHTk5ONk0Kc2RVNjBCRUNnWUVBMzhhWm1TakRlUDJKc0dnbzA1M2hmYnFVVk9WekNCbDdwbGlrYmhaMEtBWThHTmUvVVJpVQpGQ1ExS0hFNWEwVFp3NUFYRnVFcmFXbXo4YzV4QklIeFlieTExaTU4dGFEdkgxb2RKLy9uOTBQaVVRL2pnZHNlCjRhbXJSWXg3TTZXckxFUW1rT3VWZHUrZkpvclVHM2FjbVhkSFozdndjYlBxcFhaMlZLRGZjdmNDZ1lFQTRCQ3IKTkxHdXJ2UkJZWUhQZ1ZJek5lTUZnTVp2WHpBQ2RISkdyaUZ0dEdFSmZyNGxDNUwzdWhIQXg0YjQrMzV1K2NCeApmK2J6L3IwdFlVc3dhT0loalpwOHZ6c1F3dExaUnQ2UWhqSk9vOFY0Y2lEZkdSdm5Remk5UjJ5ZW0zclozbDJWCmVRSUpyUGtTcVVZLysxSXVlMjZTNUpBVWNkV09GWkdHNlNkanZLa0NnWUJtU3B5UC9LaE9PR2VtY2hhbmxYWXMKU1F2aE92bTRiQjJ2enJscmNXd3JsNTRGSlNwWlljamU1Q1pBbEhGUTdhbzEwVG9jeFZWWTNHN2JUQ2t4akV6UgpCcmlBYmNPb0t5Ymp5QWVuN3owVU5MM1JuRmU5Vm5McGFPdlg0UDI0Z0RTZENaSXZrT0ZEK3dsZlR2cmlpdmZPCjEwMldxbnNoSHNOV1c2NS94UUlmeFFLQmdRRGJ4eDNYbXUxb0NJZlU5N29zOUE3dExWZ3BmdnFoR0h0Zjh2Tm4KTzd6YXNFL2E5UEZyVCtZVHFmUTVBaWhZcnlSMWI1RWt6c25IdFpHOG5EN0lzZjROWWxvNFROeGM3T3BZZkZpdwplTW53RS9MWHAyeU51WFAyMk1HNFBFKzYzQjYxNFgrSzZUZktaYWtyUm8vZG1UZWt0TW42eldSd1gvTjFMb0J4ClU4U2R1UUtCZ1FETUxhREUwTkRWeFhlT083SGk2RkZzd2NETHBNbUp0UFFJQlQ2ZzRqVXZYMTJQQnEzSHB2bkYKcENoMnAya2RXWkRJYit0V3djZnhJQm92Vk9QaEtuRkhrcGJ4RndpVFVrUjdmSFkwWE0zYjBwa0czSTJQb1pxbwphM1luZ1ExcEw0ZnhNODJ6VXM1RVErTzM5ejR6cHVJWlJ2bEJZajl6K2Jsbzg4eXlrNUlUNHc9PQotLS0tLUVORCBSU0EgUFJJVkFURSBLRVktLS0tLQo=","node.crt":"LS0tLS1CRUdJTiBDRVJUSUZJQ0FURS0tLS0tCk1JSUdpekNDQlhPZ0F3SUJBZ0lSQU5hWUpINHRRemZldHM5RWYvRkpwYll3RFFZSktvWklodmNOQVFFTEJRQXcKS3pFU01CQUdBMVVFQ2hNSlEyOWphM0p2WVdOb01SVXdFd1lEVlFRREV3eERiMk5yY205aFkyZ2dRMEV3SGhjTgpNall3TmpJeE1qRTFNRE00V2hjTk16RXdOakkyTWpFMU1ETTRXakFqTVJJd0VBWURWUVFLRXdsRGIyTnJjbTloClkyZ3hEVEFMQmdOVkJBTVRCRzV2WkdVd2dnRWlNQTBHQ1NxR1NJYjNEUUVCQVFVQUE0SUJEd0F3Z2dFS0FvSUIKQVFEYmRQLzJRMW9QNUZSMXVwS2RURFBOMGZOOTNmaHBPNWpGb1VPNm5aaXZhSldmOTJOZFpjcjh6QmYxSW91RQpDVHkwSThDbG15TGFGaVhTSkswdEdyWmplbko3QUhvWkxSWDZ1S25wZC9xYldZVmliOU8zQll5RnUxYzhLdWZwCmZYaG5FUnR6RUgwVVJzSUg5bUpmSHlxTmlwa2d5ZFV2cTRNNnlOTGswUEgzYWZaMzBsT1hyczgrOUkwbUV3ZXMKK3J1ZlEzOWdKb0I1WFBsa0NzakNWYk5ySm82MDJZTXQvdG9vTGEra1ExaERWVU41TDdiVlVCVUl4MTNjU3prNwplVDJLekxldUdSb2hSVkUvTTVCbndFMmMyT2RIN2dOOU8zd0V0NWNjOW10cUhpMTQ1STJlQ28zUjNIb3MwTGl4CmxXMWZ4YlV1ZGZrSkhBMmgyZEZOc2pXQkFnTUJBQUdqZ2dPd01JSURyREFPQmdOVkhROEJBZjhFQkFNQ0JhQXcKSFFZRFZSMGxCQll3RkFZSUt3WUJCUVVIQXdFR0NDc0dBUVVGQndNQ01COEdBMVVkSXdRWU1CYUFGQldqVnljWQp0N0hRQVEwT25acXZ3bDVhNmxhY01JSURXQVlEVlIwUkJJSURUekNDQTB1Q0NXeHZZMkZzYUc5emRJSU1ZM0prCllpMWpiSFZ6ZEdWeWdoaGpjbVJpTFdOc2RYTjBaWEl1WTI5amEzSnZZV05vWkdLQ0hHTnlaR0l0WTJ4MWMzUmwKY2k1amIyTnJjbTloWTJoa1lpNXpkbU9DS21OeVpHSXRZMngxYzNSbGNpNWpiMk5yY205aFkyaGtZaTV6ZG1NdQpZMngxYzNSbGNpNXNiMk5oYklJVFkzSmtZaTFqYkhWemRHVnlMWEIxWW14cFk0SWZZM0prWWkxamJIVnpkR1Z5CkxYQjFZbXhwWXk1amIyTnJjbTloWTJoa1lvSWpZM0prWWkxamJIVnpkR1Z5TFhCMVlteHBZeTVqYjJOcmNtOWgKWTJoa1lpNXpkbU9DTVdOeVpHSXRZMngxYzNSbGNpMXdkV0pzYVdNdVkyOWphM0p2WVdOb1pHSXVjM1pqTG1OcwpkWE4wWlhJdWJHOWpZV3lDRG1OeVpHSXRZMngxYzNSbGNpMHdnaHRqY21SaUxXTnNkWE4wWlhJdE1DNWpjbVJpCkxXTnNkWE4wWlhLQ0oyTnlaR0l0WTJ4MWMzUmxjaTB3TG1OeVpHSXRZMngxYzNSbGNpNWpiMk5yY205aFkyaGsKWW9JclkzSmtZaTFqYkhWemRHVnlMVEF1WTNKa1lpMWpiSFZ6ZEdWeUxtTnZZMnR5YjJGamFHUmlMbk4yWTRJNQpZM0prWWkxamJIVnpkR1Z5TFRBdVkzSmtZaTFqYkhWemRHVnlMbU52WTJ0eWIyRmphR1JpTG5OMll5NWpiSFZ6CmRHVnlMbXh2WTJGc2dnNWpjbVJpTFdOc2RYTjBaWEl0TVlJYlkzSmtZaTFqYkhWemRHVnlMVEV1WTNKa1lpMWoKYkhWemRHVnlnaWRqY21SaUxXTnNkWE4wWlhJdE1TNWpjbVJpTFdOc2RYTjBaWEl1WTI5amEzSnZZV05vWkdLQwpLMk55WkdJdFkyeDFjM1JsY2kweExtTnlaR0l0WTJ4MWMzUmxjaTVqYjJOcmNtOWhZMmhrWWk1emRtT0NPV055ClpHSXRZMngxYzNSbGNpMHhMbU55WkdJdFkyeDFjM1JsY2k1amIyTnJjbTloWTJoa1lpNXpkbU11WTJ4MWMzUmwKY2k1c2IyTmhiSUlPWTNKa1lpMWpiSFZ6ZEdWeUxUS0NHMk55WkdJdFkyeDFjM1JsY2kweUxtTnlaR0l0WTJ4MQpjM1JsY29JblkzSmtZaTFqYkhWemRHVnlMVEl1WTNKa1lpMWpiSFZ6ZEdWeUxtTnZZMnR5YjJGamFHUmlnaXRqCmNtUmlMV05zZFhOMFpYSXRNaTVqY21SaUxXTnNkWE4wWlhJdVkyOWphM0p2WVdOb1pHSXVjM1pqZ2psamNtUmkKTFdOc2RYTjBaWEl0TWk1amNtUmlMV05zZFhOMFpYSXVZMjlqYTNKdllXTm9aR0l1YzNaakxtTnNkWE4wWlhJdQpiRzlqWVd5SEJIOEFBQUV3RFFZSktvWklodmNOQVFFTEJRQURnZ0VCQUVEeFMvUFdVbjhGTlM4V2thc3Z4eGVNCjZiM2NwbnRVT1FabzBpdVV5WDBzRWdGbFJ0cE5Nei84WTVNaHdmeXloNW51U2tqZitRMkJROGp0MzQ4NmxaQjIKZWllOTd0RjNFckdTQ3Urbi96anFiQU5BemxQTG5ScFF6UlZHRW5FbDI5UFlIM2xjMTE4NTlkR0hnOEhRWlBUKwprcGpuOHp2U2YwMGtOS0ZiSXVtM0hoNWVVa05MUWtES3dtamtiWjNmdWQ3TmZzd2g0ZmZUTUQ5UnJkYzlBR3orClZEZDhCeWM5OG9RTjFWQ1d3MzAzb2o1ZlBZbmZ2UUlQL0xBZ0xFc2lvcVQxUHc4V1hJTkZmN0IxNUQ2QU5ZWUUKbDFqQTdQQmJQWEtDamtZQlVqQ01zVXEwTElwRThWUkhkUzNOSWxCNHVpd1YvUUxFSmVWNFF1MGFkcTAwaE9FPQotLS0tLUVORCBDRVJUSUZJQ0FURS0tLS0tCg==","node.key":"LS0tLS1CRUdJTiBSU0EgUFJJVkFURSBLRVktLS0tLQpNSUlFcFFJQkFBS0NBUUVBMjNULzlrTmFEK1JVZGJxU25Vd3p6ZEh6ZmQzNGFUdVl4YUZEdXAyWXIyaVZuL2RqClhXWEsvTXdYOVNLTGhBazh0Q1BBcFpzaTJoWWwwaVN0TFJxMlkzcHlld0I2R1MwVityaXA2WGY2bTFtRlltL1QKdHdXTWhidFhQQ3JuNlgxNFp4RWJjeEI5RkViQ0IvWmlYeDhxallxWklNblZMNnVET3NqUzVORHg5Mm4yZDlKVApsNjdQUHZTTkpoTUhyUHE3bjBOL1lDYUFlVno1WkFySXdsV3pheWFPdE5tRExmN2FLQzJ2cEVOWVExVkRlUysyCjFWQVZDTWRkM0VzNU8zazlpc3kzcmhrYUlVVlJQek9RWjhCTm5Oam5SKzREZlR0OEJMZVhIUFpyYWg0dGVPU04KbmdxTjBkeDZMTkM0c1pWdFg4VzFMblg1Q1J3Tm9kblJUYkkxZ1FJREFRQUJBb0lCQVFDc2Z3MkdTekJxVjJYUAoxK1BRUWdwaUdFblV3SG0yZFlMQ3JOeG92ZUU2MXZEcytPNGdocGVFRndRcHlZcHlNVFNHdjZkNFJEV2p5RTdZCkc3NEhPdnpydWw1cnNsZEduTHF2QlNHQkFxNTRGMmlSbENhTXNJN2d1djE1ckp2M1dva2VNa01xTVdhdlhtSzcKRVg0SEdKOUEvQlVhd2FxUk9yWCtxY1dpMTEycHd5cTFaOWNSR0d0TjFyUlRJYkk5WHNOMTUzb212T01PMXdpTApzOTJ6dEVseDFIYy9IUi9DSW02bkNYVkh0RWhscXovNzJJMzlDQ1NMUUNtVXQyRlVGdCtiL285Mmc3NFRDckVPCktmNENlRzRDdThVUnhrZ3pTVkNZclhpOFl0MHVwSXEva2xJVDdqS1RKcXF3TXltZitObGtFbnJ4K3o1UU1BTVgKd1pvSnRCbXhBb0dCQU8rZTY5dUJLSHpGK00wd05DWW1UYm43WWpkdGpWSzNURzlRK0NJNkxqMUl2YVRpZkdteQpONWl2YUJ2RDRpRHFkKzhDQ1ROeVYxaStYV2xPUTAwZjRyNXh6bkpWRG1zVUY5enBCb2ZySEtPNmd1eWpYSlFsCllQNzNzelZtZzljNnl5dEQxY3NhcW5TNVgwMU0yaGJGT2tWdElLNGNFNnB4cWFYT1czN0daSy9GQW9HQkFPcDEKUEo2OHJuYjZadlZvMVMyczIzeno5ZlJTb3RTc2pQakRueHJYekIwNDdYZTNaWXhzcjBYL0syeG02TllyNHVTRwpOelQrTCtVNmU1VlhyR2JNNUpoMVVDSVdodjd5K1ZLWlBaMnNLK25NTHJDenY2Q3ZCeWsxWERLaGw1SGk2YXBvCmpyYmZnc0R1MFVnc2M1bDBVVW9mMGJISkw0QkpIOE91UndsUWlDNk5Bb0dCQUxPMmZTNGpzRG5rUUxXamNYa3IKUVNBN2FXNG91OVZOcEFYWXRFRDNZYmFVMTZiU05uMFBMS05XNnIzb0s3Q0VLVzhZRjg1OTh3U2J3WE01UDBDWQpxWFlyNUtuYklQVXVITGVTRFZQakFaZktTbWN3SGo3OXljRndCUGdINnRtQlB0ODBBU1JTMjRTdmdzcDIyUm82CjBYbEFYMEkxeklvSXRUT2xrUG1EMGdBQkFvR0FDMElqN2c5clpVVXk2bmZsUExNL091blFGckpkSlU4LzJiWXoKRHF2c0hqOGNrQkliYXpuUTFOQ2kraXFhNWFYbjJFZGxvVUxQYy9keDljTG5BV3kzVVdiWXVUcFJzeTVoc0lpeApQOEFEdjg5Uk1xVCsvNjFINzcrak5MOHpzd3F0WThSdmpmSi9xZG9ON0tSTnpNR2NJYTRUZUxFTGVlS0pCdkY0CmNjY1BNd1VDZ1lFQTF3RWUzWllhOUx6K3VGaVMwQVo3aW5PeTg0MkNBcHZFdk5INkRGNEcyUTZ2WHVCbFNqRUoKYU03eDZmTWo3cGd1YnpHUllpaFh2bHM0NWEzR0tpOEkvVW5MbGlNNEd6dmkwOXdYR25sZVJrNXJYdmlPM2h4RQpiY01oYzNkVjdWRHFOdDFBZHU5cGFGSitVaXBUY3dyTUVOWmdad3RXdUJpbFNvNXJraVpXYkxJPQotLS0tLUVORCBSU0EgUFJJVkFURSBLRVktLS0tLQo="}
+codex
+The `crdb-certs` Secret is now present. I’m scaling the StatefulSet to zero before patching the pod template so the secure nodes all come back with a consistent TLS configuration.
+exec
+/bin/zsh -lc 'set -euo pipefail
+kubectl -n cockroachdb scale statefulset crdb-cluster --replicas=0
+kubectl -n cockroachdb wait --for=delete pod -l app.kubernetes.io/instance=crdb-cluster,app.kubernetes.io/name=cockroachdb --timeout=180s
+PATCH=$(cat <<'"'JSON'
+{
+  \"spec\": {
+    \"template\": {
+      \"spec\": {
+        \"volumes\": [
+          {
+            \"name\": \"certs\",
+            \"secret\": {
+              \"secretName\": \"crdb-certs\",
+              \"defaultMode\": 256
+            }
+          }
+        ],
+        \"containers\": [
+          {
+            \"name\": \"db\",
+            \"command\": [
+              \"/bin/bash\",
+              \"-c\",
+              \"exec /cockroach/cockroach start --logtostderr=INFO --certs-dir=/cockroach/cockroach-certs --advertise-host="'$(POD_NAME).crdb-cluster.cockroachdb.svc.cluster.local --http-addr=0.0.0.0:8080 --port=26257 --cache=25% --max-sql-memory=25% --join=crdb-cluster-0.crdb-cluster.cockroachdb.svc.cluster.local:26257,crdb-cluster-1.crdb-cluster.cockroachdb.svc.cluster.local:26257,crdb-cluster-2.crdb-cluster.cockroachdb.svc.cluster.local:26257"
+            ],
+            "volumeMounts": [
+              {
+                "name": "certs",
+                "mountPath": "/cockroach/cockroach-certs",
+                "readOnly": true
+              }
+            ],
+            "livenessProbe": {
+              "httpGet": {
+                "scheme": "HTTPS"
+              }
+            },
+            "readinessProbe": {
+              "httpGet": {
+                "scheme": "HTTPS"
+              }
+            }
+          }
+        ]
+      }
+    }
+  }
+}
+JSON
+)
+kubectl -n cockroachdb patch statefulset crdb-cluster --type=strategic -p "$PATCH"
+kubectl -n cockroachdb scale statefulset crdb-cluster --replicas=3
+kubectl -n cockroachdb rollout status statefulset/crdb-cluster --timeout=300s
+kubectl -n cockroachdb wait --for=condition=Ready pod -l app.kubernetes.io/instance=crdb-cluster,app.kubernetes.io/name=cockroachdb --timeout=300s
+kubectl -n cockroachdb get pods -l app.kubernetes.io/instance=crdb-cluster -o wide' in /Users/jinyige/Karma/runs/new-added-workflows/cockroachdb-cert-ingress-monitor-20260622_214646/stages/stage_02
+ succeeded in 23501ms:
+statefulset.apps/crdb-cluster scaled
+pod/crdb-cluster-0 condition met
+pod/crdb-cluster-1 condition met
+pod/crdb-cluster-2 condition met
+statefulset.apps/crdb-cluster patched
+statefulset.apps/crdb-cluster scaled
+Waiting for 3 pods to be ready...
+Waiting for 1 pods to be ready...
+partitioned roll out complete: 3 new pods have been updated...
+pod/crdb-cluster-0 condition met
+pod/crdb-cluster-1 condition met
+pod/crdb-cluster-2 condition met
+NAME             READY   STATUS    RESTARTS   AGE   IP            NODE           NOMINATED NODE   READINESS GATES
+crdb-cluster-0   1/1     Running   0          12s   10.244.3.23   kind-worker3   <none>           <none>
+crdb-cluster-1   1/1     Running   0          12s   10.244.2.22   kind-worker2   <none>           <none>
+crdb-cluster-2   1/1     Running   0          12s   10.244.1.16   kind-worker    <none>           <none>
+
+codex
+The StatefulSet is back at three ready pods with the cert Secret mounted and HTTPS health probes. I’m running the two exact verification commands now: insecure should fail, secure should return `1`.
+exec
+/bin/zsh -lc 'kubectl -n cockroachdb exec crdb-cluster-0 -- ./cockroach sql --insecure -e "SELECT 1;"' in /Users/jinyige/Karma/runs/new-added-workflows/cockroachdb-cert-ingress-monitor-20260622_214646/stages/stage_02
+exec
+/bin/zsh -lc "kubectl -n cockroachdb get statefulset crdb-cluster -o jsonpath='{.spec.template.spec.containers[0].command}{\"\\n\"}{.spec.template.spec.containers[0].volumeMounts}{\"\\n\"}{.spec.template.spec.volumes}{\"\\n\"}{.spec.template.spec.containers[0].readinessProbe.httpGet.scheme}{\"\\n\"}{.spec.template.spec.containers[0].livenessProbe.httpGet.scheme}{\"\\n\"}'" in /Users/jinyige/Karma/runs/new-added-workflows/cockroachdb-cert-ingress-monitor-20260622_214646/stages/stage_02
+ succeeded in 0ms:
+["/bin/bash","-c","exec /cockroach/cockroach start --logtostderr=INFO --certs-dir=/cockroach/cockroach-certs --advertise-host=$(POD_NAME).crdb-cluster.cockroachdb.svc.cluster.local --http-addr=0.0.0.0:8080 --port=26257 --cache=25% --max-sql-memory=25% --join=crdb-cluster-0.crdb-cluster.cockroachdb.svc.cluster.local:26257,crdb-cluster-1.crdb-cluster.cockroachdb.svc.cluster.local:26257,crdb-cluster-2.crdb-cluster.cockroachdb.svc.cluster.local:26257"]
+[{"mountPath":"/cockroach/cockroach-certs","name":"certs","readOnly":true},{"mountPath":"/cockroach/cockroach-data","name":"datadir"}]
+[{"name":"certs","secret":{"defaultMode":256,"secretName":"crdb-certs"}}]
+HTTPS
+HTTPS
+
+exec
+/bin/zsh -lc 'kubectl -n cockroachdb exec crdb-cluster-0 -- ./cockroach sql --certs-dir=/cockroach/cockroach-certs -e "SELECT 1;"' in /Users/jinyige/Karma/runs/new-added-workflows/cockroachdb-cert-ingress-monitor-20260622_214646/stages/stage_02
+exec
+/bin/zsh -lc "kubectl -n cockroachdb exec crdb-cluster-0 -- sh -c 'ls -l /cockroach/cockroach-certs && ./cockroach cert list --certs-dir=/cockroach/cockroach-certs'" in /Users/jinyige/Karma/runs/new-added-workflows/cockroachdb-cert-ingress-monitor-20260622_214646/stages/stage_02
+ exited 1 in 1563ms:
+ERROR: SSL authentication error while connecting.
+failed to connect to `host=localhost user=root database=`: server error (ERROR: node is running secure mode, SSL connection required (SQLSTATE 08P01))
+Failed running "sql"
+command terminated with exit code 1
+
+ succeeded in 1568ms:
+?column?
+1
+
+ succeeded in 1566ms:
+total 0
+lrwxrwxrwx 1 root root 13 Jun 22 21:51 ca.crt -> ..data/ca.crt
+lrwxrwxrwx 1 root root 22 Jun 22 21:51 client.root.crt -> ..data/client.root.crt
+lrwxrwxrwx 1 root root 22 Jun 22 21:51 client.root.key -> ..data/client.root.key
+lrwxrwxrwx 1 root root 15 Jun 22 21:51 node.crt -> ..data/node.crt
+lrwxrwxrwx 1 root root 15 Jun 22 21:51 node.key -> ..data/node.key
+Certificate directory: /cockroach/cockroach-certs
+Usage	Certificate File	Key File	Expires	Notes	Error
+CA	ca.crt		2036/06/29	num certs: 1	
+Node	node.crt	node.key	2031/06/26	addresses: localhost,crdb-cluster,crdb-cluster.cockroachdb,crdb-cluster.cockroachdb.svc,crdb-cluster.cockroachdb.svc.cluster.local,crdb-cluster-public,crdb-cluster-public.cockroachdb,crdb-cluster-public.cockroachdb.svc,crdb-cluster-public.cockroachdb.svc.cluster.local,crdb-cluster-0,crdb-cluster-0.crdb-cluster,crdb-cluster-0.crdb-cluster.cockroachdb,crdb-cluster-0.crdb-cluster.cockroachdb.svc,crdb-cluster-0.crdb-cluster.cockroachdb.svc.cluster.local,crdb-cluster-1,crdb-cluster-1.crdb-cluster,crdb-cluster-1.crdb-cluster.cockroachdb,crdb-cluster-1.crdb-cluster.cockroachdb.svc,crdb-cluster-1.crdb-cluster.cockroachdb.svc.cluster.local,crdb-cluster-2,crdb-cluster-2.crdb-cluster,crdb-cluster-2.crdb-cluster.cockroachdb,crdb-cluster-2.crdb-cluster.cockroachdb.svc,crdb-cluster-2.crdb-cluster.cockroachdb.svc.cluster.local,127.0.0.1	
+Client	client.root.crt	client.root.key	2031/06/26	user: root	
+
+codex
+The requested checks now behave correctly: insecure SQL is rejected with “node is running secure mode,” and secure SQL returns `1`. I’m doing one final cluster health pass so the change isn’t only valid on `crdb-cluster-0`.
+exec
+/bin/zsh -lc 'kubectl -n cockroachdb exec crdb-cluster-0 -- ./cockroach node status --certs-dir=/cockroach/cockroach-certs' in /Users/jinyige/Karma/runs/new-added-workflows/cockroachdb-cert-ingress-monitor-20260622_214646/stages/stage_02
+exec
+/bin/zsh -lc 'kubectl -n cockroachdb get pods -l app.kubernetes.io/instance=crdb-cluster -o wide' in /Users/jinyige/Karma/runs/new-added-workflows/cockroachdb-cert-ingress-monitor-20260622_214646/stages/stage_02
+exec
+/bin/zsh -lc "kubectl -n cockroachdb get secret crdb-certs -o jsonpath='{.metadata.name}{\" keys=\"}{.data | keys}{\"\\n\"}'" in /Users/jinyige/Karma/runs/new-added-workflows/cockroachdb-cert-ingress-monitor-20260622_214646/stages/stage_02
+ exited 1 in 0ms:
+error: error parsing jsonpath {.metadata.name}{" keys="}{.data | keys}{"\n"}, unrecognized character in action: U+007C '|'
+
+ succeeded in 0ms:
+NAME             READY   STATUS    RESTARTS   AGE   IP            NODE           NOMINATED NODE   READINESS GATES
+crdb-cluster-0   1/1     Running   0          38s   10.244.3.23   kind-worker3   <none>           <none>
+crdb-cluster-1   1/1     Running   0          38s   10.244.2.22   kind-worker2   <none>           <none>
+crdb-cluster-2   1/1     Running   0          38s   10.244.1.16   kind-worker    <none>           <none>
+
+exec
+/bin/zsh -lc 'kubectl -n cockroachdb get events --sort-by=.lastTimestamp | tail -20' in /Users/jinyige/Karma/runs/new-added-workflows/cockroachdb-cert-ingress-monitor-20260622_214646/stages/stage_02
+ succeeded in 0ms:
+49s         Normal    SuccessfulDelete        statefulset/crdb-cluster                       delete Pod crdb-cluster-1 in StatefulSet crdb-cluster successful
+49s         Normal    SuccessfulDelete        statefulset/crdb-cluster                       delete Pod crdb-cluster-0 in StatefulSet crdb-cluster successful
+47s         Warning   Unhealthy               pod/crdb-cluster-1                             Readiness probe failed: HTTP probe failed with statuscode: 503
+40s         Warning   Unhealthy               pod/crdb-cluster-0                             Readiness probe failed: HTTP probe failed with statuscode: 503
+38s         Normal    Scheduled               pod/crdb-cluster-2                             Successfully assigned cockroachdb/crdb-cluster-2 to kind-worker
+38s         Normal    Scheduled               pod/crdb-cluster-1                             Successfully assigned cockroachdb/crdb-cluster-1 to kind-worker2
+38s         Normal    SuccessfulCreate        statefulset/crdb-cluster                       create Pod crdb-cluster-2 in StatefulSet crdb-cluster successful
+38s         Normal    SuccessfulCreate        statefulset/crdb-cluster                       create Pod crdb-cluster-0 in StatefulSet crdb-cluster successful
+38s         Normal    SuccessfulCreate        statefulset/crdb-cluster                       create Pod crdb-cluster-1 in StatefulSet crdb-cluster successful
+38s         Normal    Scheduled               pod/crdb-cluster-0                             Successfully assigned cockroachdb/crdb-cluster-0 to kind-worker3
+38s         Normal    NoPods                  poddisruptionbudget/crdb-cluster               No matching pods found
+37s         Normal    Pulled                  pod/crdb-cluster-1                             Container image "cockroachdb/cockroach:v24.1.0" already present on machine
+37s         Normal    Created                 pod/crdb-cluster-2                             Created container: db
+37s         Normal    Created                 pod/crdb-cluster-1                             Created container: db
+37s         Normal    Started                 pod/crdb-cluster-0                             Started container db
+37s         Normal    Created                 pod/crdb-cluster-0                             Created container: db
+37s         Normal    Pulled                  pod/crdb-cluster-0                             Container image "cockroachdb/cockroach:v24.1.0" already present on machine
+37s         Normal    Started                 pod/crdb-cluster-1                             Started container db
+37s         Normal    Started                 pod/crdb-cluster-2                             Started container db
+37s         Normal    Pulled                  pod/crdb-cluster-2                             Container image "cockroachdb/cockroach:v24.1.0" already present on machine
+
+ succeeded in 663ms:
+id	address	sql_address	build	started_at	updated_at	locality	is_available	is_live
+1	crdb-cluster-0.crdb-cluster.cockroachdb.svc.cluster.local:26257	crdb-cluster-0.crdb-cluster.cockroachdb.svc.cluster.local:26257	v24.1.0	2026-06-22 21:51:28.990253 +0000 UTC	2026-06-22 21:52:05.04305 +0000 UTC		true	true
+2	crdb-cluster-2.crdb-cluster.cockroachdb.svc.cluster.local:26257	crdb-cluster-2.crdb-cluster.cockroachdb.svc.cluster.local:26257	v24.1.0	2026-06-22 21:51:28.755027 +0000 UTC	2026-06-22 21:52:04.789345 +0000 UTC		true	true
+3	crdb-cluster-1.crdb-cluster.cockroachdb.svc.cluster.local:26257	crdb-cluster-1.crdb-cluster.cockroachdb.svc.cluster.local:26257	v24.1.0	2026-06-22 21:51:28.921514 +0000 UTC	2026-06-22 21:52:04.968568 +0000 UTC		true	true
+
+codex
+TLS is enabled for the CockroachDB StatefulSet in `cockroachdb`.
+
+I created `secret/crdb-certs`, mounted it at `/cockroach/cockroach-certs`, replaced `--insecure` with `--certs-dir=/cockroach/cockroach-certs`, switched health probes to HTTPS, and restarted the 3 pods. All three nodes are `Ready` and `node status` reports them `is_available=true` and `is_live=true`.
+
+Verification results:
+
+- Insecure command fails with: `node is running secure mode, SSL connection required`
+- Secure command succeeds:
+
+```text
+?column?
+1
+```
+tokens used
+45,863
+TLS is enabled for the CockroachDB StatefulSet in `cockroachdb`.
+
+I created `secret/crdb-certs`, mounted it at `/cockroach/cockroach-certs`, replaced `--insecure` with `--certs-dir=/cockroach/cockroach-certs`, switched health probes to HTTPS, and restarted the 3 pods. All three nodes are `Ready` and `node status` reports them `is_available=true` and `is_live=true`.
+
+Verification results:
+
+- Insecure command fails with: `node is running secure mode, SSL connection required`
+- Secure command succeeds:
+
+```text
+?column?
+1
+```
