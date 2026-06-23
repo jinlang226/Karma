@@ -22,13 +22,21 @@ TMP_FILE=".submit.partial"
 MODEL_ARG=""
 [ -n "${KARMA_COPILOT_AGENT_MODEL:-}" ] && MODEL_ARG="--model ${KARMA_COPILOT_AGENT_MODEL}"
 
+# Persistent-session mode (workflow agent_session: persistent): keep ONE Copilot
+# conversation across stages by reusing a stable --session-id. Copilot creates
+# the session on first use and resumes it on subsequent stages with the same id.
+SESSION_ARG=""
+if [ -n "${BENCH_SESSION_PERSIST:-}" ] && [ -n "${BENCH_SESSION_ID:-}" ]; then
+  SESSION_ARG="--session-id ${BENCH_SESSION_ID}"
+fi
+
 # Headless, full-auto Copilot run: --prompt for the non-interactive task and
 # --allow-all so every tool (shell/kubectl) runs without an approval prompt (the
 # Copilot analogue of claude_code's --dangerously-skip-permissions). tee the
 # output to BOTH the temp submit file and stdout (the sandbox captures stdout to
 # agent.log, so the full turn-by-turn is recorded even on timeout).
 copilot --prompt "$(cat "$PROMPT_FILE")" \
-  --allow-all ${MODEL_ARG} \
+  --allow-all ${MODEL_ARG} ${SESSION_ARG} \
   2>&1 | tee "$TMP_FILE"
 
 mv -f "$TMP_FILE" "$SUBMIT_FILE"
