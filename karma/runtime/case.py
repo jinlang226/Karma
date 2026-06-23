@@ -100,6 +100,12 @@ def _is_transient_apply_error(text: str) -> bool:
     * a fixed namespace from a prior run still Terminating when the case
       re-creates it (``object is being deleted: namespaces "X" already exists``)
       -> retrying ``kubectl create namespace`` waits out the termination.
+    * a just-applied StatefulSet/Deployment whose pods have not been created yet
+      when a ``kubectl wait --for=condition=ready pod -l <label>`` runs: the
+      label selector matches zero objects and ``wait`` returns immediately with
+      ``error: no matching resources found`` instead of blocking. Retrying the
+      (read-only, idempotent) wait a few seconds later, once the controller has
+      materialized the pods, lets it block for real -> ready.
 
     These resolve within seconds, so the caller retries the (idempotent) apply
     command. Genuine errors (bad manifest, forbidden field) do not match, so they
@@ -116,6 +122,7 @@ def _is_transient_apply_error(text: str) -> bool:
         or "the server is currently unable to handle the request" in t
         or "unable to connect to the server" in t
         or "object is being deleted" in t
+        or "no matching resources found" in t
     )
 
 
