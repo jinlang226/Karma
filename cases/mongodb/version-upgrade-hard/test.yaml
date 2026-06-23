@@ -87,6 +87,47 @@ preconditionUnits:
       - command: "/bin/sh -c 'kubectl -n mongodb get secret admin-user-password >/dev/null 2>&1 && echo ok'"
         timeout_sec: 15
 
+  # Problem-shape replant (composition safety, Pattern 1) -- NEEDS KIND VALIDATION.
+  # The unsolved problem is "cluster running the OLD release (mongo:5.0.5, FCV 5.0)".
+  # That baseline is planted only inside the destructive mongo_env_ready.apply,
+  # which is SKIPPED on an inherited cluster -> a prior stage may have already moved
+  # the cluster to a NEWER version, leaving the 5.0->7.0 upgrade task
+  # trivially-solved or unsatisfiable while the oracle grades the absolute 7.0.5/FCV
+  # 7.0 target. This unit re-plants the old baseline ONLY when the live cluster is
+  # not already at it: roll the image back in place via `kubectl set image` (PVC/
+  # data preserved, no namespace delete) and best-effort drop FCV to 5.0.
+  #
+  # HIGH-RISK / NEEDS KIND VALIDATION: a MongoDB version/FCV DOWNGRADE is inherently
+  # destructive and is NOT supported across more than one major version with data
+  # present -- it can violate the persistence invariant. The FCV set is best-effort
+  # (|| true) and a roll all the way back to 5.0 from an inherited newer cluster is
+  # a HARD downgrade. If a predecessor can leave the cluster newer than 5.0, this
+  # case is genuinely order-sensitive: bind it to a FRESH namespace rather than rely
+  # on this in-place roll.
+  - name: mongo_old_version_baseline_ready
+    on_probe_fail: skip
+    probe:
+      - command: |
+          /bin/sh -c '
+          imgs=$(kubectl -n mongodb get sts mongodb-replica -o jsonpath="{.spec.template.spec.containers[0].image}" 2>/dev/null)
+          [ "$imgs" = "mongo:5.0.5" ]
+          '
+        timeout_sec: 15
+    apply:
+      - command: "kubectl -n mongodb set image statefulset/mongodb-replica mongod=mongo:5.0.5"
+        sleep: 3
+      - command: |
+          /bin/sh -c 'for i in $(seq 1 120); do ready=$(kubectl -n mongodb get sts mongodb-replica -o jsonpath='\''{.status.readyReplicas}'\'' 2>/dev/null); rev=$(kubectl -n mongodb get sts mongodb-replica -o jsonpath='\''{.status.updatedReplicas}'\'' 2>/dev/null); if [ "${ready:-0}" -ge 3 ] && [ "${rev:-0}" -ge 3 ]; then exit 0; fi; sleep 5; done; exit 0'
+        timeout_sec: 650
+        sleep: 2
+      - command: |
+          /bin/sh -c 'pw=$(kubectl -n mongodb get secret admin-user-password -o jsonpath="{.data.password}" 2>/dev/null | base64 -d 2>/dev/null); pw=${pw:-admin123password}; kubectl -n mongodb exec mongodb-replica-0 -- mongosh --quiet "mongodb://admin-user:$pw@localhost:27017/admin?directConnection=true" --eval '\''db.adminCommand({setFeatureCompatibilityVersion:"5.0"})'\'' 2>/dev/null || true'
+        sleep: 2
+    verify:
+      - command: |
+          /bin/sh -c 'imgs=$(kubectl -n mongodb get sts mongodb-replica -o jsonpath="{.spec.template.spec.containers[0].image}" 2>/dev/null); [ "$imgs" = "mongo:5.0.5" ]'
+        timeout_sec: 15
+
   # Additive data fixture (composition safety): the oracle requires >= 1 docs in
   # testdb.data. When this case runs chained on an inherited cluster the
   # destructive `apply` above is skipped, so a prior stage may have left the

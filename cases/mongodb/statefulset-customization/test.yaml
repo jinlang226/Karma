@@ -14,6 +14,9 @@ params:
   template_label_key:
     default: monitoring
     description: Pod template label key toggled by the customization.
+  template_label_value:
+    default: enabled
+    description: Solved value the agent must restore for the template label.
   faulty_request_memory:
     default: 128Mi
     description: Faulty memory request applied to break readiness.
@@ -29,6 +32,8 @@ prompt: |
   - Restore a stable 3-member replica set without data loss.
   - All pods must become Ready.
   - Replica set should have 1 PRIMARY and 2 SECONDARY members.
+  - Restore the pod-template `{{params.template_label_key}}` label to
+    `{{params.template_label_value}}` so monitoring can see the members.
 
   Notes:
   - No operators or CRDs.
@@ -114,6 +119,45 @@ preconditionUnits:
         sleep: 2
     verify:
       - command: "/bin/sh -c 'kubectl -n mongodb get secret admin-user-password >/dev/null 2>&1 && echo ok'"
+        timeout_sec: 15
+
+  # Problem-shape replant (composition safety, Pattern 1): the planted fault is a
+  # StatefulSet template carrying label {{params.template_label_key}}=disabled AND
+  # too-low memory requests/limits ({{params.faulty_request_memory}} /
+  # {{params.faulty_limit_memory}}) that break readiness. The oracle grades that
+  # the agent set the label to {{params.template_label_value}} (default `enabled`)
+  # and raised memory above the minimums. Both are planted only inside the
+  # destructive mongo_env_ready.apply, which is SKIPPED on an inherited cluster ->
+  # the template label never exists (`got None`) and the memory is already fine, so
+  # the agent has nothing to fix yet the oracle still fails. This unit re-plants the
+  # EXACT drift (label=disabled + faulty memory) onto the LIVE StatefulSet via a
+  # targeted patch, then rolls the pods so they go non-Ready. It patches ONLY the
+  # template label and the mongod container memory -- never the image/version or
+  # other config -- so it is safe over a carried-over cluster. Standalone the
+  # probe sees the drift already present and skips -> identical behaviour.
+  - name: statefulset_customization_drift_ready
+    on_probe_fail: skip
+    probe:
+      # True (skip) when the unsolved drift is ALREADY present: template label is
+      # NOT the solved value OR memory request is below the oracle minimum. False
+      # (apply) when the StatefulSet is in the solved/healthy state and the drift
+      # must be re-planted.
+      - command: |
+          /bin/sh -c '
+          lbl=$(kubectl -n mongodb get sts {{params.cluster_prefix}} -o jsonpath="{.spec.template.metadata.labels.{{params.template_label_key}}}" 2>/dev/null)
+          mem=$(kubectl -n mongodb get sts {{params.cluster_prefix}} -o jsonpath="{.spec.template.spec.containers[0].resources.requests.memory}" 2>/dev/null)
+          [ "$lbl" != "{{params.template_label_value}}" ] || [ "$mem" = "{{params.faulty_request_memory}}" ]
+          '
+        timeout_sec: 15
+    apply:
+      - command: |
+          /bin/sh -c 'kubectl -n mongodb patch sts {{params.cluster_prefix}} --type=json -p='\''[{"op":"replace","path":"/spec/template/metadata/labels/{{params.template_label_key}}","value":"disabled"},{"op":"replace","path":"/spec/template/spec/containers/0/resources/requests/memory","value":"{{params.faulty_request_memory}}"},{"op":"replace","path":"/spec/template/spec/containers/0/resources/limits/memory","value":"{{params.faulty_limit_memory}}"}]'\'' 2>/dev/null || kubectl -n mongodb patch sts {{params.cluster_prefix}} --type=merge -p '\''{"spec":{"template":{"metadata":{"labels":{"{{params.template_label_key}}":"disabled"}},"spec":{"containers":[{"name":"mongod","resources":{"requests":{"memory":"{{params.faulty_request_memory}}"},"limits":{"memory":"{{params.faulty_limit_memory}}"}}}]}}}}'\'''
+        sleep: 2
+      - command: "kubectl -n mongodb delete pod -l app={{params.cluster_prefix}}"
+        sleep: 2
+    verify:
+      - command: |
+          /bin/sh -c 'lbl=$(kubectl -n mongodb get sts {{params.cluster_prefix}} -o jsonpath="{.spec.template.metadata.labels.{{params.template_label_key}}}" 2>/dev/null); [ "$lbl" = "disabled" ]'
         timeout_sec: 15
 
 oracle:
