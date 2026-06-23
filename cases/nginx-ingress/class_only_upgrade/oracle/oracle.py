@@ -2,6 +2,7 @@
 import os
 import subprocess
 import sys
+import time
 
 # Param-aware: a workflow can override host/expected_body via param_overrides;
 # read BENCH_PARAM_* (default = the standalone value) so the oracle checks the
@@ -9,6 +10,14 @@ import sys
 # unchanged.
 HOST = os.environ.get("BENCH_PARAM_HOST") or "class.example.com"
 EXPECTED_BODY = os.environ.get("BENCH_PARAM_EXPECTED_BODY") or "hello"
+
+# Reachability is transient-prone: once the agent assigns the IngressClass the
+# selected controller reloads asynchronously and the gateway Service may still be
+# warming up. A single curl races that, so re-evaluate within a bounded window
+# and pass as soon as the body matches. This does not loosen the criterion -- a
+# host that never serves the expected body still fails after the deadline.
+DEADLINE_SEC = 120
+INTERVAL_SEC = 3
 
 
 def run(cmd):
@@ -29,18 +38,22 @@ def main():
         f"Host: {HOST}",
         "http://ingress-gateway.demo.svc.cluster.local/",
     ]
-    result = run(cmd)
-    if result.returncode != 0:
-        print("Ingress request failed", file=sys.stderr)
-        if result.stderr:
-            print(result.stderr.strip(), file=sys.stderr)
-        return 1
+    deadline = time.monotonic() + DEADLINE_SEC
+    last_err = "no response"
+    while True:
+        result = run(cmd)
+        if result.returncode != 0:
+            last_err = result.stderr.strip() or "ingress request failed"
+        else:
+            body = result.stdout.strip()
+            if body == EXPECTED_BODY:
+                return 0
+            last_err = f"unexpected response body: {body}"
+        if time.monotonic() >= deadline:
+            break
+        time.sleep(INTERVAL_SEC)
 
-    body = result.stdout.strip()
-    if body == EXPECTED_BODY:
-        return 0
-
-    print(f"Unexpected response body: {body}", file=sys.stderr)
+    print(f"Ingress request failed: {last_err}", file=sys.stderr)
     return 1
 
 

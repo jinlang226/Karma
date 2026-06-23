@@ -2,6 +2,7 @@
 import os
 import subprocess
 import sys
+import time
 
 # Param-aware: a workflow can override host/header/body values via
 # param_overrides; read BENCH_PARAM_* (default = the standalone value) so the
@@ -14,21 +15,32 @@ HEADER_VALUE = os.environ.get("BENCH_PARAM_HEADER_VALUE") or "always"
 STABLE_BODY = os.environ.get("BENCH_PARAM_STABLE_BODY") or "stable"
 CANARY_BODY = os.environ.get("BENCH_PARAM_CANARY_BODY") or "canary"
 
+# Reachability is transient-prone: ingress-nginx applies the canary annotations
+# asynchronously (config reload) and in a workflow the controller may be warming
+# up or reloading right when the oracle runs. A single pass races that, so
+# re-evaluate both routes within a bounded window and pass as soon as BOTH match
+# in the same cycle. This does not loosen the criterion -- mis-routed traffic
+# that never settles still fails after the deadline.
+DEADLINE_SEC = 120
+INTERVAL_SEC = 3
+
 
 def run(cmd):
     return subprocess.run(cmd, text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
 
 
-def require_body(label, cmd, expected):
+def require_body(label, cmd, expected, quiet=False):
     result = run(cmd)
     if result.returncode != 0:
-        print(f"{label} request failed", file=sys.stderr)
-        if result.stderr:
-            print(result.stderr.strip(), file=sys.stderr)
+        if not quiet:
+            print(f"{label} request failed", file=sys.stderr)
+            if result.stderr:
+                print(result.stderr.strip(), file=sys.stderr)
         return False
     body = result.stdout.strip()
     if body != expected:
-        print(f"{label} unexpected body: {body}", file=sys.stderr)
+        if not quiet:
+            print(f"{label} unexpected body: {body}", file=sys.stderr)
         return False
     return True
 
@@ -65,12 +77,20 @@ def main():
         ),
     ]
 
-    ok = True
-    for label, cmd, expected in checks:
-        if not require_body(label, cmd, expected):
-            ok = False
-
-    return 0 if ok else 1
+    deadline = time.monotonic() + DEADLINE_SEC
+    while True:
+        # Suppress per-check diagnostics until the final attempt so a transient
+        # early miss does not spam stderr; the last cycle reports real failures.
+        last = time.monotonic() >= deadline
+        ok = True
+        for label, cmd, expected in checks:
+            if not require_body(label, cmd, expected, quiet=not last):
+                ok = False
+        if ok:
+            return 0
+        if last:
+            return 1
+        time.sleep(INTERVAL_SEC)
 
 
 if __name__ == "__main__":

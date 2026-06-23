@@ -2,10 +2,19 @@
 import os
 import subprocess
 import sys
+import time
 
 
 REQUEST_COUNT = 20
 MIN_429 = 4
+# Transient-prone reachability: in a workflow the controller / curl-test pod may
+# be warming up when the oracle runs, so the burst exec itself can fail before it
+# ever measures rate limiting. Retry only that INFRASTRUCTURE failure (the exec
+# erroring out) within a bounded window; the rate-limit verdict on a successful
+# burst is unchanged and single-shot, so a path that is genuinely not limited
+# still fails.
+PROBE_DEADLINE_SEC = 120
+PROBE_INTERVAL_SEC = 3
 # Param-aware: a workflow can override host/api_path/health_path via
 # param_overrides; read BENCH_PARAM_* (default = the standalone value) so the
 # oracle exercises the routes this stage configured on the live cluster. The
@@ -50,15 +59,30 @@ def paced(path):
     return codes
 
 
+def paced_with_retry(path, label):
+    # Re-issue the burst only when the exec itself errors (transient warm-up),
+    # bounded by PROBE_DEADLINE_SEC. Returns the response codes once the exec
+    # succeeds, or raises the last error after the deadline.
+    deadline = time.monotonic() + PROBE_DEADLINE_SEC
+    while True:
+        try:
+            return paced(path)
+        except Exception as exc:
+            if time.monotonic() >= deadline:
+                raise
+            print(f"{label} test transiently failed, retrying: {exc}", file=sys.stderr)
+            time.sleep(PROBE_INTERVAL_SEC)
+
+
 def main():
     try:
-        api_codes = paced(API_PATH)
+        api_codes = paced_with_retry(API_PATH, "API")
     except Exception as exc:
         print(f"API test failed: {exc}", file=sys.stderr)
         return 1
 
     try:
-        health_codes = paced(HEALTH_PATH)
+        health_codes = paced_with_retry(HEALTH_PATH, "Health")
     except Exception as exc:
         print(f"Health test failed: {exc}", file=sys.stderr)
         return 1
