@@ -570,7 +570,7 @@
     } }, "+ Add stage");
 
     // Adversary injections -- an option of the workflow, not a separate tab.
-    const advList = el("div", { class: "builder-list" });
+    const advList = el("div", { class: "builder-list builder-adv-list" });
     function renderAdv() {
       clear(advList);
       advRows.forEach((adv, i) => advList.appendChild(advRow(adv, i, renderAdv)));
