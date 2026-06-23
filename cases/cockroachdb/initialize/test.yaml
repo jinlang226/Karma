@@ -43,6 +43,14 @@ params:
   replica_count:
     default: 3
     description: Number of CockroachDB nodes that must join and become healthy
+  crdb_version:
+    default: 24.1.0
+    description: >-
+      CockroachDB image version the cluster is deployed at. Parameterized so a
+      workflow that established a different version baseline in an earlier stage
+      can pass it through here (or, when this stage's destructive build runs at
+      all, deploy at the workflow's intended version) instead of clobbering it
+      with a hardcoded image.
 
 namespace_contract:
   required_roles: []
@@ -59,7 +67,15 @@ preconditionUnits:
   - name: crdb_env_ready
     on_probe_fail: skip
     probe:
-      - command: "kubectl -n cockroachdb get pods -l app.kubernetes.io/name=cockroachdb --no-headers 2>/dev/null | grep -c ''"
+      # AUTHORITATIVE skip-if-running probe. The destructive apply below
+      # delete+recreates the whole namespace, so it MUST run only when no
+      # cockroachdb cluster is present — otherwise it clobbers inherited workflow
+      # state (e.g. a version baseline a prior stage upgraded/downgraded to).
+      # Match the canonical StatefulSet OR any Running cockroach pod; the old
+      # `grep -c ''` counted lines and effectively always succeeded, which masks
+      # both presence and absence. Succeeding here means "cluster present, reuse
+      # it"; failing (no STS and no Running pod) triggers the fresh build.
+      - command: "/bin/sh -c 'kubectl -n cockroachdb get statefulset crdb-cluster >/dev/null 2>&1 || kubectl -n cockroachdb get pods -l app.kubernetes.io/name=cockroachdb --no-headers 2>/dev/null | grep -q Running'"
         timeout_sec: 10
     apply:
       # This whole apply is GATED by the skip-if-running probe above, so it runs
@@ -77,7 +93,10 @@ preconditionUnits:
         sleep: 2
       - command: "kubectl -n cockroachdb apply -f cases/cockroachdb/initialize/resource/services.yaml"
         sleep: 2
-      - command: "kubectl -n cockroachdb apply -f cases/cockroachdb/initialize/resource/statefulset.yaml"
+      # Render the StatefulSet image from the case param. Whitelist only
+      # BENCH_PARAM_CRDB_VERSION so envsubst does not erase the in-manifest
+      # $(POD_NAME)/$(POD_NAMESPACE) downward-API references.
+      - command: "/bin/sh -c 'envsubst \"${BENCH_PARAM_CRDB_VERSION}\" < cases/cockroachdb/initialize/resource/statefulset.yaml | kubectl -n cockroachdb apply -f -'"
         sleep: 5
       # `kubectl wait pod/crdb-cluster-0` returns NotFound immediately if the pod
       # object does not exist yet -- under load the StatefulSet controller can lag

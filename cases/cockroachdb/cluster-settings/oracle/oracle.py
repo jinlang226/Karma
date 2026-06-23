@@ -283,14 +283,16 @@ def main():
     check(errors, "before restart")
 
     # `kubectl delete pod` blocks until the pod fully terminates, and a
-    # CockroachDB node drains on SIGTERM -- under concurrent multi-cluster load
-    # that graceful shutdown routinely exceeds 40s, so the old 40s budget
-    # aborted the persistence check before the pod was gone. Bound the drain
-    # with --grace-period and give the call room to complete (120s).
+    # CockroachDB node drains on SIGTERM. The only goal here is to BOUNCE the
+    # node so persistence can be re-checked, not to perform a clean operational
+    # drain, so a long graceful drain is wasted time. Under concurrent
+    # multi-stage load that drain routinely exceeded the old 60s grace + 120s
+    # timeout and aborted the check before the pod was gone. Use a short grace
+    # period and keep the call timeout comfortably above it.
     delete = run(
         ["kubectl", "-n", NAMESPACE, "--request-timeout=90s",
-         "delete", "pod", POD, "--grace-period=60"],
-        timeout=120,
+         "delete", "pod", POD, "--grace-period=30"],
+        timeout=180,
     )
     if delete.returncode != 0:
         errors.append(f"Failed to delete pod for persistence check: {delete.stderr.strip()}")
