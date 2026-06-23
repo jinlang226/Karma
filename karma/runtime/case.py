@@ -426,6 +426,67 @@ def _param_env_vars(params: dict[str, Any] | None) -> dict[str, str]:
     return out
 
 
+def _session_env_and_mounts(
+    run_dir: Path,
+    *,
+    session_id: str | None,
+    stage_index: int,
+    sandbox_mode: str,
+) -> tuple[dict[str, str], list[tuple[Path, str]]]:
+    """Return ``(env_vars, mounts)`` for persistent single-agent sessions.
+
+    When *session_id* is set the agent keeps ONE conversation across stages:
+    each entrypoint resumes the same CLI/api session instead of starting fresh.
+    The session store lives under ``<run_dir>/agent_session/`` (per run, shared
+    across stages). Returns empty values when *session_id* is ``None``
+    (``per_stage`` mode).
+
+    * ``BENCH_SESSION_PERSIST`` / ``BENCH_SESSION_ID`` /
+      ``BENCH_SESSION_STAGE_INDEX`` tell each entrypoint to create (index 0) or
+      resume (index > 0) the session.
+    * ``BENCH_SESSION_DIR`` is the per-run session dir the entrypoints read/write
+      (the api agent persists its message transcript there).
+    * In ``docker`` mode each stage is a fresh container, so the per-CLI session
+      stores are bind-mounted from the per-run dir to survive across stages.
+      In ``local`` mode the host home dirs already persist, so no mounts are
+      needed and ``BENCH_SESSION_DIR`` points at the host path directly.
+    """
+    if not session_id:
+        return {}, []
+
+    sess = run_dir / "agent_session"
+    sess.mkdir(parents=True, exist_ok=True)
+
+    env: dict[str, str] = {
+        "BENCH_SESSION_PERSIST": "1",
+        "BENCH_SESSION_ID": session_id,
+        "BENCH_SESSION_STAGE_INDEX": str(stage_index),
+    }
+    mounts: list[tuple[Path, str]] = []
+
+    if sandbox_mode == "docker":
+        # Each stage is a fresh container, so bind the per-run store to the
+        # places each CLI looks: the whole dir at /session (api transcript +
+        # codex CODEX_HOME=/session/codex), plus the fixed home subpaths claude
+        # and copilot use (they have no home-override env).
+        for sub, container_path in (
+            (".", "/session"),
+            ("claude-projects", "/root/.claude/projects"),
+            ("copilot-home", "/root/.copilot"),
+        ):
+            host = (sess / sub) if sub != "." else sess
+            host.mkdir(parents=True, exist_ok=True)
+            mounts.append((host, container_path))
+        env["BENCH_SESSION_DIR"] = "/session"
+    else:
+        # Local: the host CLI home dirs (~/.claude, ~/.copilot) already persist
+        # across stage subprocesses; the api transcript and codex CODEX_HOME just
+        # need a stable per-run path under the run dir.
+        env["BENCH_SESSION_DIR"] = str(sess.resolve())
+
+    return env, mounts
+
+
 def _apply_namespace_binding(
     identity_bindings: dict[str, str],
     binding: dict[str, str] | None,
@@ -544,6 +605,9 @@ def run_stage(
     prior_stage_ids: list[str],
     stage_prompts: list[str],
     prompt_mode: str,
+    agent_session: str = "per_stage",
+    session_id: str | None = None,
+    stage_index: int = 0,
     defer_cleanup: bool = False,
     sandbox_options: dict[str, Any] | None = None,
     on_progress: Any | None = None,
@@ -747,7 +811,16 @@ def run_stage(
             "/root/.kube/config" if sandbox_mode == "docker"
             else str(Path(agent_kubeconfig).resolve())
         )
-        agent_env_vars = {**env_vars_adv, "KUBECONFIG": kubeconfig_env}
+        # Persistent single-agent session: env + (docker) per-run store mounts so
+        # the agent resumes one conversation across stages instead of a fresh
+        # launch each stage. Empty in per_stage mode (session_id None).
+        session_env, session_mounts = _session_env_and_mounts(
+            run_dir,
+            session_id=session_id,
+            stage_index=stage_index,
+            sandbox_mode=sandbox_mode,
+        )
+        agent_env_vars = {**env_vars_adv, "KUBECONFIG": kubeconfig_env, **session_env}
         # A per-run launch command (--agent-cmd) is itself an agent to launch,
         # even when no agent is registered (folder/entrypoint absent).
         command_override = opts.get("agent_cmd")
@@ -775,7 +848,7 @@ def run_stage(
                 run_dir=stage_dir,
                 agent_timeout_sec=row.get("agent_timeout_sec") or 900,
                 kubeconfig_path=agent_kubeconfig,
-                extra_mounts=opts.get("extra_mounts"),
+                extra_mounts=(opts.get("extra_mounts") or []) + session_mounts,
                 command_override=command_override,
             )
 
