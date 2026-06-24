@@ -21,7 +21,10 @@ CANARY_BODY = os.environ.get("BENCH_PARAM_CANARY_BODY") or "canary"
 # re-evaluate both routes within a bounded window and pass as soon as BOTH match
 # in the same cycle. This does not loosen the criterion -- mis-routed traffic
 # that never settles still fails after the deadline.
-DEADLINE_SEC = 120
+# O-deadline: keep the loop window strictly below the oracle timeout_sec (150s)
+# with headroom for the final pair of (possibly slow) execs + output, so the
+# harness can never kill the loop before it prints a verdict.
+DEADLINE_SEC = 110
 INTERVAL_SEC = 3
 
 

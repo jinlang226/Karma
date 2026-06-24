@@ -69,7 +69,12 @@ preconditionUnits:
         sleep: 1
       - command: "kubectl create namespace ingress-nginx"
         sleep: 0
-      - command: "kubectl apply -f cases/nginx-ingress/class_only_upgrade/resource/deploy.yaml"
+      # P26: deploy.yaml ships cluster-scoped objects (IngressClass nginx,
+      # ValidatingWebhookConfiguration, ClusterRole/Binding) with immutable
+      # fields; tolerate (|| true) so a sibling case that already owns them on
+      # a reused cluster can't abort this precondition. The controller-ready
+      # rollout below is the real gate.
+      - command: "/bin/sh -c 'kubectl apply -f cases/nginx-ingress/class_only_upgrade/resource/deploy.yaml || true'"
         sleep: 90
       - command: "kubectl -n ingress-nginx rollout status deploy/ingress-nginx-controller --timeout=120s"
         sleep: 2
@@ -81,7 +86,11 @@ preconditionUnits:
         sleep: 0
       - command: "kubectl apply -f cases/nginx-ingress/class_only_upgrade/resource/ingress-classes.yaml"
         sleep: 1
-      - command: "bash -c 'IMAGE=$(kubectl -n ingress-nginx get deploy ingress-nginx-controller -o jsonpath=\"{.spec.template.spec.containers[0].image}\"); sed \"s|{{INGRESS_NGINX_IMAGE}}|$IMAGE|g\" cases/nginx-ingress/class_only_upgrade/resource/ingress-nginx-2.yaml | kubectl apply -f -'"
+      # P26: ingress-nginx-2.yaml ships a cluster-scoped ClusterRoleBinding
+      # (immutable roleRef); tolerate (|| true) so a leftover sibling binding on
+      # a reused cluster can't abort this precondition. The ingress-nginx-2
+      # rollout below is the real gate.
+      - command: "bash -c 'IMAGE=$(kubectl -n ingress-nginx get deploy ingress-nginx-controller -o jsonpath=\"{.spec.template.spec.containers[0].image}\"); sed \"s|{{INGRESS_NGINX_IMAGE}}|$IMAGE|g\" cases/nginx-ingress/class_only_upgrade/resource/ingress-nginx-2.yaml | kubectl apply -f - || true'"
         sleep: 2
       - command: "kubectl -n ingress-nginx-2 rollout status deploy/ingress-nginx-controller --timeout=120s"
         sleep: 2
