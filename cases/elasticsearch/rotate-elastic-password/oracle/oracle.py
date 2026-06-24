@@ -207,12 +207,15 @@ def main():
     # The rotation patches the elastic password and triggers a rolling restart;
     # right after that the HTTP auth endpoint can transiently fail to connect
     # ("Empty reply" / connection refused) even on a correctly-rotated cluster, so
-    # a single snapshot can report a false miss. Re-evaluate for up to ~120s and
-    # pass on the first clean snapshot. A genuinely wrong rotation (new password
-    # never authenticates, or the old one still works) fails every attempt, so the
-    # retry does not loosen the check.
+    # a single snapshot can report a false miss. Re-evaluate and pass on the first
+    # clean snapshot. A genuinely wrong rotation (new password never authenticates,
+    # or the old one still works) fails every attempt, so the retry does not loosen
+    # the check.
+    # O-deadline: keep the internal deadline strictly below the oracle timeout_sec
+    # (120s in test.yaml) so the harness does not kill the loop before it prints a
+    # verdict; 90s leaves headroom for the final evaluate() + output.
     import time
-    deadline = time.monotonic() + 120
+    deadline = time.monotonic() + 90
     errors = evaluate()
     while errors and time.monotonic() < deadline:
         time.sleep(8)

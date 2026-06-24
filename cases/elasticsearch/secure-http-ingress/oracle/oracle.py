@@ -165,11 +165,14 @@ def main():
     # controller can return curl exit 7 (connection refused) or a transient 5xx
     # even though the route is correct and converges seconds later. A single
     # snapshot can catch that transient and report a false miss. So verify the
-    # STABLE converged state: re-evaluate for up to ~120s and pass on the first
-    # clean snapshot. This does not loosen the HTTPS-reachable / HTTP-blocked
-    # requirements -- a genuinely misconfigured ingress fails every attempt.
+    # STABLE converged state: re-evaluate and pass on the first clean snapshot.
+    # This does not loosen the HTTPS-reachable / HTTP-blocked requirements -- a
+    # genuinely misconfigured ingress fails every attempt.
+    # O-deadline: keep the internal deadline strictly below the oracle timeout_sec
+    # (120s in test.yaml) so the harness does not kill the loop before it prints a
+    # verdict; 90s leaves headroom for the final evaluate() + output.
     import time
-    deadline = time.monotonic() + 120
+    deadline = time.monotonic() + 90
     errors = evaluate()
     while errors and time.monotonic() < deadline:
         time.sleep(8)

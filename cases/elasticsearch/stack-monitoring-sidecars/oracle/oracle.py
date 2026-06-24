@@ -189,12 +189,17 @@ def main():
     # indices appear and accrue documents, and a curl to the monitoring service
     # can flake during warm-up. A single snapshot right after submit catches that
     # transient and reports a false "Monitoring indices not found" / "no
-    # documents". So verify the STABLE converged state: re-evaluate for up to
-    # ~120s and pass on the first clean snapshot. This does not loosen the
-    # sidecar / monitoring-index requirements -- a genuinely missing integration
-    # fails every attempt.
+    # documents". So verify the STABLE converged state: re-evaluate and pass on
+    # the first clean snapshot. This does not loosen the sidecar / monitoring-index
+    # requirements -- a genuinely missing integration fails every attempt.
+    #
+    # O-deadline: the loop's internal deadline MUST finish strictly before the
+    # oracle's own timeout_sec (120s in test.yaml), leaving headroom for the final
+    # evaluate() + verdict print. A 120s internal deadline == the budget, so the
+    # harness killed this oracle mid-loop and it never printed a verdict
+    # ("[timed out after 119s]") even on a correctly-solved task. Cap at 90s.
     import time
-    deadline = time.monotonic() + 120
+    deadline = time.monotonic() + 90
     errors = evaluate()
     while errors and time.monotonic() < deadline:
         time.sleep(8)

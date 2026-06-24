@@ -155,13 +155,14 @@ preconditionUnits:
     # the transform already exists so the probe skips and this is a no-op.
     on_probe_fail: skip
     probe:
-      # Skip when the transform already exists (HTTP 200 from _stats).
-      - command: |
-          /bin/sh -c '
-          pw=$(kubectl -n elasticsearch get secret elastic-password -o jsonpath="{.data.password}" 2>/dev/null | base64 -d 2>/dev/null); A=""; [ -n "$pw" ] && A="-u elastic:$pw"
-          code=$(kubectl -n elasticsearch exec {{params.curl_pod_name}} -- curl -sk $A -o /dev/null -w "%{http_code}" --max-time 5 "http://{{params.http_service_name}}.elasticsearch.svc:9200/_transform/{{params.transform_id}}/_stats" 2>/dev/null)
-          [ "$code" = "200" ]
-          '
+      # P3: gate on THIS fixture's own deliverable — the transform-checkpoint
+      # ConfigMap the oracle reads — not on a proxy marker (the transform's
+      # _stats==200). Standalone, es_env_ready already created the ConfigMap so the
+      # probe passes and this fixture is a no-op. On an inherited cluster where the
+      # transform may be live but the ConfigMap is absent (es_env_ready's apply was
+      # skipped), the probe fails and the fixture RUNS, rebuilding the baseline +
+      # re-injecting the fault the oracle depends on.
+      - command: "kubectl -n elasticsearch get configmap {{params.checkpoint_configmap}} >/dev/null 2>&1"
         timeout_sec: 30
     apply:
       # Ensure the capacity nodeset StatefulSet exists, then bring it Ready so the
