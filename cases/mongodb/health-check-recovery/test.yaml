@@ -221,12 +221,12 @@ preconditionUnits:
   # non-empty, != real-health-pw override on member-1); standalone the fault is
   # already present and this skips -> identical behaviour.
   #
-  # HIGH-RISK / NEEDS KIND VALIDATION: re-applying statefulset.yaml on an inherited
-  # cluster pins image mongo:6.0.5 and the case-specific readiness-probe shape over
-  # whatever a prior stage established (Pattern 7). If a version-bearing predecessor
-  # composes ahead of this case, narrow the StatefulSet apply to PATCH only the
-  # readiness/liveness probe + health volume mounts onto the live StatefulSet
-  # instead of re-applying the whole manifest.
+  # P16 (RESOLVED): the apply now orphan-deletes the inherited StatefulSet
+  # (--cascade=orphan, preserving live pods + data PVCs) before re-applying this
+  # case's manifest, so an inherited STS whose immutable fields a prior stage
+  # mutated (e.g. statefulset-customization) no longer triggers the
+  # `updates to statefulset spec ... are forbidden` abort. Standalone the STS was
+  # just created by mongo_env_ready with this exact spec, so it is a clean no-op.
   - name: health_probe_fault_ready
     on_probe_fail: skip
     probe:
@@ -242,6 +242,16 @@ preconditionUnits:
     apply:
       - command: "kubectl -n mongodb apply -f cases/mongodb/health-check-recovery/resource/health-check.yaml"
         sleep: 1
+      # P16: re-applying the FULL statefulset.yaml onto an inherited STS whose
+      # immutable fields a prior stage (e.g. statefulset-customization) mutated
+      # fails `updates to statefulset spec for fields other than ... are
+      # forbidden` and aborts the precondition. Orphan-delete first so the live
+      # pods + data PVCs (and any running emptyDir/data) are PRESERVED, then
+      # re-apply to re-establish this case's health-* volumes/mounts + probe.
+      # Standalone the STS was just freshly created by mongo_env_ready and is
+      # already this exact spec, so the orphan-delete + re-apply is a clean no-op.
+      - command: "kubectl -n mongodb delete statefulset mongodb-replica --cascade=orphan --ignore-not-found=true"
+        sleep: 2
       - command: "kubectl -n mongodb apply -f cases/mongodb/health-check-recovery/resource/statefulset.yaml"
         sleep: 3
       - command: "kubectl -n mongodb delete pod mongodb-replica-1 --ignore-not-found=true"

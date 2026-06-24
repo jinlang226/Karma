@@ -16,8 +16,23 @@ EXTERNAL_HOST_PREFIX = os.environ.get("BENCH_PARAM_EXTERNAL_HOST_PREFIX", "domai
 NODEPORT_START = int(os.environ.get("BENCH_PARAM_NODEPORT_START", "31181"))
 
 
-def run(cmd):
-    return subprocess.run(cmd, text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+def run(cmd, timeout=9):
+    # O-bound / O-deadline: bound every kubectl exec. Under mutual requireTLS a
+    # mongosh exec against a reloading/wedged listener can hang indefinitely; the
+    # caller's member-failover round loop (3 rounds x 3 members) then accumulates
+    # past the oracle's own timeout_sec (120s) and the harness kills the oracle
+    # BEFORE it prints a verdict -- a correct run scored as a fail. The 9s per-call
+    # cap bounds the loop's absolute worst case (9 exec calls + 2x3s sleeps ~= 87s)
+    # strictly under the 120s oracle budget, with headroom for the final read +
+    # output. On timeout, surface a TimeoutExpired-shaped result so the caller
+    # treats it as "this member did not answer" and moves on, never crashing.
+    try:
+        return subprocess.run(
+            cmd, text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+            timeout=timeout,
+        )
+    except subprocess.TimeoutExpired:
+        return subprocess.CompletedProcess(cmd, 124, "", "timed out")
 
 
 _TLS_FLAGS_CACHE = {}
@@ -268,10 +283,15 @@ def _stage_client_tls_flags():
         cat = run(["kubectl", "-n", NAMESPACE, "exec", member, "--", "/bin/sh", "-c", "cat " + src])
         if cat.returncode != 0 or not cat.stdout:
             return False
-        proc = subprocess.run(
-            ["kubectl", "-n", NAMESPACE, "exec", "-i", CLIENT_POD_NAME, "--", "/bin/sh", "-c", "cat > " + dest],
-            input=cat.stdout, text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-        )
+        # O-bound: bound this exec too so a wedged write can't hang the oracle.
+        try:
+            proc = subprocess.run(
+                ["kubectl", "-n", NAMESPACE, "exec", "-i", CLIENT_POD_NAME, "--", "/bin/sh", "-c", "cat > " + dest],
+                input=cat.stdout, text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                timeout=15,
+            )
+        except subprocess.TimeoutExpired:
+            return False
         return proc.returncode == 0
 
     if ca_src and _copy(ca_src, "/tmp/oracle-ca.crt"):
