@@ -246,7 +246,7 @@ def check(errors, phase):
         )
 
 
-def wait_pod_ready(deadline_sec=150):
+def wait_pod_ready(deadline_sec=300):
     """Wait for POD to exist AND become Ready, tolerating the recreation window.
 
     The agent and this oracle both restart crdb-cluster-0 to test persistence,
@@ -254,6 +254,14 @@ def wait_pod_ready(deadline_sec=150):
     `kubectl wait` returns immediately with an error when the pod object does
     not yet exist, so this polls until the pod reappears and reports Ready,
     rather than failing on the first NotFound. Returns (ok, last_error).
+
+    O-restart: when *this oracle itself* deletes the pod to prove persistence,
+    the readiness budget must cover the worst case it will meet -- a SECURE node
+    that has been repeatedly bounced across prior workflow stages (04/05/06) can
+    take far longer to drain-rejoin-and-Ready than a fresh insecure one, so 150s
+    was too tight and failed a correct agent. The post-delete call uses the full
+    300s default; the pre-agent settle call passes a shorter budget so the total
+    stays under the oracle timeout_sec (O-deadline).
     """
     start = time.monotonic()
     last_err = "pod did not become ready"
@@ -276,7 +284,10 @@ def main():
     # The agent may have just restarted crdb-cluster-0 to test persistence
     # itself, leaving it briefly absent/not-ready. Wait for it to settle before
     # the first read so a transient restart window isn't mistaken for a failure.
-    ok, err = wait_pod_ready()
+    # Use a shorter budget here than the post-delete wait below: the worst-case
+    # recovery is the bounce *this* oracle triggers, and keeping this pre-check
+    # bounded keeps the whole oracle's wall time under timeout_sec (O-deadline).
+    ok, err = wait_pod_ready(deadline_sec=120)
     if not ok:
         errors.append(f"Pod not ready before persistence check: {err}")
 
