@@ -59,6 +59,58 @@ def exec_with_timeout(cmd, timeout_seconds):
         return None, f"timed out after {timeout_seconds}s"
 
 
+def crdb_pods():
+    """Return the cluster's pod objects, robust to the build's labels (§3.1).
+
+    Standalone this case ships its own StatefulSet with the canonical
+    app.kubernetes.io/name=cockroachdb label. In a workflow this stage can
+    inherit an agent-built cluster (cockroachdb/deploy) whose StatefulSet the
+    deploy oracle now mandates carry the same labels -- but to be resilient we
+    resolve pods by the live `crdb-cluster` StatefulSet's own selector, and fall
+    back to the canonical label and then to the crdb-cluster-* name prefix.
+    """
+    # Prefer the live StatefulSet selector.
+    sts = run(["kubectl", "-n", "cockroachdb", "get", "statefulset",
+               "crdb-cluster", "-o", "json"])
+    if sts.returncode == 0:
+        try:
+            match = (json.loads(sts.stdout).get("spec", {})
+                     .get("selector", {}).get("matchLabels")) or {}
+        except json.JSONDecodeError:
+            match = {}
+        if match:
+            sel = ",".join(f"{k}={v}" for k, v in match.items())
+            res = run(["kubectl", "-n", "cockroachdb", "get", "pods",
+                       "-l", sel, "-o", "json"])
+            if res.returncode == 0:
+                try:
+                    items = json.loads(res.stdout).get("items", [])
+                except json.JSONDecodeError:
+                    items = []
+                if items:
+                    return items
+    # Fall back to the canonical label.
+    res = run(["kubectl", "-n", "cockroachdb", "get", "pods",
+               "-l", "app.kubernetes.io/name=cockroachdb", "-o", "json"])
+    if res.returncode == 0:
+        try:
+            items = json.loads(res.stdout).get("items", [])
+        except json.JSONDecodeError:
+            items = []
+        if items:
+            return items
+    # Last resort: select by the StatefulSet's stable pod-name prefix.
+    res = run(["kubectl", "-n", "cockroachdb", "get", "pods", "-o", "json"])
+    if res.returncode != 0:
+        return []
+    try:
+        items = json.loads(res.stdout).get("items", [])
+    except json.JSONDecodeError:
+        return []
+    return [p for p in items
+            if p.get("metadata", {}).get("name", "").startswith("crdb-cluster-")]
+
+
 def parse_args():
     parser = argparse.ArgumentParser(description="Verify CockroachDB initialization.")
     parser.add_argument(
@@ -114,32 +166,25 @@ def evaluate(timeout_seconds):
         errors.append("SQL connectivity test failed")
         errors.append(f"Error: {result.stderr.strip()}")
     
-    # Check all pods are running
-    cmd = ["kubectl", "-n", "cockroachdb", "get", "pods", 
-           "-l", "app.kubernetes.io/name=cockroachdb", "-o", "json"]
-    result = run(cmd)
-    if result.returncode == 0:
-        try:
-            pods_data = json.loads(result.stdout)
-            pods = pods_data.get("items", [])
-            
-            for pod in pods:
-                name = pod["metadata"]["name"]
-                phase = pod["status"].get("phase", "Unknown")
-                conditions = pod["status"].get("conditions", [])
-                ready = any(c.get("type") == "Ready" and c.get("status") == "True" 
-                           for c in conditions)
-                
-                if phase != "Running":
-                    errors.append(f"Pod {name} is not Running (phase: {phase})")
-                if not ready:
-                    errors.append(f"Pod {name} is not Ready")
-            
-            if len(pods) != REPLICA_COUNT:
-                errors.append(f"Expected {REPLICA_COUNT} pods, found {len(pods)}")
+    # Check all pods are running (resolved robustly to the build's labels).
+    try:
+        pods = crdb_pods()
+        for pod in pods:
+            name = pod["metadata"]["name"]
+            phase = pod["status"].get("phase", "Unknown")
+            conditions = pod["status"].get("conditions", [])
+            ready = any(c.get("type") == "Ready" and c.get("status") == "True"
+                       for c in conditions)
 
-        except (json.JSONDecodeError, KeyError) as e:
-            errors.append(f"Failed to parse pod status: {e}")
+            if phase != "Running":
+                errors.append(f"Pod {name} is not Running (phase: {phase})")
+            if not ready:
+                errors.append(f"Pod {name} is not Ready")
+
+        if len(pods) != REPLICA_COUNT:
+            errors.append(f"Expected {REPLICA_COUNT} pods, found {len(pods)}")
+    except (KeyError, TypeError) as e:
+        errors.append(f"Failed to parse pod status: {e}")
 
     return errors
 

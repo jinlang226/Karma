@@ -20,6 +20,53 @@ def run(cmd):
     return subprocess.run(cmd, text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
 
 
+def crdb_pods():
+    """Return the cluster's pods, robust to how the cluster was labelled (§3.1).
+
+    Resolve by the live `crdb-cluster` StatefulSet's own selector first; fall
+    back to the canonical app.kubernetes.io/name=cockroachdb label, then to the
+    crdb-cluster-* pod-name prefix -- so a downstream oracle survives a workflow
+    whose earlier (agent-built) deploy stage chose different labels.
+    """
+    sts = run(["kubectl", "-n", "cockroachdb", "get", "statefulset",
+               "crdb-cluster", "-o", "json"])
+    if sts.returncode == 0:
+        try:
+            match = (json.loads(sts.stdout).get("spec", {})
+                     .get("selector", {}).get("matchLabels")) or {}
+        except json.JSONDecodeError:
+            match = {}
+        if match:
+            sel = ",".join(f"{k}={v}" for k, v in match.items())
+            res = run(["kubectl", "-n", "cockroachdb", "get", "pods",
+                       "-l", sel, "-o", "json"])
+            if res.returncode == 0:
+                try:
+                    items = json.loads(res.stdout).get("items", [])
+                except json.JSONDecodeError:
+                    items = []
+                if items:
+                    return items
+    res = run(["kubectl", "-n", "cockroachdb", "get", "pods",
+               "-l", "app.kubernetes.io/name=cockroachdb", "-o", "json"])
+    if res.returncode == 0:
+        try:
+            items = json.loads(res.stdout).get("items", [])
+        except json.JSONDecodeError:
+            items = []
+        if items:
+            return items
+    res = run(["kubectl", "-n", "cockroachdb", "get", "pods", "-o", "json"])
+    if res.returncode != 0:
+        return []
+    try:
+        items = json.loads(res.stdout).get("items", [])
+    except json.JSONDecodeError:
+        return []
+    return [p for p in items
+            if p.get("metadata", {}).get("name", "").startswith("crdb-cluster-")]
+
+
 _CONN_FLAG = None
 
 
@@ -103,44 +150,24 @@ def evaluate():
     """One full snapshot of the major-upgrade-finalize checks; returns error list."""
     errors = []
 
-    cmd = [
-        "kubectl",
-        "-n",
-        "cockroachdb",
-        "get",
-        "pods",
-        "-l",
-        "app.kubernetes.io/name=cockroachdb",
-        "-o",
-        "json",
-    ]
-    result = run(cmd)
-    if result.returncode != 0:
-        errors.append(result.stderr.strip() or "Failed to read pods")
-    else:
-        try:
-            data = json.loads(result.stdout)
-            pods = data.get("items", [])
-        except json.JSONDecodeError:
-            errors.append("Failed to parse pod list")
-            pods = []
-        if len(pods) != expected_nodes():
-            errors.append(f"Expected {expected_nodes()} pods, found {len(pods)}")
-        for pod in pods:
-            name = pod.get("metadata", {}).get("name", "unknown")
-            containers = pod.get("spec", {}).get("containers", [])
-            if not containers:
-                errors.append(f"No containers found in pod {name}")
-                continue
-            image = containers[0].get("image") or ""
-            # Accept any patch of the target MAJOR version (e.g. v24.1.1 for a 24.1
-            # finalize). A prior workflow upgrade stage or the agent may validly
-            # land on a different 24.1.x patch, and a major upgrade can't be
-            # downgraded to an exact patch. The logical-cluster-version finalize
-            # check below still enforces the major upgrade; only the patch is free.
-            img_majmin = ".".join(image.split(":")[-1].lstrip("v").split(".")[:2])
-            if img_majmin != TARGET_VERSION:
-                errors.append(f"Pod {name} image is {image} (expected v{TARGET_VERSION}.x)")
+    pods = crdb_pods()
+    if len(pods) != expected_nodes():
+        errors.append(f"Expected {expected_nodes()} pods, found {len(pods)}")
+    for pod in pods:
+        name = pod.get("metadata", {}).get("name", "unknown")
+        containers = pod.get("spec", {}).get("containers", [])
+        if not containers:
+            errors.append(f"No containers found in pod {name}")
+            continue
+        image = containers[0].get("image") or ""
+        # Accept any patch of the target MAJOR version (e.g. v24.1.1 for a 24.1
+        # finalize). A prior workflow upgrade stage or the agent may validly
+        # land on a different 24.1.x patch, and a major upgrade can't be
+        # downgraded to an exact patch. The logical-cluster-version finalize
+        # check below still enforces the major upgrade; only the patch is free.
+        img_majmin = ".".join(image.split(":")[-1].lstrip("v").split(".")[:2])
+        if img_majmin != TARGET_VERSION:
+            errors.append(f"Pod {name} image is {image} (expected v{TARGET_VERSION}.x)")
 
     cmd = [
         "kubectl",

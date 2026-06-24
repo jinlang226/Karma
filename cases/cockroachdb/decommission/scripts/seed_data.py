@@ -127,7 +127,7 @@ def wait_for_range_info(attempts=20, delay=3):
     return None, None, last_err
 
 
-def wait_for_replica_state(desired_count, range_id, attempts=120, delay=3):
+def wait_for_replica_state(desired_count, range_id, attempts=80, delay=3):
     last_voters = None
     last_all = None
     for _ in range(attempts):
@@ -146,7 +146,7 @@ def wait_for_replica_state(desired_count, range_id, attempts=120, delay=3):
     )
 
 
-def wait_for_relocation(range_id, target, attempts=60, delay=3):
+def wait_for_relocation(range_id, target, attempts=40, delay=3):
     last_err = None
     last_voters = None
     last_all = None

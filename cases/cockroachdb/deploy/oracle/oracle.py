@@ -26,6 +26,14 @@ EXPECTED_REPLICAS = int(
     or "3"
 )
 
+# Canonical pod-identity labels every cockroachdb stage relies on (§3.1 identity
+# contract). The deploy prompt mandates them, so the oracle enforces them, which
+# in turn lets downstream stages select pods by these labels safely.
+CANONICAL_LABELS = {
+    "app.kubernetes.io/name": "cockroachdb",
+    "app.kubernetes.io/instance": "crdb-cluster",
+}
+
 
 def run(cmd):
     return subprocess.run(cmd, text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
@@ -277,6 +285,21 @@ def evaluate():
         ) or {}
         if not selector_labels:
             errors.append("StatefulSet selector labels are missing")
+        # Identity contract (§3.1): every later cockroachdb stage selects pods by
+        # the canonical labels app.kubernetes.io/name=cockroachdb and
+        # app.kubernetes.io/instance=crdb-cluster. The deploy prompt MANDATES
+        # them, so enforce here that both the selector and the pod template carry
+        # them -- otherwise a self-consistent but differently-labelled cluster
+        # would be invisible to a downstream initialize/health/upgrade oracle.
+        for key, value in CANONICAL_LABELS.items():
+            if selector_labels.get(key) != value:
+                errors.append(
+                    f"StatefulSet selector must include canonical label {key}={value}"
+                )
+            if pod_labels.get(key) != value:
+                errors.append(
+                    f"Pod template must include canonical label {key}={value}"
+                )
 
     if svc and pod_labels:
         selector = svc.get("spec", {}).get("selector") or {}

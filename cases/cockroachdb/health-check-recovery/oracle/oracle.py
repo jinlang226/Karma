@@ -9,6 +9,53 @@ def run(cmd):
     return subprocess.run(cmd, text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
 
 
+def crdb_pods():
+    """Return the cluster's pods, robust to how the cluster was labelled (§3.1).
+
+    Resolve by the live `crdb-cluster` StatefulSet's own selector first; fall
+    back to the canonical app.kubernetes.io/name=cockroachdb label, then to the
+    crdb-cluster-* pod-name prefix. This makes a downstream oracle survive a
+    workflow whose earlier (agent-built) deploy stage chose different labels.
+    """
+    sts = run(["kubectl", "-n", "cockroachdb", "get", "statefulset",
+               "crdb-cluster", "-o", "json"])
+    if sts.returncode == 0:
+        try:
+            match = (json.loads(sts.stdout).get("spec", {})
+                     .get("selector", {}).get("matchLabels")) or {}
+        except json.JSONDecodeError:
+            match = {}
+        if match:
+            sel = ",".join(f"{k}={v}" for k, v in match.items())
+            res = run(["kubectl", "-n", "cockroachdb", "get", "pods",
+                       "-l", sel, "-o", "json"])
+            if res.returncode == 0:
+                try:
+                    items = json.loads(res.stdout).get("items", [])
+                except json.JSONDecodeError:
+                    items = []
+                if items:
+                    return items
+    res = run(["kubectl", "-n", "cockroachdb", "get", "pods",
+               "-l", "app.kubernetes.io/name=cockroachdb", "-o", "json"])
+    if res.returncode == 0:
+        try:
+            items = json.loads(res.stdout).get("items", [])
+        except json.JSONDecodeError:
+            items = []
+        if items:
+            return items
+    res = run(["kubectl", "-n", "cockroachdb", "get", "pods", "-o", "json"])
+    if res.returncode != 0:
+        return []
+    try:
+        items = json.loads(res.stdout).get("items", [])
+    except json.JSONDecodeError:
+        return []
+    return [p for p in items
+            if p.get("metadata", {}).get("name", "").startswith("crdb-cluster-")]
+
+
 _EXPECTED_NODES = None
 
 
@@ -90,22 +137,16 @@ def evaluate():
     """One full snapshot of the health-check-recovery checks; returns error list."""
     errors = []
 
-    # Check all pods are healthy
-    cmd = ["kubectl", "-n", "cockroachdb", "get", "pods", "-l", 
-           "app.kubernetes.io/name=cockroachdb", "-o", "json"]
-    result = run(cmd)
-    if result.returncode == 0:
-        try:
-            data = json.loads(result.stdout)
-            pods = data.get("items", [])
-            for pod in pods:
-                name = pod["metadata"]["name"]
-                conditions = pod["status"].get("conditions", [])
-                ready = any(c.get("type") == "Ready" and c.get("status") == "True" for c in conditions)
-                if not ready:
-                    errors.append(f"Pod {name} not ready")
-        except (json.JSONDecodeError, KeyError):
-            errors.append("Failed to parse pod status")
+    # Check all pods are healthy (resolved robustly to the build's labels).
+    try:
+        for pod in crdb_pods():
+            name = pod["metadata"]["name"]
+            conditions = pod["status"].get("conditions", [])
+            ready = any(c.get("type") == "Ready" and c.get("status") == "True" for c in conditions)
+            if not ready:
+                errors.append(f"Pod {name} not ready")
+    except (KeyError, TypeError):
+        errors.append("Failed to parse pod status")
 
     # Check all nodes are live
     cmd = [
