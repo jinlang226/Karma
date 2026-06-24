@@ -13,7 +13,12 @@ MIN_429 = 4
 # erroring out) within a bounded window; the rate-limit verdict on a successful
 # burst is unchanged and single-shot, so a path that is genuinely not limited
 # still fails.
-PROBE_DEADLINE_SEC = 120
+# O-deadline: this is a SHARED budget across BOTH the /api and /health probes,
+# not per-probe. With a per-probe 120s deadline the two sequential retry loops
+# could run 240s back-to-back and be killed by the 150s oracle timeout_sec
+# mid-loop -- no verdict printed -> a correct run scored as a fail. Keep the
+# combined window below the budget with headroom for the final bursts + output.
+PROBE_DEADLINE_SEC = 110
 PROBE_INTERVAL_SEC = 3
 # Param-aware: a workflow can override host/api_path/health_path via
 # param_overrides; read BENCH_PARAM_* (default = the standalone value) so the
@@ -57,11 +62,10 @@ def paced(path):
     return codes
 
 
-def paced_with_retry(path, label):
+def paced_with_retry(path, label, deadline):
     # Re-issue the burst only when the exec itself errors (transient warm-up),
-    # bounded by PROBE_DEADLINE_SEC. Returns the response codes once the exec
-    # succeeds, or raises the last error after the deadline.
-    deadline = time.monotonic() + PROBE_DEADLINE_SEC
+    # bounded by the SHARED `deadline` (O-deadline). Returns the response codes
+    # once the exec succeeds, or raises the last error after the deadline.
     while True:
         try:
             return paced(path)
@@ -73,14 +77,17 @@ def paced_with_retry(path, label):
 
 
 def main():
+    # One shared retry window for both probes so the oracle always prints a
+    # verdict before its timeout_sec (O-deadline).
+    deadline = time.monotonic() + PROBE_DEADLINE_SEC
     try:
-        api_codes = paced_with_retry(API_PATH, "API")
+        api_codes = paced_with_retry(API_PATH, "API", deadline)
     except Exception as exc:
         print(f"API test failed: {exc}", file=sys.stderr)
         return 1
 
     try:
-        health_codes = paced_with_retry(HEALTH_PATH, "Health")
+        health_codes = paced_with_retry(HEALTH_PATH, "Health", deadline)
     except Exception as exc:
         print(f"Health test failed: {exc}", file=sys.stderr)
         return 1

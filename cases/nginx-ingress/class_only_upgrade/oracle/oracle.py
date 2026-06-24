@@ -16,7 +16,10 @@ EXPECTED_BODY = os.environ.get("BENCH_PARAM_EXPECTED_BODY") or "hello"
 # warming up. A single curl races that, so re-evaluate within a bounded window
 # and pass as soon as the body matches. This does not loosen the criterion -- a
 # host that never serves the expected body still fails after the deadline.
-DEADLINE_SEC = 120
+# O-deadline: keep the loop window strictly below the oracle timeout_sec (150s)
+# with headroom for a final (possibly slow) exec + output, so the harness can
+# never kill the loop before it prints a verdict.
+DEADLINE_SEC = 110
 INTERVAL_SEC = 3
 
 
