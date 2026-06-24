@@ -136,10 +136,17 @@ version mismatch). *(52b63cee, a0b7598)*
   case runs against the wrong cluster and its oracle can't find its pods. Probe
   `get pod {{params.cluster_prefix}}-0` / `get statefulset <name>`. *(e1291da,
   bbb61ec, 2c1018ea) [PRECONDITION]*
-- **P3 — Probe by intent, not by a proxy marker.** A skip-probe must test the
-  **exact state the oracle checks**, not "ConfigMap exists" / "user exists" — a
-  stale-but-present artifact then skips the planting. *(bb254c58, a36bfe64)
-  [PRECONDITION]*
+- **P3 — Probe by intent (your own deliverable), not a proxy marker.** A skip-probe
+  must test the **exact artifact the oracle checks**, not a *nearby* marker a prior
+  stage may have left present. An additive re-plant fixture especially must gate on
+  the thing *it* produces (the baseline ConfigMap / secret / seed it writes), never
+  on a sibling resource — else on an inherited cluster the proxy is present, the
+  fixture skips, and the oracle's dependency is never created. *Evidence: es
+  transform-job-recovery — the re-plant fixture skips on "transform `_stats`==200"
+  while its real job is to write the `transform-checkpoint` ConfigMap; composed
+  after another ES stage the transform is live but the ConfigMap is absent →
+  oracle "Unable to read checkpoint_before". Fix: probe `get configmap
+  transform-checkpoint`.* *(bb254c58, a36bfe64) [PRECONDITION]*
 - **P4 — Force-fail the probe (`exit 1`) when the case must always re-provision**
   a clean namespace and has no idempotent target to detect. *(bbb61ec)
   [PRECONDITION]*
@@ -199,8 +206,14 @@ version mismatch). *(52b63cee, a0b7598)*
   slow** — read the logs, stop raising. *(8b4b9d4b, 2096ed93, 3515e028, 06be674)
   [PRECONDITION/FRAMEWORK]*
 - **P14 — A seed/setup script must finish within its `timeout_sec`.** Keep the
-  script's internal retry budget *under* the unit budget. *(2c1018ea, 9c4d44a)
-  [PRECONDITION]*
+  script's internal retry budget *under* the unit budget. A verify/health inner
+  loop that runs *longer* than its unit's `timeout_sec` is killed mid-loop, and the
+  harness then **re-runs the whole verify** — so an N-iteration loop that overruns
+  multiplies into the precondition cap (`setup timeout: preconditions exceeded
+  600s`) and the agent never launches. Size the inner loop strictly below one unit
+  budget. *Evidence: es master-downscale-voting-exclusions — a `seq 1 30`×`sleep 3`
+  (~240s) verify in a 120s unit was retried ~13× → blew the 600s cap.* *(2c1018ea,
+  9c4d44a) [PRECONDITION]*
 
 ### Manifests, literals, identity
 - **P15 — Get-or-apply for helper Pods.** `kubectl apply` of a bare helper Pod
@@ -209,11 +222,27 @@ version mismatch). *(52b63cee, a0b7598)*
   Reuse if present, create only if absent. Only `kind: Pod` needs this
   (StatefulSet/Deployment/Service/Secret/ConfigMap are patchable). *(f4e5b41, 27
   cases / 36 sites) [PRECONDITION/COMPOSITION]*
-- **P16 — Orphan-delete an inherited StatefulSet before re-applying** when its
-  immutable fields (`volumeClaimTemplates`/`serviceName`/`selector`) may differ:
-  `kubectl delete sts <x> --cascade=orphan --ignore-not-found` (preserves running
-  pods + data PVCs — critical for `emptyDir` clusters). *(7484f69)
-  [COMPOSITION]*
+- **P16 — Don't re-apply a whole manifest whose immutable fields a prior stage may
+  have changed.** A `kubectl apply -f <full-statefulset>.yaml` onto an inherited
+  StatefulSet whose immutable fields differ fails `updates to statefulset spec …
+  are forbidden` and aborts the precondition (the agent never runs). Either
+  **orphan-delete first** — `kubectl delete sts <x> --cascade=orphan
+  --ignore-not-found` (preserves running pods + data PVCs, critical for `emptyDir`
+  clusters) — **or patch only the field you need** (`kubectl patch` the readiness
+  probe / image) instead of re-applying the whole manifest. *Evidence: mongo
+  health-check-recovery stage_11 — re-applies the full manifest after stage_10
+  customized the STS → immutable-field Forbidden.* *(7484f69) [COMPOSITION]*
+- **P26 — Make shared cluster-scoped applies tolerant; never let them abort a
+  precondition.** Cluster-scoped objects (`IngressClass`, `CRD`, `ClusterRole(Binding)`,
+  `PersistentVolume`, `StorageClass`, `PriorityClass`) are **not namespaced**, so a
+  prior or sibling case on a reused cluster already owns them — and many of their
+  fields are immutable. A bare `kubectl apply` then fails (`IngressClass "nginx" …
+  spec.controller: field is immutable`) and aborts the whole unit. Wrap such applies
+  best-effort (`… || true`) or get-or-skip (`kubectl get ingressclass nginx ||
+  apply`); the unit's `verify` (e.g. the controller Deployment is Ready) is the real
+  gate. *Evidence: es secure-http-ingress (stage_03) and crdb expose-ingress
+  (stage_11) both abort on a pre-existing `IngressClass nginx` left by an nginx
+  case.* [PRECONDITION] (cluster-scoped sibling of P15.)
 - **P17 — Validate every seeded literal against the real system.** Roles
   (`viewer`, not the non-existent `read`), image tags, memory units (`512Mi`, not
   bare `512`), service-account names, settings names — a wrong value fails (often
@@ -278,6 +307,17 @@ version mismatch). *(52b63cee, a0b7598)*
   `--advertise-addr=$(hostname -f)`, or asserting backend-TLS the precondition
   deliberately deployed as plain-HTTP — all fail an honest agent. *(06d3fadc,
   52b63cee) [ORACLE]*
+- **O-multi — Inspect *every* entry of a multi-valued artifact; accept a valid
+  superset.** When the oracle reads something that can legitimately hold more than
+  one value — a PEM file (CA **bundle**), a multi-doc YAML, a list, a label set —
+  parse **all** entries, don't assume the first/only one. A tool that reads just
+  the head (`openssl x509` on a bundle reads only the leading cert) silently grades
+  the wrong element, and the agent's correct answer is often a *bundle/superset*
+  (old+new for a zero-gap rollover). Assert "the required value is **present among**
+  the entries," not "the single value equals X." *Evidence: es rotate-http-certs —
+  agent set `ca.crt` to `old-ca + new-ca` (prompt-required trust bundle); oracle
+  fingerprinted only the first cert → false "CA fingerprint did not change".*
+  [ORACLE]
 - **O-relative — Validate against an *absolute* target, not an inherited
   artifact.** A "rotate to ~1y" check that required the new cert to *outlive* the
   inherited old one breaks when chained after a multi-year cert. Derive the target
@@ -347,11 +387,27 @@ version mismatch). *(52b63cee, a0b7598)*
 - **O-restart — When the outcome needs a pod to recover, delete it once** so it
   recreates without accumulated CrashLoopBackOff, then poll. After a restart, poll
   the pod to exist+Ready *and* retry a `SELECT 1`/`ping` (Ready ≠ accepting
-  clients). *(d1d57ca, ff1033d3) [ORACLE]*
+  clients). When the **oracle itself** restarts a pod to prove persistence, size
+  that readiness wait for the *worst* case it will meet — a **secure**, **loaded**,
+  already-**repeatedly-bounced** node can take far longer to drain-rejoin-and-Ready
+  than a fresh one (and the wait must stay under the oracle `timeout_sec`, see
+  O-deadline). *Evidence: crdb cluster-settings stage_06 — the oracle's own 2nd
+  pod-delete `wait_pod_ready(150s)` times out on a secure node bounced across
+  stages 04/05/06, failing a correct agent.* *(d1d57ca, ff1033d3) [ORACLE]*
 - **O-budget — Size the oracle `timeout_sec` to the number of `kubectl exec`
   round-trips × per-exec latency under load**, with headroom; default the arg to
   `None`, resolve `max(oracle_timeout_sec, Σ per-command + sleeps)`. *(68709b26,
   e985873) [ORACLE/FRAMEWORK]*
+- **O-deadline — An oracle's internal retry/flap/wait loop must finish strictly
+  *before* its own `timeout_sec`.** If the loop's deadline equals (or exceeds) the
+  harness oracle budget, the harness kills the oracle mid-loop and it **never prints
+  a verdict** — the result is literally `[timed out after 119s]`, i.e. a correct,
+  passing run scored as a fail. Set the internal deadline below `timeout_sec` with
+  headroom for the final read + output (e.g. loop ≤90s under a 120s budget), or
+  raise `timeout_sec` above the loop. This is the flip side of O-flap (the loop is
+  right; its window must fit). *Evidence: es stack-monitoring-sidecars (loop
+  deadline 120s == budget) and crdb cluster-settings — both completed the task,
+  both killed before the verdict.* [ORACLE/FRAMEWORK]
 - **O-equiv — Accept equivalent valid outcomes.** ingress-nginx returns **503**
   (not always 429) on a throttled burst → accept either. To *prove* a rate limit,
   fire an **unpaced burst**, never a fixed-rps cadence that can match the limit (a
@@ -429,7 +485,10 @@ version mismatch). *(52b63cee, a0b7598)*
   existence probe ("queue exists") passes on a cluster a prior identical stage
   already healed, so the fault is never re-planted and the oracle passes with zero
   agent action. Probe the *specific faulted state* and re-plant it idempotently.
-  *(88195c8, 9357407, 3826aeb) [COMPOSITION]*
+  The same trap sinks an additive **re-plant fixture** whose probe checks a proxy
+  instead of its own deliverable — it skips on the inherited cluster and the
+  oracle's baseline/fault is never (re)created (see **P3**). *(88195c8, 9357407,
+  3826aeb) [COMPOSITION]*
 - **C9 — Don't retry stages whose precondition plants non-reentrant state.** A
   break-then-fix case can't re-break what attempt-1 fixed; a genuine agent miss
   then masquerades as "precondition units failed." Default the suite to
@@ -591,7 +650,9 @@ silent `except: pass`); cross-stage agent memory via `agent_session: persistent`
       case's shape (C3); `error`-gate vs `skip`-gate matches intent (P5).
 - [ ] **Reused cluster:** fixed-namespace delete+wait-for-delete+create inside the
       skip-gate (P9); probe gated on namespace Active; non-blocking teardown with a
-      real budget (P10); get-or-apply helper Pods (P15).
+      real budget (P10); get-or-apply helper Pods (P15); tolerant/get-or-skip applies
+      for shared cluster-scoped resources (P26); patch-don't-re-apply inherited
+      StatefulSets (P16); inner verify loop fits the unit budget (P14).
 - [ ] **Composition:** every oracle dependency brought additively (C1); idempotent
       seed vs live count (P20); adapt to live auth/TLS/mode (C4); identity contract
       across stages (C2); not chained into a contradictory/order-sensitive slot
@@ -603,8 +664,11 @@ silent `except: pass`); cross-stage agent memory via `agent_session: persistent`
 - [ ] **Oracle:** grades only the prompt's promise (O1); resolves from live state
       scoped to the target (O2); proper client identity / mode / pod-local fallback
       (O-tls, O-direct, O-primary, O-scheme, O-pod-local); accepts equivalents
-      (O-equiv); deterministic-vs-transient discipline (O3); escaped jsonpath +
-      imports (O-jsonpath, O-imports).
+      (O-equiv) and inspects *all* entries of a multi-valued artifact (O-multi);
+      internal retry/wait loop finishes before `timeout_sec` (O-deadline) and any
+      oracle-initiated pod restart is budgeted for the worst case (O-restart);
+      deterministic-vs-transient discipline (O3); escaped jsonpath + imports
+      (O-jsonpath, O-imports).
 - [ ] **Literals:** roles/versions/units/SAs validated real (P17); versions
       parameterized + envsubst whitelist (P18); no mutable secret in a readiness
       probe (P19); quoted URLs, single shell wrap (P21, P22).
@@ -701,3 +765,26 @@ reverts/applies is caught by the regression sweep (a default cluster or
 sleep-infinity pods are toothless); the oracle reads only the produced artifact
 (escaped jsonpath key) and makes no destructive change; the prompt references
 resources the deploy actually creates. *(0a2b05ef)*
+
+### Third re-run (`-rerererun`) verified faults → rule (worklist)
+All **case-definition** bugs (none were framework bugs); 8 of 9 failures, plus 1
+genuine agent fault excluded. Each is the *universal* rule it instances — fix the
+pattern across every case, not just the one observed (Law 8).
+
+| Case / stage | Class | Rule | Fix |
+| --- | --- | --- | --- |
+| es/transform-job-recovery (long stage_11) | WF | P3 | re-plant fixture probes its own ConfigMap, not `transform/_stats` |
+| es/secure-http-ingress (stage_03) | precond | P26 | tolerant apply of the shared `IngressClass nginx` |
+| crdb/expose-ingress (long stage_11) | precond | P26 | `\|\| true` the kind ingress-deploy apply |
+| mongo/health-check-recovery (long stage_11) | WF | P16 | patch the probe, don't re-apply the whole STS |
+| es/master-downscale-voting-exclusions (stage_1) | precond | P14, P22 | inner verify loop < unit budget; quote the `&` URL |
+| es/stack-monitoring-sidecars (stage_09) | oracle | O-deadline | flap-loop deadline below `timeout_sec` |
+| crdb/cluster-settings (stage_06) | oracle | O-restart, O-deadline | budget the oracle's own pod-restart for the secure/loaded worst case |
+| es/rotate-http-certs (stage_03) | oracle | O-multi | fingerprint *all* certs in the `ca.crt` bundle |
+| mongo/password-rotation (stage_05) | **AGENT_FAULT** | — | agent fabricated a literal password; leave as a valid measurement |
+
+**Dominant universals this campaign:** P26 (cluster-scoped immutable applies on a
+reused cluster — 2 cases), O-deadline (oracle's own loop killed before its verdict —
+2 cases), and the P3/C8 "probe your own deliverable" composition trap. Several
+others (P14, O-restart) were *incomplete* prior sweeps — the rule existed but hadn't
+reached the case.
