@@ -32,6 +32,8 @@ _MAX_RUN_SCAN_DEPTH = 3
 # Byte caps for tailing artifact files into run/stage detail responses.
 _LOG_TAIL_BYTES = 16384
 _PROMPT_TAIL_BYTES = 4096
+# A run's run.json carries one of these once the run has ended.
+_TERMINAL_STATUS = {"complete", "failed", "error", "passed"}
 
 from ...definitions.cases import load_case_file, normalize_case
 from ...definitions.workflows import (
@@ -205,9 +207,15 @@ def list_runs(runs_dir: Path) -> list[dict[str, Any]]:
     for run_dir in sorted(_find_run_dirs(runs_dir), key=_run_ts, reverse=True):
         rel = str(run_dir.parent.relative_to(runs_dir))
         run_subdir = "" if rel == "." else rel
-        state = _read_json(run_dir / "workflow_state.json")
-        meta = _read_json(run_dir / "run.json")
-        data = state or meta or {}
+        state = _read_json(run_dir / "workflow_state.json") or {}
+        meta = _read_json(run_dir / "run.json") or {}
+        # run.json is the authoritative FINAL artifact, written when the run ends.
+        # workflow_state.json is live in-progress tracking and can be stranded at
+        # "running" with empty stages if finalization was interrupted -- preferring
+        # it then makes a completed run render as "running" with 0 stages. Trust
+        # run.json once it carries a terminal status; fall back to the live state
+        # only while the run is still in progress (run.json not yet written).
+        data = meta if meta.get("status") in _TERMINAL_STATUS else (state or meta)
 
         entry: dict[str, Any] = {
             "run_id": run_dir.name,
@@ -232,8 +240,10 @@ def list_runs(runs_dir: Path) -> list[dict[str, Any]]:
         entry["service"] = cfg.get("service")
         entry["case_name"] = cfg.get("case_name")
         # The workflow's true total stage count (config), so a running run shows
-        # "1/5" rather than "1/2" (only 2 stage dirs created so far).
-        entry["stage_total"] = cfg.get("stage_total")
+        # "1/5" rather than "1/2" (only 2 stage dirs created so far). Fall back to
+        # the run's own stage count when config.json is absent, so a run with a
+        # missing config doesn't render "5/2" against the few mirrored stage dirs.
+        entry["stage_total"] = cfg.get("stage_total") or (len(stages) or None)
         entry["target"] = (
             cfg.get("workflow_id")
             or (f"{cfg.get('service')}/{cfg.get('case_name')}" if cfg.get("service") else None)
