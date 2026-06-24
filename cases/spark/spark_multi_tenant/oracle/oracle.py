@@ -68,10 +68,20 @@ def check_team_a_rolebinding() -> int:
     subjects = binding.get("subjects", []) or []
     if not subjects:
         return fail("rolebinding/spark-role-binding has no subjects in spark-team-a")
-    subject_ns = str(subjects[0].get("namespace") or "")
-    if subject_ns != TEAM_A_NS:
+    # O-multi: a RoleBinding's `subjects` is a list that can legitimately hold
+    # more than one entry (a valid fix may add/reorder subjects). The contract is
+    # that the Team A spark ServiceAccount is bound IN spark-team-a, so assert the
+    # required namespace is PRESENT AMONG the ServiceAccount subjects, not that it
+    # equals subjects[0] (which would false-fail a correct multi-subject binding).
+    sa_namespaces = [
+        str(s.get("namespace") or "")
+        for s in subjects
+        if str(s.get("kind") or "") == "ServiceAccount"
+    ]
+    if TEAM_A_NS not in sa_namespaces:
         return fail(
-            f"rolebinding/spark-role-binding subject namespace={subject_ns!r}, expected {TEAM_A_NS!r}"
+            "rolebinding/spark-role-binding has no ServiceAccount subject in "
+            f"namespace {TEAM_A_NS!r} (subject namespaces={sa_namespaces!r})"
         )
     return 0
 
