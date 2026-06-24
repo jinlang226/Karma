@@ -1,0 +1,13 @@
+The cluster is fully restored. Here's a summary of what was done and why:
+
+**Root cause:** The `rabbitmq-cookie-perpod` Secret had a different Erlang cookie for `rabbitmq-2` (`driftedcookie`) than for `rabbitmq-0`/`rabbitmq-1` (`supersecretcookie`). Erlang nodes refuse to cluster with peers that have a different cookie, so rabbitmq-2 started as an isolated single-node cluster.
+
+**Fix (3 steps, all using native Kubernetes resources):**
+
+1. **Patched the Secret** — corrected `rabbitmq-2`'s entry in `rabbitmq-cookie-perpod` to `supersecretcookie` (same base64 value as the other two nodes).
+
+2. **Reset Mnesia state** on the running rabbitmq-2 pod (`rabbitmqctl stop_app` + `rabbitmqctl reset`) — necessary because rabbitmq-2 had already formed its own standalone cluster with a different cluster ID; without this reset, restarting with the correct cookie would still cause a Mnesia conflict on join.
+
+3. **Deleted the pod** — the StatefulSet recreated it; the `copy-cookie` init container re-read the now-correct secret and wrote `supersecretcookie` to the emptyDir cookie volume. RabbitMQ started with the matching cookie, Kubernetes peer discovery found rabbitmq-0 and rabbitmq-1, and rabbitmq-2 joined as the third disk node.
+
+**Final state:** All 3 nodes in `Disk Nodes` and `Running Nodes`, no alarms, no network partitions.

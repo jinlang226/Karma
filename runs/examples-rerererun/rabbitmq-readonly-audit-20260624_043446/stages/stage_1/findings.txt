@@ -1,0 +1,248 @@
+================================================================================
+RABBITMQ CLUSTER COMPLIANCE AUDIT REPORT
+Namespace:  karma-rabbitmq-readonly-audit-20260624-043446
+Audit Date: 2026-06-24
+Auditor:    Automated read-only inspection (no changes made)
+================================================================================
+
+SECTION 1 — CLUSTER HEALTH & VERSION
+--------------------------------------
+Cluster name:   rabbit@rabbitmq-0.rabbitmq-headless.karma-rabbitmq-readonly-audit-20260624-043446.svc.cluster.local
+Nodes (disk):   3/3 running, no maintenance, no alarms, no network partitions
+  - rabbit@rabbitmq-0.rabbitmq-headless... (RabbitMQ 3.12.14, Erlang 25.3.2.15)
+  - rabbit@rabbitmq-1.rabbitmq-headless... (RabbitMQ 3.12.14, Erlang 25.3.2.15)
+  - rabbit@rabbitmq-2.rabbitmq-headless... (RabbitMQ 3.12.14, Erlang 25.3.2.15)
+
+FINDING [HIGH] — RabbitMQ 3.12.14 is explicitly flagged "out of support" by the
+server itself (status output: "RabbitMQ release series support status: out of
+support"). This version no longer receives security patches. Upgrade to the
+current supported release series (3.13.x or 4.x) is required.
+
+Pods (kubectl):
+  rabbitmq-0    Running  (1/1 Ready)
+  rabbitmq-1    Running  (1/1 Ready)
+  rabbitmq-2    Running  (1/1 Ready)
+  rabbitmq-setup-xzxzs   Completed (setup job, finished)
+  curl-test               Running (auxiliary test pod)
+
+Container image: rabbitmq:3.12-management (floating tag — no digest pinning)
+FINDING [MEDIUM] — Floating image tag "rabbitmq:3.12-management" without a
+digest pin means the running image can silently change on pod restart,
+violating immutable-infrastructure requirements.
+
+Resource requests/limits: none configured on the StatefulSet.
+FINDING [MEDIUM] — No CPU or memory resource requests/limits are set, which
+prevents the Kubernetes scheduler from making placement guarantees and allows
+memory/CPU resource contention to destabilize the cluster.
+
+Data volume: emptyDir (ephemeral, in-memory).
+FINDING [HIGH] — RabbitMQ data is stored on emptyDir volumes. All queue data,
+messages, and mnesia metadata will be lost when a pod is deleted or the node
+is rescheduled. PersistentVolumeClaims must be used for production workloads.
+
+
+SECTION 2 — TLS / TRANSPORT SECURITY
+--------------------------------------
+AMQP listener:      TCP port 5672 (plaintext)
+Management listener: TCP port 15672 (plaintext HTTP)
+SSL listeners:      NONE configured
+TLS options:        ssl_options = [] (empty — TLS disabled)
+Management HTTPS:   NOT configured
+
+FINDING [CRITICAL] — AMQP traffic (port 5672) is transmitted in plaintext.
+Credentials and message payloads are exposed to anyone with network access to
+the cluster or underlying node network. mTLS should be enabled on the AMQP
+listener.
+
+FINDING [CRITICAL] — The RabbitMQ Management API (port 15672) uses plain HTTP.
+Admin credentials are transmitted in cleartext on every API call and browser
+login. TLS must be enabled for the management interface.
+
+Both services (rabbitmq, rabbitmq-headless) are ClusterIP only (no NodePort/
+LoadBalancer), so exposure is currently limited to in-cluster traffic. However,
+any compromised pod or service-account token can reach these plaintext ports.
+
+
+SECTION 3 — VIRTUAL HOSTS
+---------------------------
+Vhosts found: 2
+  /       (default)
+  /app    (custom application vhost)
+
+No vhost limits (max-connections, max-queues) configured on either vhost.
+FINDING [LOW] — No resource limits are set per vhost. A misbehaving application
+could exhaust connections or queue counts cluster-wide without throttling.
+
+
+SECTION 4 — USERS & PERMISSIONS
+---------------------------------
+Users (2):
+  admin     tags=[administrator]
+  app-user  tags=[] (no management or monitoring access)
+
+Permissions on vhost "/":
+  admin       configure=.* write=.* read=.*
+
+Permissions on vhost "/app":
+  admin       configure=.* write=.* read=.*
+  app-user    configure=.* write=.* read=.*
+
+FINDING [HIGH] — The "guest" default account is accessible from non-loopback
+addresses. Config file sets "loopback_users.guest = false", overriding the
+RabbitMQ default that restricts guest to localhost only. If the guest account
+password has not been changed from the default ("guest"), this constitutes a
+trivially exploitable remote credential. The guest user should either be deleted
+or have loopback restriction re-enabled.
+
+FINDING [HIGH] — "app-user" has configure=.* (full topology permissions) on
+/app. Application service accounts should be granted only the permissions they
+require. If app-user only publishes/consumes, configure permissions should be
+restricted (e.g., configure="" write="app-queue" read="app-queue").
+
+FINDING [MEDIUM] — "app-user" has no tags, meaning it has no access to the
+management UI or monitoring endpoints. This is appropriate for an application
+credential, but note that there is no dedicated monitoring/readonly user for
+operations visibility without using the admin credential.
+
+Password hashing module: rabbit_password_hashing_sha256 (SHA-256).
+FINDING [LOW] — RabbitMQ supports SHA-512 hashing
+(rabbit_password_hashing_sha512) which provides stronger password storage.
+Current configuration uses SHA-256.
+
+No user-level connection or channel limits are configured.
+FINDING [LOW] — No per-user connection or channel limits are set. A
+misconfigured or malicious client could open unlimited connections.
+
+
+SECTION 5 — POLICIES
+----------------------
+Vhost "/":   No policies defined.
+Vhost "/app": No policies defined.
+
+No operator policies configured on any vhost.
+
+FINDING [HIGH] — No HA/quorum or mirroring policies are defined. The only
+queue in the cluster (app-queue) is a classic queue with no redundancy policy,
+meaning it has a single master and no replicas. If rabbitmq-0 (the queue
+master) fails, the queue is unavailable and messages are lost.
+
+FINDING [MEDIUM] — No message TTL (x-message-ttl), max-length, or dead-letter
+policies are configured. Without TTL or length caps, a slow or absent consumer
+can cause unbounded queue growth and memory exhaustion.
+
+
+SECTION 6 — QUEUES & EXCHANGES
+--------------------------------
+Vhost "/": No queues.
+
+Vhost "/app":
+  Name:       app-queue
+  Type:       classic (not quorum, not stream)
+  Durable:    true
+  Auto-delete: false
+  Arguments:  [] (no TTL, DLX, max-length, or other args)
+  State:      running
+  Messages:   0
+  Consumers:  0
+  Binding:    default exchange → app-queue (routing key: "app-queue")
+
+Exchanges in "/app": default (direct), amq.direct, amq.fanout, amq.headers,
+  amq.match, amq.topic, amq.rabbitmq.trace — all built-in, no custom exchanges.
+
+FINDING [HIGH] — "app-queue" is a classic queue type. Classic queues do not
+provide automatic replication across cluster nodes. A quorum queue should be
+used instead to ensure message durability and availability in a 3-node cluster.
+
+FINDING [INFO] — amq.rabbitmq.trace exchange is present (built-in). If firehose
+tracing is ever enabled, all message metadata will flow through this exchange.
+Ensure tracing is disabled in production unless explicitly required and audited.
+
+
+SECTION 7 — ENABLED PLUGINS
+------------------------------
+Enabled plugins (from /etc/rabbitmq/enabled_plugins):
+  [rabbitmq_management, rabbitmq_peer_discovery_k8s]
+
+Additional plugins loaded at runtime (from status):
+  rabbitmq_peer_discovery_k8s, rabbitmq_peer_discovery_common,
+  rabbitmq_management, rabbitmq_management_agent, rabbitmq_web_dispatch,
+  amqp_client, cowboy, cowlib
+
+FINDING [LOW] — The rabbitmq_management plugin exposes a full administrative
+HTTP API on port 15672 on every node. In a hardened deployment, the management
+plugin should be disabled on broker nodes and enabled only on dedicated
+management-only nodes, or its listener should be restricted to a management
+network.
+
+
+SECTION 8 — RUNTIME CONFIGURATION
+------------------------------------
+Key settings from rabbitmq.conf:
+  cluster_partition_handling = pause_minority
+    (safe: minority partition nodes will pause rather than split-brain)
+  queue_master_locator = min-masters
+    (balanced queue master placement)
+  loopback_users.guest = false
+    (SECURITY RISK — see Section 4)
+  listeners.tcp.default = 5672   (plaintext AMQP)
+  management.tcp.port = 15672    (plaintext HTTP management)
+
+Memory watermark:        40% of available memory (computed: ~67.5 GB)
+Disk free watermark:     50 MB (low — may not provide adequate warning)
+Max message size:        128 MB
+Heartbeat:               60 seconds
+Frame max:               131072 bytes
+net_ticktime:            60 seconds
+
+FINDING [LOW] — Disk free watermark of 50 MB is very low for a production
+deployment. RabbitMQ recommends at least 1.5–2x the memory watermark or a fixed
+value representing several minutes of write capacity.
+
+Global runtime parameters:
+  internal_cluster_id: "rabbitmq-cluster-id-NAVoSCcc3iTnOWpiqQQEJA"
+
+No vhost-level runtime parameters or federation/shovel configuration found.
+
+
+SECTION 9 — SECRETS & CREDENTIAL STORAGE
+------------------------------------------
+Kubernetes Secrets in namespace:
+  rabbitmq-admin        (Opaque, 2 keys: username, password)
+  rabbitmq-app          (Opaque, 2 keys — application credentials)
+  rabbitmq-erlang-cookie (Opaque, 1 key: cookie)
+
+Credentials are injected into pods via secretKeyRef environment variables
+(RABBITMQ_DEFAULT_USER, RABBITMQ_DEFAULT_PASS, RABBITMQ_ERLANG_COOKIE).
+
+FINDING [MEDIUM] — Erlang cookie is stored as a Kubernetes Secret and mounted
+as an environment variable. The Erlang distribution port (25672) has no TLS and
+relies solely on cookie authentication for inter-node trust. Any pod that can
+read the secret or sniff cluster traffic can join or impersonate cluster nodes.
+Erlang distribution TLS should be configured.
+
+FINDING [INFO] — rabbitmq-app secret exists but was not observed in active use
+(no connections present at audit time). Confirm this secret corresponds to the
+app-user account and is rotated on a defined schedule.
+
+
+SECTION 10 — SUMMARY OF FINDINGS
+-----------------------------------
+Severity  Count  Areas
+---------  -----  ----------------------------------------------------------------
+CRITICAL     2   Plaintext AMQP transport; Plaintext management HTTP
+HIGH         6   Out-of-support version; Ephemeral storage (emptyDir); No queue
+                 HA/replication policy; Classic queue (no quorum); guest
+                 accessible from network; app-user over-provisioned permissions
+MEDIUM       4   Floating image tag; No resource limits; Erlang distribution
+                 unencrypted; No monitoring user; No message TTL/length policy
+LOW          5   SHA-256 password hashing; No per-user connection limits; No
+                 vhost resource limits; Low disk watermark; Management plugin
+                 on all nodes
+INFO         2   amq.rabbitmq.trace present; rabbitmq-app secret usage unverified
+
+No cluster configuration was modified during this audit.
+All commands executed were read-only (rabbitmqctl list_*, status, environment,
+kubectl get/describe).
+================================================================================
+END OF REPORT
+================================================================================

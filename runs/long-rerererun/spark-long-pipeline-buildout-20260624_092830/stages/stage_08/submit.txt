@@ -1,0 +1,59 @@
+TASK COMPLETE: Spark data skew benchmark diagnosed and all optimization strategies applied.
+
+## Step 1: Cluster/Job Diagnosis
+
+Checked pod and job status in spark-skew namespace:
+- spark-master (Deployment): 1/1 Running
+- spark-worker (Deployment): 1/1 Running
+- spark-skew-baseline (Job): Complete
+- spark-skew-broadcast (Job): Complete
+- spark-skew-aqe (Job): Complete
+
+The Spark cluster (master + worker) was healthy. The baseline job was deployed by
+the precondition setup and completed successfully.
+
+## Step 2: Baseline Results (no optimization)
+
+skew_ratio=44.0x  max_partition=11579  min_partition=263
+strategy=baseline  elapsed=24.59s
+optimization=none  benefit=none  note=skewed_shuffle_join
+
+The baseline join on product_id causes severe data skew: hot partitions
+(products 1-5) are 44x larger than cold partitions, causing straggler tasks.
+
+## Step 3: Broadcast Join Optimization Applied
+
+kubectl apply -f cases/spark/spark_data_skew/resource/skew-job-broadcast.yaml
+
+strategy=broadcast  elapsed=14.61s
+optimization=broadcast_join  benefit=no_shuffle_no_skew
+
+Improvement: 24.59s → 14.61s (40.6% faster)
+Mechanism: products table broadcast to all executors; no shuffle needed,
+so the skew in product_id distribution never causes partition imbalance.
+
+## Step 4: AQE (Adaptive Query Execution) Applied
+
+kubectl apply -f cases/spark/spark_data_skew/resource/skew-job-aqe.yaml
+
+strategy=aqe  elapsed=13.5s
+optimization=aqe_skew_join  benefit=auto_split_hot_partitions
+
+Improvement: 24.59s → 13.5s (45.1% faster)
+Mechanism: Spark AQE detects skewed partitions at runtime and automatically
+splits them, distributing hot-product data across multiple tasks.
+
+## Performance Comparison
+
+| Strategy  | Elapsed | vs Baseline | Optimization           |
+|-----------|---------|-------------|------------------------|
+| baseline  | 24.59s  | --          | none (skewed shuffle)  |
+| broadcast | 14.61s  | -40.6%      | broadcast join         |
+| aqe       | 13.50s  | -45.1%      | AQE skew join split    |
+
+Both optimizations significantly outperform the baseline. AQE edges out
+broadcast by ~1s while requiring no explicit hints — it adapts automatically.
+
+## Oracle Verification
+
+spark_data_skew verified: baseline + spark-skew-broadcast, spark-skew-aqe completed successfully

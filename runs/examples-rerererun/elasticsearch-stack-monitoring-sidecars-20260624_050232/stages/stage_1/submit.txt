@@ -1,0 +1,13 @@
+Both monitoring indices are active and growing. Here's a summary of what was done and why:
+
+---
+
+**Root cause:** The Elasticsearch Docker image ships with a `log4j2.properties` that uses only `Console` appenders — ES logs go to stdout, not to files. So `/var/log/es/` was always empty, and Filebeat (configured to read `/var/log/es/*.log`) never found anything to ship.
+
+**Fix applied:** Created a `es-log4j2-config` ConfigMap that overrides `log4j2.properties` to add a `RollingFile` appender alongside the existing `Console` appender, writing JSON logs to `/var/log/es/es-cluster.log` (on the existing `es-logs` emptyDir volume shared with Filebeat). Patched the StatefulSet to mount this file at `/usr/share/elasticsearch/config/log4j2.properties` and rolled out all 3 pods.
+
+**Current verified state:**
+- All 3 ES pods: `3/3 Running`, ES cluster green (3 nodes)
+- All 3 **Metricbeat** sidecars: collecting metrics and shipping to monitoring (`cluster_stats`, `node_stats`, `index`, `shard`, etc.)
+- All 3 **Filebeat** sidecars: `open_files: 1, running: 1` — harvesting `/var/log/es/es-cluster.log`
+- Monitoring cluster: `metricbeat-7.17.9-2026.06.24-000001` (413 docs) and `filebeat-7.17.9-2026.06.24-000001` (1401 docs) — both receiving data continuously

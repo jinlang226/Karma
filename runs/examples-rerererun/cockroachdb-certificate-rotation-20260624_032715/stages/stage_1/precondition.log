@@ -1,0 +1,63 @@
+[precondition:crdb_env_ready:preconditionUnits[0] 'crdb_env_ready':probe] $ /bin/sh -c 'kubectl -n cockroachdb get statefulset crdb-cluster >/dev/null 2>&1 || kubectl -n cockroachdb get pods 2>/dev/null | grep -q Running'
+
+[precondition:crdb_env_ready:preconditionUnits[0] 'crdb_env_ready':apply] $ /bin/sh -c 'kubectl delete namespace cockroachdb --ignore-not-found=true --wait=false; kubectl wait --for=delete namespace/cockroachdb --timeout=400s || true'
+
+[precondition:crdb_env_ready:preconditionUnits[0] 'crdb_env_ready':apply] $ kubectl create namespace cockroachdb
+namespace/cockroachdb created
+
+[precondition:crdb_env_ready:preconditionUnits[0] 'crdb_env_ready':apply] $ kubectl -n cockroachdb apply -f cases/cockroachdb/certificate-rotation/resource/rbac.yaml
+serviceaccount/crdb-cluster-sa created
+role.rbac.authorization.k8s.io/crdb-cluster-role created
+rolebinding.rbac.authorization.k8s.io/crdb-cluster-rolebinding created
+
+[precondition:crdb_env_ready:preconditionUnits[0] 'crdb_env_ready':apply] $ kubectl -n cockroachdb apply -f cases/cockroachdb/certificate-rotation/resource/services.yaml
+service/crdb-cluster created
+service/crdb-cluster-public created
+
+[precondition:crdb_env_ready:preconditionUnits[0] 'crdb_env_ready':apply] $ /bin/sh -c 'kubectl -n cockroachdb get pod openssl-toolbox >/dev/null 2>&1 || kubectl -n cockroachdb apply -f cases/cockroachdb/certificate-rotation/resource/openssl-toolbox.yaml'
+pod/openssl-toolbox created
+
+[precondition:crdb_env_ready:preconditionUnits[0] 'crdb_env_ready':apply] $ kubectl -n cockroachdb wait --for=condition=ready pod/openssl-toolbox --timeout=120s
+pod/openssl-toolbox condition met
+
+[precondition:crdb_env_ready:preconditionUnits[0] 'crdb_env_ready':apply] $ kubectl -n cockroachdb exec -i openssl-toolbox -- sh -s < cases/cockroachdb/certificate-rotation/resource/gen-old-certs.sh
+Certificate request self-signature ok
+subject=CN=node
+Certificate request self-signature ok
+subject=CN=root
+
+[precondition:crdb_env_ready:preconditionUnits[0] 'crdb_env_ready':apply] $ /bin/sh -c 'rm -rf /tmp/crdb-old-certs; kubectl -n cockroachdb cp openssl-toolbox:/tmp/certs /tmp/crdb-old-certs'
+tar: removing leading '/' from member names
+
+[precondition:crdb_env_ready:preconditionUnits[0] 'crdb_env_ready':apply] $ /bin/sh -c 'kubectl -n cockroachdb create secret generic crdb-cluster-certs --from-file=ca.crt=/tmp/crdb-old-certs/ca.crt --from-file=node.crt=/tmp/crdb-old-certs/node.crt --from-file=node.key=/tmp/crdb-old-certs/node.key --from-file=client.root.crt=/tmp/crdb-old-certs/client.root.crt --from-file=client.root.key=/tmp/crdb-old-certs/client.root.key --dry-run=client -o yaml | kubectl apply -f -'
+secret/crdb-cluster-certs created
+
+[precondition:crdb_env_ready:preconditionUnits[0] 'crdb_env_ready':apply] $ /bin/sh -c 'fingerprint=$(openssl x509 -noout -fingerprint -sha256 -in /tmp/crdb-old-certs/node.crt | sed "s/.*=//"); ca_fingerprint=$(openssl x509 -noout -fingerprint -sha256 -in /tmp/crdb-old-certs/ca.crt | sed "s/.*=//"); not_after=$(openssl x509 -noout -enddate -in /tmp/crdb-old-certs/node.crt | sed "s/notAfter=//"); kubectl -n cockroachdb create configmap crdb-old-cert --from-literal=fingerprint="$fingerprint" --from-literal=ca_fingerprint="$ca_fingerprint" --from-literal=not_after="$not_after" --dry-run=client -o yaml | kubectl apply -f -'
+configmap/crdb-old-cert created
+
+[precondition:crdb_env_ready:preconditionUnits[0] 'crdb_env_ready':apply] $ kubectl -n cockroachdb apply -f cases/cockroachdb/certificate-rotation/resource/statefulset.yaml
+statefulset.apps/crdb-cluster created
+
+[precondition:crdb_env_ready:preconditionUnits[0] 'crdb_env_ready':apply] $ /bin/sh -c 'for i in $(seq 1 30); do count=$(kubectl -n cockroachdb get pod -l app.kubernetes.io/name=cockroachdb --no-headers 2>/dev/null | wc -l | tr -d " "); if [ "${count}" -ge 1 ]; then exit 0; fi; sleep 2; done; exit 1'
+
+[precondition:crdb_env_ready:preconditionUnits[0] 'crdb_env_ready':apply] $ kubectl -n cockroachdb wait --for=jsonpath={.status.phase}=Running pod -l app.kubernetes.io/name=cockroachdb --timeout=300s
+pod/crdb-cluster-0 condition met
+pod/crdb-cluster-1 condition met
+pod/crdb-cluster-2 condition met
+
+[precondition:crdb_env_ready:preconditionUnits[0] 'crdb_env_ready':apply] $ /bin/sh -c 'for i in $(seq 1 30); do kubectl -n cockroachdb exec crdb-cluster-0 -- ./cockroach init --certs-dir=/cockroach/cockroach-certs --host=crdb-cluster-0.crdb-cluster.cockroachdb.svc.cluster.local && exit 0; sleep 3; done; exit 1'
+Cluster successfully initialized
+
+[precondition:crdb_env_ready:preconditionUnits[0] 'crdb_env_ready':apply] $ kubectl -n cockroachdb rollout status statefulset/crdb-cluster --timeout=300s
+Waiting for 3 pods to be ready...
+Waiting for 2 pods to be ready...
+Waiting for 1 pods to be ready...
+partitioned roll out complete: 3 new pods have been updated...
+
+[precondition:crdb_env_ready:preconditionUnits[0] 'crdb_env_ready':verify] $ kubectl -n cockroachdb get pods 2>/dev/null | grep -c Running
+4
+
+[precondition:establish_cert_baseline:preconditionUnits[1] 'establish_cert_baseline':probe] $ kubectl -n cockroachdb get configmap crdb-old-cert
+NAME            DATA   AGE
+crdb-old-cert   3      110s
+

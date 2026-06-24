@@ -1,0 +1,26 @@
+The `rollback-rehearsal` ConfigMap is created. Here's a summary of what was done and why each choice was made:
+
+---
+
+**Non-default settings found (from `mongod-config` ConfigMap + live mongod inspection):**
+
+| Setting | Current | Default |
+|---|---|---|
+| `systemLog.verbosity` | `1` | `0` |
+| `operationProfiling.mode` | `slowOp` | `off` |
+| `operationProfiling.slowOpThresholdMs` | `200 ms` | `100 ms` |
+| `wiredTiger.engineConfig.journalCompressor` | `zlib` | `snappy` |
+
+The replica set topology (`rs.conf()`) is entirely default — equal priority 1 members, no hidden nodes, no secondary delays — so nothing to revert there.
+
+---
+
+**Rollback script design (3 steps):**
+
+1. **Patch the ConfigMap** — rewrites `mongod.conf` with the structural settings kept intact (dbPath, net, replication, security) but all non-default blocks removed and `journalCompressor` reverted to `snappy`.
+
+2. **Runtime resets via mongosh on each pod** — verbosity and profiling can be changed without a restart via `setParameter` / `setProfilingLevel`. Doing this immediately means there's no window where the live cluster keeps the old settings while waiting for the rolling restart.
+
+3. **Rolling restart of the StatefulSet** — the `journalCompressor` is a WiredTiger startup parameter; it cannot be changed at runtime. The StatefulSet rolling update restarts one pod at a time, waiting for Ready before moving to the next, so the replica set stays available throughout.
+
+The live cluster was not touched — the ConfigMap holding the rollback script is a new object (`rollback-rehearsal`), separate from the operational `mongod-config`.

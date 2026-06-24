@@ -1,0 +1,70 @@
+[precondition:es_env_ready:preconditionUnits[0] 'es_env_ready':probe] $ kubectl -n elasticsearch get pods 2>/dev/null | grep -c Running
+0
+
+[precondition:es_env_ready:preconditionUnits[0] 'es_env_ready':apply] $ /bin/sh -c 'kubectl delete namespace elasticsearch --ignore-not-found=true --wait=false; kubectl wait --for=delete namespace/elasticsearch --timeout=400s || true'
+
+[precondition:es_env_ready:preconditionUnits[0] 'es_env_ready':apply] $ kubectl create namespace elasticsearch
+namespace/elasticsearch created
+
+[precondition:es_env_ready:preconditionUnits[0] 'es_env_ready':apply] $ kubectl -n elasticsearch apply -f cases/elasticsearch/master-downscale-voting-exclusions/resource/
+configmap/es-config created
+pod/curl-test created
+service/es-cluster created
+service/es-http created
+statefulset.apps/es-cluster created
+
+[precondition:es_env_ready:preconditionUnits[0] 'es_env_ready':apply] $ kubectl -n elasticsearch wait --for=condition=ready pod -l app=es-cluster --timeout=600s
+pod/es-cluster-0 condition met
+
+[precondition:es_env_ready:preconditionUnits[0] 'es_env_ready':apply] $ kubectl -n elasticsearch wait --for=condition=ready pod/curl-test --timeout=300s
+pod/curl-test condition met
+
+[precondition:es_env_ready:preconditionUnits[0] 'es_env_ready':apply] $ /bin/sh -c 'for i in $(seq 1 30); do kubectl -n elasticsearch exec curl-test -- curl -s --max-time 5 "http://es-http.elasticsearch.svc:9200/_cluster/health?wait_for_status=yellow&timeout=5s" | grep -q "\"status\"" && exit 0; sleep 2; done; exit 1'
+command terminated with exit code 28
+command terminated with exit code 28
+command terminated with exit code 28
+command terminated with exit code 28
+command terminated with exit code 28
+command terminated with exit code 28
+command terminated with exit code 28
+
+[precondition:es_env_ready:preconditionUnits[0] 'es_env_ready':apply] $ /bin/sh -c 'kubectl -n elasticsearch exec curl-test -- curl -s -XPUT "http://es-http.elasticsearch.svc:9200/_cluster/settings" -H "Content-Type: application/json" -d "{\"persistent\":{\"cluster.auto_shrink_voting_configuration\":false}}"'
+{"acknowledged":true,"persistent":{"cluster":{"auto_shrink_voting_configuration":"false"}},"transient":{}}
+[precondition:es_env_ready:preconditionUnits[0] 'es_env_ready':apply] $ kubectl -n elasticsearch scale sts/es-cluster --replicas=1
+statefulset.apps/es-cluster scaled
+
+[precondition:es_env_ready:preconditionUnits[0] 'es_env_ready':apply] $ /bin/sh -c 'kubectl -n elasticsearch rollout status sts/es-cluster --timeout=300s || true'
+Waiting for statefulset spec update to be observed...
+partitioned roll out complete: 3 new pods have been updated...
+
+[precondition:es_env_ready:preconditionUnits[0] 'es_env_ready':verify] $ kubectl -n elasticsearch get pods 2>/dev/null | grep -c Running
+2
+
+[precondition:voting_drift_ready:preconditionUnits[1] 'voting_drift_ready':probe] $ /bin/sh -c 'pw=$(kubectl -n elasticsearch get secret elastic-password -o jsonpath="{.data.password}" 2>/dev/null | base64 -d 2>/dev/null); A=""; [ -n "$pw" ] && A="-u elastic:$pw"; S=https; kubectl -n elasticsearch exec curl-test -- curl -sk $A --max-time 5 "https://es-http.elasticsearch.svc:9200/" >/dev/null 2>&1 || S=http; kubectl -n elasticsearch exec curl-test -- curl -sk $A --max-time 5 "$S://es-http.elasticsearch.svc:9200/_cluster/settings" 2>/dev/null | grep -q "\"auto_shrink_voting_configuration\":\"false\""'
+
+[precondition:voting_drift_ready:preconditionUnits[1] 'voting_drift_ready':apply] $ /bin/sh -c 'pw=$(kubectl -n elasticsearch get secret elastic-password -o jsonpath="{.data.password}" 2>/dev/null | base64 -d 2>/dev/null); A=""; [ -n "$pw" ] && A="-u elastic:$pw"; S=https; kubectl -n elasticsearch exec curl-test -- curl -sk $A --max-time 5 "https://es-http.elasticsearch.svc:9200/" >/dev/null 2>&1 || S=http; kubectl -n elasticsearch exec curl-test -- curl -sk $A -XPUT "$S://es-http.elasticsearch.svc:9200/_cluster/settings" -H "Content-Type: application/json" -d "{\"persistent\":{\"cluster.auto_shrink_voting_configuration\":false}}" >/dev/null 2>&1; true'
+
+[precondition:voting_drift_ready:preconditionUnits[1] 'voting_drift_ready':verify] $ /bin/sh -c 'for i in $(seq 1 30); do pw=$(kubectl -n elasticsearch get secret elastic-password -o jsonpath="{.data.password}" 2>/dev/null | base64 -d 2>/dev/null); A=""; [ -n "$pw" ] && A="-u elastic:$pw"; S=https; kubectl -n elasticsearch exec curl-test -- curl -sk $A --max-time 5 "https://es-http.elasticsearch.svc:9200/" >/dev/null 2>&1 || S=http; kubectl -n elasticsearch exec curl-test -- curl -sk $A --max-time 5 "$S://es-http.elasticsearch.svc:9200/_cluster/settings" 2>/dev/null | grep -q "\"auto_shrink_voting_configuration\":\"false\"" && exit 0; sleep 3; done; exit 1'
+[timed out after 120s]
+[precondition:voting_drift_ready:preconditionUnits[1] 'voting_drift_ready':verify] $ /bin/sh -c 'for i in $(seq 1 30); do pw=$(kubectl -n elasticsearch get secret elastic-password -o jsonpath="{.data.password}" 2>/dev/null | base64 -d 2>/dev/null); A=""; [ -n "$pw" ] && A="-u elastic:$pw"; S=https; kubectl -n elasticsearch exec curl-test -- curl -sk $A --max-time 5 "https://es-http.elasticsearch.svc:9200/" >/dev/null 2>&1 || S=http; kubectl -n elasticsearch exec curl-test -- curl -sk $A --max-time 5 "$S://es-http.elasticsearch.svc:9200/_cluster/settings" 2>/dev/null | grep -q "\"auto_shrink_voting_configuration\":\"false\"" && exit 0; sleep 3; done; exit 1'
+[timed out after 120s]
+[precondition:voting_drift_ready:preconditionUnits[1] 'voting_drift_ready':verify] $ /bin/sh -c 'for i in $(seq 1 30); do pw=$(kubectl -n elasticsearch get secret elastic-password -o jsonpath="{.data.password}" 2>/dev/null | base64 -d 2>/dev/null); A=""; [ -n "$pw" ] && A="-u elastic:$pw"; S=https; kubectl -n elasticsearch exec curl-test -- curl -sk $A --max-time 5 "https://es-http.elasticsearch.svc:9200/" >/dev/null 2>&1 || S=http; kubectl -n elasticsearch exec curl-test -- curl -sk $A --max-time 5 "$S://es-http.elasticsearch.svc:9200/_cluster/settings" 2>/dev/null | grep -q "\"auto_shrink_voting_configuration\":\"false\"" && exit 0; sleep 3; done; exit 1'
+[timed out after 120s]
+[precondition:voting_drift_ready:preconditionUnits[1] 'voting_drift_ready':verify] $ /bin/sh -c 'for i in $(seq 1 30); do pw=$(kubectl -n elasticsearch get secret elastic-password -o jsonpath="{.data.password}" 2>/dev/null | base64 -d 2>/dev/null); A=""; [ -n "$pw" ] && A="-u elastic:$pw"; S=https; kubectl -n elasticsearch exec curl-test -- curl -sk $A --max-time 5 "https://es-http.elasticsearch.svc:9200/" >/dev/null 2>&1 || S=http; kubectl -n elasticsearch exec curl-test -- curl -sk $A --max-time 5 "$S://es-http.elasticsearch.svc:9200/_cluster/settings" 2>/dev/null | grep -q "\"auto_shrink_voting_configuration\":\"false\"" && exit 0; sleep 3; done; exit 1'
+[timed out after 120s]
+[precondition:voting_drift_ready:preconditionUnits[1] 'voting_drift_ready':verify] $ /bin/sh -c 'for i in $(seq 1 30); do pw=$(kubectl -n elasticsearch get secret elastic-password -o jsonpath="{.data.password}" 2>/dev/null | base64 -d 2>/dev/null); A=""; [ -n "$pw" ] && A="-u elastic:$pw"; S=https; kubectl -n elasticsearch exec curl-test -- curl -sk $A --max-time 5 "https://es-http.elasticsearch.svc:9200/" >/dev/null 2>&1 || S=http; kubectl -n elasticsearch exec curl-test -- curl -sk $A --max-time 5 "$S://es-http.elasticsearch.svc:9200/_cluster/settings" 2>/dev/null | grep -q "\"auto_shrink_voting_configuration\":\"false\"" && exit 0; sleep 3; done; exit 1'
+[timed out after 120s]
+[precondition:voting_drift_ready:preconditionUnits[1] 'voting_drift_ready':verify] $ /bin/sh -c 'for i in $(seq 1 30); do pw=$(kubectl -n elasticsearch get secret elastic-password -o jsonpath="{.data.password}" 2>/dev/null | base64 -d 2>/dev/null); A=""; [ -n "$pw" ] && A="-u elastic:$pw"; S=https; kubectl -n elasticsearch exec curl-test -- curl -sk $A --max-time 5 "https://es-http.elasticsearch.svc:9200/" >/dev/null 2>&1 || S=http; kubectl -n elasticsearch exec curl-test -- curl -sk $A --max-time 5 "$S://es-http.elasticsearch.svc:9200/_cluster/settings" 2>/dev/null | grep -q "\"auto_shrink_voting_configuration\":\"false\"" && exit 0; sleep 3; done; exit 1'
+[timed out after 120s]
+[precondition:voting_drift_ready:preconditionUnits[1] 'voting_drift_ready':verify] $ /bin/sh -c 'for i in $(seq 1 30); do pw=$(kubectl -n elasticsearch get secret elastic-password -o jsonpath="{.data.password}" 2>/dev/null | base64 -d 2>/dev/null); A=""; [ -n "$pw" ] && A="-u elastic:$pw"; S=https; kubectl -n elasticsearch exec curl-test -- curl -sk $A --max-time 5 "https://es-http.elasticsearch.svc:9200/" >/dev/null 2>&1 || S=http; kubectl -n elasticsearch exec curl-test -- curl -sk $A --max-time 5 "$S://es-http.elasticsearch.svc:9200/_cluster/settings" 2>/dev/null | grep -q "\"auto_shrink_voting_configuration\":\"false\"" && exit 0; sleep 3; done; exit 1'
+[timed out after 120s]
+[precondition:voting_drift_ready:preconditionUnits[1] 'voting_drift_ready':verify] $ /bin/sh -c 'for i in $(seq 1 30); do pw=$(kubectl -n elasticsearch get secret elastic-password -o jsonpath="{.data.password}" 2>/dev/null | base64 -d 2>/dev/null); A=""; [ -n "$pw" ] && A="-u elastic:$pw"; S=https; kubectl -n elasticsearch exec curl-test -- curl -sk $A --max-time 5 "https://es-http.elasticsearch.svc:9200/" >/dev/null 2>&1 || S=http; kubectl -n elasticsearch exec curl-test -- curl -sk $A --max-time 5 "$S://es-http.elasticsearch.svc:9200/_cluster/settings" 2>/dev/null | grep -q "\"auto_shrink_voting_configuration\":\"false\"" && exit 0; sleep 3; done; exit 1'
+[timed out after 120s]
+[precondition:voting_drift_ready:preconditionUnits[1] 'voting_drift_ready':verify] $ /bin/sh -c 'for i in $(seq 1 30); do pw=$(kubectl -n elasticsearch get secret elastic-password -o jsonpath="{.data.password}" 2>/dev/null | base64 -d 2>/dev/null); A=""; [ -n "$pw" ] && A="-u elastic:$pw"; S=https; kubectl -n elasticsearch exec curl-test -- curl -sk $A --max-time 5 "https://es-http.elasticsearch.svc:9200/" >/dev/null 2>&1 || S=http; kubectl -n elasticsearch exec curl-test -- curl -sk $A --max-time 5 "$S://es-http.elasticsearch.svc:9200/_cluster/settings" 2>/dev/null | grep -q "\"auto_shrink_voting_configuration\":\"false\"" && exit 0; sleep 3; done; exit 1'
+[timed out after 120s]
+[precondition:voting_drift_ready:preconditionUnits[1] 'voting_drift_ready':verify] $ /bin/sh -c 'for i in $(seq 1 30); do pw=$(kubectl -n elasticsearch get secret elastic-password -o jsonpath="{.data.password}" 2>/dev/null | base64 -d 2>/dev/null); A=""; [ -n "$pw" ] && A="-u elastic:$pw"; S=https; kubectl -n elasticsearch exec curl-test -- curl -sk $A --max-time 5 "https://es-http.elasticsearch.svc:9200/" >/dev/null 2>&1 || S=http; kubectl -n elasticsearch exec curl-test -- curl -sk $A --max-time 5 "$S://es-http.elasticsearch.svc:9200/_cluster/settings" 2>/dev/null | grep -q "\"auto_shrink_voting_configuration\":\"false\"" && exit 0; sleep 3; done; exit 1'
+[timed out after 120s]
+[precondition:voting_drift_ready:preconditionUnits[1] 'voting_drift_ready':verify] $ /bin/sh -c 'for i in $(seq 1 30); do pw=$(kubectl -n elasticsearch get secret elastic-password -o jsonpath="{.data.password}" 2>/dev/null | base64 -d 2>/dev/null); A=""; [ -n "$pw" ] && A="-u elastic:$pw"; S=https; kubectl -n elasticsearch exec curl-test -- curl -sk $A --max-time 5 "https://es-http.elasticsearch.svc:9200/" >/dev/null 2>&1 || S=http; kubectl -n elasticsearch exec curl-test -- curl -sk $A --max-time 5 "$S://es-http.elasticsearch.svc:9200/_cluster/settings" 2>/dev/null | grep -q "\"auto_shrink_voting_configuration\":\"false\"" && exit 0; sleep 3; done; exit 1'
+[timed out after 120s]
+[precondition:voting_drift_ready:preconditionUnits[1] 'voting_drift_ready':verify] $ /bin/sh -c 'for i in $(seq 1 30); do pw=$(kubectl -n elasticsearch get secret elastic-password -o jsonpath="{.data.password}" 2>/dev/null | base64 -d 2>/dev/null); A=""; [ -n "$pw" ] && A="-u elastic:$pw"; S=https; kubectl -n elasticsearch exec curl-test -- curl -sk $A --max-time 5 "https://es-http.elasticsearch.svc:9200/" >/dev/null 2>&1 || S=http; kubectl -n elasticsearch exec curl-test -- curl -sk $A --max-time 5 "$S://es-http.elasticsearch.svc:9200/_cluster/settings" 2>/dev/null | grep -q "\"auto_shrink_voting_configuration\":\"false\"" && exit 0; sleep 3; done; exit 1'
+[setup timeout after 3s]

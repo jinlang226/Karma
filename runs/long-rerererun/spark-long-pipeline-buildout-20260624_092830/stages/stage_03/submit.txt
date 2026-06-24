@@ -1,0 +1,26 @@
+All three jobs completed successfully. Here's a summary of what was done and the results:
+
+---
+
+## Results Summary
+
+### Step 1: Diagnosis
+The cluster and jobs were already deploying correctly — the Spark master, worker, and baseline job all started without configuration errors. The YAML files (`namespace.yaml`, `rbac.yaml`, `spark-cluster.yaml`, `skew-job.yaml`) were syntactically correct and the `ServiceAccount`, `Role`, and `RoleBinding` were properly wired.
+
+### Step 2: Baseline Observed
+The baseline job ran with `spark.sql.adaptive.enabled=false` (no optimization). It showed:
+- **Skew ratio: 44.0x** — the hot partitions (product_id 1–5) had 11,579 rows vs 263 rows in balanced partitions
+- **Elapsed: 24.59s** — straggler partitions slow down the shuffle join
+
+### Step 3 & 4: Optimizations Applied
+
+| Strategy | Approach | Elapsed | Improvement |
+|---|---|---|---|
+| **Baseline** | Plain shuffle join, AQE disabled | 24.59s | — |
+| **Broadcast** | `broadcast(products)` hint — small table replicated to all nodes, no shuffle | 14.61s | **40% faster** |
+| **AQE** | `spark.sql.adaptive.skewJoin.enabled=true` — Spark auto-detects and splits hot partitions | 13.5s | **45% faster** |
+
+### Key Findings
+- The underlying skew is real: hot products 1–5 produce a 44x partition imbalance (vs. the noted 10x design target — actual data distribution is more skewed than the spec described)
+- **Broadcast join** eliminates shuffle entirely for the small `products` table (100 rows), making the skew irrelevant
+- **AQE skew join** automatically splits large partitions at runtime, achieving the best speedup without requiring manual hints

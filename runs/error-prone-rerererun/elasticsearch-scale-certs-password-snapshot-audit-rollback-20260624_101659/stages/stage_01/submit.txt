@@ -1,0 +1,19 @@
+Everything is working. Here's a summary of what was deployed:
+
+**Resources created in `elasticsearch` namespace:**
+
+| Resource | Name | Purpose |
+|---|---|---|
+| ConfigMap | `es-config` | `elasticsearch.yml` — HTTPS + transport TLS config |
+| Service (headless) | `es-headless` | Inter-node discovery (`publishNotReadyAddresses: true`) |
+| Service (ClusterIP) | `es-http` | Port 9200 HTTPS access for clients |
+| PodDisruptionBudget | `es-pdb` | `minAvailable: 2` |
+| StatefulSet | `es-cluster` | 3 replicas, `Parallel` pod management |
+
+**Key design decisions:**
+- `podManagementPolicy: Parallel` — all 3 pods start simultaneously so they can elect a master without waiting on each other's readiness
+- `publishNotReadyAddresses: true` on headless service — nodes can resolve each other's IPs during bootstrap before any pod passes its readiness probe
+- `xpack.security.transport.ssl.verification_mode: none` — the existing `es-http-tls` cert's SANs don't cover pod FQDNs (`*.elasticsearch.svc`), so hostname verification is skipped for transport; HTTP TLS fully validates against the cert
+- `fsGroup: 1000` — Elasticsearch runs as UID 1000; the pod security context ensures the `emptyDir` data volume is group-writable without a privileged init container
+
+**Verified:** cluster is `green` with 3 nodes, and a write + read through `es-http:9200` over HTTPS succeeded.

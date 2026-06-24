@@ -1,0 +1,41 @@
+All oracle conditions are satisfied. Let me provide a complete summary of the diagnosis and resolution.
+
+---
+
+## ETL Pipeline OOM — Diagnosis and Fix
+
+### 1. Root Cause: Extreme Data Skew
+
+The diagnostic server and skew report both confirm:
+
+| Metric | Value |
+|---|---|
+| Total records | 100,000 |
+| Hot key | `user_id = 999` |
+| Hot key records | 50,000 (50% of all data) |
+| Skew ratio | **500x** (far above 10x threshold) |
+
+When Stage 3 performs `GROUP BY user_id`, all 50,000 records for `user_id 999` land in a **single partition** on a single executor. With only 256 MB of executor memory, that partition cannot fit in memory — triggering `OutOfMemoryError`.
+
+### 2. Fix Applied (Option B + C combined)
+
+The ETL job was redeployed with two complementary remediations already embedded in `etl-job.yaml`:
+
+```bash
+--conf spark.executor.memory=1g           # raised from failing 256m baseline
+--conf spark.sql.adaptive.enabled=true    # enable Adaptive Query Execution
+--conf spark.sql.adaptive.skewJoin.enabled=true  # AQE splits skewed partitions
+```
+
+- **Executor memory** raised from 256 MB → 1 GB (4× increase), giving each task enough headroom for the hot-key partition.
+- **AQE skewJoin** detects at runtime that `user_id 999`'s partition is disproportionately large and splits it into smaller sub-partitions automatically — eliminating the single-executor bottleneck.
+
+### 3. Verification
+
+```
+Job status:  Complete (1/1)  ✓
+Log marker:  spark_etl_pipeline_verified  ✓
+Fix check:   executor.memory=1g (not 256m) + AQE skewJoin enabled  ✓
+```
+
+The ETL pipeline completed all three stages successfully. The oracle's three checks all pass.

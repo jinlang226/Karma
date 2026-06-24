@@ -1,0 +1,15 @@
+Everything is working. Here's a summary of what was done:
+
+**Root causes fixed:**
+1. **Missing MinIO Service** — created `Service/minio` so `minio.elasticsearch.svc.cluster.local:9000` resolves
+2. **Missing `es-backups` bucket** — created via a one-off `minio/mc` Job (the original `minio-init` job had failed because the Service didn't exist yet)
+3. **No `repository-s3` plugin** — not installed in the base ES 7.17.9 image
+
+**Configuration applied:**
+- Created `Secret/es-secure-settings` with `s3.client.default.access_key` and `s3.client.default.secret_key` (credentials from `minio-root` secret: `minioadmin`)
+- Updated the `es-config` ConfigMap with `s3.client.default.endpoint`, `protocol: http`, and `path_style_access: true` (non-credential settings safe for elasticsearch.yml)
+- Patched the StatefulSet with two init containers:
+  - `install-s3-plugin`: downloads and installs the `repository-s3` plugin into a shared emptyDir, mounted into the main container at the plugin path
+  - `init-keystore`: reads credentials from `es-secure-settings` Secret and writes them into the ES keystore, mounted via `subPath` so credentials survive pod restarts without appearing in env vars or elasticsearch.yml
+
+**Result:** Snapshot `snapshot-1` in repository `minio-repo` completed with `state: SUCCESS`, 2 shards snapshotted, 0 failures.

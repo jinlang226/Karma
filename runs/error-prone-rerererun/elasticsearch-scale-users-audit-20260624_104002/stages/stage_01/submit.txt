@@ -1,0 +1,18 @@
+The 3-node Elasticsearch cluster is fully deployed and verified. Here's what was deployed and the two issues encountered:
+
+**Resources created:**
+- `ConfigMap/es-config` — elasticsearch.yml with TLS + security config, node name from `${NODE_NAME}` env var
+- `Service/es-transport` (headless) — inter-node discovery on port 9300
+- `Service/es-http` — ClusterIP on port 9200 for client access
+- `PodDisruptionBudget/es-pdb` — minAvailable: 2
+- `StatefulSet/es` — 3 replicas with 5Gi PVCs each
+
+**Two fixes applied during deployment:**
+1. **Missing `volumes` section** — the pod template was missing explicit volume definitions for the ConfigMap and TLS Secret (only `volumeClaimTemplates` was there).
+2. **Bootstrap deadlock** — ES requires quorum to elect a master, but the default StatefulSet creates pods one-at-a-time waiting for Ready. Fixed with `podManagementPolicy: Parallel` (all 3 start together) + `publishNotReadyAddresses: true` on the headless service (so DNS resolves pod IPs before they're Ready, allowing cluster formation).
+
+**Verification:**
+- Cluster health: **green**, 3/3 nodes, 3/3 data nodes
+- Write: document `test-index/_doc/1` created successfully
+- Read: document retrieved with correct content
+- HTTPS via `es-http.elasticsearch.svc.cluster.local:9200` using the existing `es-http-tls` CA cert

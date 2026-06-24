@@ -1,0 +1,22 @@
+Everything is working. Here's a summary of what was done:
+
+**Problem:** The ES cluster (8.11.1, HTTPS+security) had no monitoring sidecars, so the monitoring cluster (7.17.9, plain HTTP) received no data.
+
+**Solution applied:**
+
+1. **`es-log4j2-config` ConfigMap** — added a `RollingFile` appender to the ES log4j2.properties that writes ECS JSON server logs to `/usr/share/elasticsearch/logs/es-cluster_server.json` (keeping existing Console appender). This gives Filebeat a file to read.
+
+2. **`metricbeat-config` ConfigMap** — Metricbeat 7.17.9 with the `elasticsearch` xpack module, connecting to `https://localhost:9200` using the existing `es-http-tls` CA cert and `elastic-password` secret, outputting to `http://monitoring-es-http.monitoring.svc.cluster.local:9200`.
+
+3. **`filebeat-config` ConfigMap** — Filebeat 7.17.9 reading the `*_server.json` log files from the shared `es-logs` volume, shipping to the monitoring cluster.
+
+4. **StatefulSet patch** — added:
+   - `es-logs` emptyDir volume (shared between ES and Filebeat)
+   - Log4j2 config override mounted in ES container
+   - `metricbeat` sidecar (with cert mount + password env)
+   - `filebeat` sidecar (with shared log volume)
+
+**Final state:**
+- All 3 ES pods: `3/3 Running` (elasticsearch + metricbeat + filebeat)
+- ES cluster: **green**, 3 nodes, 0 unassigned shards
+- Monitoring indices: `.monitoring-es-7-mb-2026.06.24` growing continuously (581+ docs), `filebeat-es-logs-2026.06.24` with 364 startup log docs

@@ -1,0 +1,22 @@
+Everything is in place. Here's a summary of what was done:
+
+**Problem root causes:**
+1. No MinIO Kubernetes Service existed — ES couldn't resolve `minio.elasticsearch.svc.cluster.local`
+2. The `es-backups` bucket was never created (the `minio-init` Job failed because the service didn't exist yet)
+3. The `es-data-new-{0,1}` pods were missing S3 keystore entries entirely
+
+**Steps taken:**
+
+1. **Created MinIO Service** — `minio.elasticsearch.svc.cluster.local:9000` now resolves correctly
+
+2. **Created `es-secure-settings` Secret** — stores `s3.client.default.access_key` and `s3.client.default.secret_key` (both `minioadmin`); credentials stay out of `elasticsearch.yml` and env vars
+
+3. **Populated the keystore** on all 5 nodes (`es-cluster-{0,1,2}` and `es-data-new-{0,1}`) via `elasticsearch-keystore add --stdin --force` fed from the secret values
+
+4. **Reloaded secure settings** via `POST /_nodes/reload_secure_settings` — no pod restarts needed
+
+5. **Created the `es-backups` bucket** in MinIO via `mc mb`
+
+6. **Registered `minio-repo`** snapshot repository (type `s3`, path-style access, HTTP protocol)
+
+7. **`snapshot-2` completed with `state: SUCCESS`** — 2 indices (`app-data`, `test-index`), 2/2 shards successful, 0 failures

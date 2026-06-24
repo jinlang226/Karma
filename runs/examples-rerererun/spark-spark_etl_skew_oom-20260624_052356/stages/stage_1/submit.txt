@@ -1,0 +1,24 @@
+## Root Cause Diagnosis
+
+**OOM in Stage 3: Data Skew on user_id 999**
+
+- Total records: 100,000 across 1,000 distinct user_ids
+- user_id 999 holds 50,000 records = 50% of all data
+- Skew ratio: 500x (threshold is 10x)
+- Stage 3 `GROUP BY user_id` collapses all 50,000 records for user_id 999 into a single executor partition, which exhausts the 256m executor memory heap → OutOfMemoryError
+
+## Fix Applied
+
+Applied **Option C (AQE) + Option B (raised executor memory)** via `etl-job.yaml`:
+
+```
+--conf spark.executor.memory=1g          # raised from 256m
+--conf spark.sql.adaptive.enabled=true   # enable Adaptive Query Execution
+--conf spark.sql.adaptive.skewJoin.enabled=true  # split skewed partitions automatically
+```
+
+## Verification
+
+- `kubectl get job etl-job -n spark-etl` → STATUS: Complete, COMPLETIONS: 1/1
+- Job logs contain: `spark_etl_pipeline_verified`
+- Fix detectable: `spark.executor.memory=1g` and `spark.sql.adaptive.enabled=true` present in job command

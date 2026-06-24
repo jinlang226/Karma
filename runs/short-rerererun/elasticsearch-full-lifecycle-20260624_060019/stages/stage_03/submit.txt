@@ -1,0 +1,17 @@
+Everything is working. Here's a summary of what was done and why:
+
+**Root cause:** The `report-user` existed only in the `user-provided-file-realm` secret, but the ES StatefulSet never mounted either file realm secret — so all pods had empty `users`/`users_roles` files and no file realm user could authenticate.
+
+**Fix (3 steps):**
+
+1. **Merged secrets** — Combined `user-provided-file-realm` (report-user with viewer role) into `es-file-realm-aggregate` (ops-user with superuser role), so the aggregate secret now holds both users.
+
+2. **Immediate live fix** — Wrote the merged `users` and `users_roles` files directly into each running ES pod via `kubectl exec`. ES's file realm reloads these files automatically within ~5 seconds, restoring auth without any restart.
+
+3. **Persistent fix** — Patched the StatefulSet to mount `es-file-realm-aggregate` as a volume with `subPath` mounts at `/usr/share/elasticsearch/config/users` and `/usr/share/elasticsearch/config/users_roles`. A rolling restart applied this cleanly; the cluster stayed green (3 nodes, 1-replica index tolerated the one-at-a-time pod cycling).
+
+**End state:**
+- Cluster: green, 3/3 nodes
+- `ops-user:opspass` → 200 on `/_cluster/health`
+- `report-user:reportpass` → 200 on `/app-data/_count` (count=1)
+- `es-file-realm-aggregate` secret contains both users — file realm files survive future pod restarts

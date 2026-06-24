@@ -1,0 +1,20 @@
+Everything is working. Here's what was done and the current state:
+
+**Root cause**: Both file realm secrets (`es-file-realm-aggregate` for ops-user, `user-provided-file-realm` for report-user) existed in the cluster but were never mounted into the Elasticsearch pods. The pods' default `/usr/share/elasticsearch/config/users` and `users_roles` files were empty, so no file realm users could authenticate.
+
+**Fix applied**:
+
+1. **Merged secrets** — combined both users' hashes into `es-file-realm-aggregate`: ops-user (superuser) + report-user (viewer)
+
+2. **Immediate fix** — wrote the merged `users` and `users_roles` files directly into all 5 running pods via base64-encoded `kubectl exec`; Elasticsearch's file realm auto-reloads on file change
+
+3. **Persistent fix** — patched both StatefulSets (`es` and `es-data`) to mount `es-file-realm-aggregate` as a volume at:
+   - `/usr/share/elasticsearch/config/users` (subPath `users`)
+   - `/usr/share/elasticsearch/config/users_roles` (subPath `users_roles`)
+
+   The rolling restart completed with all 5 pods healthy. The `es-0` post-restart file realm is now sourced from the secret, confirming persistence.
+
+**Authentication state**:
+- `report-user:reportpass` → authenticated (403 on cluster health is expected for `viewer` role; 200 on index search)
+- `ops-user:opspass` → 200 (superuser, full access)
+- `elastic` → 200 (unchanged)

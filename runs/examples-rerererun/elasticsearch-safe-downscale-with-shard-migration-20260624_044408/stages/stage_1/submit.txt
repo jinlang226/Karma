@@ -1,0 +1,13 @@
+All four verification checks pass:
+
+1. **Cluster health: green** — 1 node, 1 data node, 0 unassigned shards, `active_shards_percent: 100%`
+2. **app-data shard on es-cluster-0** — primary shard STARTED on `es-cluster-0`
+3. **Only PVC for active ordinal** — only `data-es-cluster-0` remains; PVCs for ordinals 1 and 2 are gone
+4. **Marker file present** — `/usr/share/elasticsearch/data/pvc-gc-marker` exists on `es-cluster-0`
+
+**Summary of what was done:**
+
+1. Discovered that `app-data` had an index-level `include` filter locking shards to nodes 1 and 2 — cleared it
+2. Set `number_of_replicas: 0` (required for single-node) and used cluster-level allocation exclusion to migrate the primary shard from `es-cluster-1` to `es-cluster-0`
+3. Scaled the StatefulSet from 3 → 1 and deleted orphaned PVCs `data-es-cluster-1` and `data-es-cluster-2`
+4. ES 7.17 refused to start because the on-disk voting configuration still required quorum from all 3 nodes; added a one-shot init container running `elasticsearch-node unsafe-bootstrap` to reset the voting config to just `es-cluster-0`, allowing it to self-elect as master

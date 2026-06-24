@@ -1,0 +1,15 @@
+Everything is working end-to-end. The collector received the exact trace with `Trace ID: 36f879495aa742aba7de81d7f6d1f20f` and `ID: ba5c1f6f83971761`, which match the IDs logged in the nginx access log.
+
+Here's a summary of what was done:
+
+**Step 1 — Enable OTel in the ConfigMap:**
+Patched `ingress-nginx-controller` ConfigMap with:
+- `enable-opentelemetry: "true"`
+- `otel-sampler: AlwaysOn` / `otel-sampler-ratio: "1.0"` / `otel-sampler-parent-based: "false"` (100% sampling)
+- `log-format-upstream` set to the requested format with `otel_trace_id=$opentelemetry_trace_id otel_span_id=$opentelemetry_span_id`
+- `opentelemetry-collector-host` / `opentelemetry-collector-port` (these are parsed by the controller for other purposes)
+
+**Step 2 — Fix the TOML collector endpoint:**
+The ingress-nginx controller (v1.14.1) writes `/etc/ingress-controller/telemetry/opentelemetry.toml` at startup with `host = ""` — the `opentelemetry-collector-host` ConfigMap key doesn't populate this field. The TOML was patched directly to set `host = "otel-collector.otel.svc"`, then nginx was reloaded (not restarted) to pick it up.
+
+**Result:** Access logs now contain non-empty `otel_trace_id` and `otel_span_id` for every request, and the OTel collector is receiving the exported spans via OTLP/gRPC on port 4317.
