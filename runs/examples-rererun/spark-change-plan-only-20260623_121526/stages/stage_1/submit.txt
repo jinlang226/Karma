@@ -1,0 +1,20 @@
+Done. The `change-plan` ConfigMap exists in `spark-pi` with a full `plan.md` key, and the live cluster is untouched (same pods, same deployments, job completed naturally).
+
+Here's a summary of what the plan covers:
+
+**Critical issues found:**
+- The `spark-pi` Job runs `--master local[2]` — it **never connects to the actual Spark cluster**; the master/worker Deployments are idle during every job run.
+- `SPARK_WORKER_MEMORY=1G` equals the container memory limit (1Gi), leaving zero headroom for JVM overhead — an OOM kill waiting to happen under load.
+
+**High priority:**
+- Only 1 worker replica (no fault tolerance, no parallelism)
+- No liveness/readiness probes on either Deployment
+- No PodDisruptionBudget (master can be evicted during node maintenance)
+
+**Medium/Low priority:**
+- Image pinned to `apache/spark:3.5.3` — evaluate latest 3.5.x patch
+- `backoffLimit: 0` on the job (no retry on transient failure)
+- RBAC grants `delete` on Services and full CRUD on PVCs (unused; over-permissioned)
+- No ResourceQuota or LimitRange on the namespace
+
+The plan orders changes from safest/zero-downtime (RBAC, quota) through rolling-restart changes (probes, image upgrade) to the job recreation required to fix cluster mode, with explicit rollback steps for each.

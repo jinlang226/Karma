@@ -1,0 +1,10 @@
+All three nodes are back in the cluster. Here's what was wrong and how it was fixed:
+
+**Root cause:** The `rabbitmq-cookie-perpod` Secret had `rabbitmq-2` set to a different Erlang cookie (`driftedcookie`) than the other two nodes (`supersecretcookie`). Erlang nodes refuse to communicate with nodes that have mismatched cookies, so `rabbitmq-2` initialized its own standalone Mnesia database instead of joining the existing cluster.
+
+**Fix (three steps):**
+1. **Patch the Secret** — set `rabbitmq-2`'s entry in `rabbitmq-cookie-perpod` to the correct `supersecretcookie` value (base64: `c3VwZXJzZWNyZXRjb29raWU=`).
+2. **Delete the pod** — the init container (`copy-cookie`) only runs at pod start, so `rabbitmq-2` needed a restart to pick up the corrected cookie from the Secret.
+3. **Reset and rejoin** — because `rabbitmq-2` already had Mnesia data from its standalone startup (on the PVC), peer discovery wouldn't re-run automatically. Manually ran `rabbitmqctl stop_app && rabbitmqctl reset && rabbitmqctl join_cluster rabbit@rabbitmq-0... && rabbitmqctl start_app` to wipe the stale local metadata and rejoin the cluster.
+
+The cluster now shows all 3 nodes in both Disk Nodes and Running Nodes with no alarms and no network partitions.

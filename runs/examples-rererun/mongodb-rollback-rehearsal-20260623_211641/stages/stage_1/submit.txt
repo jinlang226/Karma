@@ -1,0 +1,22 @@
+The `rollback-rehearsal` ConfigMap is stored and the live cluster is untouched (all 3 pods still running with 0 restarts).
+
+---
+
+**What was found and what the script does:**
+
+The four non-default settings identified (from `mongod-config` ConfigMap + `getCmdLineOpts`):
+
+| Setting | Live value | MongoDB default |
+|---|---|---|
+| `systemLog.verbosity` | 1 | 0 |
+| `operationProfiling.mode` | `slowOp` | `off` |
+| `operationProfiling.slowOpThresholdMs` | 200 ms | 100 ms |
+| `storage.wiredTiger.engineConfig.journalCompressor` | `zlib` | `snappy` |
+
+The `rollback.sh` script (stored under the `rollback.sh` key) executes in three phases:
+
+1. **Live `setParameter` resets** — calls `setParameter logComponentVerbosity` and `profile 0, slowms 100` on every member; takes effect immediately without a restart.
+2. **ConfigMap patch** — rewrites `mongod-config` to remove the `systemLog` and `operationProfiling` sections and switches `journalCompressor` back to `snappy`.
+3. **Rolling restart** — deletes and waits for each pod (secondaries first, then primary), so every node reloads the config file. This is required for the `journalCompressor` change to take effect, since WiredTiger reads that setting only at startup.
+
+**Not reverted:** `security.authorization`/`keyFile` and the `admin-user` account — removing auth infra while auth is enabled would immediately lock out all clients.

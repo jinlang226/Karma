@@ -1,0 +1,39 @@
+**Diagnosis and resolution complete.** Here's the full summary:
+
+---
+
+## Root Cause: Extreme Data Skew (Stage 3)
+
+**Finding from diagnostic server and skew report:**
+- Total records: 100,000 across 1,000 distinct `user_id` values
+- `user_id=999` holds **50,000 records (~50% of all data)** — a **500x skew ratio** (far above the 10x threshold)
+- When Stage 3 runs `GROUP BY user_id`, all 50,000 records for `user_id=999` get shuffled into a **single partition/executor**
+- With only 256MB executor memory, that single partition overflows → **OutOfMemoryError**
+
+---
+
+## Fix Applied (Option C + memory increase combined)
+
+The `etl-job.yaml` was updated with two changes:
+
+| Config | Before | After |
+|--------|--------|-------|
+| `spark.executor.memory` | `256m` | `1g` |
+| `spark.sql.adaptive.enabled` | not set | `true` |
+| `spark.sql.adaptive.skewJoin.enabled` | not set | `true` |
+
+**Why this works:**
+- **Increased memory** (256m → 1g) gives each executor enough headroom for large partitions
+- **AQE skewJoin** detects hot partitions at runtime and automatically splits them into smaller sub-partitions, distributing `user_id=999`'s 50,000 records across multiple tasks instead of one
+
+---
+
+## Verification
+
+```
+etl-job   Complete   1/1   86s   ✓
+Pod phase: Succeeded
+Final log: spark_etl_pipeline_verified ✓
+```
+
+All three stages completed successfully — Stage 3 aggregation no longer OOMs.

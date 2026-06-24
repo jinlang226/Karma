@@ -1,0 +1,29 @@
+All tasks are complete. Here's the full summary:
+
+---
+
+## Results
+
+### Step 1: Cluster Status
+The Spark cluster (master + worker) was running cleanly. Spark 3.5.3 master started on port 7077, worker registered with 1 core / 1 GiB RAM. The precondition passed (2 Running pods). No startup bugs were found blocking execution.
+
+### Step 2: Baseline — Data Skew Observed
+The baseline job ran a **shuffle join on `product_id`** with no optimization:
+- **Skew ratio: 44x** — max partition had 11,579 rows vs min of 263
+- **Elapsed: 31.1s** (query-execution time)
+- Products 1–5 (hot products) caused massive partition imbalance: 5,000 orders per hot partition vs ~263 for normal ones
+
+### Step 3 & 4: Optimizations Applied
+Both broadcast join and AQE jobs ran successfully:
+
+| Strategy | Optimization | Elapsed | Speedup | Mechanism |
+|---|---|---|---|---|
+| **baseline** | none (skewed shuffle join) | 31.1s | — | Partitions skewed 44x |
+| **broadcast** | `broadcast_join` | 15.1s | **2.06x faster** | Products table broadcast to all workers — no shuffle, no skew |
+| **aqe** | `aqe_skew_join` | 15.4s | **2.02x faster** | Spark AQE auto-splits hot partitions at runtime |
+
+### Key Findings
+- Both optimizations roughly **halved query time** (2x speedup) vs the skewed baseline
+- **Broadcast join** is the best choice when the joined table is small (products ~100 rows easily fits in memory)
+- **AQE** is the automatic approach — useful when skew isn't known ahead of time, as Spark detects and splits skewed partitions dynamically
+- All 3 jobs completed with `Succeeded` status; no failures

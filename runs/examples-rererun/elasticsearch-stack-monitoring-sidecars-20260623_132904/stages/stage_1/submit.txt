@@ -1,0 +1,35 @@
+Everything is working. Here's a summary of what was done and what's now in place:
+
+---
+
+## What was wrong
+
+The sidecars already existed but had one root cause preventing the logs path from working:
+
+**Filebeat was harvesting an empty directory.** Elasticsearch's Docker image ships with a `log4j2.properties` that uses `Console` (stdout) appenders only. Even though `elasticsearch.yml` set `path.logs: /var/log/es`, no `.log` files were ever written there, so Filebeat's glob `/var/log/es/*.log` matched nothing.
+
+(Metricbeat had transient DNS/connectivity failures at startup while the monitoring pod was still initializing, but it self-healed once both clusters were up.)
+
+---
+
+## What was fixed
+
+1. **Created ConfigMap `es-log4j2-config`** with a `log4j2.properties` that adds a `RollingFile` appender writing to `${es.logs.base_path}/${es.logs.cluster_name}.log` (i.e. `/var/log/es/es-cluster.log`) alongside the existing Console appender.
+
+2. **Patched the `es-cluster` StatefulSet** to mount this ConfigMap at `/usr/share/elasticsearch/config/log4j2.properties`, triggering a rolling restart.
+
+3. **Rolling restart completed** — all 3 pods came back 3/3 Running, the ES cluster stayed GREEN throughout.
+
+---
+
+## Verified end state
+
+| Index in monitoring cluster | Docs | What |
+|---|---|---|
+| `.monitoring-es-7-mb-2026.06.23` | 406 | Metricbeat xpack stack-monitoring metrics |
+| `metricbeat-7.17.9-2026.06.23-000001` | 461 | Metricbeat events |
+| `filebeat-7.17.9-2026.06.23-000001` | 1244 | ES log lines from filebeat |
+
+- Every ES pod runs **both** `metricbeat` and `filebeat` sidecars ✓  
+- ES cluster health: **GREEN**, 3 nodes, 3 data nodes ✓  
+- All log files present on all 3 pods (`/var/log/es/es-cluster.log`) ✓

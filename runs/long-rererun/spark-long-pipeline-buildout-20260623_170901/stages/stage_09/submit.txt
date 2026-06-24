@@ -1,0 +1,36 @@
+The ETL pipeline has been successfully diagnosed and fixed. Here is the complete summary:
+
+---
+
+## Diagnosis & Fix Summary
+
+### Root Cause: Data Skew in Stage 3
+
+The diagnostic server confirmed the core issue:
+```
+DIAGNOSTIC: hot key user_id=999 holds ~50% of records
+DIAGNOSTIC: skew_ratio=500x (>> 10x threshold)
+DIAGNOSTIC: Stage 3 GROUP BY user_id triggers OutOfMemoryError
+```
+
+When Stage 3 aggregates by `user_id`, all records for `user_id=999` (50% of the dataset, 500x the average partition size) land on a single executor. With only 256MB executor memory, this partition overflows → **OutOfMemoryError**.
+
+### Fix Applied (Option C: AQE + Memory Increase)
+
+The `etl-job.yaml` was updated with two complementary fixes:
+
+| Change | Before | After |
+|--------|--------|-------|
+| Executor memory | `256m` | `1g` (4x increase) |
+| AQE enabled | not set | `spark.sql.adaptive.enabled=true` |
+| Skew join handling | not set | `spark.sql.adaptive.skewJoin.enabled=true` |
+
+AQE's skew join optimization automatically **splits oversized partitions** (like user_id=999's partition) into smaller sub-partitions, distributing the load across multiple executors rather than crushing one.
+
+### Verification
+
+```
+etl-job   Complete   1/1   90s
+```
+
+The job completed all 3 stages successfully and printed `spark_etl_pipeline_verified` — confirming the fix resolved the OOM.

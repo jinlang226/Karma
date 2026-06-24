@@ -1,0 +1,18 @@
+Both criteria are met:
+
+1. **Access log contains non-empty IDs** — `otel_trace_id=36496008de80cca85d712d9b90c5a70d otel_span_id=54d895e909be3180`
+2. **Trace exported to collector** — the OTel collector received `Trace ID: 36496008de80cca85d712d9b90c5a70d` for `http.target=/otel-check` from `service.name=nginx`
+
+Here's a summary of what was done:
+
+**Changes made:**
+
+1. **`ingress-nginx-controller` ConfigMap** — patched with:
+   - `enable-opentelemetry: "true"` — activates `opentelemetry on` in every nginx location
+   - `otel-sampler: "AlwaysOn"` + `otel-sampler-ratio: "1.0"` + `otel-sampler-parent-based: "false"` — 100% sampling
+   - `log-format-upstream` — updated to append `otel_trace_id=$opentelemetry_trace_id otel_span_id=$opentelemetry_span_id`
+   - `main-snippet: "env OTEL_EXPORTER_OTLP_ENDPOINT;"` — exposes the env var to nginx worker processes
+
+2. **`ingress-nginx-controller` Deployment** — added env var `OTEL_EXPORTER_OTLP_ENDPOINT=http://otel-collector.otel.svc:4317` to the controller container, alongside the original `POD_NAME`, `POD_NAMESPACE`, and `LD_PRELOAD` vars.
+
+**Why the env var approach:** ingress-nginx 1.14.1 writes the TOML file at pod startup using only the ConfigMap values that are set at generation time — the `opentelemetry-collector-host` key was applied to the sampler/processor fields but the host field in the TOML remained empty. The TOML itself explicitly documents `OTEL_EXPORTER_OTLP_ENDPOINT` as the alternative path, and nginx's `env` directive makes it visible to the `otel_ngx_module`.

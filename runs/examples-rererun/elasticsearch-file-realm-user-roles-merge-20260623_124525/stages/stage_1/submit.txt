@@ -1,0 +1,14 @@
+Done. Here's what was fixed and why it works:
+
+**Root cause:** The Elasticsearch StatefulSet mounted file realm credentials exclusively from `es-file-realm-aggregate` (which only contained `ops-user`). The `user-provided-file-realm` secret holding `report-user`'s bcrypt hash and role assignment existed but was never mounted, so Elasticsearch had no knowledge of that user — hence the 401.
+
+**Fix applied:**
+1. Extracted `report-user`'s bcrypt password hash and `read:report-user` role mapping from `user-provided-file-realm`
+2. Appended both into `es-file-realm-aggregate` (the mounted secret)
+3. Rolling-restarted `statefulset/es-cluster` one pod at a time (required because `subPath` volume mounts don't live-update)
+
+**Result:**
+- `report-user` with correct password → HTTP 403 (authenticated; 403 is expected since the `read` role has no cluster-level `monitor` privilege — that's authorization, not authentication)
+- `report-user` with wrong password → HTTP 401 (rejected correctly)
+- `ops-user` unchanged → HTTP 200
+- Cluster: **green**, all 3 nodes healthy

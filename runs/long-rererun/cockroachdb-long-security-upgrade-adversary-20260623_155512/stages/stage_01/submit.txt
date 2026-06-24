@@ -1,0 +1,13 @@
+The 3-node CockroachDB cluster is fully deployed and healthy. Here's a summary of what was created:
+
+**Resources deployed:**
+- `Service/crdb-cluster` — headless service (ClusterIP: None), ports 26257 + 8080, used for pod DNS and peer discovery
+- `Service/crdb-cluster-public` — standard ClusterIP service for SQL/HTTP client access
+- `StatefulSet/crdb-cluster` — 3 replicas, `podManagementPolicy: Parallel` so all pods start concurrently (avoiding the init deadlock)
+- `PodDisruptionBudget/crdb-cluster-pdb` — `minAvailable: 2` to preserve quorum during voluntary disruptions
+- 3x `PersistentVolumeClaim` — `datadir-crdb-cluster-{0,1,2}`, each 10Gi, all Bound
+
+**Key design notes:**
+- `podManagementPolicy: Parallel` was required because the default `OrderedReady` creates a deadlock: pod-0 can't pass the readiness probe until the cluster is initialized, but init requires all 3 nodes to be up
+- The readiness probe uses `/health` (not `/health?ready=1`) so pods become Ready once the HTTP server is listening, before `cockroach init` is run
+- Each node advertises itself by its full DNS name (`$(hostname -f)` → `crdb-cluster-N.crdb-cluster.cockroachdb.svc.cluster.local`) and joins all 3 peers at startup

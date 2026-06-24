@@ -1,0 +1,39 @@
+[precondition:rabbitmq_secrets_ready:preconditionUnits[0] 'rabbitmq_secrets_ready':probe] $ /bin/sh -c 'set -e; kubectl -n ${BENCH_NAMESPACE} get secret rabbitmq-erlang-cookie >/dev/null; kubectl -n ${BENCH_NAMESPACE} get secret rabbitmq-admin >/dev/null'
+
+[precondition:rbac_ready:preconditionUnits[1] 'rbac_ready':probe] $ kubectl -n ${BENCH_NAMESPACE} get sa rabbitmq
+NAME       SECRETS   AGE
+rabbitmq   0         21m
+
+[precondition:infra_ready:preconditionUnits[2] 'infra_ready':probe] $ /bin/sh -c 'set -e; kubectl -n ${BENCH_NAMESPACE} get svc rabbitmq >/dev/null; kubectl -n ${BENCH_NAMESPACE} get svc prometheus >/dev/null'
+
+[precondition:rabbitmq_cluster_ready:preconditionUnits[3] 'rabbitmq_cluster_ready':probe] $ /bin/sh -c 'set -e; [ "$(kubectl -n ${BENCH_NAMESPACE} get sts rabbitmq -o jsonpath="{.status.readyReplicas}")" = "3" ]'
+
+[precondition:curl_test_ready:preconditionUnits[4] 'curl_test_ready':probe] $ kubectl -n ${BENCH_NAMESPACE} wait --for=condition=ready pod -l app=curl-test --timeout=3s
+pod/curl-test condition met
+
+[precondition:prometheus_plugin_ready:preconditionUnits[5] 'prometheus_plugin_ready':probe] $ /bin/sh -c 'set -e; pods=$(kubectl -n ${BENCH_NAMESPACE} get pods -l app=${BENCH_PARAM_CLUSTER_PREFIX} -o jsonpath="{.items[*].metadata.name}"); [ -n "$pods" ]; for p in $pods; do kubectl -n ${BENCH_NAMESPACE} exec $p -- rabbitmqctl eval "application:which_applications()." 2>/dev/null | grep -q rabbitmq_prometheus; done'
+
+[precondition:monitoring_baseline_ready:preconditionUnits[6] 'monitoring_baseline_ready':probe] $ python3 cases/rabbitmq/manual_monitoring/setup_precondition_check.py --namespace ${BENCH_NAMESPACE} --min-ready 3
+setup-precondition-check: failed
+ - monitoring precondition missing: rabbitmq targets already >= 3
+
+[precondition:monitoring_baseline_ready:preconditionUnits[6] 'monitoring_baseline_ready':apply] $ envsubst '$BENCH_NAMESPACE $BENCH_NS_SOURCE $BENCH_NS_TARGET $BENCH_PARAM_CLUSTER_PREFIX $BENCH_PARAM_BLUE_CLUSTER_PREFIX $BENCH_PARAM_GREEN_CLUSTER_PREFIX $BENCH_PARAM_FROM_VERSION' < cases/rabbitmq/manual_monitoring/resource/prometheus.yaml | kubectl -n ${BENCH_NAMESPACE} apply -f -
+configmap/prometheus-config configured
+deployment.apps/prometheus unchanged
+
+[precondition:monitoring_baseline_ready:preconditionUnits[6] 'monitoring_baseline_ready':apply] $ kubectl -n ${BENCH_NAMESPACE} rollout restart deploy/prometheus
+deployment.apps/prometheus restarted
+
+[precondition:monitoring_baseline_ready:preconditionUnits[6] 'monitoring_baseline_ready':apply] $ kubectl -n ${BENCH_NAMESPACE} rollout status deploy/prometheus --timeout=120s
+Waiting for deployment "prometheus" rollout to finish: 1 old replicas are pending termination...
+Waiting for deployment "prometheus" rollout to finish: 1 old replicas are pending termination...
+deployment "prometheus" successfully rolled out
+
+[precondition:monitoring_baseline_ready:preconditionUnits[6] 'monitoring_baseline_ready':verify] $ python3 cases/rabbitmq/manual_monitoring/setup_precondition_check.py --namespace ${BENCH_NAMESPACE} --min-ready 3
+setup-precondition-check: failed
+ - prometheus: expected 1 pods, found 2
+ - prometheus-746f7fd9b9-c8kfq: phase=Succeeded, ready=False
+
+[precondition:monitoring_baseline_ready:preconditionUnits[6] 'monitoring_baseline_ready':verify] $ python3 cases/rabbitmq/manual_monitoring/setup_precondition_check.py --namespace ${BENCH_NAMESPACE} --min-ready 3
+setup-precondition-check: ok
+

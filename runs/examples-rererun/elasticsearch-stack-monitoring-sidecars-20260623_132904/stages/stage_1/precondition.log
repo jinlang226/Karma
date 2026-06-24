@@ -1,0 +1,99 @@
+[precondition:es_env_ready:preconditionUnits[0] 'es_env_ready':probe] $ kubectl -n elasticsearch get pods 2>/dev/null | grep -c Running
+0
+
+[precondition:es_env_ready:preconditionUnits[0] 'es_env_ready':apply] $ /bin/sh -c 'kubectl delete namespace elasticsearch --ignore-not-found=true --wait=false; kubectl wait --for=delete namespace/elasticsearch --timeout=400s || true'
+
+[precondition:es_env_ready:preconditionUnits[0] 'es_env_ready':apply] $ kubectl create namespace elasticsearch
+namespace/elasticsearch created
+
+[precondition:es_env_ready:preconditionUnits[0] 'es_env_ready':apply] $ /bin/sh -c 'kubectl -n elasticsearch get pod openssl-toolbox >/dev/null 2>&1 || kubectl -n elasticsearch apply -f cases/elasticsearch/stack-monitoring-sidecars/resource/openssl-toolbox.yaml'
+pod/openssl-toolbox created
+
+[precondition:es_env_ready:preconditionUnits[0] 'es_env_ready':apply] $ kubectl -n elasticsearch wait --for=condition=ready pod/openssl-toolbox --timeout=300s
+pod/openssl-toolbox condition met
+
+[precondition:es_env_ready:preconditionUnits[0] 'es_env_ready':apply] $ /bin/sh -c '
+set -e
+TMP_DIR=$(mktemp -d)
+kubectl -n elasticsearch exec openssl-toolbox -- /bin/sh -c '\''
+set -e
+mkdir -p /tmp/certs
+cat > /tmp/certs/openssl.cnf <<EOF
+distinguished_name=req_distinguished_name
+req_extensions=v3_req
+prompt=no
+[req_distinguished_name]
+CN=es-http
+[v3_req]
+keyUsage=critical,digitalSignature,keyEncipherment
+extendedKeyUsage=serverAuth,clientAuth
+subjectAltName=@alt_names
+[alt_names]
+DNS.1=es-http
+DNS.2=es-http.elasticsearch
+DNS.3=es-http.elasticsearch.svc
+DNS.4=es-http.elasticsearch.svc.cluster.local
+DNS.5=es-cluster-0.es-cluster.elasticsearch.svc.cluster.local
+DNS.6=es-cluster-1.es-cluster.elasticsearch.svc.cluster.local
+DNS.7=es-cluster-2.es-cluster.elasticsearch.svc.cluster.local
+DNS.8=localhost
+EOF
+openssl genrsa -out /tmp/certs/ca.key 2048
+openssl req -x509 -new -nodes -key /tmp/certs/ca.key -sha256 -days 365 -subj "/CN=es-ca" -out /tmp/certs/ca.crt
+openssl genrsa -out /tmp/certs/server.key 2048
+openssl req -new -key /tmp/certs/server.key -out /tmp/certs/server.csr -config /tmp/certs/openssl.cnf
+openssl x509 -req -in /tmp/certs/server.csr -CA /tmp/certs/ca.crt -CAkey /tmp/certs/ca.key -CAcreateserial -out /tmp/certs/server.crt -days 365 -extensions v3_req -extfile /tmp/certs/openssl.cnf
+'\''
+kubectl -n elasticsearch cp openssl-toolbox:/tmp/certs "${TMP_DIR}/certs"
+kubectl -n elasticsearch create secret generic es-http-tls --from-file=tls.crt="${TMP_DIR}/certs/server.crt" --from-file=tls.key="${TMP_DIR}/certs/server.key" --from-file=ca.crt="${TMP_DIR}/certs/ca.crt" --dry-run=client -o yaml | kubectl apply -f -
+'
+
+tar: removing leading '/' from member names
+secret/es-http-tls created
+Certificate request self-signature ok
+subject=CN=es-http
+
+[precondition:es_env_ready:preconditionUnits[0] 'es_env_ready':apply] $ kubectl -n elasticsearch apply -f cases/elasticsearch/stack-monitoring-sidecars/resource/
+configmap/es-config created
+pod/curl-test created
+configmap/filebeat-config created
+configmap/metricbeat-config created
+pod/openssl-toolbox unchanged
+secret/elastic-password created
+service/es-cluster created
+service/es-http created
+statefulset.apps/es-cluster created
+
+[precondition:es_env_ready:preconditionUnits[0] 'es_env_ready':apply] $ kubectl -n elasticsearch wait --for=condition=ready pod -l app=es-cluster --timeout=600s
+pod/es-cluster-0 condition met
+pod/es-cluster-1 condition met
+pod/es-cluster-2 condition met
+
+[precondition:es_env_ready:preconditionUnits[0] 'es_env_ready':apply] $ kubectl -n elasticsearch wait --for=condition=ready pod/curl-test --timeout=300s
+pod/curl-test condition met
+
+[precondition:es_env_ready:preconditionUnits[0] 'es_env_ready':verify] $ kubectl -n elasticsearch get pods 2>/dev/null | grep -c Running
+5
+
+[precondition:monitoring_env_ready:preconditionUnits[1] 'monitoring_env_ready':probe] $ kubectl -n monitoring get pods -l app=monitoring-es 2>/dev/null | grep -c Running
+0
+
+[precondition:monitoring_env_ready:preconditionUnits[1] 'monitoring_env_ready':apply] $ /bin/sh -c 'kubectl delete namespace monitoring --ignore-not-found=true --wait=false; kubectl wait --for=delete namespace/monitoring --timeout=400s || true'
+
+[precondition:monitoring_env_ready:preconditionUnits[1] 'monitoring_env_ready':apply] $ kubectl create namespace monitoring
+namespace/monitoring created
+
+[precondition:monitoring_env_ready:preconditionUnits[1] 'monitoring_env_ready':apply] $ kubectl -n monitoring apply -f cases/elasticsearch/stack-monitoring-sidecars/resource/monitoring-cluster/
+pod/monitoring-curl-test created
+deployment.apps/monitoring-es created
+service/monitoring-es-http created
+
+[precondition:monitoring_env_ready:preconditionUnits[1] 'monitoring_env_ready':apply] $ kubectl -n monitoring wait --for=condition=ready pod -l app=monitoring-es --timeout=300s
+pod/monitoring-es-58c4994b7f-zs8b4 condition met
+
+[precondition:monitoring_env_ready:preconditionUnits[1] 'monitoring_env_ready':apply] $ kubectl -n monitoring wait --for=condition=ready pod/monitoring-curl-test --timeout=300s
+pod/monitoring-curl-test condition met
+
+[precondition:monitoring_env_ready:preconditionUnits[1] 'monitoring_env_ready':verify] $ kubectl -n monitoring get pods 2>/dev/null | grep -c Running
+2
+

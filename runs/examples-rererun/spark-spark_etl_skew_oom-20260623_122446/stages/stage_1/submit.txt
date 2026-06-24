@@ -1,0 +1,15 @@
+ROOT CAUSE: Data skew in Stage 3 (GROUP BY user_id) — user_id 999 holds 50,000/100,000 records (50% of all data, skew ratio 500x). With only 256MB executor memory, the single partition containing all user_id=999 records caused OutOfMemoryError.
+
+DIAGNOSIS:
+- Diagnostic server confirmed: hot key user_id=999, skew_ratio=500x (>> 10x threshold)
+- skew_info.txt: total_records=100000, hot_user_records=50000, skew_ratio=500x
+- Stage 3 aggregation forces all 50k records into one executor partition → OOM at 256MB
+
+FIX APPLIED (etl-job.yaml):
+- Increased executor memory: --conf spark.executor.memory=1g (from 256m)
+- Enabled Adaptive Query Execution: --conf spark.sql.adaptive.enabled=true
+- Enabled AQE skew join handling: --conf spark.sql.adaptive.skewJoin.enabled=true
+
+AQE skewJoin splits oversized partitions at runtime, preventing a single executor from receiving the entire user_id=999 dataset. Combined with 1g executor memory, this eliminates the OOM.
+
+RESULT: ETL job (etl-job-dcc6r) completed successfully — all 3 stages passed, output: spark_etl_pipeline_verified

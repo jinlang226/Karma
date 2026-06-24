@@ -1,0 +1,21 @@
+Everything is complete. Here's a summary of what was done and why each step was needed:
+
+---
+
+**Root causes fixed:**
+
+1. **Missing `minio` Service** — the MinIO deployment had no Service, so `minio.elasticsearch.svc.cluster.local` didn't resolve. Created a ClusterIP Service exposing port 9000.
+
+2. **Missing `es-backups` bucket** — the `minio-init` Job had failed because the service didn't exist. Created the bucket with `mc mb`.
+
+3. **`repository-s3` plugin not installed** — the image ships without it. Added an init container that installs it into a shared `emptyDir` (plugins volume) on every pod start.
+
+4. **S3 client endpoint not configured** — Elasticsearch can't find MinIO without `s3.client.default.endpoint`, `protocol`, and `path_style_access` in `elasticsearch.yml`. Added these (they are non-credential settings, so they belong in the config file).
+
+5. **Keystore credentials lost across pod restarts** — the keystore lives in the container's ephemeral writable layer and is reset on every restart. Fixed by adding a `shared-config` emptyDir volume: the init container copies the default config, creates a fresh keystore with S3 credentials read from the `es-secure-settings` Secret (via env vars — never written to disk or elasticsearch.yml), and the main container uses that shared directory as its config path.
+
+**Final state:**
+- `es-secure-settings` Secret holds `s3.client.default.access_key` and `s3.client.default.secret_key`
+- Credentials reach the ES keystore only through the init container env injection — never in `elasticsearch.yml` or persistent env vars
+- Repository `minio-repo` registered and verified ✓
+- Snapshot `snapshot-1`: **SUCCESS** — 8 indices, 8/8 shards, no failures

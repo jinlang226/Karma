@@ -1,0 +1,18 @@
+Everything is working. Here's a summary of what was deployed:
+
+**Resources created:**
+- `ConfigMap/es-config` — elasticsearch.yml with security, TLS (HTTP + transport), and cluster discovery settings
+- `Service/es-headless` — clusterIP:None headless service (pod DNS, `publishNotReadyAddresses: true` so peers find each other during startup)
+- `Service/es-http` — ClusterIP service on port 9200 for HTTPS client access
+- `PodDisruptionBudget/es-pdb` — minAvailable: 2
+- `StatefulSet/elasticsearch` — 3 replicas, `podManagementPolicy: Parallel` (critical: all 3 pods start simultaneously so the initial master quorum can form)
+
+**Key decisions:**
+- `podManagementPolicy: Parallel` was required — the default `OrderedReady` caused a deadlock where pod-0 couldn't become Ready without the other master nodes, which couldn't be created until pod-0 was Ready
+- Transport TLS uses `verification_mode: certificate` because the cert's SANs (`*.elasticsearch.svc`, `*.elasticsearch.svc.cluster.local`) don't cover pod-level FQDNs like `elasticsearch-0.es-headless...`
+- `ELASTIC_PASSWORD` env var read from the existing `elastic-password` secret at boot time
+
+**Verified:**
+- Cluster status: **green**, 3/3 nodes
+- HTTPS write to `test-index`: document created (`result: created`)
+- HTTPS read from `test-index`: document returned (`found: true`)

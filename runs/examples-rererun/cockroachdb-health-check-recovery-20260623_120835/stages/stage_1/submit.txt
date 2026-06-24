@@ -1,0 +1,10 @@
+Cluster is fully recovered. Here's a summary of what happened and what was fixed:
+
+**Root Cause:** The StatefulSet's container command had a deliberate fault injected — crdb-cluster-1 was configured to bind its HTTP admin UI to `127.0.0.1:8080` (localhost only) instead of `0.0.0.0:8080`. The Kubernetes health probes (`/health` and `/health?ready=1`) connect to the pod's cluster IP, not localhost, so they could never reach the endpoint. This caused crdb-cluster-1 to fail readiness checks and get removed from service, which cascaded to crdb-cluster-2 also becoming unready as the cluster degraded.
+
+**Fix:** Patched the StatefulSet to remove the conditional `if [ "$POD_NAME" = "crdb-cluster-1" ]` that set `HTTP_ADDR="127.0.0.1:8080"`, replacing it with a single `http-addr=0.0.0.0:8080` for all pods. Then deleted crdb-cluster-1 to trigger a restart with the corrected config; crdb-cluster-2 was also recycled by the rolling update.
+
+**Verification:**
+- All 3 pods: `1/1 Running`
+- All 3 nodes: `is_available=true`, `is_live=true`
+- SQL: `SELECT 1` succeeds

@@ -1,0 +1,14 @@
+Split-horizon is working correctly. The external client connecting via the external hostnames receives `domain-rs-1:31181`, `domain-rs-2:31182`, `domain-rs-3:31183` in the `isMaster` response — not the internal cluster DNS names.
+
+**Summary of what was done:**
+
+1. **Diagnosed TLS issue:** The existing server cert had only `CN=mongo-rs` with no SANs, causing intra-cluster TLS hostname verification failures and preventing the replica set from forming a primary.
+
+2. **Reissued the server cert** using the CA key from the `mongodb-tls-ca` secret, adding SANs for all internal hostnames (`mongo-rs-{0,1,2}.mongo.mongodb.svc.cluster.local`), all external hostnames (`domain-rs-1/2/3`), the node IP (`172.18.0.4`), and localhost. Updated the `mongodb-tls-cert` secret and rolled the StatefulSet.
+
+3. **Configured split-horizon** via `rs.reconfig()` on the primary, adding a `horizons.external` entry to each member:
+   - member 0 → `domain-rs-1:31181`
+   - member 1 → `domain-rs-2:31182`
+   - member 2 → `domain-rs-3:31183`
+
+External clients now receive the external advertised addresses in `isMaster` responses. Internal cluster traffic continues to use the internal DNS names. The NodePort services were not changed.

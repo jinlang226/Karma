@@ -1,0 +1,21 @@
+Everything is complete. Here's a summary of what was done:
+
+**Problem root causes:**
+1. No MinIO Kubernetes Service existed, so `minio.elasticsearch.svc.cluster.local` didn't resolve — the `minio-init` job that should have created the `es-backups` bucket had already failed because of this.
+2. The `es-secure-settings` Secret didn't exist and no keystore credentials were configured.
+
+**What was done (no pod restarts required):**
+
+1. **Created MinIO Service** — exposed the MinIO deployment at `minio.elasticsearch.svc.cluster.local:9000`.
+
+2. **Created `es-backups` bucket** — used `curl` with AWS SigV4 signing from the existing `curl-test` pod to create the bucket in MinIO.
+
+3. **Created `es-secure-settings` Secret** — stored the S3 credentials (`s3.client.default.access_key` and `s3.client.default.secret_key`) as secret keys.
+
+4. **Populated the Elasticsearch keystore on all 5 nodes** — exec'd into each pod (elasticsearch-0/1/2, es-data-new-0/1) and ran `elasticsearch-keystore add` with the MinIO credentials. No env vars or elasticsearch.yml were touched.
+
+5. **Reloaded secure settings** — called `POST /_nodes/reload_secure_settings`, which confirmed all 5 nodes picked up the new keystore entries without a restart.
+
+6. **Registered `minio-repo`** — S3-type repository pointing at `minio.elasticsearch.svc.cluster.local:9000`, bucket `es-backups`, with `path_style_access: true` and `protocol: http`.
+
+7. **Created `snapshot-02`** — completed with `state: SUCCESS`, 2/2 shards, 0 failures.

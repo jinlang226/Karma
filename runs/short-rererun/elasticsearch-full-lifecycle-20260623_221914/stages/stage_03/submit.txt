@@ -1,0 +1,11 @@
+Oracle passes. Here's what was done:
+
+**Problem:** `report-user` existed in the `user-provided-file-realm` secret but was never merged into `es-file-realm-aggregate`, and that secret wasn't mounted into the ES pods at all — so the file realm was empty and neither user could authenticate.
+
+**Solution (three steps):**
+
+1. **Merged secrets** — combined `users` and `users_roles` from both `es-file-realm-aggregate` (ops-user/superuser) and `user-provided-file-realm` (report-user/read) into the aggregate secret. Also added a custom `roles.yml` defining the `read` role (ES 8.x has `read` as an index privilege, not a built-in role — without this, `report-user`'s role assignment was a no-op).
+
+2. **Mounted the secret into the StatefulSet** — patched `es-cluster` to add the `es-file-realm-aggregate` secret as a volume with three `subPath` mounts (`users`, `users_roles`, `roles.yml`) placed directly into `/usr/share/elasticsearch/config/`, where the file realm watcher reads them.
+
+3. **Rolling restart** — two restarts: one to activate the volume mount, one to pick up the updated `roles.yml` (subPath mounts don't live-update). The cluster stayed healthy throughout (green, 3/3 nodes).

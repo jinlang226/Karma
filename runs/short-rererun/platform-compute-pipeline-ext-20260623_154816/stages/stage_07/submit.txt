@@ -1,0 +1,28 @@
+All three jobs completed successfully. Here's the summary:
+
+---
+
+## Results Summary
+
+**Cluster:** Spark master + worker both running (`1/1 Ready`), jobs used `local[2]` mode within each pod.
+
+**No configuration bugs were found** — the cluster and job YAMLs were correctly configured. The baseline job was already running when we started and completed normally.
+
+### Performance Comparison
+
+| Strategy | Elapsed | Speedup | Optimization |
+|---|---|---|---|
+| **Baseline** | 33.6s | 1x (reference) | None — skewed shuffle join |
+| **Broadcast Join** | 14.56s | **2.3x faster** | Broadcasts small `products` table, eliminates shuffle entirely |
+| **AQE** | 15.2s | **2.2x faster** | Auto-splits hot partitions at runtime (`skewJoin.enabled=true`) |
+
+### Data Skew Observed
+- Actual skew ratio: **44x** (max partition 11,579 rows vs min 263 rows)
+- Hot products 1–5 caused 5 of 20 partitions to hold ~50% of all orders
+- Baseline straggler partitions dominated total query time
+
+### Why the optimizations work
+- **Broadcast join**: The `products` table (100 rows) is tiny — broadcasting it to every executor means each executor does a local lookup instead of a costly hash-shuffle on the skewed `product_id` key.
+- **AQE**: Spark 3.x's Adaptive Query Execution detects skewed partitions at runtime and automatically splits them into sub-tasks, distributing the hot-partition work across multiple executors.
+
+Both strategies achieved nearly identical ~2.3x improvement. For this workload, broadcast join is the preferred choice since the dimension table is small and statically known.

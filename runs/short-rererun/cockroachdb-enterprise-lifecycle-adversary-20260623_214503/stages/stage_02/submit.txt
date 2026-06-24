@@ -1,0 +1,26 @@
+The CockroachDB cluster is fully operational. Here's a summary of what was diagnosed and what happened:
+
+---
+
+## Diagnosis
+
+The cluster was configured correctly (headless service with `publishNotReadyAddresses: true`, `--join` listing all 3 peers, `--advertise-addr` using pod DNS names). The initial logs showed two types of join errors:
+
+1. **"connection refused"** — all 3 pods started simultaneously (Parallel policy) before each other's CockroachDB processes were listening. Transient, expected.
+2. **"no such host"** — intermittent DNS propagation delay for the headless service entries at startup. Transient, resolved within seconds.
+
+No configuration change was needed. The cluster self-organized:
+- `crdb-cluster-0` bootstrapped itself as node 1 after exhausting retries
+- `crdb-cluster-1` and `crdb-cluster-2` joined as nodes 3 and 2
+
+## Final State
+
+| Node | Pod | `is_available` | `is_live` |
+|------|-----|----------------|-----------|
+| 1 | crdb-cluster-0 | true | true |
+| 2 | crdb-cluster-2 | true | true |
+| 3 | crdb-cluster-1 | true | true |
+
+- **SQL accepts connections** via both pod DNS names and the `crdb-cluster-public` ClusterIP service
+- **All ranges fully replicated** (0 underreplicated ranges) — rebalancing completed ~5 minutes after join
+- **DDL/DML verified**: `CREATE DATABASE`, `CREATE TABLE`, `INSERT`, `SELECT` all succeed

@@ -1,0 +1,19 @@
+ROOT CAUSE: Data skew in Stage 3 (GROUP BY user_id)
+- user_id 999 holds 50,000 / 100,000 records (50% of all data), skew_ratio=500x
+- With only 256m executor memory, the skewed partition for user_id 999 causes OutOfMemoryError
+
+DIAGNOSIS STEPS:
+1. kubectl logs -n spark-etl -l app=etl-job -- confirmed OOM failure in Stage 3
+2. kubectl exec data-generator -- cat /data/skew_info.txt -- confirmed 500x skew (user_id 999)
+3. kubectl logs -n spark-etl -l app=diagnostic-server -- confirmed: "Stage 3 GROUP BY user_id triggers OutOfMemoryError"
+
+FIX APPLIED (Option B + C combined):
+- Raised spark.executor.memory from 256m to 1g
+- Enabled spark.sql.adaptive.enabled=true (AQE)
+- Enabled spark.sql.adaptive.skewJoin.enabled=true (automatic skew partition splitting)
+- Applied: kubectl apply -f cases/spark/spark_etl_skew_oom/resource/etl-job.yaml
+
+RESULT:
+- ETL job completed successfully (Status: Complete, 1/1)
+- Logs confirmed: spark_etl_pipeline_verified
+- Oracle: spark_etl_skew_oom verified: Stage 3 OOM remediated and ETL job completed
