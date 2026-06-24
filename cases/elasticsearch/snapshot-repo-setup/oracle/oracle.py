@@ -168,45 +168,45 @@ def _resolve_expected_nodes(node_names, default=3):
     when no live StatefulSets resolve (e.g. _cat/nodes failed or returned empty).
     """
     # Derive from the LIVE cluster FIRST (workflow-agnostic + composition-aware):
-    # sum spec.replicas over the active ES StatefulSets -- the base cluster PLUS
-    # any nodeset a PRIOR stage added to the same cluster (e.g. an inherited
-    # transform nodeset). A static EXPECTED_NODES param encodes a standalone
-    # baseline that wrongly ignores such inherited nodesets, so it is demoted to a
-    # FALLBACK below, used only when the live cluster cannot be resolved.
-    # Robust count: sum spec.replicas over ES StatefulSets that are actually
-    # present (status.replicas > 0). Counts the base cluster + any scaled-up
-    # nodeset WITHOUT the fragile node.name -> StatefulSet string mapping (which
-    # breaks when a nodeset's node.name differs from its pod name -- the cause of
-    # "Expected 3 nodes, got 5"). A torn-down prior cluster's StatefulSet has
-    # status.replicas 0 and is excluded. Still strict: a node that failed to join
-    # leaves its STS with pods but absent from _cat/nodes, so the spec sum exceeds the live
-    # node count and the check still fails.
-    res = run(["kubectl", "-n", NAMESPACE, "get", "sts", "-o", "json"])
-    if res.returncode == 0:
-        try:
-            items = json.loads(res.stdout).get("items", [])
-        except Exception:
-            items = []
-        desired = 0
-        for sts in items:
-            spec = sts.get("spec", {}) or {}
-            containers = spec.get("template", {}).get("spec", {}).get("containers", []) or []
-            if "elasticsearch" not in " ".join(c.get("image", "") for c in containers):
-                continue
-            replicas = spec.get("replicas")
-            # Use status.replicas (pods that EXIST), not readyReplicas: a
-            # scaled-up nodeset whose pods joined the cluster but lack a passing
-            # STS readiness probe has readyReplicas 0 yet is genuinely live.
-            # Count an ES StatefulSet's DESIRED replicas when it is an active part
-            # of the cluster: spec.replicas > 0 and not being torn down. Gating on
-            # status.replicas undercounts a freshly scaled-up nodeset whose status
-            # lags -- its pods have joined the cluster but status.replicas is still
-            # 0 -- which wrongly made EXPECTED < the live node count.
-            being_deleted = (sts.get("metadata", {}) or {}).get("deletionTimestamp") is not None
-            if isinstance(replicas, int) and replicas > 0 and not being_deleted:
-                desired += replicas
-        if desired > 0:
-            return desired
+    # sum spec.replicas over ONLY the ES StatefulSets that actually back a live
+    # node returned by ``_cat/nodes`` (the queried cluster). The namespace
+    # PERSISTS across workflow stages and ACCUMULATES several ES clusters/nodesets
+    # (e.g. an inherited transform nodeset, or a prior stage's separate cluster);
+    # summing spec.replicas across *every* ES StatefulSet overcounts the single
+    # cluster the oracle queries (observed live: EXPECTED=9 vs live_nodes=5). The
+    # live-node -> StatefulSet mapping (strip the pod ordinal) scopes the sum to
+    # the cluster under test. A static EXPECTED_NODES param encodes a standalone
+    # baseline that ignores inherited nodesets, so it is demoted to a FALLBACK
+    # below, used only when the live cluster cannot be resolved.
+    #
+    # Using DESIRED spec.replicas (not the raw live count) keeps the check strict:
+    # a node that FAILED to join leaves its StatefulSet "live" (siblings are up and
+    # appear in _cat/nodes) but absent itself, so the spec sum stays above the
+    # actual count -- no masking. A torn-down prior cluster's StatefulSet backs no
+    # live node, so it is excluded.
+    live_sts = _live_sts_names(node_names)
+    if live_sts:
+        res = run(["kubectl", "-n", NAMESPACE, "get", "sts", "-o", "json"])
+        if res.returncode == 0:
+            try:
+                items = json.loads(res.stdout).get("items", [])
+            except Exception:
+                items = []
+            desired = 0
+            for sts in items:
+                spec = sts.get("spec", {}) or {}
+                name = (sts.get("metadata", {}) or {}).get("name")
+                if name not in live_sts:
+                    continue
+                containers = spec.get("template", {}).get("spec", {}).get("containers", []) or []
+                if "elasticsearch" not in " ".join(c.get("image", "") for c in containers):
+                    continue
+                replicas = spec.get("replicas")
+                being_deleted = (sts.get("metadata", {}) or {}).get("deletionTimestamp") is not None
+                if isinstance(replicas, int) and replicas > 0 and not being_deleted:
+                    desired += replicas
+            if desired > 0:
+                return desired
 
     # Fallbacks (live cluster unresolvable): explicit param, then the default.
     for key in ("BENCH_PARAM_EXPECTED_NODES", "BENCH_PARAM_EXPECTED_NODE_COUNT"):
@@ -219,11 +219,45 @@ def _resolve_expected_nodes(node_names, default=3):
     return default
 
 
+def _es_pod_name():
+    """Name of a live ES pod (for a pod-local curl fallback), or None."""
+    r = run(["kubectl", "-n", NAMESPACE, "get", "pods", "-l", APP_LABEL,
+             "-o", "jsonpath={.items[0].metadata.name}"])
+    name = (r.stdout or "").strip()
+    return name or None
+
+
+def _target_base(scheme):
+    """(exec_pod, host) the oracle's curl should hit for the given scheme.
+
+    Prefer the helper ``curl-test`` pod -> the es-http Service. When a prior
+    workflow stage (e.g. a password rotation) leaves the StatefulSet pods
+    NotReady, the Service has zero endpoints and a Service curl returns exit 7;
+    fall back to exec-ing INTO a live ES pod and hitting ``localhost:9200`` so the
+    oracle can still grade an otherwise-correct cluster. The es-http path is tried
+    first so standalone behaviour is unchanged.
+    """
+    if _service_has_endpoints():
+        return "curl-test", f"{SERVICE}.{NAMESPACE}.svc:9200"
+    pod = _es_pod_name()
+    if pod:
+        return pod, "localhost:9200"
+    return "curl-test", f"{SERVICE}.{NAMESPACE}.svc:9200"
+
+
+def _service_has_endpoints():
+    """True if the es-http Service currently has at least one ready endpoint."""
+    r = run(["kubectl", "-n", NAMESPACE, "get", "endpoints", SERVICE,
+             "-o", "jsonpath={.subsets[*].addresses[*].ip}"])
+    return r.returncode == 0 and bool((r.stdout or "").strip())
+
+
 def _probe_scheme(scheme):
     """True if the ES HTTP API answers on the given scheme (auth-agnostic)."""
+    pod, host = _target_base(scheme)
     result = run([
-        "kubectl", "-n", NAMESPACE, "exec", "curl-test", "--", "/bin/sh", "-c",
-        f"curl -s -S -k -o /dev/null -w '%{{http_code}}' --max-time 5 {scheme}://{SERVICE}.{NAMESPACE}.svc:9200/",
+        "kubectl", "-n", NAMESPACE, "exec", pod, "--", "/bin/sh", "-c",
+        f"curl -s -S -k -o /dev/null -w '%{{http_code}}' --max-time 5 {scheme}://{host}/",
     ])
     code = (result.stdout or "").strip().strip("'")
     return result.returncode == 0 and code.isdigit() and code != "000"
@@ -248,12 +282,16 @@ def curl(path, errors):
     if ELASTIC_PASSWORD:
         import shlex
         auth = f"-u {shlex.quote('elastic:' + ELASTIC_PASSWORD)} "
+    # Prefer the es-http Service via curl-test; fall back to a pod-local
+    # localhost:9200 curl when the Service has no ready endpoints (e.g. a prior
+    # stage rotated the password and left pods NotReady, dropping the endpoints).
+    pod, host = _target_base(scheme)
     cmd = [
         "kubectl",
         "-n",
         NAMESPACE,
         "exec",
-        "curl-test",
+        pod,
         "--",
         "/bin/sh",
         "-c",
@@ -261,7 +299,7 @@ def curl(path, errors):
         # ``wait_for`` in `path`, otherwise curl aborts (exit 28) before ES can
         # answer. The retry loop in main() does the real waiting, so each call's
         # server wait stays short (10s).
-        f"curl -s -S -k {auth}--max-time 20 {scheme}://{SERVICE}.{NAMESPACE}.svc:9200{path}",
+        f"curl -s -S -k {auth}--max-time 20 {scheme}://{host}{path}",
     ]
     result = run(cmd)
     if result.returncode != 0:

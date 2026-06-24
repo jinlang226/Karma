@@ -52,9 +52,17 @@ metrics:
 preconditionUnits:
   - name: es_env_ready
     on_probe_fail: skip
+    # Authoritative skip-gate for THIS case's own shape (§3.4): require the
+    # es-cluster StatefulSet AND the es-http Service the oracle hardcodes, with at
+    # least one ES pod Running. A bare `grep -c Running` skips the build on an
+    # INCOMPATIBLE inherited topology (e.g. a search-*/es-alpha cluster with no
+    # es-http), leaving the oracle's hardcoded SERVICE=es-http unresolvable
+    # ("Could not resolve host"). Probing for the specific required objects makes
+    # the case self-sufficient: it rebuilds when its own objects are absent and
+    # only skips when a compatible es-cluster/es-http cluster is already present.
     probe:
-      - command: "kubectl -n elasticsearch get pods 2>/dev/null | grep -c Running"
-        timeout_sec: 10
+      - command: "/bin/sh -c 'kubectl -n elasticsearch get sts {{params.cluster_prefix}} >/dev/null 2>&1 && kubectl -n elasticsearch get svc {{params.http_service_name}} >/dev/null 2>&1 && [ \"$(kubectl -n elasticsearch get pods -l app={{params.cluster_prefix}} --field-selector=status.phase=Running 2>/dev/null | grep -c Running)\" -ge 1 ]'"
+        timeout_sec: 15
     apply:
       - command: "/bin/sh -c 'kubectl delete namespace elasticsearch --ignore-not-found=true --wait=false; kubectl wait --for=delete namespace/elasticsearch --timeout=400s || true'"
         timeout_sec: 460

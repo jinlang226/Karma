@@ -71,6 +71,11 @@ preconditionUnits:
         sleep: 1
       - command: "kubectl -n elasticsearch scale sts/{{params.cluster_prefix}} --replicas=1"
         sleep: 1
+      # Settle the StatefulSet at the controller level after the downscale so the
+      # surviving node's HTTP endpoint is reachable before any verify curls it.
+      # A bare scale leaves a re-stabilization dip where a single curl hits exit 28.
+      - command: "/bin/sh -c 'kubectl -n elasticsearch rollout status sts/{{params.cluster_prefix}} --timeout=300s || true'"
+        sleep: 1
     verify:
       - command: "kubectl -n elasticsearch get pods 2>/dev/null | grep -c Running"
         timeout_sec: 10
@@ -96,9 +101,13 @@ preconditionUnits:
     apply:
       - command: "/bin/sh -c 'pw=$(kubectl -n elasticsearch get secret elastic-password -o jsonpath=\"{.data.password}\" 2>/dev/null | base64 -d 2>/dev/null); A=\"\"; [ -n \"$pw\" ] && A=\"-u elastic:$pw\"; S=https; kubectl -n elasticsearch exec {{params.curl_pod_name}} -- curl -sk $A --max-time 5 \"https://{{params.http_service_name}}.elasticsearch.svc:9200/\" >/dev/null 2>&1 || S=http; kubectl -n elasticsearch exec {{params.curl_pod_name}} -- curl -sk $A -XPUT \"$S://{{params.http_service_name}}.elasticsearch.svc:9200/_cluster/settings\" -H \"Content-Type: application/json\" -d \"{\\\"persistent\\\":{\\\"cluster.auto_shrink_voting_configuration\\\":false}}\" >/dev/null 2>&1; true'"
         sleep: 1
+    # Flap-retry the reachability/setting verify: it runs right after a downscale
+    # (es_env_ready scales to 1), where a single curl --max-time 5 hits the
+    # post-scale re-stabilization dip (exit 28). Re-evaluate for ~90s and pass on
+    # the first clean read; a genuinely unset setting never reads false.
     verify:
-      - command: "/bin/sh -c 'pw=$(kubectl -n elasticsearch get secret elastic-password -o jsonpath=\"{.data.password}\" 2>/dev/null | base64 -d 2>/dev/null); A=\"\"; [ -n \"$pw\" ] && A=\"-u elastic:$pw\"; S=https; kubectl -n elasticsearch exec {{params.curl_pod_name}} -- curl -sk $A --max-time 5 \"https://{{params.http_service_name}}.elasticsearch.svc:9200/\" >/dev/null 2>&1 || S=http; kubectl -n elasticsearch exec {{params.curl_pod_name}} -- curl -sk $A --max-time 5 \"$S://{{params.http_service_name}}.elasticsearch.svc:9200/_cluster/settings\" 2>/dev/null | grep -q \"\\\"auto_shrink_voting_configuration\\\":\\\"false\\\"\"'"
-        timeout_sec: 20
+      - command: "/bin/sh -c 'for i in $(seq 1 30); do pw=$(kubectl -n elasticsearch get secret elastic-password -o jsonpath=\"{.data.password}\" 2>/dev/null | base64 -d 2>/dev/null); A=\"\"; [ -n \"$pw\" ] && A=\"-u elastic:$pw\"; S=https; kubectl -n elasticsearch exec {{params.curl_pod_name}} -- curl -sk $A --max-time 5 \"https://{{params.http_service_name}}.elasticsearch.svc:9200/\" >/dev/null 2>&1 || S=http; kubectl -n elasticsearch exec {{params.curl_pod_name}} -- curl -sk $A --max-time 5 \"$S://{{params.http_service_name}}.elasticsearch.svc:9200/_cluster/settings\" 2>/dev/null | grep -q \"\\\"auto_shrink_voting_configuration\\\":\\\"false\\\"\" && exit 0; sleep 3; done; exit 1'"
+        timeout_sec: 120
 
 oracle:
   verify:
