@@ -160,7 +160,8 @@ def check_auth_checker(errors):
         errors.append("auth-checker is not Ready")
 
 
-def main():
+def evaluate():
+    """One full snapshot of the password-rotation checks; returns the errors."""
     errors = []
 
     current, err = get_secret_value(SECRET_CURRENT)
@@ -199,6 +200,23 @@ def main():
             errors.append("Old password still works")
 
     check_auth_checker(errors)
+    return errors
+
+
+def main():
+    # The rotation patches the elastic password and triggers a rolling restart;
+    # right after that the HTTP auth endpoint can transiently fail to connect
+    # ("Empty reply" / connection refused) even on a correctly-rotated cluster, so
+    # a single snapshot can report a false miss. Re-evaluate for up to ~120s and
+    # pass on the first clean snapshot. A genuinely wrong rotation (new password
+    # never authenticates, or the old one still works) fails every attempt, so the
+    # retry does not loosen the check.
+    import time
+    deadline = time.monotonic() + 120
+    errors = evaluate()
+    while errors and time.monotonic() < deadline:
+        time.sleep(8)
+        errors = evaluate()
 
     if errors:
         print("Rotate elastic password verification failed:", file=sys.stderr)

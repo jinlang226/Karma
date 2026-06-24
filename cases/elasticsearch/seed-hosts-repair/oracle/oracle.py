@@ -157,39 +157,37 @@ def _resolve_expected_nodes(node_names, default=3):
     # transform nodeset). A static EXPECTED_NODES param encodes a standalone
     # baseline that wrongly ignores such inherited nodesets, so it is demoted to a
     # FALLBACK below, used only when the live cluster cannot be resolved.
-    # Robust count: sum spec.replicas over ES StatefulSets that are actually
-    # present (status.replicas > 0). Counts the base cluster + any scaled-up
-    # nodeset WITHOUT the fragile node.name -> StatefulSet string mapping (which
-    # breaks when a nodeset's node.name differs from its pod name). A torn-down
-    # prior cluster's StatefulSet has readyReplicas 0 and is excluded. Still
-    # strict: a node that failed to join leaves its STS ready>0 but short, so the
-    # spec-replica sum exceeds the live node count and the check still fails.
-    res = run(["kubectl", "-n", NAMESPACE, "get", "sts", "-o", "json"])
-    if res.returncode == 0:
-        try:
-            items = json.loads(res.stdout).get("items", [])
-        except Exception:
-            items = []
-        desired = 0
-        for sts in items:
-            spec = sts.get("spec", {}) or {}
-            containers = spec.get("template", {}).get("spec", {}).get("containers", []) or []
-            if "elasticsearch" not in " ".join(c.get("image", "") for c in containers):
-                continue
-            replicas = spec.get("replicas")
-            # Use status.replicas (pods that EXIST), not readyReplicas: a
-            # scaled-up nodeset whose pods joined the cluster but lack a passing
-            # STS readiness probe has readyReplicas 0 yet is genuinely live.
-            # Count an ES StatefulSet's DESIRED replicas when it is an active part
-            # of the cluster: spec.replicas > 0 and not being torn down. Gating on
-            # status.replicas undercounts a freshly scaled-up nodeset whose status
-            # lags -- its pods have joined the cluster but status.replicas is still
-            # 0 -- which wrongly made EXPECTED < the live node count.
-            being_deleted = (sts.get("metadata", {}) or {}).get("deletionTimestamp") is not None
-            if isinstance(replicas, int) and replicas > 0 and not being_deleted:
-                desired += replicas
-        if desired > 0:
-            return desired
+    # Scope the sum to ONLY the ES StatefulSets that actually back a live node
+    # returned by ``_cat/nodes`` (the queried cluster). The namespace PERSISTS and
+    # ACCUMULATES several ES clusters/nodesets across stages; summing spec.replicas
+    # over *every* ES StatefulSet overcounts the single cluster the oracle queries.
+    # Mapping each live node name -> its StatefulSet (strip the pod ordinal) scopes
+    # the sum. Using DESIRED spec.replicas stays strict: the repaired StatefulSet's
+    # spec.replicas stays at its target (3) even while a node is missing, so a node
+    # that failed to rejoin leaves the sum above the live _cat/nodes count.
+    live_sts = _live_sts_names(node_names)
+    if live_sts:
+        res = run(["kubectl", "-n", NAMESPACE, "get", "sts", "-o", "json"])
+        if res.returncode == 0:
+            try:
+                items = json.loads(res.stdout).get("items", [])
+            except Exception:
+                items = []
+            desired = 0
+            for sts in items:
+                spec = sts.get("spec", {}) or {}
+                name = (sts.get("metadata", {}) or {}).get("name")
+                if name not in live_sts:
+                    continue
+                containers = spec.get("template", {}).get("spec", {}).get("containers", []) or []
+                if "elasticsearch" not in " ".join(c.get("image", "") for c in containers):
+                    continue
+                replicas = spec.get("replicas")
+                being_deleted = (sts.get("metadata", {}) or {}).get("deletionTimestamp") is not None
+                if isinstance(replicas, int) and replicas > 0 and not being_deleted:
+                    desired += replicas
+            if desired > 0:
+                return desired
 
     # Fallbacks (live cluster unresolvable): explicit param, then the default.
     for key in ("BENCH_PARAM_EXPECTED_NODE_COUNT", "BENCH_PARAM_EXPECTED_NODES"):
