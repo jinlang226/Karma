@@ -263,11 +263,31 @@ topology.*
 
 ---
 
-## 5. Verified faults from the `-rererun` campaign (worklist)
+## 5. Verified faults from the `-rererun` campaign (worklist — APPLIED)
 
 Genuine test/workflow faults found and confirmed (a perfect agent could not have
 passed). The infra-flakes (~20 runs, API outage) and the 1 agent fault are
 **excluded** from this list.
+
+> **Status:** all worklist items below were **applied** in the sweep (commits
+> `64c28dd` es, `9c4d44a` crdb, `5dfc429` mongo, `e22e0a1` nginx, `333953b`
+> runtime). A second re-run re-confirmed two of them once the API outage stopped
+> masking them: `cockroachdb-enterprise-lifecycle` stage_02 (the deploy→initialize
+> label seam, §3.1) and `elasticsearch-drift-monitoring-seed` stage_07 (the
+> snapshot oracle node over-count, §2.3) — both fixed as part of the sweep.
+
+> **Elasticsearch is the fault epicenter.** Of the verified faults, ES carries the
+> most *and* the most distinct patterns (6 of the 11 worklist items, plus 4 more
+> oracles that had the same node-overcount bug, plus a flap-retry — ~11 ES files).
+> It's also the slowest service (JVM cluster formation + shard recovery + rolling
+> restarts; median ~7.4 min/case). When auditing a new ES case, assume these four
+> failure modes by default: (a) an oracle that resolves expected node count by
+> **summing all ES StatefulSets** instead of live `_cat/nodes`-backed ones (§2.3);
+> (b) a **single-shot** HTTP/health check with no flap-retry around a restart/scale
+> (§1.5); (c) a **non-idempotent re-seed** that doubles docs on an inherited index
+> (§1.6); (d) a **non-authoritative skip-probe** (`grep -c Running`) that skips the
+> build on an incompatible inherited topology, then the oracle hardcodes `es-http`
+> (§3.4). Sweep every ES oracle for these before shipping.
 
 | Case / stage | Class | Rule | Fix |
 | --- | --- | --- | --- |
