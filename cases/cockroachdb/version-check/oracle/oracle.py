@@ -6,6 +6,7 @@
 # version (BENCH_PARAM_TO_VERSION) all come from the case params, so a workflow
 # that overrides them is honored. Standalone (default params) this behaves
 # identically to the old hardcoded check.
+import json
 import os
 import subprocess
 import sys
@@ -21,6 +22,26 @@ TO_MAJOR_MINOR = ".".join(TO_VERSION.split(".")[:2])
 
 def run(cmd):
     return subprocess.run(cmd, text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+
+
+def crdb_pod_selector():
+    """Return the live `crdb-cluster` StatefulSet's pod selector string (§3.1).
+
+    Falls back to the canonical app.kubernetes.io/name=cockroachdb label when the
+    StatefulSet can't be read, so the oracle still works against an inherited
+    agent-built cluster (whose labels the deploy oracle now mandates).
+    """
+    sts = run(["kubectl", "-n", "cockroachdb", "get", "statefulset",
+               "crdb-cluster", "-o", "json"])
+    if sts.returncode == 0:
+        try:
+            match = (json.loads(sts.stdout).get("spec", {})
+                     .get("selector", {}).get("matchLabels")) or {}
+        except json.JSONDecodeError:
+            match = {}
+        if match:
+            return ",".join(f"{k}={v}" for k, v in match.items())
+    return "app.kubernetes.io/name=cockroachdb"
 
 
 _CONN_FLAG = None
@@ -168,7 +189,7 @@ def main():
         "get",
         "pods",
         "-l",
-        "app.kubernetes.io/name=cockroachdb",
+        crdb_pod_selector(),
         "-o",
         "jsonpath={.items[*].spec.containers[0].image}",
     ]

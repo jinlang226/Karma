@@ -46,6 +46,26 @@ def parse_targets(payload):
     return data.get("activeTargets", [])
 
 
+def _crdb_pod_selector():
+    """Return the live `crdb-cluster` StatefulSet's pod selector string (§3.1).
+
+    Falls back to the canonical app.kubernetes.io/name=cockroachdb label when the
+    StatefulSet can't be read, so the oracle still works against an inherited
+    agent-built cluster (whose labels the deploy oracle now mandates).
+    """
+    sts = run(["kubectl", "-n", "cockroachdb", "get", "statefulset",
+               "crdb-cluster", "-o", "json"])
+    if sts.returncode == 0:
+        try:
+            match = (json.loads(sts.stdout).get("spec", {})
+                     .get("selector", {}).get("matchLabels")) or {}
+        except json.JSONDecodeError:
+            match = {}
+        if match:
+            return ",".join(f"{k}={v}" for k, v in match.items())
+    return "app.kubernetes.io/name=cockroachdb"
+
+
 def load_pod_ips():
     cmd = [
         "kubectl",
@@ -54,7 +74,7 @@ def load_pod_ips():
         "get",
         "pods",
         "-l",
-        "app.kubernetes.io/name=cockroachdb",
+        _crdb_pod_selector(),
         "-o",
         "json",
     ]
@@ -70,6 +90,19 @@ def load_pod_ips():
         ip = item.get("status", {}).get("podIP")
         if ip:
             ips.append(ip)
+    # Last resort: select by the StatefulSet's stable pod-name prefix.
+    if not ips:
+        res = run(["kubectl", "-n", "cockroachdb", "get", "pods", "-o", "json"])
+        if res.returncode == 0:
+            try:
+                items = json.loads(res.stdout).get("items", [])
+            except json.JSONDecodeError:
+                items = []
+            for item in items:
+                name = item.get("metadata", {}).get("name", "")
+                ip = item.get("status", {}).get("podIP")
+                if name.startswith("crdb-cluster-") and ip:
+                    ips.append(ip)
     return ips, ""
 
 
