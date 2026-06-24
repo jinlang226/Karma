@@ -124,6 +124,11 @@ def _is_transient_apply_error(text: str) -> bool:
         or "object is being deleted" in t
         or "no matching resources found" in t
         or "being terminated" in t
+        # mongosh / DB clients exec'd right after pod-Ready can hit the server
+        # before it accepts TCP: mongosh emits ECONNREFUSED (not kubectl's
+        # "connection refused") and topology-monitor errors during election.
+        or "econnrefused" in t
+        or "server selection" in t
     )
 
 
