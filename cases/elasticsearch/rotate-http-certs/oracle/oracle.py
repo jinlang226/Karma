@@ -82,6 +82,62 @@ def openssl_fingerprint(path, errors, label):
     return line.split("=", 1)[1].strip()
 
 
+def _split_pem_certs(text):
+    """Split a PEM blob into its individual certificate blocks.
+
+    A ca.crt may legitimately be a trust BUNDLE (old-CA + new-CA) for a zero-gap
+    rollover, so we must inspect every entry, not just the leading one.
+    """
+    certs = []
+    cur = []
+    capture = False
+    for line in (text or "").splitlines():
+        if "BEGIN CERTIFICATE" in line:
+            capture = True
+            cur = [line]
+        elif "END CERTIFICATE" in line:
+            cur.append(line)
+            certs.append("\n".join(cur) + "\n")
+            capture = False
+            cur = []
+        elif capture:
+            cur.append(line)
+    return certs
+
+
+def openssl_fingerprints_all(path, errors, label):
+    """Fingerprint EVERY certificate in a PEM file (O-multi).
+
+    ``openssl x509`` reads only the FIRST cert in a bundle, so a single call
+    silently grades the wrong element. Split the PEM and fingerprint each block,
+    returning the set of fingerprints found. Returns None only on a hard read
+    failure; an empty set means no parseable certs.
+    """
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            blob = f.read()
+    except OSError as exc:
+        errors.append(f"Failed to read {label} PEM: {exc}")
+        return None
+    blocks = _split_pem_certs(blob)
+    if not blocks:
+        errors.append(f"No certificates found in {label} PEM")
+        return set()
+    fps = set()
+    with tempfile.TemporaryDirectory() as td:
+        for idx, block in enumerate(blocks):
+            one = f"{td}/cert-{idx}.crt"
+            with open(one, "w", encoding="utf-8") as f:
+                f.write(block)
+            result = run(["openssl", "x509", "-noout", "-fingerprint", "-sha256", "-in", one])
+            if result.returncode != 0:
+                continue
+            line = result.stdout.strip()
+            if "=" in line:
+                fps.add(line.split("=", 1)[1].strip())
+    return fps
+
+
 def openssl_not_after(path, errors):
     result = run(["openssl", "x509", "-noout", "-enddate", "-in", path])
     if result.returncode != 0:
@@ -239,17 +295,34 @@ def main():
         if new_ca is None or new_leaf is None:
             errors.append("Missing TLS data from es-http-tls secret")
         else:
-            new_ca_fp = openssl_fingerprint(ca_path, errors, "new CA")
+            # O-multi: the served ca.crt may be a trust BUNDLE (old-CA + new-CA)
+            # for a zero-gap rollover. Inspect EVERY cert in it, not just the
+            # leading one (which openssl x509 would read in isolation and could be
+            # the OLD CA -> a false "CA fingerprint did not change"). Assert a NEW
+            # CA is PRESENT among the entries (some fingerprint that is not the old
+            # CA's), rather than requiring the single/first cert to differ.
+            served_ca_fps = openssl_fingerprints_all(ca_path, errors, "served CA")
+            served_ca_fps = served_ca_fps or set()
+            new_ca_candidates = served_ca_fps - ({old_ca_fp} if old_ca_fp else set())
+            # The new CA fingerprint = a served CA fp that is not the old one. Used
+            # below only as a truthy "a new CA is present" gate; chain validation
+            # via openssl verify -CAfile (bundle-aware) is the real proof.
+            new_ca_fp = next(iter(new_ca_candidates), None)
+            if served_ca_fps and old_ca_fp and not new_ca_candidates:
+                errors.append("CA fingerprint did not change (no new CA present in served ca.crt bundle)")
+
             new_leaf_fp = openssl_fingerprint(leaf_path, errors, "new leaf")
-            if new_ca_fp and old_ca_fp and new_ca_fp == old_ca_fp:
-                errors.append("CA fingerprint did not change")
             if new_leaf_fp and old_leaf_fp and new_leaf_fp == old_leaf_fp:
                 errors.append("Leaf fingerprint did not change")
 
+            # O-multi: the client trust ConfigMap is also legitimately a BUNDLE
+            # (old + new CA). Assert the new CA is PRESENT among its certs, not
+            # that its single/first cert equals the new CA.
             if new_ca_fp and client_ca_pem:
-                client_fp = openssl_fingerprint(client_ca_path, errors, "client CA")
-                if client_fp and client_fp != new_ca_fp:
-                    errors.append("Client CA does not match new CA")
+                client_fps = openssl_fingerprints_all(client_ca_path, errors, "client CA")
+                client_fps = client_fps or set()
+                if client_fps and new_ca_fp not in client_fps:
+                    errors.append("Client CA bundle does not contain the new CA")
 
             not_after = openssl_not_after(leaf_path, errors)
             if not_after:

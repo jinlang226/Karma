@@ -105,9 +105,15 @@ preconditionUnits:
     # (es_env_ready scales to 1), where a single curl --max-time 5 hits the
     # post-scale re-stabilization dip (exit 28). Re-evaluate for ~90s and pass on
     # the first clean read; a genuinely unset setting never reads false.
+    # P14: the inner loop must finish within this unit's timeout_sec, else the
+    # harness kills it mid-loop and re-runs the whole verify, multiplying into the
+    # 600s precondition cap (the agent never launches). The old `seq 1 30` x two
+    # `--max-time 5` curls + `sleep 3` (worst case ~240s) blew a 120s budget. Bound
+    # the loop to 7 iterations (each <=~13s -> <~95s worst case) and raise
+    # timeout_sec to 150 so the loop window is strictly below the unit budget.
     verify:
-      - command: "/bin/sh -c 'for i in $(seq 1 30); do pw=$(kubectl -n elasticsearch get secret elastic-password -o jsonpath=\"{.data.password}\" 2>/dev/null | base64 -d 2>/dev/null); A=\"\"; [ -n \"$pw\" ] && A=\"-u elastic:$pw\"; S=https; kubectl -n elasticsearch exec {{params.curl_pod_name}} -- curl -sk $A --max-time 5 \"https://{{params.http_service_name}}.elasticsearch.svc:9200/\" >/dev/null 2>&1 || S=http; kubectl -n elasticsearch exec {{params.curl_pod_name}} -- curl -sk $A --max-time 5 \"$S://{{params.http_service_name}}.elasticsearch.svc:9200/_cluster/settings\" 2>/dev/null | grep -q \"\\\"auto_shrink_voting_configuration\\\":\\\"false\\\"\" && exit 0; sleep 3; done; exit 1'"
-        timeout_sec: 120
+      - command: "/bin/sh -c 'for i in $(seq 1 7); do pw=$(kubectl -n elasticsearch get secret elastic-password -o jsonpath=\"{.data.password}\" 2>/dev/null | base64 -d 2>/dev/null); A=\"\"; [ -n \"$pw\" ] && A=\"-u elastic:$pw\"; S=https; kubectl -n elasticsearch exec {{params.curl_pod_name}} -- curl -sk $A --max-time 5 \"https://{{params.http_service_name}}.elasticsearch.svc:9200/\" >/dev/null 2>&1 || S=http; kubectl -n elasticsearch exec {{params.curl_pod_name}} -- curl -sk $A --max-time 5 \"$S://{{params.http_service_name}}.elasticsearch.svc:9200/_cluster/settings\" 2>/dev/null | grep -q \"\\\"auto_shrink_voting_configuration\\\":\\\"false\\\"\" && exit 0; sleep 3; done; exit 1'"
+        timeout_sec: 150
 
 oracle:
   verify:

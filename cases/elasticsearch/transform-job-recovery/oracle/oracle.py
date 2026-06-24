@@ -194,13 +194,16 @@ def main():
     # runs (seconds to a sync interval later), and a curl can flake during that
     # window. A single immediate snapshot catches the not-yet-advanced state and
     # falsely reports "Checkpoint did not advance" / "no documents". So verify the
-    # STABLE converged state: re-evaluate for up to ~120s and pass on the first
-    # clean snapshot. The checkpoint_before baseline is read ONCE up front so the
-    # advance check stays strict across retries.
+    # STABLE converged state: re-evaluate and pass on the first clean snapshot.
+    # The checkpoint_before baseline is read ONCE up front so the advance check
+    # stays strict across retries.
+    # O-deadline: keep the internal deadline strictly below the oracle timeout_sec
+    # (120s in test.yaml) so the harness does not kill the loop before it prints a
+    # verdict; 90s leaves headroom for the final evaluate() + output.
     import time
     config_errors = []
     checkpoint_before = get_checkpoint_before(config_errors)
-    deadline = time.monotonic() + 120
+    deadline = time.monotonic() + 90
     live_errors = evaluate(checkpoint_before)
     while live_errors and time.monotonic() < deadline:
         time.sleep(8)
