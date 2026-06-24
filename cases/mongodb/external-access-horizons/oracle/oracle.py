@@ -236,6 +236,51 @@ def check_services():
     return fail("External access horizons service check failed:", errors)
 
 
+def _stage_client_tls_flags():
+    """TLS flags for the external connectivity check from the mongo-client pod.
+
+    The mongo-client fixture pod is a bare image with NO cert mounts. When a
+    prior stage (tls-setup/certificate-rotation) leaves the cluster in mutual
+    requireTLS, a certless plain connection is dropped by the server even with
+    --tlsAllowInvalidCertificates (§2.4). The members DO hold the CA + a client
+    keypair the server accepts; copy those out of a member pod and into the
+    mongo-client pod, then return flags pointing at the staged paths so the
+    oracle presents a valid client identity. Standalone (no TLS) the member has
+    no CA mount -> returns [] -> identical plain behaviour.
+    """
+    member = f"{CLUSTER_PREFIX}-0"
+    member_flags = _mongo_tls_flags(member)
+    if not member_flags:
+        return []  # cluster is plain; nothing to stage
+    # Pull the CA path and (optional) client cert path the member uses.
+    ca_src = None
+    cert_src = None
+    for i, tok in enumerate(member_flags):
+        if tok == "--tlsCAFile":
+            ca_src = member_flags[i + 1]
+        elif tok == "--tlsCertificateKeyFile":
+            cert_src = member_flags[i + 1]
+    staged = ["--tls", "--tlsAllowInvalidHostnames", "--tlsAllowInvalidCertificates"]
+
+    def _copy(src, dest):
+        # Stream the file out of the member and into the client pod (no kubectl cp
+        # dependency on tar). Returns True on success.
+        cat = run(["kubectl", "-n", NAMESPACE, "exec", member, "--", "/bin/sh", "-c", "cat " + src])
+        if cat.returncode != 0 or not cat.stdout:
+            return False
+        proc = subprocess.run(
+            ["kubectl", "-n", NAMESPACE, "exec", "-i", CLIENT_POD_NAME, "--", "/bin/sh", "-c", "cat > " + dest],
+            input=cat.stdout, text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+        )
+        return proc.returncode == 0
+
+    if ca_src and _copy(ca_src, "/tmp/oracle-ca.crt"):
+        staged += ["--tlsCAFile", "/tmp/oracle-ca.crt"]
+    if cert_src and _copy(cert_src, "/tmp/oracle-client.pem"):
+        staged += ["--tlsCertificateKeyFile", "/tmp/oracle-client.pem"]
+    return staged
+
+
 def check_connectivity():
     errors = []
     hosts = ",".join(
@@ -253,7 +298,7 @@ def check_connectivity():
             "--",
             "mongosh",
             "--quiet",
-            *_mongo_tls_flags(CLIENT_POD_NAME),
+            *_stage_client_tls_flags(),
             uri,
             "--eval",
             "JSON.stringify(db.hello())",
