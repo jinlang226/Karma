@@ -88,12 +88,18 @@ def main():
         return 1
 
     api_200 = api_codes.count("200")
-    api_429 = api_codes.count("429")
-    api_other = [code for code in api_codes if code not in ("200", "429")]
+    # ingress-nginx returns 503 (not always 429) when a request is dropped by the
+    # rate limiter, depending on controller version/config (§2.6). Count BOTH as a
+    # rate-limited response so a correct limit that surfaces as 503 still passes;
+    # the /health-stays-200 + /api-still-serves-some-200 checks keep the limit
+    # scoped to /api.
+    api_limited = api_codes.count("429") + api_codes.count("503")
+    api_other = [code for code in api_codes if code not in ("200", "429", "503")]
 
-    if api_429 < MIN_429:
+    if api_limited < MIN_429:
         print(
-            f"/api returned too few 429 responses ({api_429}/{REQUEST_COUNT}): {api_codes}",
+            f"/api returned too few rate-limited (429/503) responses "
+            f"({api_limited}/{REQUEST_COUNT}): {api_codes}",
             file=sys.stderr,
         )
         return 1
