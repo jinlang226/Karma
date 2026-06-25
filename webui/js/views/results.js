@@ -186,7 +186,11 @@
     KARMA.clearHistory();
     KARMA.currentLocation = () => KARMA.activate("results");
     setFolderCrumb();
-    root.appendChild(el("h2", {}, "Results"));
+    // Title bar with a live "N running" badge at the top-left: a global tally of
+    // every run currently executing (status "running"), across all folders. The
+    // span is refreshed in place by updateRunningTotal() on each runs fetch.
+    root.appendChild(el("h2", { class: "results-title" }, "Results",
+      el("span", { id: "running-total", class: "running-total" })));
     root.appendChild(el("p", { class: "field-help" },
       "Every run, live and historical. Click a run for its config, per-stage " +
       "status and failure logs, and to judge it."));
@@ -245,6 +249,22 @@
       wrap.appendChild(el("span", { class: "badge " + st.cls, title: st.text }, `${st.text} ${counts[id]}`));
     });
     return wrap;
+  }
+
+  // Refresh the top-left "N running" badge from allRuns. A run counts as running
+  // while it is NOT in a terminal status (the same active set that drives the 3s
+  // auto-refresh) — so "Running", "Setting up" and just-started runs all count.
+  // Always shown (including "0 running") so the homepage states the live total.
+  function updateRunningTotal() {
+    const node = document.getElementById("running-total");
+    if (!node) return;
+    const n = allRuns.filter((r) => !isTerminal(r.status)).length;
+    clear(node);
+    const st = KARMA.labels.status("running");
+    node.appendChild(el("span", {
+      class: "badge " + st.cls,
+      title: n + " run" + (n === 1 ? "" : "s") + " currently running",
+    }, `${n} running`));
   }
 
   // Set the top-left breadcrumb for the current runsFolder: "Results / <folder…>"
@@ -371,6 +391,7 @@
       if (!kb) return -1;
       return kb < ka ? -1 : 1;
     });
+    updateRunningTotal();
     // Re-render rows in place if the table already exists (auto-refresh), so the
     // search box keeps focus; otherwise build the panel + search + table.
     let body = document.getElementById("runs-body");
