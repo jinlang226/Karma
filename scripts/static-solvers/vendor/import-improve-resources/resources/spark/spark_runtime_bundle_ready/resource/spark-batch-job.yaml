@@ -1,0 +1,61 @@
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: __JOB_NAME__
+  namespace: __NAMESPACE__
+spec:
+  backoffLimit: 0
+  template:
+    metadata:
+      labels:
+        app: __JOB_NAME__
+    spec:
+      serviceAccountName: __SERVICE_ACCOUNT__
+      restartPolicy: Never
+      containers:
+      - name: spark-runtime-batch
+        image: __SPARK_IMAGE__
+        env:
+        - name: SPARK_EXECUTOR_MEMORY
+          valueFrom:
+            configMapKeyRef:
+              name: __CONFIGMAP_NAME__
+              key: spark.executor.memory
+        - name: SPARK_DRIVER_MEMORY
+          valueFrom:
+            configMapKeyRef:
+              name: __CONFIGMAP_NAME__
+              key: spark.driver.memory
+        - name: API_KEY
+          valueFrom:
+            secretKeyRef:
+              name: __SECRET_NAME__
+              key: api-key
+        command:
+        - /bin/bash
+        - -c
+        - |
+          set -e
+          echo "executor.memory=${SPARK_EXECUTOR_MEMORY}"
+          echo "driver.memory=${SPARK_DRIVER_MEMORY}"
+          test -n "${API_KEY}"
+          export SPARK_LOCAL_IP=$(hostname -i)
+          output=$(
+            /opt/spark/bin/spark-submit \
+              --master local[1] \
+              --conf spark.executor.memory="${SPARK_EXECUTOR_MEMORY}" \
+              --driver-memory "${SPARK_DRIVER_MEMORY}" \
+              --class org.apache.spark.examples.SparkPi \
+              /opt/spark/examples/jars/spark-examples_2.12-3.5.3.jar \
+              500 2>&1
+          )
+          echo "${output}"
+          echo "${output}" | grep -q 'Pi is roughly'
+          echo "spark_runtime_bundle_verified"
+        resources:
+          requests:
+            cpu: 200m
+            memory: 512Mi
+          limits:
+            cpu: 500m
+            memory: 1Gi

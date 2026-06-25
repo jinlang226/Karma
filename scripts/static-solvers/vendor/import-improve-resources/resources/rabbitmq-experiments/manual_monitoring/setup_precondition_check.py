@@ -1,0 +1,148 @@
+#!/usr/bin/env python3
+import argparse
+import os
+import json
+import sys
+from pathlib import Path
+
+COMMON = Path(__file__).resolve().parents[1] / "common"
+sys.path.insert(0, str(COMMON))
+
+from setup_check_utils import expect_pod_ready, expect_pods_ready, run  # noqa: E402
+
+
+def main():
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--namespace", default=os.environ.get("BENCH_NAMESPACE", "rabbitmq"))
+    parser.add_argument("--min-ready", type=int, default=1)
+    parser.add_argument("--targets-unsynced-only", action="store_true")
+    parser.add_argument("--rabbitmq-metrics-ready-only", action="store_true")
+    parser.add_argument("--targets-ready-only", action="store_true")
+    args = parser.parse_args()
+    ns = args.namespace
+    cluster_prefix = os.environ.get("BENCH_PARAM_CLUSTER_PREFIX", "rabbitmq")
+    errors = []
+
+    selected_modes = sum(
+        1 for enabled in (args.targets_unsynced_only, args.rabbitmq_metrics_ready_only, args.targets_ready_only) if enabled
+    )
+    if selected_modes > 1:
+        print("setup-precondition-check: failed")
+        print(
+            " - choose only one mode: --targets-unsynced-only, "
+            "--rabbitmq-metrics-ready-only, or --targets-ready-only"
+        )
+        return 1
+
+    if args.targets_unsynced_only:
+        expect_pods_ready(ns, "app=prometheus", 1, errors, "prometheus")
+        expect_pods_ready(ns, "app=curl-test", 1, errors, "curl-test")
+    elif args.rabbitmq_metrics_ready_only:
+        expect_pods_ready(ns, f"app={cluster_prefix}", 3, errors, cluster_prefix)
+
+        for ordinal in range(3):
+            pod_name = f"{cluster_prefix}-{ordinal}"
+            try:
+                listeners = run(
+                    [
+                        "kubectl",
+                        "-n",
+                        ns,
+                        "exec",
+                        pod_name,
+                        "--",
+                        "rabbitmq-diagnostics",
+                        "listeners",
+                    ]
+                )
+                if "15692" not in listeners:
+                    errors.append(f"{pod_name}: missing prometheus listener on port 15692")
+            except Exception as exc:
+                errors.append(f"{pod_name}: failed to inspect listeners: {exc}")
+
+            try:
+                enabled_plugins = run(
+                    [
+                        "kubectl",
+                        "-n",
+                        ns,
+                        "exec",
+                        pod_name,
+                        "--",
+                        "rabbitmq-plugins",
+                        "list",
+                        "-m",
+                        "-e",
+                    ]
+                )
+                if "rabbitmq_prometheus" not in enabled_plugins.split():
+                    errors.append(f"{pod_name}: rabbitmq_prometheus plugin not enabled")
+            except Exception as exc:
+                errors.append(f"{pod_name}: failed to inspect enabled plugins: {exc}")
+    elif args.targets_ready_only:
+        expect_pods_ready(ns, "app=prometheus", 1, errors, "prometheus")
+        expect_pods_ready(ns, "app=curl-test", 1, errors, "curl-test")
+    else:
+        expect_pods_ready(ns, f"app={cluster_prefix}", 3, errors, cluster_prefix)
+        expect_pods_ready(ns, "app=prometheus", 1, errors, "prometheus")
+        expect_pods_ready(ns, "app=curl-test", 1, errors, "curl-test")
+
+    if args.targets_unsynced_only or args.targets_ready_only or not args.rabbitmq_metrics_ready_only:
+        try:
+            curl_pod = run(
+                [
+                    "kubectl",
+                    "-n",
+                    ns,
+                    "get",
+                    "pods",
+                    "-l",
+                    "app=curl-test",
+                    "-o",
+                    "jsonpath={.items[0].metadata.name}",
+                ]
+            ).strip()
+            targets_raw = run(
+                [
+                    "kubectl",
+                    "-n",
+                    ns,
+                    "exec",
+                    curl_pod,
+                    "--",
+                    "curl",
+                    "-s",
+                    "--max-time",
+                    "5",
+                    f"http://prometheus.{ns}.svc.cluster.local:8000/api/v1/targets",
+                ]
+            )
+            targets = json.loads(targets_raw)
+            rabbit = [
+                t
+                for t in ((targets.get("data") or {}).get("activeTargets") or [])
+                if ((t.get("labels") or {}).get("job") == "rabbitmq")
+            ]
+            if args.targets_unsynced_only and len(rabbit) >= 3:
+                errors.append("monitoring precondition missing: rabbitmq targets already >= 3")
+            if args.targets_ready_only:
+                if len(rabbit) < 3:
+                    errors.append(f"monitoring solved state missing: rabbitmq targets={len(rabbit)}")
+                else:
+                    down = [t for t in rabbit if t.get("health") != "up"]
+                    if down:
+                        errors.append(f"monitoring solved state missing: {len(down)} rabbitmq targets not UP")
+        except Exception as exc:
+            errors.append(f"failed to query Prometheus targets: {exc}")
+
+    if errors:
+        print("setup-precondition-check: failed")
+        for err in errors:
+            print(f" - {err}")
+        return 1
+    print("setup-precondition-check: ok")
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

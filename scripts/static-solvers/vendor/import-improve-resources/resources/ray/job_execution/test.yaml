@@ -1,0 +1,396 @@
+type: ray-job-execution
+targetApp: Ray
+numAppInstance: 1
+maxAttempts: 1
+namespace_contract:
+  required_roles:
+  - default
+
+params:
+  definitions:
+    cluster_prefix:
+      type: string
+      default: ray
+    ray_image:
+      type: string
+      default: rayproject/ray:2.9.0
+    worker_replicas:
+      type: int
+      default: 2
+      min: 1
+      max: 10
+    expected_output:
+      type: string
+      default: pong
+
+preconditionUnits:
+  - id: ray_head_service_ready
+    probe:
+      commands:
+        - command:
+            [
+              "/bin/sh",
+              "-c",
+              "set -e; ports=$(kubectl -n ${BENCH_NAMESPACE} get service {{params.cluster_prefix}}-head -o jsonpath='{range .spec.ports[*]}{.port}{\"\\n\"}{end}'); printf '%s\n' \"$ports\" | grep -qx '6379'",
+            ]
+          timeout_sec: 10
+    apply:
+      commands:
+        - command:
+            [
+              "/bin/sh",
+              "-c",
+              "sed -e 's/__CLUSTER_PREFIX__/{{params.cluster_prefix}}/g' resources/ray/job_execution/resource/ray-head-service.yaml | kubectl -n ${BENCH_NAMESPACE} apply -f -",
+            ]
+          timeout_sec: 20
+    verify:
+      commands:
+        - command:
+            [
+              "/bin/sh",
+              "-c",
+              "set -e; ports=$(kubectl -n ${BENCH_NAMESPACE} get service {{params.cluster_prefix}}-head -o jsonpath='{range .spec.ports[*]}{.port}{\"\\n\"}{end}'); printf '%s\n' \"$ports\" | grep -qx '6379'",
+            ]
+          timeout_sec: 10
+
+  - id: ray_job_script_ready
+    probe:
+      commands:
+        - command:
+            - /bin/sh
+            - -c
+            - >
+              set -e;
+              kubectl -n ${BENCH_NAMESPACE} get configmap {{params.cluster_prefix}}-job-script >/dev/null;
+              python3 resources/ray/job_execution/oracle/oracle.py
+              --check script
+              --expected-workers {{params.worker_replicas}}
+              --expected-output {{params.expected_output}} >/dev/null
+          timeout_sec: 10
+    apply:
+      commands:
+        - command:
+            - /bin/sh
+            - -c
+            - |
+              set -e
+              sed -e 's/__CLUSTER_PREFIX__/{{params.cluster_prefix}}/g' \
+                -e 's/__EXPECTED_WORKERS__/{{params.worker_replicas}}/g' \
+                -e 's/__EXPECTED_OUTPUT__/{{params.expected_output}}/g' \
+                resources/ray/job_execution/resource/ray-job-script.yaml | \
+                kubectl -n ${BENCH_NAMESPACE} apply -f -
+              if kubectl -n ${BENCH_NAMESPACE} get deployment {{params.cluster_prefix}}-head >/dev/null 2>&1; then
+                kubectl -n ${BENCH_NAMESPACE} rollout restart deployment/{{params.cluster_prefix}}-head
+              fi
+          timeout_sec: 20
+    verify:
+      commands:
+        - command:
+            - /bin/sh
+            - -c
+            - >
+              set -e;
+              kubectl -n ${BENCH_NAMESPACE} get configmap {{params.cluster_prefix}}-job-script >/dev/null;
+              python3 resources/ray/job_execution/oracle/oracle.py
+              --check script
+              --expected-workers {{params.worker_replicas}}
+              --expected-output {{params.expected_output}} >/dev/null
+          timeout_sec: 10
+
+  - id: ray_job_runner_state_ready
+    probe:
+      commands:
+        - command:
+            - /bin/sh
+            - -c
+            - >
+              set -e;
+              ! kubectl -n ${BENCH_NAMESPACE} get job {{params.cluster_prefix}}-job-runner >/dev/null 2>&1
+          timeout_sec: 10
+    apply:
+      commands:
+        - command:
+            [
+              "kubectl",
+              "-n",
+              "${BENCH_NAMESPACE}",
+              "delete",
+              "job",
+              "{{params.cluster_prefix}}-job-runner",
+              "--ignore-not-found=true",
+              "--wait=true",
+            ]
+          timeout_sec: 30
+    verify:
+      commands:
+        - command:
+            - /bin/sh
+            - -c
+            - >
+              set -e;
+              ! kubectl -n ${BENCH_NAMESPACE} get job {{params.cluster_prefix}}-job-runner >/dev/null 2>&1
+          timeout_sec: 10
+
+  - id: ray_job_result_state_ready
+    probe:
+      commands:
+        - command:
+            - /bin/sh
+            - -c
+            - >
+              set -e;
+              ! kubectl -n ${BENCH_NAMESPACE} get configmap {{params.cluster_prefix}}-job-result >/dev/null 2>&1
+          timeout_sec: 10
+    apply:
+      commands:
+        - command:
+            [
+              "kubectl",
+              "-n",
+              "${BENCH_NAMESPACE}",
+              "delete",
+              "configmap",
+              "{{params.cluster_prefix}}-job-result",
+              "--ignore-not-found=true",
+            ]
+          timeout_sec: 20
+    verify:
+      commands:
+        - command:
+            - /bin/sh
+            - -c
+            - >
+              set -e;
+              ! kubectl -n ${BENCH_NAMESPACE} get configmap {{params.cluster_prefix}}-job-result >/dev/null 2>&1
+          timeout_sec: 10
+
+  - id: ray_head_ready
+    probe:
+      commands:
+        - command:
+            [
+              "/bin/sh",
+              "-c",
+              "set -e; kubectl -n ${BENCH_NAMESPACE} rollout status deployment/{{params.cluster_prefix}}-head --timeout=5s >/dev/null; ready=$(kubectl -n ${BENCH_NAMESPACE} get deployment {{params.cluster_prefix}}-head -o jsonpath='{.status.readyReplicas}'); image=$(kubectl -n ${BENCH_NAMESPACE} get deployment {{params.cluster_prefix}}-head -o jsonpath='{.spec.template.spec.containers[0].image}'); test ${ready:-0} -ge 1; test \"${image}\" = \"{{params.ray_image}}\"",
+            ]
+          timeout_sec: 10
+    apply:
+      commands:
+        - command:
+            [
+              "/bin/sh",
+              "-c",
+              "sed -e 's/__CLUSTER_PREFIX__/{{params.cluster_prefix}}/g' -e 's#__RAY_IMAGE__#{{params.ray_image}}#g' resources/ray/job_execution/resource/ray-head.yaml | kubectl -n ${BENCH_NAMESPACE} apply -f -",
+            ]
+          timeout_sec: 20
+    verify:
+      commands:
+        - command:
+            [
+              "/bin/sh",
+              "-c",
+              "set -e; kubectl -n ${BENCH_NAMESPACE} rollout status deployment/{{params.cluster_prefix}}-head --timeout=60s >/dev/null; ready=$(kubectl -n ${BENCH_NAMESPACE} get deployment {{params.cluster_prefix}}-head -o jsonpath='{.status.readyReplicas}'); image=$(kubectl -n ${BENCH_NAMESPACE} get deployment {{params.cluster_prefix}}-head -o jsonpath='{.spec.template.spec.containers[0].image}'); test ${ready:-0} -ge 1; test \"${image}\" = \"{{params.ray_image}}\"",
+            ]
+          timeout_sec: 70
+      retries: 3
+      interval_sec: 2
+
+  - id: ray_worker_ready
+    probe:
+      commands:
+        - command:
+            [
+              "/bin/sh",
+              "-c",
+              "set -e; kubectl -n ${BENCH_NAMESPACE} rollout status deployment/{{params.cluster_prefix}}-worker --timeout=5s >/dev/null; ready=$(kubectl -n ${BENCH_NAMESPACE} get deployment {{params.cluster_prefix}}-worker -o jsonpath='{.status.readyReplicas}'); image=$(kubectl -n ${BENCH_NAMESPACE} get deployment {{params.cluster_prefix}}-worker -o jsonpath='{.spec.template.spec.containers[0].image}'); test ${ready:-0} -ge {{params.worker_replicas}}; test \"${image}\" = \"{{params.ray_image}}\"",
+            ]
+          timeout_sec: 10
+    apply:
+      commands:
+        - command:
+            [
+              "/bin/sh",
+              "-c",
+              "sed -e 's/__CLUSTER_PREFIX__/{{params.cluster_prefix}}/g' -e 's#__RAY_IMAGE__#{{params.ray_image}}#g' -e 's/__WORKER_REPLICAS__/{{params.worker_replicas}}/g' resources/ray/job_execution/resource/ray-worker.yaml | kubectl -n ${BENCH_NAMESPACE} apply -f -",
+            ]
+          timeout_sec: 20
+    verify:
+      commands:
+        - command:
+            [
+              "/bin/sh",
+              "-c",
+              "set -e; kubectl -n ${BENCH_NAMESPACE} rollout status deployment/{{params.cluster_prefix}}-worker --timeout=60s >/dev/null; ready=$(kubectl -n ${BENCH_NAMESPACE} get deployment {{params.cluster_prefix}}-worker -o jsonpath='{.status.readyReplicas}'); image=$(kubectl -n ${BENCH_NAMESPACE} get deployment {{params.cluster_prefix}}-worker -o jsonpath='{.spec.template.spec.containers[0].image}'); test ${ready:-0} -ge {{params.worker_replicas}}; test \"${image}\" = \"{{params.ray_image}}\"",
+            ]
+          timeout_sec: 70
+      retries: 3
+      interval_sec: 2
+
+  - id: ray_connectivity_ready
+    probe:
+      commands:
+        - command:
+            [
+              "python3",
+              "resources/ray/job_execution/oracle/oracle.py",
+              "--check",
+              "connectivity",
+              "--expected-workers",
+              "{{params.worker_replicas}}",
+              "--expected-output",
+              "{{params.expected_output}}",
+            ]
+          timeout_sec: 90
+    apply:
+      commands:
+        - command:
+            [
+              "kubectl",
+              "-n",
+              "${BENCH_NAMESPACE}",
+              "delete",
+              "deployment",
+              "{{params.cluster_prefix}}-head",
+              "{{params.cluster_prefix}}-worker",
+              "--ignore-not-found=true",
+              "--wait=true",
+            ]
+          timeout_sec: 60
+        - command:
+            [
+              "/bin/sh",
+              "-c",
+              "sed -e 's/__CLUSTER_PREFIX__/{{params.cluster_prefix}}/g' -e 's#__RAY_IMAGE__#{{params.ray_image}}#g' resources/ray/job_execution/resource/ray-head.yaml | kubectl -n ${BENCH_NAMESPACE} apply -f -",
+            ]
+          timeout_sec: 20
+        - command:
+            [
+              "/bin/sh",
+              "-c",
+              "sed -e 's/__CLUSTER_PREFIX__/{{params.cluster_prefix}}/g' -e 's#__RAY_IMAGE__#{{params.ray_image}}#g' -e 's/__WORKER_REPLICAS__/{{params.worker_replicas}}/g' resources/ray/job_execution/resource/ray-worker.yaml | kubectl -n ${BENCH_NAMESPACE} apply -f -",
+            ]
+          timeout_sec: 20
+        - command:
+            [
+              "/bin/sh",
+              "-c",
+              "set -e; kubectl -n ${BENCH_NAMESPACE} rollout status deployment/{{params.cluster_prefix}}-head --timeout=60s >/dev/null; kubectl -n ${BENCH_NAMESPACE} rollout status deployment/{{params.cluster_prefix}}-worker --timeout=60s >/dev/null",
+            ]
+          timeout_sec: 70
+    verify:
+      commands:
+        - command:
+            [
+              "python3",
+              "resources/ray/job_execution/oracle/oracle.py",
+              "--check",
+              "connectivity",
+              "--expected-workers",
+              "{{params.worker_replicas}}",
+              "--expected-output",
+              "{{params.expected_output}}",
+            ]
+          timeout_sec: 90
+      retries: 3
+      interval_sec: 2
+
+detailedInstructions: |
+  Execute the sample Ray job in `${BENCH_NAMESPACE}` and make sure it produces
+  `{{params.expected_output}}` while proving the Ray cluster still sees all
+  worker pods.
+
+  Requirements:
+  - Create Job `{{params.cluster_prefix}}-job-runner` and make sure it completes successfully.
+  - Reuse the existing script from ConfigMap `{{params.cluster_prefix}}-job-script`.
+  - The script itself must use `ray.init(address="auto")`.
+  - The job runner must execute `python /opt/job.py` from inside the Ray head pod.
+  - The workload must prove all `{{params.worker_replicas}}` worker pods are alive in Ray membership before it returns.
+  - Persist the final output line into ConfigMap `{{params.cluster_prefix}}-job-result`
+    under key `result`.
+  - Keep the Ray head Service and deployments healthy.
+
+  A good solve flow is:
+  ```bash
+  sed -e 's/__CLUSTER_PREFIX__/{{params.cluster_prefix}}/g' \
+      resources/ray/job_execution/resource/ray-job-runner.yaml | kubectl -n ${BENCH_NAMESPACE} apply -f -
+  kubectl -n ${BENCH_NAMESPACE} wait --for=condition=complete job/{{params.cluster_prefix}}-job-runner --timeout=120s
+  output=$(kubectl -n ${BENCH_NAMESPACE} logs job/{{params.cluster_prefix}}-job-runner | tail -n1)
+  result=$(printf '%s\n' "$output" | python3 -c 'import json,sys; print(json.loads(sys.stdin.read())["message"])')
+  kubectl -n ${BENCH_NAMESPACE} create configmap {{params.cluster_prefix}}-job-result \
+    --from-literal=result="$result" --dry-run=client -o yaml | kubectl apply -f -
+  ```
+
+operatorContext: |
+  Helpful commands:
+  ```bash
+  kubectl -n ${BENCH_NAMESPACE} get deploy,pod,job,configmap,svc
+  kubectl -n ${BENCH_NAMESPACE} logs job/{{params.cluster_prefix}}-job-runner
+  kubectl -n ${BENCH_NAMESPACE} exec deployment/{{params.cluster_prefix}}-head -- python /opt/job.py
+  python3 resources/ray/job_execution/oracle/oracle.py --check connectivity --expected-workers {{params.worker_replicas}} --expected-output {{params.expected_output}}
+  kubectl -n ${BENCH_NAMESPACE} get configmap {{params.cluster_prefix}}-job-script -o yaml
+  kubectl -n ${BENCH_NAMESPACE} get configmap {{params.cluster_prefix}}-job-result -o yaml
+  ```
+
+oracle:
+  verify:
+    commands:
+      - command:
+          [
+            "python3",
+            "resources/ray/job_execution/oracle/oracle.py",
+            "--check",
+            "cluster",
+            "--expected-workers",
+            "{{params.worker_replicas}}",
+            "--expected-output",
+            "{{params.expected_output}}",
+          ]
+        timeout_sec: 90
+      - command:
+          [
+            "python3",
+            "resources/ray/job_execution/oracle/oracle.py",
+            "--check",
+            "connectivity",
+            "--expected-workers",
+            "{{params.worker_replicas}}",
+            "--expected-output",
+            "{{params.expected_output}}",
+          ]
+        timeout_sec: 30
+      - command:
+          [
+            "python3",
+            "resources/ray/job_execution/oracle/oracle.py",
+            "--check",
+            "script",
+            "--expected-workers",
+            "{{params.worker_replicas}}",
+            "--expected-output",
+            "{{params.expected_output}}",
+          ]
+        timeout_sec: 30
+      - command:
+          [
+            "python3",
+            "resources/ray/job_execution/oracle/oracle.py",
+            "--check",
+            "job-runner",
+            "--expected-workers",
+            "{{params.worker_replicas}}",
+            "--expected-output",
+            "{{params.expected_output}}",
+          ]
+        timeout_sec: 30
+      - command:
+          [
+            "python3",
+            "resources/ray/job_execution/oracle/oracle.py",
+            "--check",
+            "result",
+            "--expected-workers",
+            "{{params.worker_replicas}}",
+            "--expected-output",
+            "{{params.expected_output}}",
+          ]
+        timeout_sec: 30

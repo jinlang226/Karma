@@ -75,7 +75,7 @@ class ProxyHandle:
                 with urllib.request.urlopen(url, timeout=1) as resp:
                     return resp.status == 200
             except Exception:
-                return False
+                pass
         # Fall back to checking if the proxy port is open
         try:
             with socket.create_connection(("127.0.0.1", self._port), timeout=1):
@@ -143,28 +143,15 @@ def launch_proxy(
     # (stages/<id>/stages/<id>/...) and silently empties evidence + metrics.
     log_path = run_dir / "kubectl_log.jsonl"
 
-    proxy_port = find_free_port()
-    control_port = find_free_port()
-
     # Derive the upstream URL from KUBECONFIG or default.
     upstream_url = _get_upstream_url(env)
-
     merged_env = {**os.environ, **(env or {})}
-    cmd = [
-        sys.executable, "-m", "karma.transport.k8s.proxy",
-        "--upstream-url", upstream_url,
-        "--log-path", str(log_path),
-        "--port", str(proxy_port),
-        "--control-port", str(control_port),
-        "--bind-host", bind_host,
-    ]
-    # The agent talks to the proxy over plain HTTP without credentials, so the
-    # proxy must authenticate to the real API server on the agent's behalf.
-    # Extract the caller's auth from KUBECONFIG and hand it to the proxy.
     auth = _get_upstream_auth(env)
+
+    cert_args: list[str] = []
     if auth.get("client_cert_file") and auth.get("client_key_file"):
-        cmd += ["--client-cert", auth["client_cert_file"],
-                "--client-key", auth["client_key_file"]]
+        cert_args += ["--client-cert", auth["client_cert_file"],
+                      "--client-key", auth["client_key_file"]]
     elif auth.get("client_cert_data") and auth.get("client_key_data"):
         cert_path = run_dir / "proxy-client.crt"
         key_path = run_dir / "proxy-client.key"
@@ -174,21 +161,78 @@ def launch_proxy(
             os.chmod(key_path, 0o600)
         except Exception:
             pass
-        cmd += ["--client-cert", str(cert_path), "--client-key", str(key_path)]
+        cert_args += ["--client-cert", str(cert_path), "--client-key", str(key_path)]
     if auth.get("token"):
-        cmd += ["--token", auth["token"]]
-    proc = subprocess.Popen(
-        cmd, env=merged_env, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True
-    )
+        cert_args += ["--token", auth["token"]]
 
+    last_error: RuntimeError | None = None
+    for attempt in range(4):
+        proxy_port = find_free_port()
+        control_port = find_free_port()
+        cmd = [
+            sys.executable, "-m", "karma.transport.k8s.proxy",
+            "--upstream-url", upstream_url,
+            "--log-path", str(log_path),
+            "--port", str(proxy_port),
+            "--control-port", str(control_port),
+            "--bind-host", bind_host,
+            *cert_args,
+        ]
+        proc = subprocess.Popen(
+            cmd,
+            env=merged_env,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+        )
+
+        try:
+            (run_dir / "proxy.pid").write_text(str(proc.pid))
+        except Exception:
+            pass
+
+        handle = ProxyHandle(proc, proxy_port, run_dir=run_dir, control_port=control_port)
+        try:
+            wait_for_readiness(handle, timeout_sec=readiness_timeout_sec)
+            return handle
+        except RuntimeError as exc:
+            last_error = exc
+            detail = str(exc)
+            try:
+                handle.teardown()
+            except Exception:
+                pass
+            retryable = "Address already in use" in detail
+            if not retryable or attempt == 3:
+                raise
+            time.sleep(0.1 * (attempt + 1))
+
+    assert last_error is not None
+    raise last_error
+
+
+def _startup_failure_detail(proc: subprocess.Popen[str]) -> str:
+    """Return a concise startup-failure detail string for a dead proxy process."""
+    stdout_text = ""
+    stderr_text = ""
     try:
-        (run_dir / "proxy.pid").write_text(str(proc.pid))
+        stdout_text, stderr_text = proc.communicate(timeout=0.1)
     except Exception:
-        pass
-
-    handle = ProxyHandle(proc, proxy_port, run_dir=run_dir, control_port=control_port)
-    wait_for_readiness(handle, timeout_sec=readiness_timeout_sec)
-    return handle
+        try:
+            if proc.stdout is not None:
+                stdout_text = proc.stdout.read() or ""
+        except Exception:
+            pass
+        try:
+            if proc.stderr is not None:
+                stderr_text = proc.stderr.read() or ""
+        except Exception:
+            pass
+    detail = (stderr_text or stdout_text or "").strip()
+    if not detail:
+        code = proc.returncode if proc.returncode is not None else "unknown"
+        detail = f"exit={code}"
+    return detail
 
 
 def _get_upstream_auth(env: dict[str, str] | None) -> dict[str, str]:
@@ -314,6 +358,9 @@ def wait_for_readiness(
     while time.monotonic() < deadline:
         if proxy_handle.is_ready():
             return
+        if proxy_handle._proc.poll() is not None:
+            detail = _startup_failure_detail(proxy_handle._proc)
+            raise RuntimeError(f"kubectl proxy exited before readiness: {detail}")
         time.sleep(interval)
         interval = min(interval * 1.5, 1.0)
     raise RuntimeError(

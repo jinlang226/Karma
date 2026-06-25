@@ -1,0 +1,75 @@
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: ${BENCH_PARAM_BLUE_CLUSTER_PREFIX}-setup
+spec:
+  backoffLimit: 2
+  template:
+    spec:
+      restartPolicy: OnFailure
+      containers:
+        - name: setup
+          image: curlimages/curl:8.6.0
+          env:
+            - name: RABBITMQ_ADMIN_USER
+              valueFrom:
+                secretKeyRef:
+                  name: ${BENCH_PARAM_BLUE_CLUSTER_PREFIX}-admin
+                  key: username
+            - name: RABBITMQ_ADMIN_PASS
+              valueFrom:
+                secretKeyRef:
+                  name: ${BENCH_PARAM_BLUE_CLUSTER_PREFIX}-admin
+                  key: password
+            - name: RABBITMQ_APP_USER
+              valueFrom:
+                secretKeyRef:
+                  name: ${BENCH_PARAM_BLUE_CLUSTER_PREFIX}-app
+                  key: username
+            - name: RABBITMQ_APP_PASS
+              valueFrom:
+                secretKeyRef:
+                  name: ${BENCH_PARAM_BLUE_CLUSTER_PREFIX}-app
+                  key: password
+          command:
+            - /bin/sh
+            - -c
+            - |
+              set -e
+              base="http://${BENCH_PARAM_BLUE_CLUSTER_PREFIX}.${BENCH_NS_SOURCE}.svc.cluster.local:15672/api"
+              auth="${RABBITMQ_ADMIN_USER}:${RABBITMQ_ADMIN_PASS}"
+              for i in $(seq 1 60); do
+                if curl -fsS -u "$auth" "$base/overview" >/dev/null; then
+                  break
+                fi
+                sleep 2
+              done
+              if ! curl -fsS -u "$auth" "$base/overview" >/dev/null; then
+                echo "${BENCH_PARAM_BLUE_CLUSTER_PREFIX}-setup: management API not ready"
+                exit 1
+              fi
+              for i in $(seq 1 60); do
+                nodes=$(curl -fsS -u "$auth" "$base/nodes" | tr -d '[:space:]' | grep -o '"name":"rabbit@[^"]*"' | sort -u | wc -l | tr -d ' ')
+                if [ "${nodes:-0}" -eq 3 ]; then
+                  break
+                fi
+                sleep 2
+              done
+              if [ "${nodes:-0}" -ne 3 ]; then
+                echo "${BENCH_PARAM_BLUE_CLUSTER_PREFIX}-setup: cluster nodes not stable"
+                exit 1
+              fi
+              curl -fsS -u "$auth" -XPUT "$base/vhosts/%2Fapp" >/dev/null
+              curl -fsS -u "$auth" -H "content-type: application/json" \
+                -XPUT "$base/users/${RABBITMQ_APP_USER}" \
+                -d '{"password":"'"${RABBITMQ_APP_PASS}"'","tags":""}' >/dev/null
+              curl -fsS -u "$auth" -H "content-type: application/json" \
+                -XPUT "$base/permissions/%2Fapp/${RABBITMQ_APP_USER}" \
+                -d '{"configure":".*","write":".*","read":".*"}' >/dev/null
+              curl -fsS -u "$auth" -H "content-type: application/json" \
+                -XPUT "$base/permissions/%2Fapp/${RABBITMQ_ADMIN_USER}" \
+                -d '{"configure":".*","write":".*","read":".*"}' >/dev/null
+              curl -fsS -u "$auth" -H "content-type: application/json" \
+                -XPUT "$base/queues/%2Fapp/app-queue" \
+                -d '{"durable":true,"auto_delete":false,"arguments":{}}' >/dev/null
+              exit 0

@@ -1,0 +1,107 @@
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: ${BENCH_PARAM_CLUSTER_PREFIX}
+spec:
+  serviceName: ${BENCH_PARAM_CLUSTER_PREFIX}-headless
+  replicas: 3
+  selector:
+    matchLabels:
+      app: ${BENCH_PARAM_CLUSTER_PREFIX}
+  template:
+    metadata:
+      labels:
+        app: ${BENCH_PARAM_CLUSTER_PREFIX}
+    spec:
+      serviceAccountName: ${BENCH_PARAM_CLUSTER_PREFIX}
+      containers:
+        - name: rabbitmq
+          image: rabbitmq:3.12-management
+          ports:
+            - containerPort: 5672
+              name: amqp
+            - containerPort: 5671
+              name: amqps
+            - containerPort: 15672
+              name: management
+          env:
+            - name: POD_NAME
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.name
+            - name: POD_NAMESPACE
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.namespace
+            - name: RABBITMQ_USE_LONGNAME
+              value: "true"
+            - name: RABBITMQ_NODENAME
+              value: "rabbit@$(POD_NAME).${BENCH_PARAM_CLUSTER_PREFIX}-headless.$(POD_NAMESPACE).svc.cluster.local"
+            - name: RABBITMQ_ERLANG_COOKIE
+              valueFrom:
+                secretKeyRef:
+                  name: ${BENCH_PARAM_CLUSTER_PREFIX}-erlang-cookie
+                  key: cookie
+            - name: RABBITMQ_DEFAULT_USER
+              valueFrom:
+                secretKeyRef:
+                  name: ${BENCH_PARAM_CLUSTER_PREFIX}-admin
+                  key: username
+            - name: RABBITMQ_DEFAULT_PASS
+              valueFrom:
+                secretKeyRef:
+                  name: ${BENCH_PARAM_CLUSTER_PREFIX}-admin
+                  key: password
+          volumeMounts:
+            - name: config
+              mountPath: /etc/rabbitmq/rabbitmq.conf
+              subPath: rabbitmq.conf
+            - name: config
+              mountPath: /etc/rabbitmq/enabled_plugins
+              subPath: enabled_plugins
+            - name: tls-secret
+              mountPath: /etc/rabbitmq/tls
+              readOnly: true
+            - name: data
+              mountPath: /var/lib/rabbitmq
+          startupProbe:
+            exec:
+              command: ["rabbitmq-diagnostics", "-q", "check_running"]
+            initialDelaySeconds: 10
+            periodSeconds: 10
+            timeoutSeconds: 10
+            failureThreshold: 120
+          readinessProbe:
+            exec:
+              command: ["rabbitmq-diagnostics", "-q", "check_running"]
+            initialDelaySeconds: 10
+            periodSeconds: 5
+            timeoutSeconds: 10
+            failureThreshold: 12
+          livenessProbe:
+            exec:
+              command: ["rabbitmq-diagnostics", "-q", "ping"]
+            initialDelaySeconds: 180
+            periodSeconds: 30
+            timeoutSeconds: 20
+            failureThreshold: 10
+      volumes:
+        - name: config
+          configMap:
+            name: ${BENCH_PARAM_CLUSTER_PREFIX}-config
+            items:
+              - key: rabbitmq.conf
+                path: rabbitmq.conf
+              - key: enabled_plugins
+                path: enabled_plugins
+        - name: tls-secret
+          secret:
+            secretName: ${BENCH_PARAM_CLUSTER_PREFIX}-tls
+  volumeClaimTemplates:
+    - metadata:
+        name: data
+      spec:
+        accessModes: ["ReadWriteOnce"]
+        resources:
+          requests:
+            storage: 1Gi

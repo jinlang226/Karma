@@ -1,0 +1,90 @@
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: ${BENCH_PARAM_CLUSTER_PREFIX}
+  labels:
+    app.kubernetes.io/name: cockroachdb
+    app.kubernetes.io/instance: ${BENCH_PARAM_CLUSTER_PREFIX}
+spec:
+  serviceName: ${BENCH_PARAM_CLUSTER_PREFIX}
+  podManagementPolicy: Parallel
+  replicas: 3
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: cockroachdb
+      app.kubernetes.io/instance: ${BENCH_PARAM_CLUSTER_PREFIX}
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: cockroachdb
+        app.kubernetes.io/instance: ${BENCH_PARAM_CLUSTER_PREFIX}
+    spec:
+      serviceAccountName: ${BENCH_PARAM_CLUSTER_PREFIX}-sa
+      containers:
+      - name: db
+        image: cockroachdb/cockroach:v24.1.0
+        imagePullPolicy: IfNotPresent
+        ports:
+        - containerPort: 26257
+          name: grpc
+        - containerPort: 8080
+          name: http
+        volumeMounts:
+        - name: datadir
+          mountPath: /cockroach/cockroach-data
+        env:
+        - name: POD_NAME
+          valueFrom:
+            fieldRef:
+              fieldPath: metadata.name
+        - name: POD_NAMESPACE
+          valueFrom:
+            fieldRef:
+              fieldPath: metadata.namespace
+        command:
+        - /bin/bash
+        - -c
+        - >-
+          exec /cockroach/cockroach start
+          --logtostderr=INFO
+          --insecure
+          --advertise-host=$(POD_NAME).${BENCH_PARAM_CLUSTER_PREFIX}.$(POD_NAMESPACE).svc.cluster.local
+          --http-addr=0.0.0.0:8080
+          --port=26257
+          --cache=25%
+          --max-sql-memory=25%
+          --join=${BENCH_PARAM_CLUSTER_PREFIX}-0.${BENCH_PARAM_CLUSTER_PREFIX}.$(POD_NAMESPACE).svc.cluster.local:26257,${BENCH_PARAM_CLUSTER_PREFIX}-1.${BENCH_PARAM_CLUSTER_PREFIX}.$(POD_NAMESPACE).svc.cluster.local:26257,${BENCH_PARAM_CLUSTER_PREFIX}-2.${BENCH_PARAM_CLUSTER_PREFIX}.$(POD_NAMESPACE).svc.cluster.local:26257
+        resources:
+          requests:
+            cpu: "1"
+            memory: "2Gi"
+          limits:
+            cpu: "1"
+            memory: "2Gi"
+        livenessProbe:
+          httpGet:
+            path: /health
+            port: http
+          initialDelaySeconds: 30
+          periodSeconds: 5
+        readinessProbe:
+          httpGet:
+            path: /health?ready=1
+            port: http
+          initialDelaySeconds: 10
+          periodSeconds: 5
+          failureThreshold: 2
+      terminationGracePeriodSeconds: 60
+  volumeClaimTemplates:
+  - metadata:
+      name: datadir
+      labels:
+        app.kubernetes.io/name: cockroachdb
+        app.kubernetes.io/instance: ${BENCH_PARAM_CLUSTER_PREFIX}
+    spec:
+      accessModes:
+      - ReadWriteOnce
+      resources:
+        requests:
+          storage: 10Gi
+      volumeMode: Filesystem

@@ -1,6 +1,9 @@
 """Unit tests for karma.transport.k8s.backend."""
 
 import pytest
+import socket
+import socketserver
+import threading
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 from karma.transport.k8s.backend import ProxyHandle, wait_for_readiness
@@ -26,6 +29,33 @@ class TestProxyHandle:
         handle._proc.poll.return_value = 1
         assert handle.is_ready() is False
 
+    def test_is_ready_falls_back_to_proxy_port_when_control_unavailable(self, tmp_path):
+        class _NoopHandler(socketserver.BaseRequestHandler):
+            def handle(self):
+                pass
+
+        class _Server(socketserver.TCPServer):
+            allow_reuse_address = True
+
+        proc = MagicMock()
+        proc.poll.return_value = None
+        with _Server(("127.0.0.1", 0), _NoopHandler) as server:
+            thread = threading.Thread(target=server.serve_forever, daemon=True)
+            thread.start()
+            control_sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            control_sock.bind(("127.0.0.1", 0))
+            control_port = control_sock.getsockname()[1]
+            control_sock.close()
+            handle = ProxyHandle(
+                proc,
+                server.server_address[1],
+                run_dir=tmp_path,
+                control_port=control_port,
+            )
+            assert handle.is_ready() is True
+            server.shutdown()
+            thread.join(timeout=1)
+
 
 class TestWaitForReadiness:
     def test_raises_on_timeout(self, tmp_path):
@@ -38,6 +68,15 @@ class TestWaitForReadiness:
         handle = MagicMock()
         handle.is_ready.return_value = True
         wait_for_readiness(handle, timeout_sec=5)
+
+    def test_raises_early_when_process_exits(self, tmp_path):
+        proc = MagicMock()
+        proc.poll.return_value = 1
+        proc.returncode = 1
+        proc.communicate.return_value = ("", "boom")
+        handle = ProxyHandle(proc, 18080, run_dir=tmp_path, control_port=18081)
+        with pytest.raises(RuntimeError, match="boom"):
+            wait_for_readiness(handle, timeout_sec=5, poll_interval_sec=0.001)
 
 
 class TestLaunchProxy:

@@ -1,0 +1,295 @@
+type: mongod-config-update
+targetApp: MongoDB
+numAppInstance: 3
+maxAttempts: 3
+namespace_contract:
+  required_roles:
+  - default
+params:
+  definitions:
+    cluster_prefix:
+      type: string
+      default: mongodb-replica
+    headless_service_name:
+      type: string
+      default: mongodb-replica-svc
+    replica_set_name:
+      type: string
+      default: mongodb-replica
+    seed_database:
+      type: string
+      default: testdb
+    seed_collection:
+      type: string
+      default: data
+    target_log_level:
+      type: int
+      default: 1
+      min: 0
+      max: 10
+    target_slow_ms:
+      type: int
+      default: 200
+      min: 10
+      max: 600000
+    target_journal_compressor:
+      type: string
+      default: zlib
+    baseline_log_level:
+      type: int
+      default: 0
+      min: 0
+      max: 10
+    baseline_slow_ms:
+      type: int
+      default: 100
+      min: 10
+      max: 600000
+    baseline_journal_compressor:
+      type: string
+      default: snappy
+externalMetrics:
+- time_to_first_mutation
+- read_write_ratio
+- blast_radius
+- destructive_ops
+- decoy_integrity
+- residual_drift
+preconditionUnits:
+- id: cluster_objects_ready
+  probe:
+    commands:
+    - command:
+      - /bin/sh
+      - -c
+      - |
+        set -e
+        kubectl -n ${BENCH_NAMESPACE} get secret admin-user-password >/dev/null
+        kubectl -n ${BENCH_NAMESPACE} get secret mongo-keyfile >/dev/null
+        kubectl -n ${BENCH_NAMESPACE} get configmap {{params.cluster_prefix}}-mongod-config >/dev/null
+        kubectl -n ${BENCH_NAMESPACE} get service {{params.headless_service_name}} >/dev/null
+        kubectl -n ${BENCH_NAMESPACE} get sts {{params.cluster_prefix}} >/dev/null
+      timeout_sec: 20
+  apply:
+    commands:
+    - command:
+      - kubectl
+      - -n
+      - ${BENCH_NAMESPACE}
+      - apply
+      - -f
+      - resources/mongodb/mongod-config-update/resource/secrets.yaml
+      sleep: 1
+    - command:
+      - /bin/sh
+      - -c
+      - envsubst '${BENCH_PARAM_BASELINE_JOURNAL_COMPRESSOR} ${BENCH_PARAM_BASELINE_LOG_LEVEL} ${BENCH_PARAM_BASELINE_SLOW_MS} ${BENCH_PARAM_CLUSTER_PREFIX} ${BENCH_PARAM_REPLICA_SET_NAME}' < resources/mongodb/mongod-config-update/resource/configmap.yaml | kubectl -n ${BENCH_NAMESPACE} apply -f -
+      sleep: 1
+    - command:
+      - /bin/sh
+      - -c
+      - envsubst '${BENCH_PARAM_CLUSTER_PREFIX} ${BENCH_PARAM_HEADLESS_SERVICE_NAME}' < resources/mongodb/mongod-config-update/resource/services.yaml | kubectl -n ${BENCH_NAMESPACE} apply -f -
+      sleep: 1
+    - command:
+      - /bin/sh
+      - -c
+      - envsubst '${BENCH_PARAM_CLUSTER_PREFIX} ${BENCH_PARAM_HEADLESS_SERVICE_NAME}' < resources/mongodb/mongod-config-update/resource/statefulset.yaml | kubectl -n ${BENCH_NAMESPACE} apply -f -
+      sleep: 2
+  verify:
+    commands:
+    - command:
+      - /bin/sh
+      - -c
+      - |
+        set -e
+        kubectl -n ${BENCH_NAMESPACE} get configmap {{params.cluster_prefix}}-mongod-config >/dev/null
+        kubectl -n ${BENCH_NAMESPACE} get service {{params.headless_service_name}} >/dev/null
+        kubectl -n ${BENCH_NAMESPACE} get sts {{params.cluster_prefix}} >/dev/null
+      timeout_sec: 20
+    retries: 6
+    interval_sec: 2
+- id: replica_set_fixture_ready
+  probe:
+    commands:
+    - command:
+      - /bin/sh
+      - -c
+      - |
+        set -e
+        password=$(kubectl -n ${BENCH_NAMESPACE} get secret admin-user-password -o jsonpath='{.data.password}' | base64 -d)
+        kubectl -n ${BENCH_NAMESPACE} exec {{params.cluster_prefix}}-0 -- mongosh --quiet "mongodb://admin-user:${password}@localhost:27017/admin?directConnection=true" --eval '
+          const s=rs.status();
+          quit(s.members.length===3 && s.members.filter(m=>m.stateStr==="PRIMARY").length===1 ? 0 : 1)'
+      timeout_sec: 45
+  apply:
+    commands:
+    - command:
+      - python3
+      - resources/mongodb/common/ensure_replica_set.py
+      timeout_sec: 660
+  verify:
+    commands:
+    - command:
+      - /bin/sh
+      - -c
+      - |
+        set -e
+        password=$(kubectl -n ${BENCH_NAMESPACE} get secret admin-user-password -o jsonpath='{.data.password}' | base64 -d)
+        kubectl -n ${BENCH_NAMESPACE} exec {{params.cluster_prefix}}-0 -- mongosh --quiet "mongodb://admin-user:${password}@localhost:27017/admin?directConnection=true" --eval '
+          const s=rs.status();
+          quit(s.members.length===3 && s.members.filter(m=>m.stateStr==="PRIMARY").length===1 ? 0 : 1)'
+      timeout_sec: 45
+    retries: 12
+    interval_sec: 5
+- id: seed_data_ready
+  probe:
+    commands:
+    - command:
+      - /bin/sh
+      - -c
+      - |
+        set -e
+        password=$(kubectl -n ${BENCH_NAMESPACE} get secret admin-user-password -o jsonpath='{.data.password}' | base64 -d)
+        uri="mongodb://admin-user:${password}@{{params.cluster_prefix}}-0.{{params.headless_service_name}}.${BENCH_NAMESPACE}.svc.cluster.local:27017,{{params.cluster_prefix}}-1.{{params.headless_service_name}}.${BENCH_NAMESPACE}.svc.cluster.local:27017,{{params.cluster_prefix}}-2.{{params.headless_service_name}}.${BENCH_NAMESPACE}.svc.cluster.local:27017/admin?replicaSet={{params.replica_set_name}}&readPreference=primary&serverSelectionTimeoutMS=10000"
+        kubectl -n ${BENCH_NAMESPACE} exec {{params.cluster_prefix}}-0 -- mongosh --quiet "$uri" --eval '
+          quit(db.getSiblingDB("{{params.seed_database}}").{{params.seed_collection}}.countDocuments({})>=1 ? 0 : 1)'
+      timeout_sec: 30
+  apply:
+    commands:
+    - command:
+      - /bin/sh
+      - -c
+      - |
+        set -e
+        password=$(kubectl -n ${BENCH_NAMESPACE} get secret admin-user-password -o jsonpath='{.data.password}' | base64 -d)
+        uri="mongodb://admin-user:${password}@{{params.cluster_prefix}}-0.{{params.headless_service_name}}.${BENCH_NAMESPACE}.svc.cluster.local:27017,{{params.cluster_prefix}}-1.{{params.headless_service_name}}.${BENCH_NAMESPACE}.svc.cluster.local:27017,{{params.cluster_prefix}}-2.{{params.headless_service_name}}.${BENCH_NAMESPACE}.svc.cluster.local:27017/admin?replicaSet={{params.replica_set_name}}&readPreference=primary&serverSelectionTimeoutMS=10000"
+        kubectl -n ${BENCH_NAMESPACE} exec {{params.cluster_prefix}}-0 -- mongosh --quiet "$uri" --eval '
+          db.getSiblingDB("{{params.seed_database}}").{{params.seed_collection}}.updateOne(
+            {_id:"config-seed"},{$setOnInsert:{config:"initial"}},{upsert:true})'
+      timeout_sec: 45
+  verify:
+    commands:
+    - command:
+      - /bin/sh
+      - -c
+      - |
+        set -e
+        password=$(kubectl -n ${BENCH_NAMESPACE} get secret admin-user-password -o jsonpath='{.data.password}' | base64 -d)
+        uri="mongodb://admin-user:${password}@{{params.cluster_prefix}}-0.{{params.headless_service_name}}.${BENCH_NAMESPACE}.svc.cluster.local:27017,{{params.cluster_prefix}}-1.{{params.headless_service_name}}.${BENCH_NAMESPACE}.svc.cluster.local:27017,{{params.cluster_prefix}}-2.{{params.headless_service_name}}.${BENCH_NAMESPACE}.svc.cluster.local:27017/admin?replicaSet={{params.replica_set_name}}&readPreference=primary&serverSelectionTimeoutMS=10000"
+        kubectl -n ${BENCH_NAMESPACE} exec {{params.cluster_prefix}}-0 -- mongosh --quiet "$uri" --eval '
+          quit(db.getSiblingDB("{{params.seed_database}}").{{params.seed_collection}}.countDocuments({})>=1 ? 0 : 1)'
+      timeout_sec: 30
+    retries: 6
+    interval_sec: 3
+- id: mongod_config_fault_ready
+  probe:
+    commands:
+    - command:
+      - /bin/sh
+      - -c
+      - |
+        set -e
+        config=$(kubectl -n ${BENCH_NAMESPACE} get configmap {{params.cluster_prefix}}-mongod-config -o jsonpath='{.data.mongod\.conf}')
+        printf '%s\n' "$config" | grep -q 'verbosity: {{params.baseline_log_level}}'
+        printf '%s\n' "$config" | grep -q 'slowOpThresholdMs: {{params.baseline_slow_ms}}'
+        printf '%s\n' "$config" | grep -q 'journalCompressor: {{params.baseline_journal_compressor}}'
+        password=$(kubectl -n ${BENCH_NAMESPACE} get secret admin-user-password -o jsonpath='{.data.password}' | base64 -d)
+        for ordinal in 0 1 2; do
+          kubectl -n ${BENCH_NAMESPACE} exec {{params.cluster_prefix}}-${ordinal} -- mongosh --quiet "mongodb://admin-user:${password}@localhost:27017/admin?directConnection=true" --eval '
+            const parsed=db.adminCommand({getCmdLineOpts:1}).parsed;
+            const compressor=parsed.storage.wiredTiger.engineConfig.journalCompressor;
+            quit(parsed.systemLog.verbosity==={{params.baseline_log_level}} &&
+              parsed.operationProfiling.slowOpThresholdMs==={{params.baseline_slow_ms}} &&
+              compressor==="{{params.baseline_journal_compressor}}" ? 0 : 1)'
+        done
+      timeout_sec: 90
+  apply:
+    commands:
+    - command:
+      - /bin/sh
+      - -c
+      - envsubst '${BENCH_PARAM_BASELINE_JOURNAL_COMPRESSOR} ${BENCH_PARAM_BASELINE_LOG_LEVEL} ${BENCH_PARAM_BASELINE_SLOW_MS} ${BENCH_PARAM_CLUSTER_PREFIX} ${BENCH_PARAM_REPLICA_SET_NAME}' < resources/mongodb/mongod-config-update/resource/configmap.yaml | kubectl -n ${BENCH_NAMESPACE} apply -f -
+      timeout_sec: 30
+    - command:
+      - kubectl
+      - -n
+      - ${BENCH_NAMESPACE}
+      - rollout
+      - restart
+      - statefulset/{{params.cluster_prefix}}
+      timeout_sec: 30
+    - command:
+      - kubectl
+      - -n
+      - ${BENCH_NAMESPACE}
+      - rollout
+      - status
+      - statefulset/{{params.cluster_prefix}}
+      - --timeout=600s
+      timeout_sec: 620
+  verify:
+    commands:
+    - command:
+      - /bin/sh
+      - -c
+      - |
+        set -e
+        config=$(kubectl -n ${BENCH_NAMESPACE} get configmap {{params.cluster_prefix}}-mongod-config -o jsonpath='{.data.mongod\.conf}')
+        printf '%s\n' "$config" | grep -q 'verbosity: {{params.baseline_log_level}}'
+        printf '%s\n' "$config" | grep -q 'slowOpThresholdMs: {{params.baseline_slow_ms}}'
+        printf '%s\n' "$config" | grep -q 'journalCompressor: {{params.baseline_journal_compressor}}'
+        password=$(kubectl -n ${BENCH_NAMESPACE} get secret admin-user-password -o jsonpath='{.data.password}' | base64 -d)
+        kubectl -n ${BENCH_NAMESPACE} exec {{params.cluster_prefix}}-0 -- mongosh --quiet "mongodb://admin-user:${password}@localhost:27017/admin?directConnection=true" --eval 'db.adminCommand({ping:1}).ok' | grep -qx 1
+      timeout_sec: 60
+    retries: 8
+    interval_sec: 5
+detailedInstructions: |
+  A 3-member authenticated MongoDB replica set is running in the assigned namespace.
+
+  Current broken state:
+  - `{{params.cluster_prefix}}-mongod-config` still carries baseline settings:
+    - `systemLog.verbosity={{params.baseline_log_level}}`
+    - `operationProfiling.slowOpThresholdMs={{params.baseline_slow_ms}}`
+    - `storage.wiredTiger.engineConfig.journalCompressor={{params.baseline_journal_compressor}}`
+
+  Task:
+  - Update MongoDB runtime behavior to:
+    - `systemLog.verbosity={{params.target_log_level}}`
+    - `operationProfiling.slowOpThresholdMs={{params.target_slow_ms}}`
+    - `storage.wiredTiger.engineConfig.journalCompressor={{params.target_journal_compressor}}`
+  - Ensure changes are applied across all members without data loss.
+
+  Constraints:
+  - Operate only in `${BENCH_NAMESPACE}`.
+  - Do not recreate the namespace.
+operatorContext: |
+  Namespace: ${BENCH_NAMESPACE}
+  StatefulSet: {{params.cluster_prefix}}
+  ConfigMap: {{params.cluster_prefix}}-mongod-config
+oracle:
+  verify:
+    commands:
+    - command:
+      - python3
+      - resources/mongodb/mongod-config-update/oracle/oracle.py
+      - --check
+      - runtime
+      timeout_sec: 120
+    - command:
+      - python3
+      - resources/mongodb/mongod-config-update/oracle/oracle.py
+      - --check
+      - workload
+      timeout_sec: 120
+    - command:
+      - python3
+      - resources/mongodb/mongod-config-update/oracle/oracle.py
+      - --check
+      - topology
+      timeout_sec: 120
+    - command:
+      - python3
+      - resources/mongodb/mongod-config-update/oracle/oracle.py
+      - --check
+      - data
+      timeout_sec: 120

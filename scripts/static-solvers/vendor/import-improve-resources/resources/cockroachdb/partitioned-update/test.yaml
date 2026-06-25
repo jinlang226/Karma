@@ -1,0 +1,240 @@
+type: operator-partitioned-update
+targetApp: CockroachDB
+numAppInstance: 3
+params:
+  definitions:
+    cluster_prefix:
+      type: string
+      default: crdb-cluster
+    from_version:
+      type: string
+      default: 24.1.0
+    to_version:
+      type: string
+      default: 24.1.1
+maxAttempts: 3
+namespace_contract:
+  required_roles:
+  - default
+externalMetrics:
+- time_to_first_mutation
+- destructive_ops
+preconditionUnits:
+- id: rbac_ready
+  probe:
+    commands:
+    - command:
+      - kubectl
+      - -n
+      - ${BENCH_NAMESPACE}
+      - get
+      - serviceaccount
+      - '{{params.cluster_prefix}}-sa'
+      timeout_sec: 15
+  apply:
+    commands:
+    - command:
+      - /bin/sh
+      - -c
+      - envsubst '${BENCH_PARAM_CLUSTER_PREFIX}' < resources/cockroachdb/partitioned-update/resource/rbac.yaml | kubectl -n ${BENCH_NAMESPACE} apply -f -
+      sleep: 1
+      timeout_sec: 30
+  verify:
+    commands:
+    - command:
+      - kubectl
+      - -n
+      - ${BENCH_NAMESPACE}
+      - get
+      - serviceaccount
+      - '{{params.cluster_prefix}}-sa'
+      timeout_sec: 15
+    retries: 6
+    interval_sec: 2
+- id: services_ready
+  probe:
+    commands:
+    - command:
+      - /bin/sh
+      - -c
+      - 'set -e
+
+        kubectl -n ${BENCH_NAMESPACE} get service {{params.cluster_prefix}} >/dev/null
+
+        kubectl -n ${BENCH_NAMESPACE} get service {{params.cluster_prefix}}-public
+        >/dev/null
+
+        '
+      timeout_sec: 20
+  apply:
+    commands:
+    - command:
+      - /bin/sh
+      - -c
+      - envsubst '${BENCH_PARAM_CLUSTER_PREFIX}' < resources/cockroachdb/partitioned-update/resource/services.yaml | kubectl -n ${BENCH_NAMESPACE} apply -f -
+      sleep: 1
+      timeout_sec: 30
+  verify:
+    commands:
+    - command:
+      - /bin/sh
+      - -c
+      - 'set -e
+
+        kubectl -n ${BENCH_NAMESPACE} get service {{params.cluster_prefix}} >/dev/null
+
+        kubectl -n ${BENCH_NAMESPACE} get service {{params.cluster_prefix}}-public
+        >/dev/null
+
+        '
+      timeout_sec: 20
+    retries: 6
+    interval_sec: 2
+- id: cluster_ready_on_old_minor
+  probe:
+    commands:
+    - command:
+      - /bin/sh
+      - -c
+      - 'set -e
+
+        image=$(kubectl -n ${BENCH_NAMESPACE} get sts {{params.cluster_prefix}} -o
+        jsonpath=''{.spec.template.spec.containers[0].image}'')
+
+        [ "$image" = "cockroachdb/cockroach:v{{params.from_version}}" ]
+
+        [ "$(kubectl -n ${BENCH_NAMESPACE} get sts {{params.cluster_prefix}} -o jsonpath=''{.spec.updateStrategy.rollingUpdate.partition}'')"
+        = "2" ]
+
+        [ "$(kubectl -n ${BENCH_NAMESPACE} get sts {{params.cluster_prefix}} -o jsonpath=''{.status.readyReplicas}'')"
+        = "3" ]
+
+        '
+      timeout_sec: 30
+  apply:
+    commands:
+    - command:
+      - /bin/sh
+      - -c
+      - |
+        set -e
+        desired_image="cockroachdb/cockroach:v{{params.from_version}}"
+        current_image="$(kubectl -n ${BENCH_NAMESPACE} get sts {{params.cluster_prefix}} -o jsonpath='{.spec.template.spec.containers[0].image}' 2>/dev/null || echo missing)"
+        current_partition="$(kubectl -n ${BENCH_NAMESPACE} get sts {{params.cluster_prefix}} -o jsonpath='{.spec.updateStrategy.rollingUpdate.partition}' 2>/dev/null || echo missing)"
+        if [ "$current_image" != "$desired_image" ] || [ "$current_partition" != "2" ]; then
+          kubectl -n ${BENCH_NAMESPACE} delete statefulset {{params.cluster_prefix}} --ignore-not-found=true --wait=true >/dev/null
+          for ordinal in 0 1 2; do
+            kubectl -n ${BENCH_NAMESPACE} delete pvc datadir-{{params.cluster_prefix}}-$ordinal --ignore-not-found=true --wait=true >/dev/null
+          done
+        fi
+      sleep: 2
+      timeout_sec: 420
+    - command:
+      - /bin/sh
+      - -c
+      - envsubst '${BENCH_PARAM_CLUSTER_PREFIX}' < resources/cockroachdb/partitioned-update/resource/statefulset.yaml | kubectl -n ${BENCH_NAMESPACE} apply -f -
+      sleep: 1
+      timeout_sec: 60
+    - command:
+      - kubectl
+      - -n
+      - ${BENCH_NAMESPACE}
+      - wait
+      - --for=jsonpath={.status.phase}=Running
+      - pod
+      - -l
+      - app.kubernetes.io/name=cockroachdb,app.kubernetes.io/instance={{params.cluster_prefix}}
+      - --timeout=300s
+      sleep: 1
+      timeout_sec: 320
+    - command:
+      - /bin/sh
+      - -c
+      - |
+        set -e
+        initialized=false
+        for i in $(seq 1 30); do
+          kubectl -n ${BENCH_NAMESPACE} exec {{params.cluster_prefix}}-0 -- \
+            ./cockroach init --insecure --host={{params.cluster_prefix}}-0.{{params.cluster_prefix}}.${BENCH_NAMESPACE}.svc.cluster.local \
+            && initialized=true && break
+          sleep 3
+        done
+        [ "$initialized" = "true" ]
+      sleep: 1
+      timeout_sec: 120
+    - command:
+      - kubectl
+      - -n
+      - ${BENCH_NAMESPACE}
+      - wait
+      - --for=condition=ready
+      - pod
+      - -l
+      - app.kubernetes.io/name=cockroachdb,app.kubernetes.io/instance={{params.cluster_prefix}}
+      - --timeout=300s
+      sleep: 1
+      timeout_sec: 320
+  verify:
+    commands:
+    - command:
+      - /bin/sh
+      - -c
+      - 'set -e
+
+        image=$(kubectl -n ${BENCH_NAMESPACE} get sts {{params.cluster_prefix}} -o
+        jsonpath=''{.spec.template.spec.containers[0].image}'')
+
+        [ "$image" = "cockroachdb/cockroach:v{{params.from_version}}" ]
+
+        [ "$(kubectl -n ${BENCH_NAMESPACE} get sts {{params.cluster_prefix}} -o jsonpath=''{.spec.updateStrategy.rollingUpdate.partition}'')"
+        = "2" ]
+
+        [ "$(kubectl -n ${BENCH_NAMESPACE} get sts {{params.cluster_prefix}} -o jsonpath=''{.status.readyReplicas}'')"
+        = "3" ]
+
+        '
+      timeout_sec: 30
+    retries: 30
+    interval_sec: 5
+detailedInstructions: 'A 3-node CockroachDB cluster is running an older minor version.
+
+
+  Your task:
+
+  Upgrade the cluster to v{{params.to_version}} with a controlled rolling update.
+
+
+  Requirements:
+
+  - Keep the cluster available during the upgrade.
+
+  - Ensure the rollout fully completes.
+
+  '
+operatorContext: 'Useful commands:
+
+  ```bash
+
+  kubectl -n ${BENCH_NAMESPACE} get pods
+
+  kubectl -n ${BENCH_NAMESPACE} get sts {{params.cluster_prefix}} -o jsonpath=''{.spec.updateStrategy.rollingUpdate.partition}''
+
+  ```
+
+  '
+oracle:
+  verify:
+    commands:
+    - command:
+      - /bin/sh
+      - -c
+      - kubectl -n ${BENCH_NAMESPACE} get statefulset {{params.cluster_prefix}} >/dev/null
+    - command:
+      - /bin/sh
+      - -c
+      - kubectl -n ${BENCH_NAMESPACE} get pods -l app.kubernetes.io/name=cockroachdb,app.kubernetes.io/instance={{params.cluster_prefix}}
+        >/dev/null
+    - command:
+      - python3
+      - resources/cockroachdb/partitioned-update/oracle/oracle.py
+      timeout_sec: 600
