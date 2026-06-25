@@ -312,9 +312,17 @@ def check_cluster(errors):
             errors.append(f"Failed to parse {SERVICE} endpoints JSON")
             ep = None
         if ep is not None:
+            # O-funcready: a Service only lists a pod under subsets.addresses
+            # once it is k8s-Ready; a serving-but-Ready-lagging ES node sits in
+            # notReadyAddresses, so counting only addresses re-imposes the laggy
+            # pod-Ready gate. Count BOTH so the check proves the pod is wired
+            # into the Service (the real config deliverable), not that its
+            # readiness probe has caught up. A node genuinely absent from the
+            # Service is in neither list and still fails the count.
             addr_count = 0
             for subset in ep.get("subsets", []) or []:
                 addr_count += len(subset.get("addresses", []) or [])
+                addr_count += len(subset.get("notReadyAddresses", []) or [])
             if addr_count != expected_nodes:
                 errors.append(f"Expected {expected_nodes} endpoints, got {addr_count}")
 
@@ -376,12 +384,15 @@ def evaluate():
         items = pods.get("items", []) if isinstance(pods, dict) else []
         if len(items) != expected_nodes:
             errors.append(f"Expected {expected_nodes} pods, got {len(items)}")
-        for pod in items:
-            name = pod.get("metadata", {}).get("name", "unknown")
-            conditions = pod.get("status", {}).get("conditions", [])
-            ready = next((c for c in conditions if c.get("type") == "Ready"), {})
-            if ready.get("status") != "True":
-                errors.append(f"Pod {name} is not Ready")
+        # O-funcready: do NOT gate the verdict on the k8s pod-`Ready` bit. An ES
+        # node serves (and joins the cluster as a master/data node) before -- and
+        # can dip back below -- its HTTP readiness probe during GC or shard
+        # recovery, so asserting all N pods carry the Ready condition false-fails
+        # a cluster that already bootstrapped and serves N nodes. The DELIVERABLE
+        # (the cluster bootstrapped and serves N nodes) is graded functionally in
+        # check_cluster: `_cat/nodes` count, `_cluster/health` (yellow/green,
+        # number_of_nodes == N), and cluster_uuid set. Pod existence is still
+        # asserted above; a node that never joins drops the node count and fails.
 
     return errors
 

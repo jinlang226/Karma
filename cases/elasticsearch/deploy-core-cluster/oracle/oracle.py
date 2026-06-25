@@ -228,9 +228,15 @@ def evaluate():
     es_pods = get_es_pods(errors)
     if len(es_pods) != EXPECTED_NODES:
         errors.append(f"Expected {EXPECTED_NODES} Elasticsearch pods, found {len(es_pods)}")
-    ready_count = sum(1 for pod in es_pods if pod_ready(pod))
-    if ready_count != EXPECTED_NODES:
-        errors.append(f"Expected {EXPECTED_NODES} Ready Elasticsearch pods, found {ready_count}")
+    # O-funcready: do NOT gate the verdict on the k8s pod-`Ready` bit. An ES node
+    # serves (a yellow cluster answers writes/reads) before -- and can briefly
+    # dip back below -- its HTTP readiness probe during GC or shard recovery,
+    # even when the cluster is stably serving N nodes. Asserting all N pods carry
+    # the Ready condition false-fails such a serving cluster. The DELIVERABLE is
+    # that the service serves N nodes, which the functional checks below grade
+    # directly: `_cluster/health?wait_for_status=yellow&wait_for_nodes=N` (the
+    # cluster serves with N nodes) plus `_cluster/stats` total node count == N.
+    # A genuinely down node leaves number_of_nodes/stats short and still fails.
 
     health = curl_json(
         f"/_cluster/health?wait_for_status=yellow&wait_for_nodes={EXPECTED_NODES}&timeout=10s",

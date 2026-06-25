@@ -252,8 +252,15 @@ def evaluate():
         if not pod:
             errors.append(f"Missing pod {pod_name}")
             continue
-        if not pod_ready(pod):
-            errors.append(f"Pod {pod_name} is not Ready")
+        # O-funcready: do NOT gate on the k8s pod-`Ready` bit. A surviving ES
+        # node serves (a yellow cluster answers) before -- and can dip back below
+        # -- its HTTP readiness probe during the shard migration this case
+        # triggers, so asserting pod-Ready false-fails a node that is already
+        # serving. The DELIVERABLE (the surviving nodes serve, shards migrated)
+        # is graded functionally below: `_cluster/health` (yellow/green,
+        # number_of_nodes == EXPECTED, 0 unassigned) + shard placement. Pod
+        # existence is still required above; a genuinely down node drops
+        # number_of_nodes and still fails.
 
     if replicas >= 1:
         result = run(
