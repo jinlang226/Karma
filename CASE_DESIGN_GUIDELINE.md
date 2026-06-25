@@ -435,6 +435,19 @@ version mismatch). *(52b63cee, a0b7598)*
   single snapshot. *Evidence: mongo statefulset-customization — required
   `monitoring=enabled` label → rolling restart → oracle read `rs.status()` once with
   pod-0 at age 7s → "expected 2 SECONDARY, got 1" on a stably-healthy set.* [ORACLE]
+- **O-funcready — Grade *functional* readiness (the service serves), not just the
+  k8s pod-`Ready` bit.** "Pod-Ready ≠ ready-to-use" cuts **both** ways: an oracle
+  that asserts `pod.status.conditions[Ready]==True` can *false-fail a healthy*
+  workload whose own readiness probe **lags** functional readiness. CockroachDB's
+  `/health?ready=1` keeps returning not-ready while ranges replicate after a fresh
+  init even though the node already serves SQL; a yellow ES cluster serves; a mongo
+  member answers before it flips Ready. Grade what the deliverable actually *is* —
+  the service **serves** (`SELECT 1` / a successful query / `node status … is_live`)
+  — rather than (or in addition to) the k8s Ready condition, which is a stricter,
+  laggier proxy under load. Not a loosening: a genuinely uninitialized/dead cluster
+  fails `SELECT 1` and has non-live nodes. *Evidence: crdb/initialize — the agent
+  proved `SELECT 1+1=2` + all 3 nodes `is_live=true`, but the oracle's pod-Ready poll
+  failed after 70s under 6-cluster load → "Pod crdb-cluster-N is not Ready".* [ORACLE]
 - **O-maxtime — Client `--max-time` must exceed any server-side `wait_for_*`** it
   triggers (else curl exit 28). Shorten the server health timeout (≤10s), raise
   the client deadline (~20s), let the oracle's own loop wait. *(4fccd53) [ORACLE]*
