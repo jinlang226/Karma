@@ -855,8 +855,15 @@ Also: allocation-attribute oracles must flag a (key,value) on any *new* node no
 - **Adaptive auth (O2/C4)** — accept both `authSource=admin` and `=<appdb>`; the
   "bring-your-own admin user" fixture (C6/C1) for cases composed after a no-auth
   predecessor; ping-gate before `rs.initiate` (P11).
-- **Version-upgrade** FCV downgrade is impossible → curate out of chains past its
-  base (C6).
+- **Version-upgrade(-hard)** needs an *old-version baseline*, which is impossible to
+  establish on an inherited cluster that already holds newer data — a precondition
+  that `set image … mongo:5.0.5` to downgrade the binary leaves mongod unable to
+  start on data written by a newer version, so the pods **crash-loop**, the
+  `readyReplicas` wait times out (~650s), and the next `kubectl exec` fails
+  `container not found ("mongod")`. Same hard constraint for crdb/ES (a binary
+  can't read a newer on-disk format). **Curate these cases OUT of any chain that
+  reaches them past their base version** (C6); test them standalone. *Evidence:
+  mongodb-long-all-cases-marathon stage_16 version-upgrade-hard.*
 
 ### CockroachDB — labels, mode, version (16 cases)
 - **deploy→initialize label seam (C2)** — the dominant fault; mandate canonical
