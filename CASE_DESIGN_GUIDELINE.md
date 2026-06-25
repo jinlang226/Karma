@@ -320,6 +320,21 @@ version mismatch). *(52b63cee, a0b7598)*
   cluster-Ready), not just that the Secret exists. *Evidence: cockroachdb/
   certificate-rotation — inlined node-cert gen lost its SANs → `cockroach init` hit
   "container not found db".* *(9052eb3b) [PRECONDITION]*
+- **P-toolimage — Pin helper/tool images to a fixed tag that ships the binary;
+  never `:latest`.** A helper pod (openssl-toolbox, curl-test, mongo-client) on a
+  `:latest` tag **drifts** — a later image build can move or drop the very binary
+  your precondition execs, so `kubectl exec toolbox -- sh -c 'openssl …'` dies
+  `command not found` (exit 127) the next time the image is pulled. Pin to a
+  specific version known to ship the binary on `PATH`, and prefer a purpose-built
+  image (`alpine/openssl:3.1.4`) over a bare base that `apk add`s at runtime (that
+  races the exec). This is the *helper-pod* counterpart of P18 (parameterize the
+  **workload** image so workflows can override it, but **pin** the **tool** image)
+  and the precondition-side of O-binary (exec a binary only into a pod that ships
+  it). Especially insidious under composition: a get-or-apply toolbox + a skip-gated
+  cert path means the drift only bites when the cert artifact *isn't* inherited and
+  the exec actually runs. *Evidence: cockroachdb/certificate-rotation —
+  openssl-toolbox on `alpine/openssl:latest` → gen-old-certs.sh "openssl: command
+  not found"; 11 cert cases shared the same `:latest` toolbox.* [PRECONDITION]
 
 ---
 
