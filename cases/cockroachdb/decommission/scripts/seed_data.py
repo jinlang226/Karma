@@ -10,13 +10,25 @@ SQL_HOST = "crdb-cluster-0.crdb-cluster.cockroachdb.svc.cluster.local"
 TARGET_PODS = ["crdb-cluster-3", "crdb-cluster-4"]
 
 
-def run(cmd):
-    return subprocess.run(cmd, text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+def run(cmd, timeout=30):
+    # Bound every exec (O-bound): an un-timed `kubectl exec` against an
+    # unresponsive node hangs to the unit timeout and the buffered log is lost on
+    # kill. On timeout return a synthetic failed result so the retry loops continue.
+    try:
+        return subprocess.run(
+            cmd, text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+            timeout=timeout,
+        )
+    except subprocess.TimeoutExpired as exc:
+        return subprocess.CompletedProcess(
+            cmd, 124, exc.stdout or "", (exc.stderr or "") + "\n[exec timed out]"
+        )
 
 
 def log(message):
     timestamp = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
-    print(f"[{timestamp}] {message}")
+    # flush so a script killed at its timeout still leaves its progress log
+    print(f"[{timestamp}] {message}", flush=True)
 
 
 def exec_sql(sql, fmt=None):

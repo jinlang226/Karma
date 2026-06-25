@@ -496,7 +496,11 @@ version mismatch).
   oracle deadline, the uncaught `TimeoutExpired` crashes the *whole* oracle, and
   the false fail cascades to "precondition units failed" on retry. Add `timeout=`,
   `--connect-timeout/--max-time`, `timeout 15 s_client`; catch the exception;
-  retry hang/empty as "not converged". [ORACLE]
+  retry hang/empty as "not converged". The same holds for **precondition/seed
+  scripts**: bound every exec there too, *and* run them unbuffered (`python3 -u` or
+  `flush=True`) so a script killed at its `timeout_sec` leaves its progress log
+  instead of silence — an unbounded `exec` in a buffered seed hangs to the unit
+  cap and you learn nothing from the run. [ORACLE/PRECONDITION]
 - **O-determ — Deterministic ≠ transient.** A check that fails on *every* attempt (and
   on an idle node) has a deterministic root cause — find it from agent ground
   truth; do **not** sweep retries/timeout bumps over it (they were added, were dead
