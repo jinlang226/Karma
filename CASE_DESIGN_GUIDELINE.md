@@ -141,9 +141,9 @@ version mismatch).
   stage may have left present. An additive re-plant fixture especially must gate on
   the thing *it* produces (the baseline ConfigMap / secret / seed it writes), never
   on a sibling resource — else on an inherited cluster the proxy is present, the
-  fixture skips, and the oracle's dependency is never created. *Evidence: es
-  transform-job-recovery — the re-plant fixture skips on "transform `_stats`==200"
-  while its real job is to write the `transform-checkpoint` ConfigMap; composed
+  fixture skips, and the oracle's dependency is never created. *Example: an ES
+  transform-recovery case whose re-plant fixture skips on "transform `_stats`==200"
+  while its real job is to write a `transform-checkpoint` ConfigMap; composed
   after another ES stage the transform is live but the ConfigMap is absent →
   oracle "Unable to read checkpoint_before". Fix: probe `get configmap
   transform-checkpoint`.* [PRECONDITION]
@@ -174,15 +174,15 @@ version mismatch).
   value, a row/doc count) *before* injecting the fault, and **(b)** confirm the
   fault from the **control plane** — `kubectl get sts -o …replicas`, pod count/phase,
   a `kubectl exec` that doesn't need the broken service — or any path the fault
-  leaves intact. *Evidence: es master-downscale-voting-exclusions — sets
-  `auto_shrink_voting_configuration=false` while healthy, scales the masters 3→1
-  (quorum lost → no elected master), then its `voting_drift_ready` verify does
-  `GET /_cluster/settings` which returns `503 master_not_discovered` on a
+  leaves intact. *Example: an ES master-downscale that sets
+  `auto_shrink_voting_configuration=false` while healthy, scales the masters below
+  quorum (no elected master), then a verify that does
+  `GET /_cluster/settings` — which returns `503 master_not_discovered` on a
   master-less cluster → the verify never matches → 600s setup timeout, agent never
   runs. (A shorter loop just fails faster — the check is unsatisfiable, not slow.)
-  Fix: verify the StatefulSet is at 1 replica (control-plane) and trust the
-  pre-scale-down `acknowledged:true`, instead of re-reading cluster settings on the
-  broken cluster.* [PRECONDITION] (the deeper root cause behind some P14 "timeouts").
+  Fix: verify the StatefulSet is at the target replica count (control-plane) and
+  trust the pre-scale-down `acknowledged:true`, instead of re-reading cluster
+  settings on the broken cluster.* [PRECONDITION] (the deeper root cause behind some P14 "timeouts").
 - **P7 — Tolerate (`|| true`) flaky steps the oracle doesn't depend on.** A
   race-prone, non-essential setup step (`ray start` GCS registration) must not
   abort the whole precondition. [PRECONDITION]
@@ -226,7 +226,7 @@ version mismatch).
   harness then **re-runs the whole verify** — so an N-iteration loop that overruns
   multiplies into the precondition cap (`setup timeout: preconditions exceeded
   600s`) and the agent never launches. Size the inner loop strictly below one unit
-  budget. *Evidence: es master-downscale-voting-exclusions — a `seq 1 30`×`sleep 3`
+  budget. *Example: an ES master-downscale whose `seq 1 30`×`sleep 3`
   (~240s) verify in a 120s unit was retried ~13× → blew the 600s cap.* [PRECONDITION]
 - **P14b — To set per-unit `retries`/`interval_sec`, author the structured block
   form** `{commands: […], retries: N, interval_sec: M}` for probe/apply/verify — a
@@ -247,8 +247,8 @@ version mismatch).
   **orphan-delete first** — `kubectl delete sts <x> --cascade=orphan
   --ignore-not-found` (preserves running pods + data PVCs, critical for `emptyDir`
   clusters) — **or patch only the field you need** (`kubectl patch` the readiness
-  probe / image) instead of re-applying the whole manifest. *Evidence: mongo
-  health-check-recovery stage_11 — re-applies the full manifest after stage_10
+  probe / image) instead of re-applying the whole manifest. *Example: a MongoDB
+  case that re-applies the full manifest after an earlier stage
   customized the STS → immutable-field Forbidden.* [COMPOSITION]
 - **P26 — Make shared cluster-scoped applies tolerant; never let them abort a
   precondition.** Cluster-scoped objects (`IngressClass`, `CRD`, `ClusterRole(Binding)`,
@@ -258,8 +258,8 @@ version mismatch).
   spec.controller: field is immutable`) and aborts the whole unit. Wrap such applies
   best-effort (`… || true`) or get-or-skip (`kubectl get ingressclass nginx ||
   apply`); the unit's `verify` (e.g. the controller Deployment is Ready) is the real
-  gate. *Evidence: es secure-http-ingress (stage_03) and crdb expose-ingress
-  (stage_11) both abort on a pre-existing `IngressClass nginx` left by an nginx
+  gate. *Example: an ES secure-ingress case and a CockroachDB expose-ingress case
+  both abort on a pre-existing `IngressClass nginx` left by an nginx
   case.* [PRECONDITION] (cluster-scoped sibling of P15.)
 - **P-decoy — Decoy planting aborts the stage on a missing/ill-scoped manifest;
   treat it like a precondition.** `plant_decoys` *raises* (killing the stage before
@@ -308,8 +308,9 @@ version mismatch).
   downstream `exec` reports a phantom *"container not found"* (the container never
   started), masquerading as a timing bug. Generate certs from a static reviewed
   gen-script (heredoc SAN config) and verify a real handshake (`SELECT 1` /
-  cluster-Ready), not just that the Secret exists. *Evidence: cockroachdb/
-  certificate-rotation — inlined node-cert gen lost its SANs → `cockroach init` hit
+  cluster-Ready), not just that the Secret exists. *Example: a CockroachDB
+  node-cert gen step that drops its SANs → secure inter-node TLS fails → pods
+  NotReady → a downstream `cockroach init` exec reports
   "container not found db".* [PRECONDITION]
 - **P-toolimage — Pin helper/tool images to a fixed tag that ships the binary;
   never `:latest`.** A helper pod (openssl-toolbox, curl-test, mongo-client) on a
@@ -323,9 +324,9 @@ version mismatch).
   and the precondition-side of O-binary (exec a binary only into a pod that ships
   it). Especially insidious under composition: a get-or-apply toolbox + a skip-gated
   cert path means the drift only bites when the cert artifact *isn't* inherited and
-  the exec actually runs. *Evidence: cockroachdb/certificate-rotation —
-  openssl-toolbox on `alpine/openssl:latest` → gen-old-certs.sh "openssl: command
-  not found"; 11 cert cases shared the same `:latest` toolbox.* [PRECONDITION]
+  the exec actually runs. *Example: a CockroachDB cert-rotation case whose
+  openssl-toolbox on `alpine/openssl:latest` → cert-gen script "openssl: command
+  not found"; a whole family of cert cases shared the same `:latest` toolbox.* [PRECONDITION]
 
 ---
 
@@ -358,8 +359,8 @@ version mismatch).
   the head (`openssl x509` on a bundle reads only the leading cert) silently grades
   the wrong element, and the agent's correct answer is often a *bundle/superset*
   (old+new for a zero-gap rollover). Assert "the required value is **present among**
-  the entries," not "the single value equals X." *Evidence: es rotate-http-certs —
-  agent set `ca.crt` to `old-ca + new-ca` (prompt-required trust bundle); oracle
+  the entries," not "the single value equals X." *Example: an ES http-cert rotation
+  where the agent set `ca.crt` to `old-ca + new-ca` (prompt-required trust bundle); the oracle
   fingerprinted only the first cert → false "CA fingerprint did not change".*
   [ORACLE]
 - **O-relative — Validate against an *absolute* target, not an inherited
@@ -417,9 +418,9 @@ version mismatch).
   during which a member/replica/node tally reads short. So a PRIMARY/SECONDARY count,
   a "`N` nodes" check, or a "`N` ready" check that follows a template mutation MUST
   use the O-flap convergence wrapper (or wait on `rollout status` first), not a
-  single snapshot. *Evidence: mongo statefulset-customization — required
-  `monitoring=enabled` label → rolling restart → oracle read `rs.status()` once with
-  pod-0 at age 7s → "expected 2 SECONDARY, got 1" on a stably-healthy set.* [ORACLE]
+  single snapshot. *Example: a MongoDB case whose solution sets a StatefulSet
+  `monitoring=enabled` label → rolling restart → an oracle that reads `rs.status()` once with
+  the last-restarted pod at age 7s → "expected 2 SECONDARY, got 1" on a stably-healthy set.* [ORACLE]
 - **O-funcready — Grade *functional* readiness (the service serves), not just the
   k8s pod-`Ready` bit.** "Pod-Ready ≠ ready-to-use" cuts **both** ways: an oracle
   that asserts `pod.status.conditions[Ready]==True` can *false-fail a healthy*
@@ -430,9 +431,9 @@ version mismatch).
   the service **serves** (`SELECT 1` / a successful query / `node status … is_live`)
   — rather than (or in addition to) the k8s Ready condition, which is a stricter,
   laggier proxy under load. Not a loosening: a genuinely uninitialized/dead cluster
-  fails `SELECT 1` and has non-live nodes. *Evidence: crdb/initialize — the agent
-  proved `SELECT 1+1=2` + all 3 nodes `is_live=true`, but the oracle's pod-Ready poll
-  failed after 70s under 6-cluster load → "Pod crdb-cluster-N is not Ready".* [ORACLE]
+  fails `SELECT 1` and has non-live nodes. *Example: a CockroachDB initialize case where the agent
+  proved `SELECT 1+1=2` + all nodes `is_live=true`, but the oracle's pod-Ready poll
+  failed under heavy multi-cluster load → "Pod crdb-cluster-N is not Ready".* [ORACLE]
 - **O-maxtime — Client `--max-time` must exceed any server-side `wait_for_*`** it
   triggers (else curl exit 28). Shorten the server health timeout (≤10s), raise
   the client deadline (~20s), let the oracle's own loop wait. [ORACLE]
@@ -456,9 +457,9 @@ version mismatch).
   that readiness wait for the *worst* case it will meet — a **secure**, **loaded**,
   already-**repeatedly-bounced** node can take far longer to drain-rejoin-and-Ready
   than a fresh one (and the wait must stay under the oracle `timeout_sec`, see
-  O-deadline). *Evidence: crdb cluster-settings stage_06 — the oracle's own 2nd
+  O-deadline). *Example: a CockroachDB cluster-settings case where the oracle's own 2nd
   pod-delete `wait_pod_ready(150s)` times out on a secure node bounced across
-  stages 04/05/06, failing a correct agent.* [ORACLE]
+  several prior stages, failing a correct agent.* [ORACLE]
 - **O-budget — Size the oracle `timeout_sec` to the number of `kubectl exec`
   round-trips × per-exec latency under load**, with headroom; default the arg to
   `None`, resolve `max(oracle_timeout_sec, Σ per-command + sleeps)`. [ORACLE/FRAMEWORK]
@@ -469,8 +470,8 @@ version mismatch).
   passing run scored as a fail. Set the internal deadline below `timeout_sec` with
   headroom for the final read + output (e.g. loop ≤90s under a 120s budget), or
   raise `timeout_sec` above the loop. This is the flip side of O-flap (the loop is
-  right; its window must fit). *Evidence: es stack-monitoring-sidecars (loop
-  deadline 120s == budget) and crdb cluster-settings — both completed the task,
+  right; its window must fit). *Example: an ES stack-monitoring case (loop
+  deadline 120s == budget) and a CockroachDB cluster-settings case — both completed the task,
   both killed before the verdict.* [ORACLE/FRAMEWORK]
 - **O-equiv — Accept equivalent valid outcomes.** ingress-nginx returns **503**
   (not always 429) on a throttled burst → accept either. To *prove* a rate limit,
@@ -515,8 +516,8 @@ version mismatch).
   never delete a namespace or restart a pod. [COMPOSITION]
 - **C2 — Identity contract across stages.** If stage A lets the **agent build** a
   resource and a later stage must find it, both ends must share the identity. The
-  crdb deploy→initialize seam: `deploy` graded by the STS's *own* selector while
-  `initialize` hardcoded `-l app.kubernetes.io/name=cockroachdb` → "Expected 3,
+  CockroachDB deploy→initialize seam: a `deploy` stage graded by the STS's *own* selector while
+  an `initialize` stage hardcodes `-l app.kubernetes.io/name=cockroachdb` → "Expected 3,
   found 0" against a healthy cluster. Fix both: mandate the canonical labels in the
   creating stage's prompt+oracle, *and* have downstream oracles resolve by the live
   STS selector → canonical label → name prefix. [COMPOSITION]
@@ -587,7 +588,7 @@ version mismatch).
   overwrite clear. Either say so in the prompt or drop the brittle SETUP assertion
   (cf. C10); a real regression should still fail the sweep. [COMPOSITION]
 - **C11 — Probe/verify the namespace the workload actually runs in.** Multi-namespace
-  cases (spark-team-a) must check the core-workload namespace, not the bare
+  cases (e.g. a Spark per-team workload) must check the core-workload namespace, not the bare
   umbrella one. [COMPOSITION]
 - **C12 — Multi-namespace cases bind logical roles per stage via `namespace_binding`.**
   A case declares logical roles (`source`/`target`/`default`); the workflow declares
@@ -820,7 +821,7 @@ Also: allocation-attribute oracles must flag a (key,value) on any *new* node no
 (`transform.node`, `ml.*`); seed `-r viewer` not `read`; quote `&` in health URLs.
 
 ### MongoDB — TLS, primary, and auth (18 cases)
-- **TLS client cert (O-tls)** — the `external-access-horizons` saga: present the
+- **TLS client cert (O-tls)** — ES/Mongo TLS client-cert handling: present the
   client cert the cluster expects, as CLI flags (not URI), cached per pod. Consumer
   oracles relax cert checks (O-consumer); read with no URI/directConnection
   (O-direct).
@@ -829,15 +830,14 @@ Also: allocation-attribute oracles must flag a (key,value) on any *new* node no
 - **Adaptive auth (O2/C4)** — accept both `authSource=admin` and `=<appdb>`; the
   "bring-your-own admin user" fixture (C6/C1) for cases composed after a no-auth
   predecessor; ping-gate before `rs.initiate` (P11).
-- **Version-upgrade(-hard)** needs an *old-version baseline*, which is impossible to
+- **Version-upgrade** cases need an *old-version baseline*, which is impossible to
   establish on an inherited cluster that already holds newer data — a precondition
   that `set image … mongo:5.0.5` to downgrade the binary leaves mongod unable to
   start on data written by a newer version, so the pods **crash-loop**, the
   `readyReplicas` wait times out (~650s), and the next `kubectl exec` fails
   `container not found ("mongod")`. Same hard constraint for crdb/ES (a binary
   can't read a newer on-disk format). **Curate these cases OUT of any chain that
-  reaches them past their base version** (C6); test them standalone. *Evidence:
-  mongodb-long-all-cases-marathon stage_16 version-upgrade-hard.*
+  reaches them past their base version** (C6); test them standalone.
 
 ### CockroachDB — labels, mode, version (16 cases)
 - **deploy→initialize label seam (C2)** — the dominant fault; mandate canonical
@@ -857,8 +857,8 @@ Also: allocation-attribute oracles must flag a (key,value) on any *new* node no
   one drift); orphan-delete inherited StatefulSets (`--cascade=orphan`, P16) since
   `emptyDir` clusters lose users/queues/policies on a real restart.
 - Runtime-enable a baked-in plugin (`rabbitmq_prometheus`, C7); durable CA secret
-  for `manual_tls_rotation` (C6); replant policy/permission drift (C8);
-  multi-hop `skip_upgrade` is order-sensitive → curate out (C6); plain-port-first
+  for a manual TLS-rotation case (C6); replant policy/permission drift (C8);
+  a multi-hop skip-version upgrade is order-sensitive → curate out (C6); plain-port-first
   management API; bound every oracle exec/`s_client` (O-bound).
 
 ### nginx-ingress (10 cases) · Ray · Spark
