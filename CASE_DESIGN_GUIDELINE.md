@@ -408,6 +408,18 @@ version mismatch). *(52b63cee, a0b7598)*
   deadline (~75–150s), passing on the first clean snapshot; keep config/cert/count
   checks single-pass. Not a loosening — a genuinely degraded cluster fails every
   attempt. *(c298ae67, 4fccd53, 7c74c4f2) [ORACLE]*
+- **O-flap-restart — A count/topology tally read *after* a solution that touches the
+  pod template is volatile — flap-retry it.** The "keep count checks single-pass"
+  carve-out in O-flap only holds when nothing restarts the pods. If the agent's task
+  is a label/probe/resource/config edit to a StatefulSet, it forces a **rolling
+  restart**, and the last-restarted member spends seconds in a rejoin window
+  (mongod `STARTUP2`/`RECOVERING`, an ES node re-electing, a crdb node re-Ready)
+  during which a member/replica/node tally reads short. So a PRIMARY/SECONDARY count,
+  a "`N` nodes" check, or a "`N` ready" check that follows a template mutation MUST
+  use the O-flap convergence wrapper (or wait on `rollout status` first), not a
+  single snapshot. *Evidence: mongo statefulset-customization — required
+  `monitoring=enabled` label → rolling restart → oracle read `rs.status()` once with
+  pod-0 at age 7s → "expected 2 SECONDARY, got 1" on a stably-healthy set.* [ORACLE]
 - **O-maxtime — Client `--max-time` must exceed any server-side `wait_for_*`** it
   triggers (else curl exit 28). Shorten the server health timeout (≤10s), raise
   the client deadline (~20s), let the oracle's own loop wait. *(4fccd53) [ORACLE]*
@@ -541,12 +553,17 @@ version mismatch). *(52b63cee, a0b7598)*
   then masquerades as "precondition units failed." Default the suite to
   `retries: 0`; keep retry as a workflow-level `max_attempts` only where setup is
   idempotent. *(9729cd95, abcb902b) [COMPOSITION]*
-- **C10 — Pin a downstream verification stage's target to the effective upstream
-  target.** A `version-check` stage defaulting to `24.1.0` rejects a cluster a
-  prior `partitioned-update` legitimately took to `24.1.1`. Sweep *all* workflows
-  for the param-default mismatch. Drop SETUP assertions an upstream stage can
-  legitimately invalidate; keep only the agent's-task assertions. *(a0b75982,
-  1c229739, 8a1bf243) [COMPOSITION]*
+- **C10 — Pin a downstream verification stage's target to the *last* upstream stage
+  that mutates the checked attribute** — not the first stage to reach the target
+  value. A later same-attribute stage can re-mutate it: a `version-check` pinned to a
+  `partitioned-update`'s `24.1.1` fails when a subsequent `major-upgrade-finalize`
+  (defaulting to `24.1.0`) legitimately sets the version *back down* — the effective
+  end-state is the last mutator's value, not the first's. Pin to the last mutator
+  (declaratively via C10b's `${stages.<id>.params.<n>}` so it can't drift), audit any
+  pin whose justifying comment names multiple upstream stages with conflicting param
+  values, and sweep *all* workflows for the mismatch. Drop SETUP assertions an
+  upstream stage can legitimately invalidate; keep only the agent's-task assertions.
+  *(a0b75982, 1c229739, 8a1bf243) [COMPOSITION]*
 - **C10b — Pin a downstream target *declaratively* with `${stages.<id>.params.<n>}`,
   never a re-typed literal.** A stage's `param_overrides` may reference a prior
   stage's resolved param (`target_version: ${stages.stage_03.params.crdb_version}`);
