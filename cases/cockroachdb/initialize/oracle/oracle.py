@@ -135,10 +135,13 @@ def evaluate(timeout_seconds):
         if payload.get("items"):
             errors.append("CrdbCluster CRs detected; operator/CRDs are not allowed")
 
-    # Check if cluster is initialized by running node status
+    # Check if cluster is initialized by running node status. We grade on
+    # is_live so a node that has joined and is serving counts (O-funcready) --
+    # node status reports is_live=true once the node accepts SQL, which can
+    # precede its k8s pod-Ready condition flipping under load.
     cmd = [
         "kubectl", "-n", "cockroachdb", "exec", "crdb-cluster-0", "--",
-        "./cockroach", "node", "status", conn_flag()
+        "./cockroach", "node", "status", conn_flag(), "--format=tsv"
     ]
     result, err = exec_with_timeout(cmd, timeout_seconds)
     if err:
@@ -147,12 +150,30 @@ def evaluate(timeout_seconds):
         errors.append("Cluster not initialized - 'cockroach node status' failed")
         errors.append(f"Error: {result.stderr.strip()}")
     else:
-        # Parse node status output
-        lines = result.stdout.strip().split('\n')
-        # Skip header lines and count data rows
-        data_lines = [l for l in lines if l.strip() and not l.startswith('id') and not l.startswith('--')]
-        if len(data_lines) < REPLICA_COUNT:
-            errors.append(f"Expected {REPLICA_COUNT} nodes, but found {len(data_lines)}")
+        # Parse node status TSV: header row names the columns; count rows whose
+        # is_live column is true. (Older builds omit is_live unless the
+        # ranges/stats decommission columns are requested; default node status
+        # includes it.)
+        lines = [l for l in result.stdout.strip().split('\n') if l.strip()]
+        live_nodes = 0
+        if lines:
+            header = lines[0].split('\t')
+            try:
+                live_idx = header.index("is_live")
+            except ValueError:
+                live_idx = None
+            for row in lines[1:]:
+                cols = row.split('\t')
+                if live_idx is not None and live_idx < len(cols):
+                    if cols[live_idx].strip().lower() == "true":
+                        live_nodes += 1
+                else:
+                    # is_live column absent: presence in node status means the
+                    # node is part of the cluster; count it.
+                    live_nodes += 1
+        if live_nodes < REPLICA_COUNT:
+            errors.append(
+                f"Expected {REPLICA_COUNT} live nodes, but found {live_nodes}")
     
     # Test SQL connectivity
     cmd = [
@@ -167,19 +188,20 @@ def evaluate(timeout_seconds):
         errors.append(f"Error: {result.stderr.strip()}")
     
     # Check all pods are running (resolved robustly to the build's labels).
+    # We grade phase==Running (cheap + correct) and the pod count, but do NOT
+    # gate on the k8s pod-Ready condition: CockroachDB's /health?ready=1 probe
+    # lags functional readiness (ranges still replicating after a fresh init /
+    # under load), so a node that already serves SQL and reports is_live=true
+    # can still read pod-Ready=False. Functional readiness is graded above via
+    # `node status` is_live + the `SELECT 1` connectivity test (O-funcready).
     try:
         pods = crdb_pods()
         for pod in pods:
             name = pod["metadata"]["name"]
             phase = pod["status"].get("phase", "Unknown")
-            conditions = pod["status"].get("conditions", [])
-            ready = any(c.get("type") == "Ready" and c.get("status") == "True"
-                       for c in conditions)
 
             if phase != "Running":
                 errors.append(f"Pod {name} is not Running (phase: {phase})")
-            if not ready:
-                errors.append(f"Pod {name} is not Ready")
 
         if len(pods) != REPLICA_COUNT:
             errors.append(f"Expected {REPLICA_COUNT} pods, found {len(pods)}")

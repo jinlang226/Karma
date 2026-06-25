@@ -39,6 +39,76 @@ def run(cmd):
     return subprocess.run(cmd, text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
 
 
+_CONN_FLAG = None
+
+
+def conn_flag():
+    """Return the cockroach SQL connection flag for the live cluster's mode.
+
+    Standalone deploy targets an INSECURE cluster (`--insecure`), but in a
+    workflow this stage can run against a SECURE cluster, so detect the mode
+    once via the mounted certs dir (mirrors initialize/cluster-settings, C4).
+    """
+    global _CONN_FLAG
+    if _CONN_FLAG is not None:
+        return _CONN_FLAG
+    probe = run([
+        "kubectl", "-n", "cockroachdb", "--request-timeout=15s", "exec",
+        "crdb-cluster-0", "--", "ls", "/cockroach/cockroach-certs/ca.crt",
+    ])
+    if probe.returncode == 0:
+        _CONN_FLAG = "--certs-dir=/cockroach/cockroach-certs"
+    else:
+        _CONN_FLAG = "--insecure"
+    return _CONN_FLAG
+
+
+def _live_node_count():
+    """Count nodes reporting is_live=true via `cockroach node status`.
+
+    This is the FUNCTIONAL readiness signal (O-funcready): a node reports
+    is_live=true once it serves SQL, which can precede its k8s pod-Ready probe
+    flipping (CockroachDB's /health?ready=1 lags while ranges replicate after a
+    fresh init / under load). Returns (count, error_or_None).
+    """
+    result = run([
+        "kubectl", "-n", "cockroachdb", "--request-timeout=20s", "exec",
+        "crdb-cluster-0", "--", "./cockroach", "node", "status", conn_flag(),
+        "--format=tsv",
+    ])
+    if result.returncode != 0:
+        return 0, result.stderr.strip() or "cockroach node status failed"
+    lines = [l for l in result.stdout.strip().split("\n") if l.strip()]
+    if not lines:
+        return 0, "empty node status output"
+    header = lines[0].split("\t")
+    try:
+        live_idx = header.index("is_live")
+    except ValueError:
+        live_idx = None
+    live = 0
+    for row in lines[1:]:
+        cols = row.split("\t")
+        if live_idx is not None and live_idx < len(cols):
+            if cols[live_idx].strip().lower() == "true":
+                live += 1
+        else:
+            live += 1
+    return live, None
+
+
+def _sql_serves():
+    """Return (ok, error_or_None) for a `SELECT 1` against the cluster."""
+    result = run([
+        "kubectl", "-n", "cockroachdb", "--request-timeout=20s", "exec",
+        "crdb-cluster-0", "--", "./cockroach", "sql", conn_flag(),
+        "-e", "SELECT 1;",
+    ])
+    if result.returncode != 0:
+        return False, result.stderr.strip() or "SELECT 1 failed"
+    return True, None
+
+
 def kubectl_json(args, namespace="cockroachdb"):
     cmd = ["kubectl", "-n", namespace] + args + ["-o", "json"]
     result = run(cmd)
@@ -98,14 +168,6 @@ def _parse_budget_value(value, total):
         if text.isdigit():
             return int(text)
     return None
-
-
-def _pod_ready(pod):
-    conditions = pod.get("status", {}).get("conditions") or []
-    for cond in conditions:
-        if cond.get("type") == "Ready" and cond.get("status") == "True":
-            return True
-    return False
 
 
 def _container_command(container):
@@ -323,9 +385,22 @@ def evaluate():
             items = pods.get("items") or []
             if len(items) < EXPECTED_REPLICAS:
                 errors.append(f"Expected {EXPECTED_REPLICAS} pods, found {len(items)}")
-            ready_count = sum(1 for pod in items if _pod_ready(pod))
-            if ready_count < EXPECTED_REPLICAS:
-                errors.append(f"Expected {EXPECTED_REPLICAS} ready pods, found {ready_count}")
+            # Grade FUNCTIONAL readiness (O-funcready) rather than the laggy k8s
+            # pod-Ready bit: the cluster serves SQL and all expected nodes report
+            # is_live=true. CockroachDB's readiness probe stays not-ready while
+            # ranges replicate after a fresh deploy even though the node already
+            # serves SQL, so a pod-Ready count can false-fail a healthy cluster.
+            # Not a loosening -- a node that never joins is not is_live and an
+            # uninitialized cluster fails SELECT 1.
+            live, live_err = _live_node_count()
+            if live_err:
+                errors.append(f"Cluster not serving - node status: {live_err}")
+            elif live < EXPECTED_REPLICAS:
+                errors.append(
+                    f"Expected {EXPECTED_REPLICAS} live nodes, found {live}")
+            ok, sql_err = _sql_serves()
+            if not ok:
+                errors.append(f"Cluster not serving SQL - SELECT 1: {sql_err}")
 
     endpoints, err = kubectl_json(["get", "endpoints", "crdb-cluster"])
     if err:

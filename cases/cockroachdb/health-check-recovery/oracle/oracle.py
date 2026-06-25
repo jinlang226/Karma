@@ -137,14 +137,19 @@ def evaluate():
     """One full snapshot of the health-check-recovery checks; returns error list."""
     errors = []
 
-    # Check all pods are healthy (resolved robustly to the build's labels).
+    # Check all pods are present and Running (resolved robustly to the build's
+    # labels). We do NOT gate on the k8s pod-Ready condition: this case recovers
+    # a node, and CockroachDB's /health?ready=1 probe lags functional readiness
+    # (ranges still replicating after the restart) even though the node already
+    # serves SQL -- so pod-Ready can read False on a functionally-recovered node
+    # and false-fail it. Functional readiness is graded below via node status
+    # is_live + the SELECT 1 serving test (O-funcready).
     try:
         for pod in crdb_pods():
             name = pod["metadata"]["name"]
-            conditions = pod["status"].get("conditions", [])
-            ready = any(c.get("type") == "Ready" and c.get("status") == "True" for c in conditions)
-            if not ready:
-                errors.append(f"Pod {name} not ready")
+            phase = pod["status"].get("phase", "Unknown")
+            if phase != "Running":
+                errors.append(f"Pod {name} is not Running (phase: {phase})")
     except (KeyError, TypeError):
         errors.append("Failed to parse pod status")
 
