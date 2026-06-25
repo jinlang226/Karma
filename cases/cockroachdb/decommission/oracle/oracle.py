@@ -111,11 +111,14 @@ def evaluate():
         try:
             sts = json.loads(result.stdout)
             replicas = sts.get("spec", {}).get("replicas", 0)
-            ready = sts.get("status", {}).get("readyReplicas", 0)
             if replicas != TARGET_NODES:
                 errors.append(f"StatefulSet should have {TARGET_NODES} replicas, got {replicas}")
-            if ready < TARGET_NODES:
-                errors.append(f"StatefulSet readyReplicas should be {TARGET_NODES}, got {ready}")
+            # We do NOT gate on status.readyReplicas (the k8s pod-Ready tally):
+            # after a decommission a surviving node restarting can lag its
+            # readiness probe while already serving SQL (O-funcready). The
+            # functional signal -- TARGET_NODES nodes is_live and serving, the
+            # data query below -- is graded directly, so a readyReplicas gate
+            # would only add a laggy false-fail without strengthening anything.
         except json.JSONDecodeError:
             errors.append("Failed to parse StatefulSet JSON")
     else:

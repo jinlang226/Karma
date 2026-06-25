@@ -287,9 +287,13 @@ def main():
     # Use a shorter budget here than the post-delete wait below: the worst-case
     # recovery is the bounce *this* oracle triggers, and keeping this pre-check
     # bounded keeps the whole oracle's wall time under timeout_sec (O-deadline).
-    ok, err = wait_pod_ready(deadline_sec=120)
-    if not ok:
-        errors.append(f"Pod not ready before persistence check: {err}")
+    # Best-effort settle: wait for the pod to come back, but do NOT gate the
+    # verdict on the k8s pod-Ready bit. CockroachDB reports Ready to Kubernetes
+    # only after /health?ready=1 passes, which lags the point at which the node
+    # accepts SQL clients (O-funcready); the authoritative functional check is
+    # check()'s SQL read below, which retries until the node serves. Gating on
+    # pod-Ready here would only add a laggy false-fail on a serving node.
+    wait_pod_ready(deadline_sec=120)
 
     check(errors, "before restart")
 
@@ -307,11 +311,13 @@ def main():
     )
     if delete.returncode != 0:
         errors.append(f"Failed to delete pod for persistence check: {delete.stderr.strip()}")
-    # After the delete the StatefulSet recreates the pod; wait for it to exist
-    # and become Ready again, tolerating the brief NotFound recreation window.
-    ok, err = wait_pod_ready()
-    if not ok:
-        errors.append(f"Pod did not become ready after restart: {err}")
+    # After the delete the StatefulSet recreates the pod; wait (best effort) for
+    # it to come back, then let check()'s SQL-retry loop be the authority on
+    # functional recovery. We do NOT fail the verdict on the pod-Ready bit: a
+    # secure, repeatedly-bounced node can serve SQL (and prove the setting
+    # persisted) before its readiness probe flips back to Ready (O-funcready),
+    # so a pod-Ready gate would false-fail a correct, persisted setting.
+    wait_pod_ready()
 
     check(errors, "after restart")
 
