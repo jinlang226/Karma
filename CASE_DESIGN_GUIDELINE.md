@@ -166,6 +166,25 @@ version mismatch). *(52b63cee, a0b7598)*
   *meant* broken); a case where the agent does the deploy must verify the
   namespace/baseline, not Running pods (else instant precondition error). *(10bbbd63,
   abf32a22, 61386287) [PRECONDITION]*
+- **P27 — Never confirm an injected fault *through the capability the fault
+  disables*.** When the precondition degrades the service itself — quorum loss
+  (master gone), a blocked port, a stepped-down primary, disabled shard allocation,
+  a stopped process — its probe/verify (and the oracle's pre-recovery checks) must
+  **not** call through the very path the fault breaks. That check can *never* pass:
+  the data-plane query errors forever, the verify loops to the setup cap, and the
+  agent never even starts. Instead **(a)** capture any in-service proof (a setting
+  value, a row/doc count) *before* injecting the fault, and **(b)** confirm the
+  fault from the **control plane** — `kubectl get sts -o …replicas`, pod count/phase,
+  a `kubectl exec` that doesn't need the broken service — or any path the fault
+  leaves intact. *Evidence: es master-downscale-voting-exclusions — sets
+  `auto_shrink_voting_configuration=false` while healthy, scales the masters 3→1
+  (quorum lost → no elected master), then its `voting_drift_ready` verify does
+  `GET /_cluster/settings` which returns `503 master_not_discovered` on a
+  master-less cluster → the verify never matches → 600s setup timeout, agent never
+  runs. (A shorter loop just fails faster — the check is unsatisfiable, not slow.)
+  Fix: verify the StatefulSet is at 1 replica (control-plane) and trust the
+  pre-scale-down `acknowledged:true`, instead of re-reading cluster settings on the
+  broken cluster.* [PRECONDITION] (the deeper root cause behind some P14 "timeouts").
 - **P7 — Tolerate (`|| true`) flaky steps the oracle doesn't depend on.** A
   race-prone, non-essential setup step (`ray start` GCS registration) must not
   abort the whole precondition. *(d486d91) [PRECONDITION]*
@@ -647,7 +666,9 @@ silent `except: pass`); cross-stage agent memory via `agent_session: persistent`
       is actually injected (heavy case must NOT finish in ~6s — Law 5).
 - [ ] **Probes:** no `|| true` (P1); probe this case's own named resource (P2) and
       the exact oracle-checked state (P3); skip-gate is authoritative for the
-      case's shape (C3); `error`-gate vs `skip`-gate matches intent (P5).
+      case's shape (C3); `error`-gate vs `skip`-gate matches intent (P5); a planted
+      fault is verified from the control plane, not through the capability it
+      disables (P27).
 - [ ] **Reused cluster:** fixed-namespace delete+wait-for-delete+create inside the
       skip-gate (P9); probe gated on namespace Active; non-blocking teardown with a
       real budget (P10); get-or-apply helper Pods (P15); tolerant/get-or-skip applies
@@ -777,7 +798,7 @@ pattern across every case, not just the one observed (Law 8).
 | es/secure-http-ingress (stage_03) | precond | P26 | tolerant apply of the shared `IngressClass nginx` |
 | crdb/expose-ingress (long stage_11) | precond | P26 | `\|\| true` the kind ingress-deploy apply |
 | mongo/health-check-recovery (long stage_11) | WF | P16 | patch the probe, don't re-apply the whole STS |
-| es/master-downscale-voting-exclusions (stage_1) | precond | P14, P22 | inner verify loop < unit budget; quote the `&` URL |
+| es/master-downscale-voting-exclusions (stage_1) | precond | **P27** (+P14) | verify the fault from the control plane (STS at 1 replica) — `/_cluster/settings` is unreadable on the quorum-broken cluster; shorter loop alone just fails faster |
 | es/stack-monitoring-sidecars (stage_09) | oracle | O-deadline | flap-loop deadline below `timeout_sec` |
 | crdb/cluster-settings (stage_06) | oracle | O-restart, O-deadline | budget the oracle's own pod-restart for the secure/loaded worst case |
 | es/rotate-http-certs (stage_03) | oracle | O-multi | fingerprint *all* certs in the `ca.crt` bundle |
