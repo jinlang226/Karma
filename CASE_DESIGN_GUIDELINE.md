@@ -236,6 +236,21 @@ version mismatch).
   surfaces at load as the misleading *"verify command(s) are required"*).
   *Example: an ES master-downscale whose `seq 1 30`×`sleep 3` (~240s) verify in a
   120s unit was retried ~13× → blew the 600s cap.* [PRECONDITION]
+- **P-live — Gate a clustered workload's setup on the engine's own *live-member*
+  view, and give liveness probes load headroom.** A setup step that needs quorum or
+  replica placement (upreplication, shard allocation, primary election, rebalancing)
+  only works once ≥quorum members are actually LIVE in the cluster's membership —
+  and pod-Ready / `rollout status` can pass *before* membership forms. Worse, a
+  too-aggressive liveness probe (short `periodSeconds`, ~1s `timeoutSeconds`, low
+  `failureThreshold`) restarts healthy members under concurrent load, dropping the
+  live count below quorum and cascading — so the operation silently never completes
+  and the unit times out (looks like slowness, is lost quorum). Gate on the engine's
+  own liveness (`node status … is_live`, `_cat/nodes`, `rs.status()` members) rather
+  than pod readiness, and size liveness probes (longer `timeoutSeconds`/`periodSeconds`,
+  higher `failureThreshold`) so a transient load pause can't evict a healthy member.
+  The precondition analog of O-funcready. *Example: a CockroachDB multi-node setup
+  whose range stayed at 1 replica because too few nodes were live under load, so
+  RF=3 upreplication never happened and the seed timed out.* [PRECONDITION]
 
 ### Manifests, literals, identity
 - **P15 — Get-or-apply for helper Pods.** `kubectl apply` of a bare helper Pod

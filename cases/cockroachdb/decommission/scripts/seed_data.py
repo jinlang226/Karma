@@ -189,8 +189,51 @@ def init_cluster():
     return False
 
 
+def get_node_status():
+    cmd = [
+        "kubectl", "-n", NAMESPACE, "exec", POD, "--",
+        "./cockroach", "node", "status", "--insecure",
+        f"--host={SQL_HOST}", "--format=tsv",
+    ]
+    result = run(cmd)
+    if result.returncode != 0:
+        return None, result.stderr.strip()
+    header, rows = parse_tsv(result.stdout)
+    if "is_live" not in header:
+        return None, "no is_live column in node status"
+    idx = header.index("is_live")
+    live = sum(1 for r in rows if len(r) > idx and r[idx].strip().lower() == "true")
+    return live, result.stdout.strip()
+
+
+def wait_for_live_nodes(expected, attempts=50, delay=3):
+    """A range cannot upreplicate to RF=3 unless >=3 nodes are LIVE (not merely
+    registered in gossip). pod-Ready / rollout-complete can race ahead of cluster
+    membership, and a too-aggressive liveness probe can restart nodes under load,
+    dropping the live count below quorum. Gate on the cluster's own liveness view."""
+    last = 0
+    for _ in range(attempts):
+        count, info = get_node_status()
+        if count is not None:
+            last = count
+            if count >= expected:
+                log(f"Live nodes: {count}/{expected}")
+                return count
+        time.sleep(delay)
+    log(f"Live nodes stabilized at {last}/{expected}")
+    return last
+
+
 def main():
     if not init_cluster():
+        return 1
+
+    log("Waiting for cluster nodes to become live")
+    live = wait_for_live_nodes(5)
+    if live < 3:
+        count, info = get_node_status()
+        print(f"Cluster never reached quorum: only {live} live node(s)", file=sys.stderr)
+        print(info or "node status unavailable", file=sys.stderr)
         return 1
 
     log("Seeding bench.decom_data")
