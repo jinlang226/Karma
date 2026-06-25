@@ -5,6 +5,7 @@ import json
 import os
 import subprocess
 import sys
+import time
 
 
 NAMESPACE = os.environ.get("BENCH_NAMESPACE", "mongodb")
@@ -174,19 +175,19 @@ def find_primary(admin_uri, errors):
     return f"{CLUSTER_PREFIX}-0"
 
 
-def check_workload():
+def _workload_attempt():
     errors = []
     sts_res = run(["kubectl", "-n", NAMESPACE, "get", "sts", CLUSTER_PREFIX, "-o", "json"])
     if sts_res.returncode != 0:
         detail = sts_res.stderr.strip() or sts_res.stdout.strip() or f"exit {sts_res.returncode}"
         errors.append(f"Failed to read statefulset {CLUSTER_PREFIX}: {detail}")
-        return fail("Version upgrade workload check failed:", errors)
+        return errors
 
     try:
         sts = json.loads(sts_res.stdout)
     except json.JSONDecodeError:
         errors.append("Failed to parse statefulset JSON")
-        return fail("Version upgrade workload check failed:", errors)
+        return errors
 
     spec_replicas = sts.get("spec", {}).get("replicas")
     ready_replicas = sts.get("status", {}).get("readyReplicas")
@@ -207,13 +208,13 @@ def check_workload():
     if pods_res.returncode != 0:
         detail = pods_res.stderr.strip() or pods_res.stdout.strip() or f"exit {pods_res.returncode}"
         errors.append(f"Failed to list pods: {detail}")
-        return fail("Version upgrade workload check failed:", errors)
+        return errors
 
     try:
         pods = json.loads(pods_res.stdout)
     except json.JSONDecodeError:
         errors.append("Failed to parse pod list JSON")
-        return fail("Version upgrade workload check failed:", errors)
+        return errors
 
     items = pods.get("items", [])
     if len(items) != EXPECTED_REPLICAS:
@@ -228,6 +229,23 @@ def check_workload():
         if c[0].get("image") != TO_IMAGE:
             errors.append(f"Pod {name} image expected {TO_IMAGE}, got {c[0].get('image')}")
 
+    return errors
+
+
+def check_workload():
+    # O-flap-restart: the rolling version upgrade brings pods Ready staggered, so
+    # readyReplicas/Ready and the pod count read short while the last pod
+    # recreates. Poll to convergence (~120s, 5s between attempts); assertions
+    # unchanged.
+    deadline = time.monotonic() + 120
+    errors = []
+    while True:
+        errors = _workload_attempt()
+        if not errors:
+            break
+        if time.monotonic() >= deadline:
+            break
+        time.sleep(5)
     return fail("Version upgrade workload check failed:", errors)
 
 
@@ -265,11 +283,11 @@ def check_version():
     return fail("Version upgrade version check failed:", errors)
 
 
-def check_topology():
+def _topology_attempt():
     errors = []
     admin_pw = get_secret_value(ADMIN_SECRET_NAME, "password", errors)
     if admin_pw is None:
-        return fail("Version upgrade topology check failed:", errors)
+        return errors
 
     # directConnection skips SDAM topology monitoring (see check_version).
     admin_uri = f"mongodb://{ADMIN_USERNAME}:{admin_pw}@localhost:27017/admin?directConnection=true"
@@ -288,6 +306,22 @@ def check_topology():
     else:
         errors.append("Unable to read replica set status")
 
+    return errors
+
+
+def check_topology():
+    # O-flap-restart: the last upgraded member sits in a STARTUP2/RECOVERING
+    # rejoin window, reading the SECONDARY tally short. Poll to convergence
+    # (~120s, 5s between attempts); assertion not loosened.
+    deadline = time.monotonic() + 120
+    errors = []
+    while True:
+        errors = _topology_attempt()
+        if not errors:
+            break
+        if time.monotonic() >= deadline:
+            break
+        time.sleep(5)
     return fail("Version upgrade topology check failed:", errors)
 
 

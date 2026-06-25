@@ -5,6 +5,7 @@ import json
 import os
 import subprocess
 import sys
+import time
 
 
 NAMESPACE = os.environ.get("BENCH_NAMESPACE", "mongodb")
@@ -217,7 +218,11 @@ def check_template():
     return fail("StatefulSet customization template check failed:", errors)
 
 
-def check_workload():
+def _workload_attempt():
+    """One snapshot of the StatefulSet readyReplicas + per-pod Ready tally.
+    Returns the error list (empty on a clean read). The readyReplicas count and
+    the per-pod Ready conditions are restart-volatile (the last-rolled pod reads
+    non-Ready for seconds), so this is polled to convergence by check_workload."""
     errors = []
     sts = _load_sts(errors)
     if sts:
@@ -229,12 +234,12 @@ def check_workload():
     pods_res = run(["kubectl", "-n", NAMESPACE, "get", "pods", "-l", f"app={CLUSTER_PREFIX}", "-o", "json"])
     if pods_res.returncode != 0:
         errors.append(f"failed to read pods: {pods_res.stderr.strip() or pods_res.stdout.strip()}")
-        return fail("StatefulSet customization workload check failed:", errors)
+        return errors
     try:
         pods = json.loads(pods_res.stdout)
     except json.JSONDecodeError:
         errors.append("failed to parse pods JSON")
-        return fail("StatefulSet customization workload check failed:", errors)
+        return errors
 
     items = pods.get("items", [])
     if len(items) != EXPECTED_REPLICAS:
@@ -244,15 +249,36 @@ def check_workload():
         ready = next((c for c in pod.get("status", {}).get("conditions", []) if c.get("type") == "Ready"), {})
         if ready.get("status") != "True":
             errors.append(f"pod {name} is not Ready")
+    return errors
 
+
+def check_workload():
+    # O-flap-restart: the template edit (label + resources) rolls the
+    # StatefulSet, so readyReplicas and the per-pod Ready tally read short while
+    # the last pod recreates. Poll to convergence (~120s, 5s between attempts);
+    # the spec.replicas == EXPECTED and pod-count assertions are unchanged, so a
+    # genuinely missing/unready member still fails every attempt.
+    deadline = time.monotonic() + 120
+    errors = []
+    while True:
+        errors = _workload_attempt()
+        if not errors:
+            break
+        if time.monotonic() >= deadline:
+            break
+        time.sleep(5)
     return fail("StatefulSet customization workload check failed:", errors)
 
 
-def check_topology():
+def _topology_attempt():
+    """One snapshot of the replica-set topology. Returns the error list (empty
+    on a clean read). The graded assertion is UNCHANGED -- exactly 1 PRIMARY,
+    EXPECTED_REPLICAS-1 SECONDARY, members == EXPECTED_REPLICAS -- so a genuinely
+    degraded set fails every attempt."""
     errors = []
     admin_pw = get_secret_value(ADMIN_SECRET, "password", errors)
     if errors:
-        return fail("StatefulSet customization topology check failed:", errors)
+        return errors
     # directConnection skips SDAM topology monitoring, which a localhost
     # connection would start and which fails under a persisted requireTLS mode.
     admin_uri = f"mongodb://{ADMIN_USER}:{admin_pw}@localhost:27017/admin?directConnection=true"
@@ -270,7 +296,25 @@ def check_topology():
             errors.append(f"expected {EXPECTED_REPLICAS - 1} SECONDARY, got {s}")
     else:
         errors.append("unable to read replica set status")
+    return errors
 
+
+def check_topology():
+    # O-flap-restart: the agent's task (template label + resource edit) forces a
+    # rolling restart of the StatefulSet, so the last-restarted member spends
+    # seconds in a STARTUP2/RECOVERING rejoin window during which the
+    # PRIMARY/SECONDARY tally reads short. Poll the topology to convergence
+    # (~120s deadline, 5s between attempts) and pass on the first clean snapshot;
+    # the assertion is not loosened, so a truly degraded set fails every attempt.
+    deadline = time.monotonic() + 120
+    errors = []
+    while True:
+        errors = _topology_attempt()
+        if not errors:
+            break
+        if time.monotonic() >= deadline:
+            break
+        time.sleep(5)
     return fail("StatefulSet customization topology check failed:", errors)
 
 

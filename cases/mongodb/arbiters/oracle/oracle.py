@@ -5,6 +5,7 @@ import json
 import os
 import subprocess
 import sys
+import time
 
 
 NAMESPACE = os.environ.get("BENCH_NAMESPACE", "mongodb")
@@ -139,7 +140,7 @@ def mongo_json(pod, script, label, errors):
         return None
 
 
-def check_workload():
+def _check_workload_attempt():
     errors = []
     data_sts = run(["kubectl", "-n", NAMESPACE, "get", "sts", DATA_CLUSTER_PREFIX, "-o", "json"])
     arb_sts = run(["kubectl", "-n", NAMESPACE, "get", "sts", ARBITER_CLUSTER_PREFIX, "-o", "json"])
@@ -171,10 +172,26 @@ def check_workload():
         if arb_obj.get("status", {}).get("readyReplicas", 0) != ARBITER_REPLICAS:
             errors.append(f"Arbiter StatefulSet ready replicas expected {ARBITER_REPLICAS}")
 
+    return errors
+
+
+def check_workload():
+    # O-flap-restart: adding the arbiter rolls/reconfigures the set, so the
+    # data+arbiter readyReplicas tally reads short during the rejoin window.
+    # Poll to convergence (~120s, 5s between attempts); assertions unchanged.
+    deadline = time.monotonic() + 120
+    errors = []
+    while True:
+        errors = _check_workload_attempt()
+        if not errors:
+            break
+        if time.monotonic() >= deadline:
+            break
+        time.sleep(5)
     return fail("MongoDB arbiters workload check failed:", errors)
 
 
-def check_topology():
+def _check_topology_attempt():
     errors = []
     pod = f"{DATA_CLUSTER_PREFIX}-0"
     conf = mongo_json(pod, "JSON.stringify(rs.conf())", "rs.conf()", errors)
@@ -215,6 +232,22 @@ def check_topology():
         if data_hosts != expected_data_hosts:
             errors.append(f"Data member hosts mismatch: expected={sorted(expected_data_hosts)} actual={sorted(data_hosts)}")
 
+    return errors
+
+
+def check_topology():
+    # O-flap-restart: the reconfigured/added member sits in a rejoin window,
+    # reading the PRIMARY/SECONDARY/ARBITER tally short. Poll to convergence
+    # (~120s, 5s between attempts); assertion not loosened.
+    deadline = time.monotonic() + 120
+    errors = []
+    while True:
+        errors = _check_topology_attempt()
+        if not errors:
+            break
+        if time.monotonic() >= deadline:
+            break
+        time.sleep(5)
     return fail("MongoDB arbiters topology check failed:", errors)
 
 

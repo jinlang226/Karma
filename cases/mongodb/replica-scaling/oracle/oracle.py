@@ -5,6 +5,7 @@ import json
 import os
 import subprocess
 import sys
+import time
 
 
 NAMESPACE = os.environ.get("BENCH_NAMESPACE", "mongodb")
@@ -147,18 +148,18 @@ def find_primary(uri, errors):
     return f"{CLUSTER_PREFIX}-0"
 
 
-def check_workload():
+def _workload_attempt():
     errors = []
     res = run(["kubectl", "-n", NAMESPACE, "get", "sts", CLUSTER_PREFIX, "-o", "json"])
     if res.returncode != 0:
         detail = res.stderr.strip() or res.stdout.strip() or f"exit {res.returncode}"
         errors.append(f"Failed to read statefulset {CLUSTER_PREFIX}: {detail}")
-        return fail("MongoDB replica-scaling workload check failed:", errors)
+        return errors
     try:
         sts = json.loads(res.stdout)
     except json.JSONDecodeError:
         errors.append("Failed to parse statefulset JSON")
-        return fail("MongoDB replica-scaling workload check failed:", errors)
+        return errors
 
     spec_replicas = sts.get("spec", {}).get("replicas")
     ready_replicas = sts.get("status", {}).get("readyReplicas", 0)
@@ -171,25 +172,42 @@ def check_workload():
     if pods.returncode != 0:
         detail = pods.stderr.strip() or pods.stdout.strip() or f"exit {pods.returncode}"
         errors.append(f"Failed to read pods: {detail}")
-        return fail("MongoDB replica-scaling workload check failed:", errors)
+        return errors
     try:
         pod_obj = json.loads(pods.stdout)
     except json.JSONDecodeError:
         errors.append("Failed to parse pod JSON")
-        return fail("MongoDB replica-scaling workload check failed:", errors)
+        return errors
 
     items = pod_obj.get("items", [])
     if len(items) != TARGET_REPLICAS:
         errors.append(f"Expected {TARGET_REPLICAS} pods, got {len(items)}")
 
+    return errors
+
+
+def check_workload():
+    # O-flap-restart: scaling adds a new mongod pod that joins via
+    # STARTUP2/RECOVERING, so readyReplicas and the pod count read short until it
+    # is Ready. Poll to convergence (~120s, 5s between attempts); assertions
+    # unchanged.
+    deadline = time.monotonic() + 120
+    errors = []
+    while True:
+        errors = _workload_attempt()
+        if not errors:
+            break
+        if time.monotonic() >= deadline:
+            break
+        time.sleep(5)
     return fail("MongoDB replica-scaling workload check failed:", errors)
 
 
-def check_topology():
+def _topology_attempt():
     errors = []
     admin_pw = get_secret(ADMIN_SECRET, "password", errors)
     if errors:
-        return fail("MongoDB replica-scaling topology check failed:", errors)
+        return errors
     # directConnection skips SDAM topology monitoring, which a localhost
     # connection would start and which fails under a persisted requireTLS mode.
     uri = f"mongodb://{ADMIN_USERNAME}:{admin_pw}@localhost:27017/admin?directConnection=true"
@@ -220,6 +238,22 @@ def check_topology():
         if s != TARGET_REPLICAS - 1:
             errors.append(f"Expected {TARGET_REPLICAS - 1} SECONDARY, got {s}")
 
+    return errors
+
+
+def check_topology():
+    # O-flap-restart: the newly-scaled-in member sits in a STARTUP2/RECOVERING
+    # rejoin window, reading the SECONDARY tally short. Poll to convergence
+    # (~120s, 5s between attempts); assertion not loosened.
+    deadline = time.monotonic() + 120
+    errors = []
+    while True:
+        errors = _topology_attempt()
+        if not errors:
+            break
+        if time.monotonic() >= deadline:
+            break
+        time.sleep(5)
     return fail("MongoDB replica-scaling topology check failed:", errors)
 
 
