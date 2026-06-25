@@ -327,6 +327,15 @@ version mismatch).
   the exec actually runs. *Example: a CockroachDB cert-rotation case whose
   openssl-toolbox on `alpine/openssl:latest` → cert-gen script "openssl: command
   not found"; a whole family of cert cases shared the same `:latest` toolbox.* [PRECONDITION]
+- **P-order — Order precondition units by dependency; make the dependency explicit.**
+  Units run in declared order, so a fixture that authenticates as admin (seed data,
+  create a downstream user, plant an auth-gated fault) must be declared *after* the
+  unit that establishes that credential — otherwise it runs against a not-yet-existing
+  principal and its `apply` silently no-ops on an inherited cluster. State the order
+  in a comment so a later edit can't reorder it. *Example: a MongoDB precondition where
+  the admin-user fixture is declared before the seed fixture so seeding can
+  authenticate, and a get-or-apply openssl-toolbox precedes any unit that execs
+  openssl.* [PRECONDITION]
 
 ---
 
@@ -504,6 +513,109 @@ version mismatch).
   Never rely on a metric to police an agent whose mutations happen inside a pod —
   assert that contract in the oracle. [ORACLE/METRICS]
 
+### Assertion completeness & oracle structure
+- **O-collect — Accumulate every check into an error list; never raise mid-snapshot.**
+  A single read that raises crashes the whole oracle (cascading to a false
+  "precondition units failed" on retry) and hides every *other* failure, so a
+  fix-rerun cycle surfaces one problem at a time. Each check appends a human-readable
+  string to a shared list and continues; one reporter prints them all and fails iff
+  any. This is what makes O-flap's "re-run until the list is empty" possible. *Example:
+  a replica-set oracle that reports both "expected 1 PRIMARY got 0" and a host-set
+  mismatch in one verdict instead of dying on the first parse of a mid-election status
+  read.* [ORACLE]
+- **O-subcheck — Expose each assertion as an independently dispatchable named
+  sub-check.** A `--check {all,<name>}` dispatcher lets the regression sweep and triage
+  probe one dimension (just-topology, just-auth) without the full battery, and the
+  ordered "all" run yields one deterministic verdict. *Example: a deploy oracle with
+  `service`/`workload`/`topology`/`auth` sub-checks so a sweep can re-grade only
+  `topology` after a later scaling stage.* [ORACLE]
+- **O-diag — On a count/topology/identity mismatch, dump the live breakdown to stderr
+  (verdict unchanged).** When an oracle fails "expected N, got M", print the
+  per-resource breakdown it derived from (each StatefulSet's name/replicas/image/age,
+  each member's state) so the failure log alone reveals which inherited/orphaned object
+  inflated the count — turning a triage round-trip into a glance. Diagnostic only.
+  *Example: a node-count oracle that, on a miss, lists every ES StatefulSet `(name,
+  spec.replicas, image, age)`.* [ORACLE]
+- **O-everymember — Assert a cluster-wide change on *every* member/node, not just the
+  primary or pod-0.** A config/version/probe mutation "applied to the cluster" can land
+  on the primary while a secondary is stale (a half-rolled restart). Loop every member
+  and assert the field on each — and check both the controller template and each live
+  pod, since they diverge mid-roll. *Example: a MongoDB config case that sets a
+  parameter cluster-wide; the oracle reads it on every replica, and a version oracle
+  asserts the target image on the STS template AND every running pod.* [ORACLE]
+- **O-negative — Prove enforcement with an explicit negative assertion, not only a
+  positive one.** A security/isolation outcome (auth required, requireTLS, a revoked
+  password, a read-only role) is proven only if the *forbidden* path actually fails:
+  assert an unauthenticated query is rejected, a plain connect refused, the old
+  credential denied. A positive-only oracle passes a cluster where auth/TLS was
+  silently never enabled. Scan stdout *and* stderr, and per O3 never retry these.
+  *Example: a deploy oracle that, alongside a successful authenticated ping, runs a
+  credential-less query and fails if it succeeds.* [ORACLE]
+- **O-e2e — For an externally-reachable deliverable, prove it end-to-end over the
+  advertised path, not just by inspecting config.** When the task exposes a service to
+  a new path (NodePort/external host, split-horizon, ingress), connect *through* the
+  advertised endpoint and assert the live response identity (the replica-set name, an
+  HTTP 200, the served document) — a config-only oracle passes a service whose endpoint
+  doesn't actually route. *Example: a Mongo split-horizon oracle that, after asserting
+  each member's horizons, connects over the advertised `EXTERNAL_HOST:NODEPORT` and
+  asserts `db.hello().setName`.* [ORACLE]
+- **O-rotate-diff — Grade a rotation as a two-sided diff: new value present *and* old
+  value gone.** A "rotate X" outcome is proven only by asserting the live artifact now
+  equals the new target AND no longer equals the recorded old value. Asserting only
+  "equals new" false-passes a no-op where the value was already the target; the
+  precondition must capture the pre-rotation baseline for the oracle to diff (cf.
+  O-relative). *Example: a password-rotation oracle asserting the secret matches `-next`
+  and differs from `-old`; a cert-rotation oracle requiring the server fingerprint to
+  change while the CA fingerprint stays identical.* [ORACLE]
+- **O-resolve — Resolve a removed/renamed identifier against the live cluster; treat
+  only an explicit "not found" as absent.** A setting/role/feature name the prompt
+  allows can be spelled differently across versions. Probe which name the live version
+  accepts and grade that one — and classify *only* the engine's explicit
+  unknown-identifier message as "absent", never an auth/transient/timeout error. Cache
+  it so before/after reads agree. *Example: a CockroachDB settings case where the
+  configured setting name was removed in the running version; the oracle aliases to the
+  live equivalent and only a literal "unknown setting" counts as missing.* [ORACLE]
+- **O-equiv-value — Compare configured values semantically, not as strings.** Normalize
+  both sides to canonical units before comparing — `1.5GiB`==`1536MiB`==`1610612736`,
+  `1m30s`==`90s`, `on`==`true`. A raw string compare false-fails an agent who chose an
+  equally-valid spelling the prompt never forbade; a genuinely wrong magnitude still
+  differs after normalization. *Example: a CockroachDB setting graded where the agent
+  wrote `64MiB` and the cluster echoes `67108864`.* [ORACLE]
+- **O-mgmt-order — Probe an admin/management API in the order the app serves by
+  default, not always TLS-first.** O-scheme's https-first fits a console that redirects
+  plain→TLS, but a management API defaulting to a *plain* port should be probed
+  plain-first: a TLS listener a later stage brings up can answer the reachability probe
+  yet then drag every real query past its deadline (curl exit 28). Pick the
+  default-serving scheme first, fall back, accept any HTTP code (incl. 401), bound each
+  attempt. *Example: a RabbitMQ oracle that tries the plain mgmt port before the TLS one
+  so it works both before and after a mgmt-TLS stage.* [ORACLE]
+- **O-client-bounce — When the graded outcome is a client reacting to the agent's fix,
+  bounce the client once to escape CrashLoopBackOff before polling.** A side-car
+  producer/consumer crash-looping against the *broken* baseline accumulates exponential
+  backoff, so after the agent's fix its next successful restart can be minutes away.
+  Delete the client pods once (their Deployment recreates them immediately, backoff
+  reset) and re-evaluate to a bounded deadline. Distinct from O-restart (which bounces
+  the *primary* workload to prove persistence). *Example: a RabbitMQ permission-fix case
+  whose clients are CrashLooping against the wrong perms; the oracle deletes them so
+  they retry under the corrected perms.* [ORACLE]
+- **O-drift-source — When grading a remediation, assert the drift *source* is gone, not
+  just the current snapshot.** If a case ships a self-healing reconciler (a CronJob, an
+  operator, an init-loop) that re-applies the broken state, an oracle reading only the
+  live value passes on a momentary good snapshot the reconciler then overwrites — a
+  false pass that also trips the sweep. Verify both: the value is correct AND no
+  reconciler is still configured to re-impose the fault. *Example: a RabbitMQ
+  permission-fix case shipping a reloader CronJob; the oracle fails unless its script no
+  longer enforces the wrong permissions.* [ORACLE]
+- **O-job — Grade a one-shot batch workload by terminal completion *and* its result
+  payload, within a budget.** A batch job (a Spark driver, a Ray job, an ETL run)
+  differs from a long-lived service (O-funcready) and an async signal (O-async): assert
+  it reaches a terminal success state within a generous cold-cluster budget AND emits
+  the promised result (a sentinel line, a numeric result in range, an expected token).
+  `succeeded>=1`/exit-0 alone false-passes a job that finished with wrong output; an
+  immediate read false-fails one still running. *Example: a compute job whose oracle
+  checks `Job.status.succeeded` only, passing a driver that finished but logged a wrong
+  numeric answer; the fix also greps the log for the in-range result.* [ORACLE]
+
 ---
 
 ## V. Composition & workflow rules
@@ -643,6 +755,36 @@ version mismatch).
 - **ADV6 — Verify must positively assert the fault planted/removed**, tolerant of
   empty values (never `grep -qx ''` on a possibly-empty stream); write verify as a
   literal block scalar to avoid nested-quote fragility.
+- **ADV7 — A spec-mutation adversary must also force the rollout that makes the fault
+  take effect (and lift, the rollout that clears it).** Patching a StatefulSet/Deployment
+  template (probe, image, resource, env, label) only changes the *desired* spec; running
+  pods keep the old spec until they re-roll. An inject that patches the template but
+  never restarts the pods reports a green verify while the live pods stay healthy — a
+  vacuous fault. Follow a template patch with a rollout trigger (`delete pod -l
+  <selector>` / `rollout restart`); lift restores the value and re-rolls; verify the
+  *effect* (pods adopting the new spec), not just the template field. *Example: a
+  probe-hardening adversary that patches `readinessProbe.timeoutSeconds` then deletes the
+  pods so the StatefulSet re-rolls with the bad probe.*
+- **ADV8 — Snapshot the pre-injection value at deploy, or restore to the documented
+  canonical default — never an unverified literal.** Most non-scale faults restore at
+  lift to a param default (a baseline password, image, count, rate, claim) they never
+  read from the live target at inject time; if a prior stage set a different value, lift
+  silently restores the *wrong* state. Capture the live value during the deploy probe and
+  restore exactly that, or restore to a documented canonical default (and say so). This
+  generalizes ADV5's replica-only `restore_replicas` discipline to images, secrets,
+  rates, claims, annotations, config. *Example: an image-drift adversary that, at lift,
+  `set image` back to a hardcoded tag — wrong whenever the workflow pinned a different
+  baseline; the fix records the original image at deploy and restores that.*
+- **ADV9 — Block a path with an allow-list that omits it, scoped so co-located traffic
+  still flows.** Network faults block a port not with "deny X" but with an ingress
+  `NetworkPolicy` whose allow-list *omits* the target (allow the admin port to block
+  SQL; `ingress: []` to deny all), relying on Kubernetes implicit-deny once a policy
+  selects the pod. Two traps: the policy must still *allow* the ports the rest of the
+  workload and the oracle's own probes need (else it over-blocks unrelated graded
+  paths), and lift *deletes* the policy (so deploy must not assume a prior allow-policy
+  to clobber). *Example: a "block the SQL port" adversary whose policy allows only the
+  admin/HTTP port — denying SQL by omission — while the admin endpoint the agent
+  diagnoses through stays reachable.*
 
 ---
 
