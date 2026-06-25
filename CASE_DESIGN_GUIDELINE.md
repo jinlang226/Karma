@@ -248,9 +248,12 @@ version mismatch).
   own liveness (`node status … is_live`, `_cat/nodes`, `rs.status()` members) rather
   than pod readiness, and size liveness probes (longer `timeoutSeconds`/`periodSeconds`,
   higher `failureThreshold`) so a transient load pause can't evict a healthy member.
-  The precondition analog of O-funcready. *Example: a CockroachDB multi-node setup
-  whose range stayed at 1 replica because too few nodes were live under load, so
-  RF=3 upreplication never happened and the seed timed out.* [PRECONDITION]
+  The precondition analog of O-funcready. *Example: gate a CockroachDB/ES/Mongo setup
+  on `node status … is_live` / `_cat/nodes` / `rs.status()` and **log the count**
+  before any quorum/placement op — so a member that is pod-Ready but not yet admitted
+  is caught, and (critically) a later stall is *attributed from data* — membership vs.
+  a hung exec (cf. O-bound) — instead of guessed; the live-member emit is what
+  disproves a wrong hypothesis.* [PRECONDITION]
 
 ### Manifests, literals, identity
 - **P15 — Get-or-apply for helper Pods.** `kubectl apply` of a bare helper Pod
