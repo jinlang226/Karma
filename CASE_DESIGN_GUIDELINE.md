@@ -427,9 +427,16 @@ version mismatch).
   during which a member/replica/node tally reads short. So a PRIMARY/SECONDARY count,
   a "`N` nodes" check, or a "`N` ready" check that follows a template mutation MUST
   use the O-flap convergence wrapper (or wait on `rollout status` first), not a
-  single snapshot. *Example: a MongoDB case whose solution sets a StatefulSet
-  `monitoring=enabled` label → rolling restart → an oracle that reads `rs.status()` once with
-  the last-restarted pod at age 7s → "expected 2 SECONDARY, got 1" on a stably-healthy set.* [ORACLE]
+  single snapshot. **When you add a convergence wrapper, you MUST also raise the
+  oracle command's `timeout_sec` above the loop deadline (O-deadline) — a 120s loop
+  under a 60s budget just *relocates* the timeout to "[timed out after 60s]". And
+  loops added to *separate* check functions run **sequentially**, so the budget must
+  exceed their SUM (two 120s loops ⇒ `timeout_sec ≥ ~300`), not a single loop.**
+  *Example: a MongoDB case whose solution sets a StatefulSet `monitoring=enabled`
+  label → rolling restart → an oracle that reads `rs.status()` once with the
+  last-restarted pod at age 7s → "expected 2 SECONDARY, got 1" on a stably-healthy
+  set — fixed with a poll loop, but only if the oracle's `timeout_sec` was raised to
+  fit it.* [ORACLE]
 - **O-funcready — Grade *functional* readiness (the service serves), not just the
   k8s pod-`Ready` bit.** "Pod-Ready ≠ ready-to-use" cuts **both** ways: an oracle
   that asserts `pod.status.conditions[Ready]==True` can *false-fail a healthy*
