@@ -5,6 +5,7 @@ import json
 import os
 import subprocess
 import sys
+import time
 
 
 NAMESPACE = os.environ.get("BENCH_NAMESPACE", "mongodb")
@@ -193,7 +194,7 @@ def check_service():
     return fail("MongoDB deploy service check failed:", errors)
 
 
-def check_workload():
+def _workload_attempt():
     errors = []
     sts_result = run(
         ["kubectl", "-n", NAMESPACE, "get", "sts", CLUSTER_PREFIX, "-o", "json"]
@@ -201,12 +202,12 @@ def check_workload():
     if sts_result.returncode != 0:
         detail = sts_result.stderr.strip() or sts_result.stdout.strip() or f"exit {sts_result.returncode}"
         errors.append(f"Failed to read statefulset {CLUSTER_PREFIX}: {detail}")
-        return fail("MongoDB deploy workload check failed:", errors)
+        return errors
     try:
         sts = json.loads(sts_result.stdout)
     except json.JSONDecodeError:
         errors.append("Failed to parse statefulset JSON")
-        return fail("MongoDB deploy workload check failed:", errors)
+        return errors
 
     spec_replicas = sts.get("spec", {}).get("replicas")
     ready_replicas = sts.get("status", {}).get("readyReplicas")
@@ -231,12 +232,12 @@ def check_workload():
     if pods_result.returncode != 0:
         detail = pods_result.stderr.strip() or pods_result.stdout.strip() or f"exit {pods_result.returncode}"
         errors.append(f"Failed to read pods: {detail}")
-        return fail("MongoDB deploy workload check failed:", errors)
+        return errors
     try:
         pods = json.loads(pods_result.stdout)
     except json.JSONDecodeError:
         errors.append("Failed to parse pods JSON")
-        return fail("MongoDB deploy workload check failed:", errors)
+        return errors
 
     items = pods.get("items", [])
     if len(items) != EXPECTED_REPLICAS:
@@ -248,14 +249,30 @@ def check_workload():
         if ready.get("status") != "True":
             errors.append(f"Pod {name} is not Ready")
 
+    return errors
+
+
+def check_workload():
+    # O-flap-restart: a freshly-deployed StatefulSet brings pods Ready staggered,
+    # so readyReplicas/Ready and the pod count read short during formation. Poll
+    # to convergence (~120s, 5s between attempts); assertions unchanged.
+    deadline = time.monotonic() + 120
+    errors = []
+    while True:
+        errors = _workload_attempt()
+        if not errors:
+            break
+        if time.monotonic() >= deadline:
+            break
+        time.sleep(5)
     return fail("MongoDB deploy workload check failed:", errors)
 
 
-def check_topology():
+def _topology_attempt():
     errors = []
     admin_pw = get_secret_value(ADMIN_SECRET, "password", errors)
     if errors:
-        return fail("MongoDB deploy topology check failed:", errors)
+        return errors
     # directConnection skips SDAM topology monitoring, which a localhost
     # connection would start and which fails under a persisted requireTLS mode.
     admin_uri = f"mongodb://{ADMIN_USER}:{admin_pw}@localhost:27017/admin?directConnection=true"
@@ -274,6 +291,22 @@ def check_topology():
             errors.append(f"Expected {EXPECTED_REPLICAS - 1} SECONDARY, got {secondary}")
     else:
         errors.append("Unable to read replica set status")
+    return errors
+
+
+def check_topology():
+    # O-flap-restart: members join via STARTUP2/RECOVERING during set formation,
+    # reading the PRIMARY/SECONDARY tally short. Poll to convergence (~120s, 5s
+    # between attempts); assertion not loosened.
+    deadline = time.monotonic() + 120
+    errors = []
+    while True:
+        errors = _topology_attempt()
+        if not errors:
+            break
+        if time.monotonic() >= deadline:
+            break
+        time.sleep(5)
     return fail("MongoDB deploy topology check failed:", errors)
 
 

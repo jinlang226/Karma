@@ -5,6 +5,7 @@ import json
 import os
 import subprocess
 import sys
+import time
 
 
 NAMESPACE = os.environ.get("BENCH_NAMESPACE", "mongodb")
@@ -173,7 +174,7 @@ def get_sts(errors):
         return {}
 
 
-def check_workload():
+def _workload_attempt():
     errors = []
     sts = get_sts(errors)
     if sts:
@@ -187,12 +188,12 @@ def check_workload():
     pods_res = run(["kubectl", "-n", NAMESPACE, "get", "pods", "-l", f"app={CLUSTER_PREFIX}", "-o", "json"])
     if pods_res.returncode != 0:
         errors.append(f"failed to read pods: {pods_res.stderr.strip() or pods_res.stdout.strip()}")
-        return fail("Readiness probe tuning workload check failed:", errors)
+        return errors
     try:
         pods = json.loads(pods_res.stdout)
     except json.JSONDecodeError:
         errors.append("failed to parse pods JSON")
-        return fail("Readiness probe tuning workload check failed:", errors)
+        return errors
 
     items = pods.get("items", [])
     if len(items) != EXPECTED_REPLICAS:
@@ -204,6 +205,22 @@ def check_workload():
         if ready.get("status") != "True":
             errors.append(f"pod {name} is not Ready")
 
+    return errors
+
+
+def check_workload():
+    # O-flap-restart: tuning the probes rolls the StatefulSet, so readyReplicas
+    # and per-pod Ready read short while the last pod recreates. Poll to
+    # convergence (~120s, 5s between attempts); assertions unchanged.
+    deadline = time.monotonic() + 120
+    errors = []
+    while True:
+        errors = _workload_attempt()
+        if not errors:
+            break
+        if time.monotonic() >= deadline:
+            break
+        time.sleep(5)
     return fail("Readiness probe tuning workload check failed:", errors)
 
 
@@ -248,11 +265,11 @@ def _find_primary(admin_uri, errors):
     return f"{POD_PREFIX}0"
 
 
-def check_topology():
+def _topology_attempt():
     errors = []
     admin_pw = get_secret_value(ADMIN_SECRET, "password", errors)
     if errors:
-        return fail("Readiness probe tuning topology check failed:", errors)
+        return errors
     # directConnection skips SDAM topology monitoring, which a localhost
     # connection would start and which fails under a persisted requireTLS mode.
     admin_uri = f"mongodb://{ADMIN_USER}:{admin_pw}@localhost:27017/admin?directConnection=true"
@@ -270,6 +287,22 @@ def check_topology():
             errors.append(f"expected {EXPECTED_REPLICAS - 1} SECONDARY, got {secondary_n}")
     else:
         errors.append("unable to read replica set status")
+    return errors
+
+
+def check_topology():
+    # O-flap-restart: the probe-tune roll leaves the last-restarted member in a
+    # STARTUP2/RECOVERING rejoin window, reading the SECONDARY tally short. Poll
+    # to convergence (~120s, 5s between attempts); assertion not loosened.
+    deadline = time.monotonic() + 120
+    errors = []
+    while True:
+        errors = _topology_attempt()
+        if not errors:
+            break
+        if time.monotonic() >= deadline:
+            break
+        time.sleep(5)
     return fail("Readiness probe tuning topology check failed:", errors)
 
 

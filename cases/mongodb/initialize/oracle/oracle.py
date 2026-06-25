@@ -5,6 +5,7 @@ import json
 import os
 import subprocess
 import sys
+import time
 
 
 NAMESPACE = os.environ.get("BENCH_NAMESPACE", "mongodb")
@@ -204,7 +205,7 @@ def check_topology():
     return fail("MongoDB initialize topology check failed:", errors)
 
 
-def check_health():
+def _health_attempt():
     errors = []
     pod = f"{CLUSTER_PREFIX}-0"
     status = mongo_json(pod, "JSON.stringify(rs.status())", "rs.status()", errors)
@@ -234,6 +235,23 @@ def check_health():
         if ready_replicas != EXPECTED_REPLICAS:
             errors.append(f"Ready replicas expected {EXPECTED_REPLICAS}, got {ready_replicas}")
 
+    return errors
+
+
+def check_health():
+    # O-flap-restart: restoring/reforming the set leaves members briefly in
+    # STARTUP2/RECOVERING and pods Ready staggered, so the PRIMARY/SECONDARY and
+    # readyReplicas tallies read short. Poll to convergence (~120s, 5s between
+    # attempts); assertions unchanged.
+    deadline = time.monotonic() + 120
+    errors = []
+    while True:
+        errors = _health_attempt()
+        if not errors:
+            break
+        if time.monotonic() >= deadline:
+            break
+        time.sleep(5)
     return fail("MongoDB initialize health check failed:", errors)
 
 

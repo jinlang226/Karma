@@ -5,6 +5,7 @@ import json
 import os
 import subprocess
 import sys
+import time
 
 
 NAMESPACE = os.environ.get("BENCH_NAMESPACE", "mongodb")
@@ -168,18 +169,18 @@ def mongo_json(pod, script, label, errors):
         return None
 
 
-def check_workload():
+def _check_workload_attempt():
     errors = []
     res = run(["kubectl", "-n", NAMESPACE, "get", "sts", CLUSTER_PREFIX, "-o", "json"])
     if res.returncode != 0:
         detail = res.stderr.strip() or res.stdout.strip() or f"exit {res.returncode}"
         errors.append(f"Failed to read statefulset {CLUSTER_PREFIX}: {detail}")
-        return fail("MongoDB decommission workload check failed:", errors)
+        return errors
     try:
         sts = json.loads(res.stdout)
     except json.JSONDecodeError:
         errors.append("Failed to parse statefulset JSON")
-        return fail("MongoDB decommission workload check failed:", errors)
+        return errors
 
     spec_replicas = sts.get("spec", {}).get("replicas")
     ready_replicas = sts.get("status", {}).get("readyReplicas", 0)
@@ -188,10 +189,27 @@ def check_workload():
     if ready_replicas != TARGET_REPLICAS:
         errors.append(f"Ready replicas expected {TARGET_REPLICAS}, got {ready_replicas}")
 
+    return errors
+
+
+def check_workload():
+    # O-flap-restart: decommissioning reconfigures the set and removes a pod, so
+    # the readyReplicas/pod-count tally reads short during the rejoin/election
+    # window. Poll to convergence (~120s, 5s between attempts); assertions
+    # unchanged.
+    deadline = time.monotonic() + 120
+    errors = []
+    while True:
+        errors = _check_workload_attempt()
+        if not errors:
+            break
+        if time.monotonic() >= deadline:
+            break
+        time.sleep(5)
     return fail("MongoDB decommission workload check failed:", errors)
 
 
-def check_topology():
+def _check_topology_attempt():
     errors = []
     pod = f"{CLUSTER_PREFIX}-0"
 
@@ -221,6 +239,22 @@ def check_topology():
         if s != TARGET_REPLICAS - 1:
             errors.append(f"Expected {TARGET_REPLICAS - 1} SECONDARY, got {s}")
 
+    return errors
+
+
+def check_topology():
+    # O-flap-restart: after the decommission reconfig the set may re-elect and a
+    # member may briefly RECOVER, reading the SECONDARY tally short. Poll to
+    # convergence (~120s, 5s between attempts); assertion not loosened.
+    deadline = time.monotonic() + 120
+    errors = []
+    while True:
+        errors = _check_topology_attempt()
+        if not errors:
+            break
+        if time.monotonic() >= deadline:
+            break
+        time.sleep(5)
     return fail("MongoDB decommission topology check failed:", errors)
 
 
