@@ -293,9 +293,20 @@ version mismatch).
   `tests/unit/test_case_command_syntax.py`. [PRECONDITION]
 - **P22 — Quote URLs with `&`/`?`.** `curl …/health?wait_for_status=yellow&timeout=5s`
   backgrounds curl (the `&`) → grep gets no input → burns the budget. [PRECONDITION]
-- **P23 — Size scheduling *requests* to fit the target node** (request governs
-  scheduling; the DB scales cache to the *limit*, so a small request is safe). 5×2Gi
-  requests don't fit a 7.6Gi node → pods Pending. [PRECONDITION]
+- **P23 — Size *requests* to fit the node, *limits* to the engine's real floor.**
+  The request governs scheduling and the DB scales its cache to the *limit*, so a
+  small request is safe — 5×2Gi *requests* don't fit a 7.6Gi node → pods Pending. But
+  the *limit* must meet the engine's documented floor and stay consistent across every
+  case of a service: because the DB scales to the limit, a too-small limit OOM-kills
+  (**exit 137**) under a memory-heavy op (upreplication, rebalancing, compaction, an
+  in-pod client), the workload stalls, and the symptom surfaces *downstream* as a
+  precondition/oracle **timeout**, not an obvious OOM — so triage a precondition
+  timeout by checking the workload for OOMKilled/CrashLoop before assuming "needs more
+  time." The trap is drift: one case left below the service standard fails
+  reproducibly only under concurrent load and reads as a flake. *Example: a
+  CockroachDB case whose 5 nodes were capped at 1Gi (vs 2Gi in every sibling case)
+  OOM'd during range relocation, stalling its seed until it overran the unit timeout.*
+  [PRECONDITION]
 - **P24 — TLS re-key without a mixed-CA window.** A CA swap done with rolling
   `kubectl delete pod` leaves old- and new-cert pods that can't handshake. Scale to
   0 first then up, or use `podManagementPolicy: Parallel` (PVCs untouched → data /
