@@ -107,14 +107,14 @@ were an LLM-provider outage. Classify first:
 | You see… | It's almost certainly… | Rule |
 |---|---|---|
 | "agent submitted (0s)" + empty agent.log on a **retried** stage | stale `submit.txt` not cleared before relaunch | F-E4 |
-| oracle "found 0 pods" / 401 right after a verified-green cluster | transient connectivity / readiness flap | O2, §VIII |
+| oracle "found 0 pods" / 401 right after a verified-green cluster | transient connectivity / readiness flap | O-scope, §VIII |
 | precondition "error" ~8s into a fresh/busy cluster | SA-not-ready / connection-refused apply race | §VIII |
 | "namespace is being terminated/deleted", repeated give-ups | namespace uniqueness / teardown race | F-E8 |
 | oracle fails but the prompt never asked for the missing thing | oracle-contract drift / non-additive dep | O-contract, C3 |
 | run aborts with **no `run.json`** | adversary stage-ref mismatch (pre-run) | ADV4 |
 | a heavy case "trivially passes" / finishes in ~6s | silent no-op precondition (Law 5) | P-noop |
 | zero kubectl activity in evidence | proxy log double-nesting / empty KUBECONFIG / schema mismatch | F-E13, F-E15, F-B7 |
-| a check fails on **every** attempt (and on an idle node) | **deterministic** root cause — find it from agent ground truth; do **not** paper over with retries/timeout bumps | O3 |
+| a check fails on **every** attempt (and on an idle node) | **deterministic** root cause — find it from agent ground truth; do **not** paper over with retries/timeout bumps | O-determ |
 
 **Re-validate after every fix** — surface fixes routinely unmask the next layer
 (http→https reaches ES → exposes 401; pinning a blocker surfaces a downstream
@@ -123,6 +123,10 @@ version mismatch).
 ---
 
 ## III. Precondition rules
+
+> **Quick reference.** *Probe semantics:* P1–P5, P-noop. *Verify post-state:* P6,
+> P7, P8, P27. *Cluster reuse & timing:* P9–P14. *Manifests, literals, identity:*
+> P15, P16, P18–P26, P-decoy, P-secure, P-toolimage, P-order.
 
 ### Probe semantics & specificity
 - **P1 — Skip-probe success is exit-code based; never `|| true`.** The port that
@@ -226,13 +230,12 @@ version mismatch).
   harness then **re-runs the whole verify** — so an N-iteration loop that overruns
   multiplies into the precondition cap (`setup timeout: preconditions exceeded
   600s`) and the agent never launches. Size the inner loop strictly below one unit
-  budget. *Example: an ES master-downscale whose `seq 1 30`×`sleep 3`
-  (~240s) verify in a 120s unit was retried ~13× → blew the 600s cap.* [PRECONDITION]
-- **P14b — To set per-unit `retries`/`interval_sec`, author the structured block
-  form** `{commands: […], retries: N, interval_sec: M}` for probe/apply/verify — a
-  bare string or list carries no per-unit retry budget. A malformed wrapper or wrong
-  key surfaces at load as the misleading *"verify command(s) are required"*, not a
-  runtime error.
+  budget. To set per-unit `retries`/`interval_sec` at all, author the structured
+  block form `{commands: […], retries: N, interval_sec: M}` for probe/apply/verify
+  (a bare string or list carries no per-unit retry budget; a malformed wrapper
+  surfaces at load as the misleading *"verify command(s) are required"*).
+  *Example: an ES master-downscale whose `seq 1 30`×`sleep 3` (~240s) verify in a
+  120s unit was retried ~13× → blew the 600s cap.* [PRECONDITION]
 
 ### Manifests, literals, identity
 - **P15 — Get-or-apply for helper Pods.** `kubectl apply` of a bare helper Pod
@@ -341,13 +344,22 @@ version mismatch).
 
 ## IV. Oracle rules
 
+> **Quick reference.** *Grade the contract:* O-promise, O-scope, O-contract,
+> O-multi, O-relative. *Connection & identity:* O-tls, O-direct, O-primary,
+> O-consumer, O-pod-local, O-scheme, O-binary. *Robustness & timing:* O-flap,
+> O-flap-restart, O-funcready, O-maxtime, O-bound, O-determ, O-restart, O-budget,
+> O-deadline, O-equiv, O-async. *Scripting hygiene:* O-jsonpath, O-imports, O-seed,
+> O-exec-metric. *Assertion completeness & structure:* O-collect, O-subcheck,
+> O-diag, O-everymember, O-negative, O-e2e, O-rotate-diff, O-resolve, O-equiv-value,
+> O-mgmt-order, O-client-bounce, O-drift-source, O-job.
+
 ### Grade the contract, from live state, scoped to the target
-- **O1 — Grade only what the prompt promised.** Any exact filename, count, label,
+- **O-promise — Grade only what the prompt promised.** Any exact filename, count, label,
   version, role/object name, magic probe value, or `replSetName` the oracle checks
   must appear in the prompt or be planted by the precondition — never left for the
   agent to guess. Prefer grading the **effective outcome** (can read reports;
   denied writes) over an undisclosed identifier. [ORACLE/PROMPT]
-- **O2 — Resolve expectations from live state, scoped to the target object.**
+- **O-scope — Resolve expectations from live state, scoped to the target object.**
   Never sum a global topology a namespace legitimately accumulates; never hardcode
   a standalone count/name/scheme. Count only StatefulSets backing live
   `_cat/nodes` members (gate on **desired `spec.replicas` of not-being-deleted**
@@ -459,7 +471,7 @@ version mismatch).
   the false fail cascades to "precondition units failed" on retry. Add `timeout=`,
   `--connect-timeout/--max-time`, `timeout 15 s_client`; catch the exception;
   retry hang/empty as "not converged". [ORACLE]
-- **O3 — Deterministic ≠ transient.** A check that fails on *every* attempt (and
+- **O-determ — Deterministic ≠ transient.** A check that fails on *every* attempt (and
   on an idle node) has a deterministic root cause — find it from agent ground
   truth; do **not** sweep retries/timeout bumps over it (they were added, were dead
   weight, and were reverted). Retries must never mask a *wrong value* (the
@@ -555,7 +567,7 @@ version mismatch).
   password, a read-only role) is proven only if the *forbidden* path actually fails:
   assert an unauthenticated query is rejected, a plain connect refused, the old
   credential denied. A positive-only oracle passes a cluster where auth/TLS was
-  silently never enabled. Scan stdout *and* stderr, and per O3 never retry these.
+  silently never enabled. Scan stdout *and* stderr, and per O-determ never retry these.
   *Example: a deploy oracle that, alongside a successful authenticated ping, runs a
   credential-less query and fails if it succeeds.* [ORACLE]
 - **O-e2e — For an externally-reachable deliverable, prove it end-to-end over the
@@ -627,6 +639,10 @@ version mismatch).
 
 ## V. Composition & workflow rules
 
+> **Quick reference.** *Additive composition:* C1, C3, C4, C7, C8. *Identity &
+> ordering:* C2, C10, C11, C12. *What can / can't chain:* C5, C6, C9. *Regression
+> sweep:* C-sweep.
+
 - **C1 — Bring every oracle dependency additively.** Anything the oracle reads
   (secrets, ConfigMaps, baselines, seed data, users/roles, a `monitoring`
   namespace) must be (re)established by its **own additive, idempotent,
@@ -685,19 +701,16 @@ version mismatch).
   `partitioned-update`'s `24.1.1` fails when a subsequent `major-upgrade-finalize`
   (defaulting to `24.1.0`) legitimately sets the version *back down* — the effective
   end-state is the last mutator's value, not the first's. Pin to the last mutator
-  (declaratively via C10b's `${stages.<id>.params.<n>}` so it can't drift), audit any
-  pin whose justifying comment names multiple upstream stages with conflicting param
-  values, and sweep *all* workflows for the mismatch. Drop SETUP assertions an
-  upstream stage can legitimately invalidate; keep only the agent's-task assertions.
-  [COMPOSITION]
-- **C10b — Pin a downstream target *declaratively* with `${stages.<id>.params.<n>}`,
-  never a re-typed literal.** A stage's `param_overrides` may reference a prior
-  stage's resolved param (`target_version: ${stages.stage_03.params.crdb_version}`);
-  the resolver rejects self/forward refs and unknown ids, requires the **exact
-  zero-padded** id (like ADV4), and only *warns* (resolving to `null`) when an
-  intervening overlapping-namespace stage may have invalidated the source — treat
-  that warning as a chaining bug. This is the wiring that makes C10 robust instead of
-  a hand-copied default that silently drifts. [COMPOSITION]
+  **declaratively, never as a re-typed literal** — a stage's `param_overrides` may
+  reference a prior stage's resolved param (`target_version:
+  ${stages.stage_03.params.crdb_version}`) so it can't drift; the resolver rejects
+  self/forward refs and unknown ids, requires the **exact zero-padded** id (like
+  ADV4), and only *warns* (resolving to `null`) when an intervening
+  overlapping-namespace stage may have invalidated the source (treat that warning as
+  a chaining bug). Audit any pin whose justifying comment names multiple upstream
+  stages with conflicting param values, and sweep *all* workflows for the mismatch.
+  Drop SETUP assertions an upstream stage can legitimately invalidate; keep only the
+  agent's-task assertions. [COMPOSITION]
 - **C-sweep — A stage composed *before* a legitimate shared-state mutator trips the
   regression sweep; design it to be adjudicable.** The final sweep re-runs every
   passed stage's oracle against end-of-run state, so an early oracle that asserts an
@@ -736,6 +749,10 @@ version mismatch).
 ---
 
 ## VII. Adversary rules
+
+> **Quick reference.** *Probe polarity & gates:* ADV1, ADV2. *Scoping & transport:*
+> ADV3, ADV5, ADV9. *Stage refs & windows:* ADV4. *Inject/lift correctness:* ADV6,
+> ADV7, ADV8.
 
 - **ADV1 — Probe polarity is the INVERSE of preconditions.** Precondition:
   probe-pass ⇒ state present ⇒ *skip* apply. Adversary: probe-pass ⇒ target
@@ -917,13 +934,13 @@ silent `except: pass`); cross-stage agent memory via `agent_session: persistent`
       (P12); `kubectl wait --timeout` paired with `timeout_sec` (P13); first DB
       call ping-gated (P11); flap-retry every oracle reachability check (O-flap),
       bounded exec/curl (O-bound), oracle budget sized for exec count (O-budget).
-- [ ] **Oracle:** grades only the prompt's promise (O1); resolves from live state
-      scoped to the target (O2); proper client identity / mode / pod-local fallback
+- [ ] **Oracle:** grades only the prompt's promise (O-promise); resolves from live state
+      scoped to the target (O-scope); proper client identity / mode / pod-local fallback
       (O-tls, O-direct, O-primary, O-scheme, O-pod-local); accepts equivalents
       (O-equiv) and inspects *all* entries of a multi-valued artifact (O-multi);
       internal retry/wait loop finishes before `timeout_sec` (O-deadline) and any
       oracle-initiated pod restart is budgeted for the worst case (O-restart);
-      deterministic-vs-transient discipline (O3); escaped jsonpath + imports
+      deterministic-vs-transient discipline (O-determ); escaped jsonpath + imports
       (O-jsonpath, O-imports).
 - [ ] **Literals:** roles/versions/units/SAs validated real (P17); versions
       parameterized + envsubst whitelist (P18); no mutable secret in a readiness
@@ -936,7 +953,7 @@ silent `except: pass`); cross-stage agent memory via `agent_session: persistent`
       ADV5); positive verify (ADV6).
 - [ ] **Triage discipline:** confirm a failure isn't INFRA-FLAKE or AGENT_FAULT
       before filing a test bug (§II); a deterministic failure gets a root-cause
-      fix, not retries (O3); re-validate after every fix (a fix unmasks the next
+      fix, not retries (O-determ); re-validate after every fix (a fix unmasks the next
       layer).
 - [ ] **Sweep:** when you find a fault in a cloned family, fix it across **all**
       cases/workflows, not just the one observed (Law 8).
@@ -950,7 +967,7 @@ ES carries the most and most-distinct faults. JVM cluster formation + master
 election + shard recovery to green + one-at-a-time rolling restarts make every
 operation slow and flap-prone, and the security model adds an auth layer mid-chain.
 Default audit assumptions for a new ES case:
-1. **Node-count over-count (O2)** — oracle sums *all* ES StatefulSets; scope to
+1. **Node-count over-count (O-scope)** — oracle sums *all* ES StatefulSets; scope to
    live `_cat/nodes`-backed STSs, gate on desired `spec.replicas` of
    not-being-deleted STSs (status lag drops a joined-but-yellow node), live-derive
    first for add/preserve cases (param-first only for downscale).
@@ -976,7 +993,7 @@ Also: allocation-attribute oracles must flag a (key,value) on any *new* node no
   (O-direct).
 - **Primary after election (O-primary)** — detect `db.hello().isWritablePrimary`;
   seed waits for a primary, never defaults to pod-0.
-- **Adaptive auth (O2/C4)** — accept both `authSource=admin` and `=<appdb>`; the
+- **Adaptive auth (O-scope/C4)** — accept both `authSource=admin` and `=<appdb>`; the
   "bring-your-own admin user" fixture (C6/C1) for cases composed after a no-auth
   predecessor; ping-gate before `rs.initiate` (P11).
 - **Version-upgrade** cases need an *old-version baseline*, which is impossible to
