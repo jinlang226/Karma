@@ -1,0 +1,574 @@
+OpenAI Codex v0.142.2
+--------
+workdir: /Users/jinyige/Karma/runs/new-added-workflows/elasticsearch-master-downscale-sweep-20260626_044136/stages/stage_02
+model: gpt-5.5
+provider: openai
+approval: never
+sandbox: danger-full-access
+reasoning effort: xhigh
+reasoning summaries: none
+session id: 019f0241-bf4d-7c11-a3e3-d8e190a1b18c
+--------
+user
+Reduce the cluster from 3 nodes to 1 without data loss, and clean up unused PVCs.
+
+CONSTRAINTS:
+- Do not install CRDs or use operators.
+- Do not delete PVCs still referenced by running pods.
+
+GOAL:
+- Cluster runs on 1 node with all data available.
+- Only PVCs for active pods remain.
+
+Verification:
+1. Cluster health is yellow/green with 1 node and no unassigned shards.
+2. app-data shards are on the remaining node.
+3. Only PVCs for active ordinals remain.
+4. Remaining pod still has its marker file.
+codex
+I’ll inspect the Kubernetes resources first so I can identify how Elasticsearch is deployed, which PVCs are bound to which ordinals, and which node currently has the full shard copy before changing replica count or deleting anything.
+exec
+/bin/zsh -lc pwd in /Users/jinyige/Karma/runs/new-added-workflows/elasticsearch-master-downscale-sweep-20260626_044136/stages/stage_02
+ succeeded in 0ms:
+/Users/jinyige/Karma/runs/new-added-workflows/elasticsearch-master-downscale-sweep-20260626_044136/stages/stage_02
+
+exec
+/bin/zsh -lc 'rg --files' in /Users/jinyige/Karma/runs/new-added-workflows/elasticsearch-master-downscale-sweep-20260626_044136/stages/stage_02
+ succeeded in 0ms:
+proxy-client.crt
+agent.log
+precondition.log
+prompt.txt
+proxy-client.key
+
+exec
+/bin/zsh -lc 'kubectl get pvc' in /Users/jinyige/Karma/runs/new-added-workflows/elasticsearch-master-downscale-sweep-20260626_044136/stages/stage_02
+exec
+/bin/zsh -lc 'kubectl get pods -o wide' in /Users/jinyige/Karma/runs/new-added-workflows/elasticsearch-master-downscale-sweep-20260626_044136/stages/stage_02
+exec
+/bin/zsh -lc 'kubectl get sts,deploy,svc,cm,secret' in /Users/jinyige/Karma/runs/new-added-workflows/elasticsearch-master-downscale-sweep-20260626_044136/stages/stage_02
+ succeeded in 0ms:
+No resources found in default namespace.
+
+ succeeded in 0ms:
+No resources found in default namespace.
+
+ succeeded in 137ms:
+NAME                 TYPE        CLUSTER-IP   EXTERNAL-IP   PORT(S)   AGE
+service/kubernetes   ClusterIP   10.96.0.1    <none>        443/TCP   14d
+
+NAME                         DATA   AGE
+configmap/kube-root-ca.crt   1      14d
+
+codex
+Default is empty, so I’m checking the task metadata and all namespaces next. The resources are probably deployed outside `default`, and I need the exact namespace before scaling or deleting PVCs.
+exec
+/bin/zsh -lc "sed -n '1,220p' prompt.txt" in /Users/jinyige/Karma/runs/new-added-workflows/elasticsearch-master-downscale-sweep-20260626_044136/stages/stage_02
+exec
+/bin/zsh -lc "sed -n '1,220p' precondition.log" in /Users/jinyige/Karma/runs/new-added-workflows/elasticsearch-master-downscale-sweep-20260626_044136/stages/stage_02
+ succeeded in 0ms:
+Reduce the cluster from 3 nodes to 1 without data loss, and clean up unused PVCs.
+
+CONSTRAINTS:
+- Do not install CRDs or use operators.
+- Do not delete PVCs still referenced by running pods.
+
+GOAL:
+- Cluster runs on 1 node with all data available.
+- Only PVCs for active pods remain.
+
+Verification:
+1. Cluster health is yellow/green with 1 node and no unassigned shards.
+2. app-data shards are on the remaining node.
+3. Only PVCs for active ordinals remain.
+4. Remaining pod still has its marker file.
+ succeeded in 0ms:
+[precondition:es_env_ready:preconditionUnits[0] 'es_env_ready':probe] $ kubectl -n elasticsearch get pods 2>/dev/null | grep -c Running
+2
+
+[precondition:downscale_seed_fixture:preconditionUnits[1] 'downscale_seed_fixture':probe] $ /bin/sh -c 'pw=$(kubectl -n elasticsearch get secret elastic-password -o jsonpath="{.data.password}" 2>/dev/null | base64 -d 2>/dev/null); A=""; [ -n "$pw" ] && A="-u elastic:$pw"; kubectl -n elasticsearch exec curl-test -- curl -sk $A --max-time 5 "http://es-http.elasticsearch.svc:9200/app-data/_count" 2>/dev/null | grep -q "\"count\""'
+
+[precondition:downscale_seed_fixture:preconditionUnits[1] 'downscale_seed_fixture':apply] $ /bin/sh -c 'pw=$(kubectl -n elasticsearch get secret elastic-password -o jsonpath="{.data.password}" 2>/dev/null | base64 -d 2>/dev/null); A=""; [ -n "$pw" ] && A="-u elastic:$pw"; kubectl -n elasticsearch exec curl-test -- curl -sk $A -XPUT "http://es-http.elasticsearch.svc:9200/app-data" -H "Content-Type: application/json" -d "{\"settings\":{\"number_of_shards\":3,\"number_of_replicas\":1}}" >/dev/null 2>&1; kubectl -n elasticsearch exec curl-test -- curl -sk $A -XPOST "http://es-http.elasticsearch.svc:9200/app-data/_doc/1" -H "Content-Type: application/json" -d "{\"msg\":\"alpha\"}" >/dev/null 2>&1; kubectl -n elasticsearch exec curl-test -- curl -sk $A -XPOST "http://es-http.elasticsearch.svc:9200/app-data/_doc/2" -H "Content-Type: application/json" -d "{\"msg\":\"beta\"}" >/dev/null 2>&1; kubectl -n elasticsearch exec curl-test -- curl -sk $A -XPOST "http://es-http.elasticsearch.svc:9200/app-data/_doc/3" -H "Content-Type: application/json" -d "{\"msg\":\"gamma\"}" >/dev/null 2>&1; true'
+
+[precondition:downscale_seed_fixture:preconditionUnits[1] 'downscale_seed_fixture':apply] $ /bin/sh -c 'for pod in $(kubectl -n elasticsearch get pods -l app=es-cluster -o jsonpath="{.items[*].metadata.name}"); do kubectl -n elasticsearch exec "$pod" -- /bin/sh -c "echo marker > /usr/share/elasticsearch/data/pvc-gc-marker" >/dev/null 2>&1 || true; done; true'
+
+[precondition:downscale_seed_fixture:preconditionUnits[1] 'downscale_seed_fixture':verify] $ /bin/sh -c 'pw=$(kubectl -n elasticsearch get secret elastic-password -o jsonpath="{.data.password}" 2>/dev/null | base64 -d 2>/dev/null); A=""; [ -n "$pw" ] && A="-u elastic:$pw"; kubectl -n elasticsearch exec curl-test -- curl -sk $A --max-time 5 "http://es-http.elasticsearch.svc:9200/app-data/_count" >/dev/null 2>&1; true'
+
+
+exec
+/bin/zsh -lc 'kubectl get ns' in /Users/jinyige/Karma/runs/new-added-workflows/elasticsearch-master-downscale-sweep-20260626_044136/stages/stage_02
+exec
+/bin/zsh -lc 'kubectl get pvc -A' in /Users/jinyige/Karma/runs/new-added-workflows/elasticsearch-master-downscale-sweep-20260626_044136/stages/stage_02
+ succeeded in 0ms:
+NAMESPACE       NAME                STATUS   VOLUME                                     CAPACITY   ACCESS MODES   STORAGECLASS   VOLUMEATTRIBUTESCLASS   AGE
+elasticsearch   data-es-cluster-0   Bound    pvc-bf4f5bd3-b030-456e-bac1-c775585c30bb   5Gi        RWO            standard       <unset>                 6m57s
+elasticsearch   data-es-cluster-1   Bound    pvc-d0a6161a-4b8a-4d9c-8b18-195be19f75f3   5Gi        RWO            standard       <unset>                 6m57s
+elasticsearch   data-es-cluster-2   Bound    pvc-76f3e80c-1821-4bbd-bf9e-c25b9116df2f   5Gi        RWO            standard       <unset>                 6m57s
+
+ succeeded in 0ms:
+NAME                                                       STATUS   AGE
+default                                                    Active   14d
+elasticsearch                                              Active   6m58s
+karma-rabbitmq-security-marathon-2026-e9526b7b-cluster-a   Active   3d7h
+kube-node-lease                                            Active   14d
+kube-public                                                Active   14d
+kube-system                                                Active   14d
+local-path-storage                                         Active   14d
+
+exec
+/bin/zsh -lc 'kubectl get pods -A -o wide' in /Users/jinyige/Karma/runs/new-added-workflows/elasticsearch-master-downscale-sweep-20260626_044136/stages/stage_02
+ succeeded in 0ms:
+NAMESPACE                                                  NAME                                         READY   STATUS      RESTARTS       AGE     IP             NODE                 NOMINATED NODE   READINESS GATES
+elasticsearch                                              curl-test                                    1/1     Running     0              6m57s   10.244.3.129   kind-worker3         <none>           <none>
+elasticsearch                                              es-cluster-0                                 1/1     Running     0              78s     10.244.1.128   kind-worker          <none>           <none>
+karma-rabbitmq-security-marathon-2026-e9526b7b-cluster-a   app-client-5b47685ddb-hvgq5                  1/1     Running     13 (10h ago)   3d7h    10.244.1.4     kind-worker          <none>           <none>
+karma-rabbitmq-security-marathon-2026-e9526b7b-cluster-a   app-producer-77696467c6-wg7z9                1/1     Running     14 (13h ago)   3d7h    10.244.3.6     kind-worker3         <none>           <none>
+karma-rabbitmq-security-marathon-2026-e9526b7b-cluster-a   curl-test                                    1/1     Running     30 (59m ago)   3d7h    10.244.2.4     kind-worker2         <none>           <none>
+karma-rabbitmq-security-marathon-2026-e9526b7b-cluster-a   ops-client-8467495d-pst7r                    1/1     Running     11 (9h ago)    3d7h    10.244.2.3     kind-worker2         <none>           <none>
+karma-rabbitmq-security-marathon-2026-e9526b7b-cluster-a   rabbitmq-0                                   1/1     Running     5 (22h ago)    3d7h    10.244.2.2     kind-worker2         <none>           <none>
+karma-rabbitmq-security-marathon-2026-e9526b7b-cluster-a   rabbitmq-1                                   1/1     Running     5 (22h ago)    3d7h    10.244.3.4     kind-worker3         <none>           <none>
+karma-rabbitmq-security-marathon-2026-e9526b7b-cluster-a   rabbitmq-2                                   1/1     Running     5 (22h ago)    3d7h    10.244.1.8     kind-worker          <none>           <none>
+karma-rabbitmq-security-marathon-2026-e9526b7b-cluster-a   rabbitmq-setup-8cbf8                         0/1     Completed   0              3d7h    <none>         kind-worker          <none>           <none>
+kube-system                                                coredns-668d6bf9bc-6plsl                     1/1     Running     5 (22h ago)    14d     10.244.0.2     kind-control-plane   <none>           <none>
+kube-system                                                coredns-668d6bf9bc-zvnh5                     1/1     Running     6 (14h ago)    14d     10.244.0.4     kind-control-plane   <none>           <none>
+kube-system                                                etcd-kind-control-plane                      1/1     Running     1 (22h ago)    35h     172.22.0.5     kind-control-plane   <none>           <none>
+kube-system                                                kindnet-fl6rj                                1/1     Running     4 (22h ago)    14d     172.22.0.5     kind-control-plane   <none>           <none>
+kube-system                                                kindnet-jr8b4                                1/1     Running     3 (22h ago)    14d     172.22.0.3     kind-worker3         <none>           <none>
+kube-system                                                kindnet-sgtbd                                1/1     Running     4 (22h ago)    14d     172.22.0.4     kind-worker          <none>           <none>
+kube-system                                                kindnet-znrw6                                1/1     Running     3 (22h ago)    14d     172.22.0.2     kind-worker2         <none>           <none>
+kube-system                                                kube-apiserver-kind-control-plane            1/1     Running     2 (14h ago)    35h     172.22.0.5     kind-control-plane   <none>           <none>
+kube-system                                                kube-controller-manager-kind-control-plane   1/1     Running     129 (8h ago)   14d     172.22.0.5     kind-control-plane   <none>           <none>
+kube-system                                                kube-proxy-db7bb                             1/1     Running     3 (22h ago)    14d     172.22.0.2     kind-worker2         <none>           <none>
+kube-system                                                kube-proxy-gtj4l                             1/1     Running     4 (22h ago)    14d     172.22.0.4     kind-worker          <none>           <none>
+kube-system                                                kube-proxy-mk9l2                             1/1     Running     3 (22h ago)    14d     172.22.0.3     kind-worker3         <none>           <none>
+kube-system                                                kube-proxy-t5f4z                             1/1     Running     4 (22h ago)    14d     172.22.0.5     kind-control-plane   <none>           <none>
+kube-system                                                kube-scheduler-kind-control-plane            1/1     Running     133 (8h ago)   14d     172.22.0.5     kind-control-plane   <none>           <none>
+local-path-storage                                         local-path-provisioner-58cc7856b6-zfzps      1/1     Running     10 (22h ago)   14d     10.244.0.3     kind-control-plane   <none>           <none>
+
+codex
+The Elasticsearch namespace has the three PVCs but only `es-cluster-0` is currently running. I’m going to confirm the StatefulSet shape, service wiring, and Elasticsearch health/shard allocation before deciding whether any PVCs are safe to remove.
+exec
+/bin/zsh -lc 'kubectl -n elasticsearch get pods -l app=es-cluster -o wide' in /Users/jinyige/Karma/runs/new-added-workflows/elasticsearch-master-downscale-sweep-20260626_044136/stages/stage_02
+exec
+/bin/zsh -lc 'kubectl -n elasticsearch get endpoints' in /Users/jinyige/Karma/runs/new-added-workflows/elasticsearch-master-downscale-sweep-20260626_044136/stages/stage_02
+exec
+/bin/zsh -lc 'kubectl -n elasticsearch get sts es-cluster -o yaml' in /Users/jinyige/Karma/runs/new-added-workflows/elasticsearch-master-downscale-sweep-20260626_044136/stages/stage_02
+exec
+/bin/zsh -lc 'kubectl -n elasticsearch get svc -o wide' in /Users/jinyige/Karma/runs/new-added-workflows/elasticsearch-master-downscale-sweep-20260626_044136/stages/stage_02
+exec
+/bin/zsh -lc "kubectl -n elasticsearch get secret elastic-password -o jsonpath='{.data.password}'" in /Users/jinyige/Karma/runs/new-added-workflows/elasticsearch-master-downscale-sweep-20260626_044136/stages/stage_02
+ succeeded in 152ms:
+NAME         TYPE        CLUSTER-IP    EXTERNAL-IP   PORT(S)    AGE    SELECTOR
+es-cluster   ClusterIP   None          <none>        9300/TCP   7m8s   app=es-cluster
+es-http      ClusterIP   10.96.24.22   <none>        9200/TCP   7m8s   app=es-cluster
+
+ succeeded in 161ms:
+NAME         ENDPOINTS           AGE
+es-cluster   10.244.1.128:9300   7m8s
+es-http      10.244.1.128:9200   7m8s
+
+ succeeded in 158ms:
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  annotations:
+    kubectl.kubernetes.io/last-applied-configuration: |
+      {"apiVersion":"apps/v1","kind":"StatefulSet","metadata":{"annotations":{},"name":"es-cluster","namespace":"elasticsearch"},"spec":{"podManagementPolicy":"Parallel","replicas":3,"selector":{"matchLabels":{"app":"es-cluster"}},"serviceName":"es-cluster","template":{"metadata":{"labels":{"app":"es-cluster"}},"spec":{"containers":[{"env":[{"name":"POD_NAME","valueFrom":{"fieldRef":{"fieldPath":"metadata.name"}}},{"name":"ES_JAVA_OPTS","value":"-Xms512m -Xmx512m"}],"image":"docker.elastic.co/elasticsearch/elasticsearch:7.17.9","name":"elasticsearch","ports":[{"containerPort":9200,"name":"http"},{"containerPort":9300,"name":"transport"}],"readinessProbe":{"failureThreshold":6,"initialDelaySeconds":10,"periodSeconds":5,"tcpSocket":{"port":9200},"timeoutSeconds":1},"resources":{"limits":{"cpu":"1","memory":"2Gi"},"requests":{"cpu":"500m","memory":"1Gi"}},"volumeMounts":[{"mountPath":"/usr/share/elasticsearch/config/elasticsearch.yml","name":"es-config","subPath":"elasticsearch.yml"},{"mountPath":"/usr/share/elasticsearch/data","name":"data"}]}],"volumes":[{"configMap":{"items":[{"key":"elasticsearch.yml","path":"elasticsearch.yml"}],"name":"es-config"},"name":"es-config"}]}},"volumeClaimTemplates":[{"metadata":{"name":"data"},"spec":{"accessModes":["ReadWriteOnce"],"resources":{"requests":{"storage":"5Gi"}}}}]}}
+  creationTimestamp: "2026-06-26T04:41:38Z"
+  generation: 6
+  name: es-cluster
+  namespace: elasticsearch
+  resourceVersion: "309525"
+  uid: 8d3edf31-bbef-44b6-9975-f29b8d5f067e
+spec:
+  persistentVolumeClaimRetentionPolicy:
+    whenDeleted: Retain
+    whenScaled: Retain
+  podManagementPolicy: Parallel
+  replicas: 1
+  revisionHistoryLimit: 10
+  selector:
+    matchLabels:
+      app: es-cluster
+  serviceName: es-cluster
+  template:
+    metadata:
+      creationTimestamp: null
+      labels:
+        app: es-cluster
+    spec:
+      containers:
+      - env:
+        - name: POD_NAME
+          valueFrom:
+            fieldRef:
+              apiVersion: v1
+              fieldPath: metadata.name
+        - name: ES_JAVA_OPTS
+          value: -Xms512m -Xmx512m
+        image: docker.elastic.co/elasticsearch/elasticsearch:7.17.9
+        imagePullPolicy: IfNotPresent
+        name: elasticsearch
+        ports:
+        - containerPort: 9200
+          name: http
+          protocol: TCP
+        - containerPort: 9300
+          name: transport
+          protocol: TCP
+        readinessProbe:
+          failureThreshold: 6
+          initialDelaySeconds: 10
+          periodSeconds: 5
+          successThreshold: 1
+          tcpSocket:
+            port: 9200
+          timeoutSeconds: 1
+        resources:
+          limits:
+            cpu: "1"
+            memory: 2Gi
+          requests:
+            cpu: 500m
+            memory: 1Gi
+        terminationMessagePath: /dev/termination-log
+        terminationMessagePolicy: File
+        volumeMounts:
+        - mountPath: /usr/share/elasticsearch/config/elasticsearch.yml
+          name: es-config
+          subPath: elasticsearch.yml
+        - mountPath: /usr/share/elasticsearch/data
+          name: data
+      dnsPolicy: ClusterFirst
+      restartPolicy: Always
+      schedulerName: default-scheduler
+      securityContext: {}
+      terminationGracePeriodSeconds: 30
+      volumes:
+      - configMap:
+          defaultMode: 420
+          items:
+          - key: elasticsearch.yml
+            path: elasticsearch.yml
+          name: es-config
+        name: es-config
+  updateStrategy:
+    rollingUpdate:
+      partition: 0
+    type: RollingUpdate
+  volumeClaimTemplates:
+  - apiVersion: v1
+    kind: PersistentVolumeClaim
+    metadata:
+      creationTimestamp: null
+      name: data
+    spec:
+      accessModes:
+      - ReadWriteOnce
+      resources:
+        requests:
+          storage: 5Gi
+      volumeMode: Filesystem
+    status:
+      phase: Pending
+status:
+  availableReplicas: 1
+  collisionCount: 0
+  currentReplicas: 1
+  currentRevision: es-cluster-5f9b5d9cdf
+  observedGeneration: 6
+  readyReplicas: 1
+  replicas: 1
+  updateRevision: es-cluster-5f9b5d9cdf
+  updatedReplicas: 1
+
+ succeeded in 164ms:
+NAME           READY   STATUS    RESTARTS   AGE   IP             NODE          NOMINATED NODE   READINESS GATES
+es-cluster-0   1/1     Running   0          89s   10.244.1.128   kind-worker   <none>           <none>
+
+ exited 1 in 168ms:
+Error from server (NotFound): secrets "elastic-password" not found
+
+codex
+`es-cluster` is already at `replicas: 1`, with PVC retention set to keep old claims. I’m checking Elasticsearch directly now; if shards are unassigned or replicas block the one-node state, I’ll adjust index settings before removing only the inactive ordinal PVCs.
+exec
+/bin/zsh -lc 'kubectl -n elasticsearch exec curl-test -- curl -sS --max-time 5 http://es-http.elasticsearch.svc:9200/_cluster/health?pretty' in /Users/jinyige/Karma/runs/new-added-workflows/elasticsearch-master-downscale-sweep-20260626_044136/stages/stage_02
+ exited 1 in 0ms:
+zsh:1: no matches found: http://es-http.elasticsearch.svc:9200/_cluster/health?pretty
+
+exec
+/bin/zsh -lc 'kubectl -n elasticsearch get cm es-config -o yaml' in /Users/jinyige/Karma/runs/new-added-workflows/elasticsearch-master-downscale-sweep-20260626_044136/stages/stage_02
+ succeeded in 0ms:
+apiVersion: v1
+data:
+  elasticsearch.yml: |
+    cluster.name: es-cluster
+    node.name: ${POD_NAME}
+    node.roles: [ master, data, ingest ]
+    network.host: 0.0.0.0
+    discovery.seed_hosts:
+      - es-cluster-0.es-cluster
+    node.store.allow_mmap: false
+kind: ConfigMap
+metadata:
+  annotations:
+    kubectl.kubernetes.io/last-applied-configuration: |
+      {"apiVersion":"v1","data":{"elasticsearch.yml":"cluster.name: es-cluster\nnode.name: ${POD_NAME}\nnode.roles: [ master, data, ingest ]\nnetwork.host: 0.0.0.0\ndiscovery.seed_hosts:\n  - es-cluster-0.es-cluster\n  - es-cluster-1.es-cluster\n  - es-cluster-2.es-cluster\ncluster.initial_master_nodes:\n  - es-cluster-0\n  - es-cluster-1\n  - es-cluster-2\nnode.store.allow_mmap: false\n"},"kind":"ConfigMap","metadata":{"annotations":{},"name":"es-config","namespace":"elasticsearch"}}
+  creationTimestamp: "2026-06-26T04:41:38Z"
+  name: es-config
+  namespace: elasticsearch
+  resourceVersion: "309114"
+  uid: cb74dfde-9a1e-4743-a578-a30fdc450037
+
+exec
+/bin/zsh -lc "kubectl -n elasticsearch exec curl-test -- curl -sS --max-time 5 'http://es-http.elasticsearch.svc:9200/_cat/nodes?v'" in /Users/jinyige/Karma/runs/new-added-workflows/elasticsearch-master-downscale-sweep-20260626_044136/stages/stage_02
+exec
+/bin/zsh -lc 'kubectl -n elasticsearch exec es-cluster-0 -- ls -l /usr/share/elasticsearch/data/pvc-gc-marker' in /Users/jinyige/Karma/runs/new-added-workflows/elasticsearch-master-downscale-sweep-20260626_044136/stages/stage_02
+exec
+/bin/zsh -lc "kubectl -n elasticsearch exec curl-test -- curl -sS --max-time 5 'http://es-http.elasticsearch.svc:9200/app-data/_count?pretty'" in /Users/jinyige/Karma/runs/new-added-workflows/elasticsearch-master-downscale-sweep-20260626_044136/stages/stage_02
+exec
+/bin/zsh -lc "kubectl -n elasticsearch exec curl-test -- curl -sS --max-time 5 'http://es-http.elasticsearch.svc:9200/_cat/shards/app-data?v'" in /Users/jinyige/Karma/runs/new-added-workflows/elasticsearch-master-downscale-sweep-20260626_044136/stages/stage_02
+ succeeded in 119ms:
+-rw-r--r-- 1 root root 7 Jun 26 04:48 /usr/share/elasticsearch/data/pvc-gc-marker
+
+ succeeded in 128ms:
+ip           heap.percent ram.percent cpu load_1m load_5m load_15m node.role master name
+10.244.1.128           65          42   2    3.43    4.01     4.01 dim       *      es-cluster-0
+
+ succeeded in 123ms:
+index    shard prirep state      docs store ip           node
+app-data 1     p      STARTED       2 3.7kb 10.244.1.128 es-cluster-0
+app-data 1     r      UNASSIGNED                         
+app-data 2     p      STARTED       1 3.7kb 10.244.1.128 es-cluster-0
+app-data 2     r      UNASSIGNED                         
+app-data 0     p      STARTED       0  226b 10.244.1.128 es-cluster-0
+app-data 0     r      UNASSIGNED                         
+
+ succeeded in 131ms:
+{
+  "count" : 3,
+  "_shards" : {
+    "total" : 3,
+    "successful" : 3,
+    "skipped" : 0,
+    "failed" : 0
+  }
+}
+
+codex
+The active node has all three `app-data` primary shards and the document count is intact, but replica shards are unassigned because a single Elasticsearch node cannot hold replicas of its own primaries. I’m going to set `app-data` replicas to `0`, wait for green/no unassigned shards, then delete only `data-es-cluster-1` and `data-es-cluster-2` after confirming no running pod references them.
+  ✓ Confirm remaining node has all app-data primaries and marker file
+  → Set app-data replica count to 0 and verify no unassigned shards
+  • Delete PVCs for inactive StatefulSet ordinals only
+  • Run final health, shard, PVC, marker verification
+exec
+/bin/zsh -lc 'kubectl -n elasticsearch exec curl-test -- curl -sS --max-time 5 http://es-http.elasticsearch.svc:9200/_cat/shards?v' in /Users/jinyige/Karma/runs/new-added-workflows/elasticsearch-master-downscale-sweep-20260626_044136/stages/stage_02
+ exited 1 in 0ms:
+zsh:1: no matches found: http://es-http.elasticsearch.svc:9200/_cat/shards?v
+
+exec
+/bin/zsh -lc "kubectl -n elasticsearch get pods -l app=es-cluster -o jsonpath='{range .items[*]}{.metadata.name}{\"\\t\"}{range .spec.volumes[*]}{.persistentVolumeClaim.claimName}{\" \"}{end}{\"\\n\"}{end}'" in /Users/jinyige/Karma/runs/new-added-workflows/elasticsearch-master-downscale-sweep-20260626_044136/stages/stage_02
+exec
+/bin/zsh -lc 'kubectl -n elasticsearch get pvc data-es-cluster-0 data-es-cluster-1 data-es-cluster-2 -o wide' in /Users/jinyige/Karma/runs/new-added-workflows/elasticsearch-master-downscale-sweep-20260626_044136/stages/stage_02
+ succeeded in 192ms:
+es-cluster-0	data-es-cluster-0   
+
+ succeeded in 217ms:
+NAME                STATUS   VOLUME                                     CAPACITY   ACCESS MODES   STORAGECLASS   VOLUMEATTRIBUTESCLASS   AGE     VOLUMEMODE
+data-es-cluster-0   Bound    pvc-bf4f5bd3-b030-456e-bac1-c775585c30bb   5Gi        RWO            standard       <unset>                 7m45s   Filesystem
+data-es-cluster-1   Bound    pvc-d0a6161a-4b8a-4d9c-8b18-195be19f75f3   5Gi        RWO            standard       <unset>                 7m45s   Filesystem
+data-es-cluster-2   Bound    pvc-76f3e80c-1821-4bbd-bf9e-c25b9116df2f   5Gi        RWO            standard       <unset>                 7m45s   Filesystem
+
+codex
+Only `es-cluster-0` is mounted to `data-es-cluster-0`; ordinals 1 and 2 have no running pod consumers. I’m applying the Elasticsearch index setting now so the single-node cluster has no replica allocations left behind.
+exec
+/bin/zsh -lc "kubectl -n elasticsearch exec curl-test -- curl -sS --max-time 10 -XPUT 'http://es-http.elasticsearch.svc:9200/app-data/_settings' -H 'Content-Type: application/json' -d '{\"index\":{\"number_of_replicas\":0}}'" in /Users/jinyige/Karma/runs/new-added-workflows/elasticsearch-master-downscale-sweep-20260626_044136/stages/stage_02
+ succeeded in 170ms:
+{"acknowledged":true}
+exec
+/bin/zsh -lc "kubectl -n elasticsearch exec curl-test -- curl -sS --max-time 5 'http://es-http.elasticsearch.svc:9200/_cluster/health?pretty'" in /Users/jinyige/Karma/runs/new-added-workflows/elasticsearch-master-downscale-sweep-20260626_044136/stages/stage_02
+exec
+/bin/zsh -lc "kubectl -n elasticsearch exec curl-test -- curl -sS --max-time 5 'http://es-http.elasticsearch.svc:9200/_cat/shards/app-data?v'" in /Users/jinyige/Karma/runs/new-added-workflows/elasticsearch-master-downscale-sweep-20260626_044136/stages/stage_02
+exec
+/bin/zsh -lc "kubectl -n elasticsearch exec curl-test -- curl -sS --max-time 5 'http://es-http.elasticsearch.svc:9200/app-data/_settings?pretty'" in /Users/jinyige/Karma/runs/new-added-workflows/elasticsearch-master-downscale-sweep-20260626_044136/stages/stage_02
+ succeeded in 113ms:
+{
+  "app-data" : {
+    "settings" : {
+      "index" : {
+        "routing" : {
+          "allocation" : {
+            "include" : {
+              "_tier_preference" : "data_content"
+            }
+          }
+        },
+        "number_of_shards" : "3",
+        "provided_name" : "app-data",
+        "creation_date" : "1782449287208",
+        "number_of_replicas" : "0",
+        "uuid" : "kXuBK41nRi6V6c_bnj_chg",
+        "version" : {
+          "created" : "7170999"
+        }
+      }
+    }
+  }
+}
+
+ succeeded in 122ms:
+{
+  "cluster_name" : "es-cluster",
+  "status" : "green",
+  "timed_out" : false,
+  "number_of_nodes" : 1,
+  "number_of_data_nodes" : 1,
+  "active_primary_shards" : 6,
+  "active_shards" : 6,
+  "relocating_shards" : 0,
+  "initializing_shards" : 0,
+  "unassigned_shards" : 0,
+  "delayed_unassigned_shards" : 0,
+  "number_of_pending_tasks" : 0,
+  "number_of_in_flight_fetch" : 0,
+  "task_max_waiting_in_queue_millis" : 0,
+  "active_shards_percent_as_number" : 100.0
+}
+
+ succeeded in 122ms:
+index    shard prirep state   docs store ip           node
+app-data 1     p      STARTED    2 3.7kb 10.244.1.128 es-cluster-0
+app-data 2     p      STARTED    1 3.7kb 10.244.1.128 es-cluster-0
+app-data 0     p      STARTED    0  226b 10.244.1.128 es-cluster-0
+
+codex
+Elasticsearch is now green with one node and zero unassigned shards, and `app-data` has only its three primary shards on `es-cluster-0`. I’m deleting the retained PVCs for inactive ordinals 1 and 2 next.
+  ✓ Confirm remaining node has all app-data primaries and marker file
+  ✓ Set app-data replica count to 0 and verify no unassigned shards
+  → Delete PVCs for inactive StatefulSet ordinals only
+  • Run final health, shard, PVC, marker verification
+exec
+/bin/zsh -lc 'kubectl -n elasticsearch delete pvc data-es-cluster-1 data-es-cluster-2' in /Users/jinyige/Karma/runs/new-added-workflows/elasticsearch-master-downscale-sweep-20260626_044136/stages/stage_02
+ succeeded in 201ms:
+codex
+The unused PVCs were deleted. I’m running the final checks now: cluster health, shard placement, remaining PVC list, active pod mount, and marker file on the surviving pod.
+  ✓ Confirm remaining node has all app-data primaries and marker file
+  ✓ Set app-data replica count to 0 and verify no unassigned shards
+  ✓ Delete PVCs for inactive StatefulSet ordinals only
+  → Run final health, shard, PVC, marker verification
+exec
+/bin/zsh -lc "kubectl -n elasticsearch exec curl-test -- curl -sS --max-time 5 'http://es-http.elasticsearch.svc:9200/_cluster/health?pretty'" in /Users/jinyige/Karma/runs/new-added-workflows/elasticsearch-master-downscale-sweep-20260626_044136/stages/stage_02
+exec
+/bin/zsh -lc 'kubectl -n elasticsearch get sts es-cluster' in /Users/jinyige/Karma/runs/new-added-workflows/elasticsearch-master-downscale-sweep-20260626_044136/stages/stage_02
+exec
+/bin/zsh -lc 'kubectl -n elasticsearch get pods -l app=es-cluster -o wide' in /Users/jinyige/Karma/runs/new-added-workflows/elasticsearch-master-downscale-sweep-20260626_044136/stages/stage_02
+exec
+/bin/zsh -lc "kubectl -n elasticsearch exec curl-test -- curl -sS --max-time 5 'http://es-http.elasticsearch.svc:9200/_cat/shards/app-data?v'" in /Users/jinyige/Karma/runs/new-added-workflows/elasticsearch-master-downscale-sweep-20260626_044136/stages/stage_02
+exec
+/bin/zsh -lc 'kubectl -n elasticsearch get pvc' in /Users/jinyige/Karma/runs/new-added-workflows/elasticsearch-master-downscale-sweep-20260626_044136/stages/stage_02
+exec
+/bin/zsh -lc 'kubectl -n elasticsearch exec es-cluster-0 -- cat /usr/share/elasticsearch/data/pvc-gc-marker' in /Users/jinyige/Karma/runs/new-added-workflows/elasticsearch-master-downscale-sweep-20260626_044136/stages/stage_02
+ succeeded in 218ms:
+NAME                STATUS   VOLUME                                     CAPACITY   ACCESS MODES   STORAGECLASS   VOLUMEATTRIBUTESCLASS   AGE
+data-es-cluster-0   Bound    pvc-bf4f5bd3-b030-456e-bac1-c775585c30bb   5Gi        RWO            standard       <unset>                 8m30s
+
+ succeeded in 226ms:
+NAME           READY   STATUS    RESTARTS   AGE     IP             NODE          NOMINATED NODE   READINESS GATES
+es-cluster-0   1/1     Running   0          2m51s   10.244.1.128   kind-worker   <none>           <none>
+
+ succeeded in 228ms:
+NAME         READY   AGE
+es-cluster   1/1     8m30s
+
+ succeeded in 277ms:
+marker
+
+ succeeded in 289ms:
+index    shard prirep state   docs store ip           node
+app-data 1     p      STARTED    2 3.7kb 10.244.1.128 es-cluster-0
+app-data 2     p      STARTED    1 3.7kb 10.244.1.128 es-cluster-0
+app-data 0     p      STARTED    0  226b 10.244.1.128 es-cluster-0
+
+ succeeded in 296ms:
+{
+  "cluster_name" : "es-cluster",
+  "status" : "green",
+  "timed_out" : false,
+  "number_of_nodes" : 1,
+  "number_of_data_nodes" : 1,
+  "active_primary_shards" : 6,
+  "active_shards" : 6,
+  "relocating_shards" : 0,
+  "initializing_shards" : 0,
+  "unassigned_shards" : 0,
+  "delayed_unassigned_shards" : 0,
+  "number_of_pending_tasks" : 0,
+  "number_of_in_flight_fetch" : 0,
+  "task_max_waiting_in_queue_millis" : 0,
+  "active_shards_percent_as_number" : 100.0
+}
+
+codex
+Final state is matching the requested shape so far. I’m adding two last sanity checks for data count and pod-to-PVC mapping so the closeout is concrete.
+exec
+/bin/zsh -lc "kubectl -n elasticsearch get sts es-cluster -o jsonpath='{.spec.replicas}{\"\\n\"}'" in /Users/jinyige/Karma/runs/new-added-workflows/elasticsearch-master-downscale-sweep-20260626_044136/stages/stage_02
+ succeeded in 0ms:
+1
+
+exec
+/bin/zsh -lc "kubectl -n elasticsearch get pods -l app=es-cluster -o jsonpath='{range .items[*]}{.metadata.name}{\"\\t\"}{range .spec.volumes[*]}{.persistentVolumeClaim.claimName}{\" \"}{end}{\"\\n\"}{end}'" in /Users/jinyige/Karma/runs/new-added-workflows/elasticsearch-master-downscale-sweep-20260626_044136/stages/stage_02
+ succeeded in 0ms:
+es-cluster-0	data-es-cluster-0   
+
+exec
+/bin/zsh -lc "kubectl -n elasticsearch exec curl-test -- curl -sS --max-time 5 'http://es-http.elasticsearch.svc:9200/app-data/_count?pretty'" in /Users/jinyige/Karma/runs/new-added-workflows/elasticsearch-master-downscale-sweep-20260626_044136/stages/stage_02
+ succeeded in 132ms:
+{
+  "count" : 3,
+  "_shards" : {
+    "total" : 3,
+    "successful" : 3,
+    "skipped" : 0,
+    "failed" : 0
+  }
+}
+
+  ✓ Confirm remaining node has all app-data primaries and marker file
+  ✓ Set app-data replica count to 0 and verify no unassigned shards
+  ✓ Delete PVCs for inactive StatefulSet ordinals only
+  ✓ Run final health, shard, PVC, marker verification
+codex
+Completed.
+
+I set `app-data` to `number_of_replicas: 0` so the one-node Elasticsearch cluster has no unassigned replica shards, and deleted only the unused retained PVCs:
+
+- Deleted: `data-es-cluster-1`, `data-es-cluster-2`
+- Kept: `data-es-cluster-0`, mounted by running pod `es-cluster-0`
+
+Verification:
+
+- StatefulSet `es-cluster` replicas: `1`
+- Pod: `es-cluster-0` is `Running`
+- Cluster health: `green`, `number_of_nodes: 1`, `unassigned_shards: 0`
+- `app-data` shards: all three primary shards are `STARTED` on `es-cluster-0`
+- `app-data` count: `3`
+- Remaining PVCs: only `data-es-cluster-0`
+- Marker file: `/usr/share/elasticsearch/data/pvc-gc-marker` still contains `marker`
+tokens used
+44,904
+Completed.
+
+I set `app-data` to `number_of_replicas: 0` so the one-node Elasticsearch cluster has no unassigned replica shards, and deleted only the unused retained PVCs:
+
+- Deleted: `data-es-cluster-1`, `data-es-cluster-2`
+- Kept: `data-es-cluster-0`, mounted by running pod `es-cluster-0`
+
+Verification:
+
+- StatefulSet `es-cluster` replicas: `1`
+- Pod: `es-cluster-0` is `Running`
+- Cluster health: `green`, `number_of_nodes: 1`, `unassigned_shards: 0`
+- `app-data` shards: all three primary shards are `STARTED` on `es-cluster-0`
+- `app-data` count: `3`
+- Remaining PVCs: only `data-es-cluster-0`
+- Marker file: `/usr/share/elasticsearch/data/pvc-gc-marker` still contains `marker`
