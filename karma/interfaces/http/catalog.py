@@ -162,6 +162,10 @@ def _find_run_dirs(runs_dir: Path, _depth: int = 0) -> list[Path]:
     for c in children:
         if not c.is_dir():
             continue
+        # Skip underscore-prefixed grouping dirs (e.g. runs/_archive/) -- they hold
+        # archived runs intentionally kept out of the catalog/UI.
+        if c.name.startswith("_"):
+            continue
         is_run = (c / "stages").is_dir() or any(
             (c / f).exists() for f in ("config.json", "run.json", "workflow_state.json")
         )
