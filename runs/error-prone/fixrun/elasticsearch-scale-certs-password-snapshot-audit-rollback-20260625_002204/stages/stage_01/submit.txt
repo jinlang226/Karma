@@ -1,0 +1,19 @@
+The 3-node Elasticsearch cluster is fully deployed and healthy. Here's a summary of what was created:
+
+**Resources deployed:**
+| Resource | Name | Purpose |
+|----------|------|---------|
+| ConfigMap | `es-config` | `elasticsearch.yml` with TLS + security config |
+| Service | `es-headless` | Headless service for pod-to-pod discovery (port 9300/9200) |
+| Service | `es-http` | ClusterIP service for HTTPS access on port 9200 |
+| StatefulSet | `es` | 3 replicas, `podManagementPolicy: Parallel` |
+| PodDisruptionBudget | `es-pdb` | `minAvailable: 2` |
+| PVCs | `data-es-{0,1,2}` | 10Gi each via `standard` StorageClass |
+
+**Key design decisions:**
+- `podManagementPolicy: Parallel` — all 3 pods start simultaneously so they can form a quorum (the default `OrderedReady` would deadlock since each pod waits for the previous to be Ready, but a node can't be Ready without a master, which requires quorum)
+- Transport TLS uses `verification_mode: certificate` (not `full`) since the cert's SANs (`*.elasticsearch.svc`, `*.elasticsearch.svc.cluster.local`) don't cover individual pod hostnames like `es-0.es-headless.*`
+- HTTP TLS uses the provided `es-http-tls` secret; cert matches `*.elasticsearch.svc.cluster.local` which covers the `es-http` service
+- `publishNotReadyAddresses: true` on the headless service so pods can discover each other before readiness probes pass
+
+**Verified:** cluster status is **green**, 3/3 nodes, writes and reads through `es-http:9200` over HTTPS succeed.

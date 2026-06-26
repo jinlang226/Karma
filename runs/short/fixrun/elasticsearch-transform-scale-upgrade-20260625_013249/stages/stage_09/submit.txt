@@ -1,0 +1,33 @@
+Everything is working. Here's a summary of what was done and the final state:
+
+---
+
+## What was done
+
+**Problem:** No monitoring sidecars existed on the Elasticsearch pods, so no monitoring data reached the monitoring cluster.
+
+**Solution:** Added Metricbeat (metrics) and Filebeat (logs) sidecars to every Elasticsearch pod via a strategic-merge-patch on the StatefulSet.
+
+**Key changes:**
+
+1. **`metricbeat-config` ConfigMap** — Configures the `elasticsearch` module with `xpack.enabled: true`, connecting to `https://localhost:9200` (same pod) with TLS and the `elastic` credential. Outputs to `http://monitoring-es-http.monitoring.svc:9200`.
+
+2. **`filebeat-config` ConfigMap** — Collects GC logs from `/var/log/elasticsearch/gc.log*` (the only on-disk logs; ES 8.x writes server logs to stdout). Outputs to a plain `filebeat-es-logs-*` index with template/ILM disabled — required because Filebeat 8.x's default data-stream setup is incompatible with the ES 7.17.9 monitoring cluster.
+
+3. **StatefulSet patch** — Adds:
+   - `es-logs` emptyDir volume shared between the `elasticsearch` container (writes GC logs) and `filebeat` sidecar (reads them)
+   - `metricbeat` sidecar with access to the TLS certs and elastic-password secret
+   - `filebeat` sidecar with access to the shared log volume
+
+**Final state:**
+
+| Pod | Containers |
+|-----|-----------|
+| elasticsearch-0 | elasticsearch, **metricbeat**, **filebeat** |
+| elasticsearch-1 | elasticsearch, **metricbeat**, **filebeat** |
+| elasticsearch-2 | elasticsearch, **metricbeat**, **filebeat** |
+
+**Monitoring cluster indices (all growing):**
+- `.monitoring-es-8-mb` — Stack Monitoring ES metrics
+- `.ds-metricbeat-8.11.1-2026.06.25-000001` — Metricbeat self-telemetry
+- `filebeat-es-logs-2026.06.25` — Elasticsearch GC logs (490 docs)

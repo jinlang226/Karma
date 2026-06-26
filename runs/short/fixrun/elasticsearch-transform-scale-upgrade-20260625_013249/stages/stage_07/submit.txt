@@ -1,0 +1,16 @@
+Everything is working. Here's a summary of what was done:
+
+**Resources created:**
+- `Service/minio` — exposes the MinIO deployment at `minio.elasticsearch.svc.cluster.local:9000`
+- `Secret/es-secure-settings` — stores `s3.client.default.access_key` and `s3.client.default.secret_key` (both `minioadmin`); this is the durable source of truth for credentials
+
+**Elasticsearch configuration (no credentials in elasticsearch.yml or env vars):**
+- Added an `init-keystore` init container to the `elasticsearch` StatefulSet that reads from `es-secure-settings` secret and populates the Elasticsearch keystore on every pod start
+- Used a command override on the main container to copy the keystore from the init container's shared emptyDir before Elasticsearch starts — needed because `repository-s3` is a built-in module (no plugin install required), but ES tries to atomically replace the keystore file which fails on a subPath bind-mount
+- `POST /_nodes/reload_secure_settings` activated the credentials on all 3 nodes
+
+**Snapshot repository & snapshot:**
+- Registered `minio-repo` (`type: s3`, `bucket: es-backups`, `endpoint: minio.elasticsearch.svc.cluster.local:9000`, `path_style_access: true`, `protocol: http`)
+- Snapshot `snapshot-1` created — state `SUCCESS`, 6 indices, 7 shards, 0 failures
+
+The cluster is green (3/3 nodes), the keystore is populated from the secret on every pod restart, and the repository verifies healthy on all 3 nodes.

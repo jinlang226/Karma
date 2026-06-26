@@ -1,0 +1,60 @@
+[precondition:mongo_env_ready:preconditionUnits[0] 'mongo_env_ready':probe] $ kubectl -n mongodb get pod mongodb-replica-0 2>/dev/null | grep -c Running
+1
+
+[precondition:admin_user_fixture:preconditionUnits[1] 'admin_user_fixture':probe] $ /bin/sh -c '
+t=""; for cca in /etc/tls/ca.crt /etc/mongo-ca/ca.crt; do kubectl -n mongodb exec mongodb-replica-0 -- ls $cca >/dev/null 2>&1 && { t="--tls --tlsAllowInvalidHostnames --tlsAllowInvalidCertificates --tlsCAFile $cca"; break; }; done
+pw=$(kubectl -n mongodb get secret admin-user-password -o jsonpath="{.data.password}" 2>/dev/null | base64 -d 2>/dev/null)
+[ -n "$pw" ] || exit 1
+kubectl -n mongodb exec mongodb-replica-0 -- mongosh --quiet $t "mongodb://admin-user:$pw@localhost:27017/admin" --eval "db.runCommand({ping:1}).ok" 2>/dev/null | grep -q 1
+'
+
+
+[precondition:health_user_fixture:preconditionUnits[2] 'health_user_fixture':probe] $ /bin/sh -c '
+t=""; for cca in /etc/tls/ca.crt /etc/mongo-ca/ca.crt; do kubectl -n mongodb exec mongodb-replica-0 -- ls $cca >/dev/null 2>&1 && { t="--tls --tlsAllowInvalidHostnames --tlsAllowInvalidCertificates --tlsCAFile $cca"; break; }; done
+pw=$(kubectl -n mongodb get secret health-user-password -o jsonpath="{.data.password}" 2>/dev/null | base64 -d 2>/dev/null)
+[ -n "$pw" ] || exit 1
+kubectl -n mongodb exec mongodb-replica-0 -- mongosh --quiet $t "mongodb://health-user:$pw@localhost:27017/admin" --eval "db.runCommand({ping:1}).ok" 2>/dev/null | grep -q 1
+'
+
+
+[precondition:health_user_fixture:preconditionUnits[2] 'health_user_fixture':apply] $ /bin/sh -c 'kubectl -n mongodb get secret health-user-password >/dev/null 2>&1 || kubectl -n mongodb create secret generic health-user-password --from-literal=password=healthpass123'
+secret/health-user-password created
+
+[precondition:health_user_fixture:preconditionUnits[2] 'health_user_fixture':apply] $ /bin/sh -c '
+t=""; for cca in /etc/tls/ca.crt /etc/mongo-ca/ca.crt; do kubectl -n mongodb exec mongodb-replica-0 -- ls $cca >/dev/null 2>&1 && { t="--tls --tlsAllowInvalidHostnames --tlsAllowInvalidCertificates --tlsCAFile $cca"; break; }; done
+ap=$(kubectl -n mongodb get secret admin-user-password -o jsonpath="{.data.password}" 2>/dev/null | base64 -d 2>/dev/null)
+au=""; [ -n "$ap" ] && au="-u admin-user -p $ap --authenticationDatabase admin"
+kubectl -n mongodb exec mongodb-replica-0 -- mongosh --quiet $t $au --eval "db.getSiblingDB(\"admin\").createUser({user:\"health-user\",pwd:\"healthpass123\",roles:[{role:\"clusterMonitor\",db:\"admin\"}]})" 2>/dev/null || true
+'
+
+
+[precondition:health_user_fixture:preconditionUnits[2] 'health_user_fixture':verify] $ /bin/sh -c 'kubectl -n mongodb get secret health-user-password >/dev/null 2>&1 && echo ok'
+ok
+
+[precondition:health_probe_fault_ready:preconditionUnits[3] 'health_probe_fault_ready':probe] $ /bin/sh -c '
+hp=$(kubectl -n mongodb get secret health-user-password -o jsonpath="{.data.password}" 2>/dev/null | base64 -d 2>/dev/null); hp=${hp:-healthpass123}
+v=$(kubectl -n mongodb get configmap health-overrides -o jsonpath="{.data.mongodb-replica-1}" 2>/dev/null)
+[ -n "$v" ] && [ "$v" != "$hp" ]
+'
+
+
+[precondition:health_probe_fault_ready:preconditionUnits[3] 'health_probe_fault_ready':apply] $ kubectl -n mongodb apply -f cases/mongodb/health-check-recovery/resource/health-check.yaml
+configmap/health-check-script created
+configmap/health-overrides created
+
+[precondition:health_probe_fault_ready:preconditionUnits[3] 'health_probe_fault_ready':apply] $ kubectl -n mongodb delete statefulset mongodb-replica --cascade=orphan --ignore-not-found=true
+statefulset.apps "mongodb-replica" deleted
+
+[precondition:health_probe_fault_ready:preconditionUnits[3] 'health_probe_fault_ready':apply] $ kubectl -n mongodb apply -f cases/mongodb/health-check-recovery/resource/statefulset.yaml
+statefulset.apps/mongodb-replica created
+
+[precondition:health_probe_fault_ready:preconditionUnits[3] 'health_probe_fault_ready':apply] $ kubectl -n mongodb delete pod mongodb-replica-1 --ignore-not-found=true
+pod "mongodb-replica-1" deleted
+
+[precondition:health_probe_fault_ready:preconditionUnits[3] 'health_probe_fault_ready':verify] $ /bin/sh -c '
+hp=$(kubectl -n mongodb get secret health-user-password -o jsonpath="{.data.password}" 2>/dev/null | base64 -d 2>/dev/null); hp=${hp:-healthpass123}
+v=$(kubectl -n mongodb get configmap health-overrides -o jsonpath="{.data.mongodb-replica-1}" 2>/dev/null)
+[ -n "$v" ] && [ "$v" != "$hp" ]
+'
+
+

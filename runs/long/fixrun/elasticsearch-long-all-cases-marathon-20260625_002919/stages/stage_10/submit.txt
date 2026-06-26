@@ -1,0 +1,21 @@
+Everything is complete and working. Here's a summary of what was done:
+
+**Problem:** MinIO had no Kubernetes Service (the `minio-init` job failed because DNS for `minio.elasticsearch.svc.cluster.local` didn't exist), and the `es-secure-settings` secret and `repository-s3` plugin were missing.
+
+**Steps taken:**
+
+1. **Created the MinIO Service** — exposed `minio.elasticsearch.svc.cluster.local:9000` so ES nodes could reach it.
+
+2. **Created `es-secure-settings` Secret** — stored `s3.client.default.access_key` and `s3.client.default.secret_key` (both `minioadmin`) as Kubernetes secret keys.
+
+3. **Installed `repository-s3` plugin** on all 3 pods directly, then **patched the StatefulSet** with two init containers:
+   - `install-s3-plugin`: downloads and installs the plugin into a shared `emptyDir` volume mounted at `/usr/share/elasticsearch/plugins`
+   - `setup-keystore`: reads credentials from the `es-secure-settings` secret volume, populates a fresh keystore, and writes it to a shared `emptyDir` mounted at the keystore path — **credentials never touch `elasticsearch.yml` or env vars**
+
+4. **Rolled the StatefulSet** — all 3 pods restarted with the plugin active and keystore loaded from the secret.
+
+5. **Created the `es-backups` bucket** in MinIO (the init job had failed earlier).
+
+6. **Registered `minio-repo`** snapshot repository pointing at `minio.elasticsearch.svc.cluster.local:9000`.
+
+7. **Created `snapshot-1`** — completed with `state: SUCCESS`, 2 shards snapshotted, 0 failures.

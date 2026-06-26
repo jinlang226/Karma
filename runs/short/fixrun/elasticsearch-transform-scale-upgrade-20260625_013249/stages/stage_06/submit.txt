@@ -1,0 +1,13 @@
+The oracle passes. Here's a summary of everything done:
+
+**Problem identified:** Three interrelated issues caused the transform failure:
+1. `app-events` source index was missing (lost during stage_05 upgrade)
+2. The transform had accumulated 7/10 failure retries and was near the auto-fail threshold
+3. `es-transform-0` node (ES 7.17.9) couldn't join the upgraded `es-cluster` (ES 8.11.1), and its `node.roles` config was missing the `transform` role
+
+**Fix sequence:**
+1. **Stopped the transform immediately** (force-stop) to prevent it from exhausting retries and transitioning to `failed` state
+2. **Restored transform capacity**: Updated `es-transform-config` to add `transform` role, updated the StatefulSet image to `8.11.1` — `es-transform-0` rejoined the `es-cluster` cluster with `ingest+transform` roles
+3. **Recreated `app-events`** with an explicit `keyword` mapping for the `service` field (auto-mapping had created it as `text`, incompatible with the transform's terms aggregation)
+4. **Added current-timestamp documents** — the transform was at checkpoint 2 with `time_upper_bound ~= 2026-06-25T02:13Z`; historical data was already processed, so new live-timestamped docs were needed to trigger a new checkpoint cycle
+5. **Restarted the transform** — checkpoint advanced from 2 → 3, health green, `elastic:elasticpass` credential confirmed valid
