@@ -1,0 +1,401 @@
+OpenAI Codex v0.142.2
+--------
+workdir: /Users/jinyige/Karma/runs/new-added-workflows/cockroachdb-version-decommission-20260625_205421/stages/stage_01
+model: gpt-5.5
+provider: openai
+approval: never
+sandbox: danger-full-access
+reasoning effort: xhigh
+reasoning summaries: none
+session id: 019f0090-8e70-7723-92f9-faf3c6f6e70f
+--------
+user
+A 5-node CockroachDB cluster is running in namespace cockroachdb.
+
+OBSERVED STATE:
+- 5 nodes are live.
+- A critical table (bench.decom_data) has replicas concentrated on the highest-ordinal nodes.
+
+YOUR TASK:
+Safely reduce the cluster to 3 nodes without losing data or availability.
+
+CONSTRAINTS:
+- Do not delete or recreate the cluster.
+- Keep bench.decom_data readable throughout.
+- Use CockroachDB's decommission process for nodes being removed.
+
+GOAL:
+- StatefulSet scaled to 3 replicas.
+- Removed nodes fully decommissioned.
+- Cluster remains SQL-ready.
+
+Useful commands:
+```bash
+kubectl -n cockroachdb exec crdb-cluster-0 -- ./cockroach node status --insecure
+kubectl -n cockroachdb exec crdb-cluster-0 -- ./cockroach node decommission <id> --insecure
+kubectl -n cockroachdb exec crdb-cluster-0 -- ./cockroach sql --insecure -e "SELECT count(*) FROM bench.decom_data;"
+```
+
+Verification:
+1. Verify 3 nodes in cluster:
+   kubectl -n cockroachdb exec crdb-cluster-0 -- ./cockroach node status --insecure
+   (Should show 3 live nodes)
+
+2. Check StatefulSet replicas:
+   kubectl -n cockroachdb get sts crdb-cluster
+   (Should show 3/3 ready)
+
+3. Verify data still available:
+   kubectl -n cockroachdb exec crdb-cluster-0 -- \
+     ./cockroach sql --insecure -e "SELECT count(*) FROM bench.decom_data;"
+   (Should return the seeded rows)
+codex
+I’ll inspect the live node IDs and StatefulSet status first, then decommission the two highest-ordinal nodes before scaling the StatefulSet down. After each risky step I’ll check that `bench.decom_data` is still readable.
+exec
+/bin/zsh -lc 'kubectl -n cockroachdb exec crdb-cluster-0 -- ./cockroach node status --insecure' in /Users/jinyige/Karma/runs/new-added-workflows/cockroachdb-version-decommission-20260625_205421/stages/stage_01
+exec
+/bin/zsh -lc 'kubectl -n cockroachdb get sts crdb-cluster -o wide' in /Users/jinyige/Karma/runs/new-added-workflows/cockroachdb-version-decommission-20260625_205421/stages/stage_01
+exec
+/bin/zsh -lc 'kubectl -n cockroachdb exec crdb-cluster-0 -- ./cockroach sql --insecure -e "SELECT count(*) FROM bench.decom_data;"' in /Users/jinyige/Karma/runs/new-added-workflows/cockroachdb-version-decommission-20260625_205421/stages/stage_01
+exec
+/bin/zsh -lc 'kubectl -n cockroachdb get pods -l app.kubernetes.io/name=cockroachdb -o wide' in /Users/jinyige/Karma/runs/new-added-workflows/cockroachdb-version-decommission-20260625_205421/stages/stage_01
+ succeeded in 142ms:
+NAME           READY   AGE   CONTAINERS   IMAGES
+crdb-cluster   5/5     48s   db           cockroachdb/cockroach:v24.1.0
+
+ succeeded in 135ms:
+NAME             READY   STATUS    RESTARTS   AGE   IP            NODE           NOMINATED NODE   READINESS GATES
+crdb-cluster-0   1/1     Running   0          48s   10.244.1.22   kind-worker    <none>           <none>
+crdb-cluster-1   1/1     Running   0          48s   10.244.3.23   kind-worker3   <none>           <none>
+crdb-cluster-2   1/1     Running   0          48s   10.244.2.19   kind-worker2   <none>           <none>
+crdb-cluster-3   1/1     Running   0          48s   10.244.2.20   kind-worker2   <none>           <none>
+crdb-cluster-4   1/1     Running   0          48s   10.244.3.24   kind-worker3   <none>           <none>
+
+ succeeded in 1505ms:
+count
+3
+
+ succeeded in 1542ms:
+id	address	sql_address	build	started_at	updated_at	locality	is_available	is_live
+1	crdb-cluster-0.crdb-cluster.cockroachdb.svc.cluster.local:26257	crdb-cluster-0.crdb-cluster.cockroachdb.svc.cluster.local:26257	v24.1.0	2026-06-25 20:54:43.838761 +0000 UTC	2026-06-25 20:55:16.878106 +0000 UTC		true	true
+2	crdb-cluster-1.crdb-cluster.cockroachdb.svc.cluster.local:26257	crdb-cluster-1.crdb-cluster.cockroachdb.svc.cluster.local:26257	v24.1.0	2026-06-25 20:54:44.258717 +0000 UTC	2026-06-25 20:55:17.291765 +0000 UTC		true	true
+3	crdb-cluster-4.crdb-cluster.cockroachdb.svc.cluster.local:26257	crdb-cluster-4.crdb-cluster.cockroachdb.svc.cluster.local:26257	v24.1.0	2026-06-25 20:54:44.546744 +0000 UTC	2026-06-25 20:55:17.571774 +0000 UTC		true	true
+4	crdb-cluster-2.crdb-cluster.cockroachdb.svc.cluster.local:26257	crdb-cluster-2.crdb-cluster.cockroachdb.svc.cluster.local:26257	v24.1.0	2026-06-25 20:54:45.476811 +0000 UTC	2026-06-25 20:55:18.550763 +0000 UTC		true	true
+5	crdb-cluster-3.crdb-cluster.cockroachdb.svc.cluster.local:26257	crdb-cluster-3.crdb-cluster.cockroachdb.svc.cluster.local:26257	v24.1.0	2026-06-25 20:54:45.480253 +0000 UTC	2026-06-25 20:55:18.54819 +0000 UTC		true	true
+
+codex
+The StatefulSet will delete ordinal pods `crdb-cluster-4` and `crdb-cluster-3` when scaled to 3. In this cluster those map to Cockroach node IDs `3` and `5`, so I’m decommissioning those IDs before changing the StatefulSet.
+exec
+/bin/zsh -lc 'kubectl -n cockroachdb exec crdb-cluster-0 -- ./cockroach node decommission 3 --insecure' in /Users/jinyige/Karma/runs/new-added-workflows/cockroachdb-version-decommission-20260625_205421/stages/stage_01
+ succeeded in 3237ms:
+id	is_live	replicas	is_decommissioning	membership	is_draining	readiness	blocking_ranges
+3	true	67	true	decommissioning	false	ready	0
+
+
+id	is_live	replicas	is_decommissioning	membership	is_draining	readiness	blocking_ranges
+3	true	64	true	decommissioning	false	ready	0
+id	is_live	replicas	is_decommissioning	membership	is_draining	readiness	blocking_ranges
+3	true	62	true	decommissioning	false	ready	0
+
+
+id	is_live	replicas	is_decommissioning	membership	is_draining	readiness	blocking_ranges
+3	true	60	true	decommissioning	false	ready	0
+id	is_live	replicas	is_decommissioning	membership	is_draining	readiness	blocking_ranges
+3	true	58	true	decommissioning	false	ready	0
+
+
+id	is_live	replicas	is_decommissioning	membership	is_draining	readiness	blocking_ranges
+3	true	55	true	decommissioning	false	ready	0
+
+id	is_live	replicas	is_decommissioning	membership	is_draining	readiness	blocking_ranges
+3	true	52	true	decommissioning	false	ready	0
+id	is_live	replicas	is_decommissioning	membership	is_draining	readiness	blocking_ranges
+3	true	48	true	decommissioning	false	ready	0
+
+
+id	is_live	replicas	is_decommissioning	membership	is_draining	readiness	blocking_ranges
+3	true	46	true	decommissioning	false	ready	0
+
+id	is_live	replicas	is_decommissioning	membership	is_draining	readiness	blocking_ranges
+3	true	44	true	decommissioning	false	ready	0
+id	is_live	replicas	is_decommissioning	membership	is_draining	readiness	blocking_ranges
+3	true	41	true	decommissioning	false	ready	0
+
+
+id	is_live	replicas	is_decommissioning	membership	is_draining	readiness	blocking_ranges
+3	true	38	true	decommissioning	false	ready	0
+
+id	is_live	replicas	is_decommissioning	membership	is_draining	readiness	blocking_ranges
+3	true	36	true	decommissioning	false	ready	0
+id	is_live	replicas	is_decommissioning	membership	is_draining	readiness	blocking_ranges
+3	true	32	true	decommissioning	false	ready	0
+
+
+id	is_live	replicas	is_decommissioning	membership	is_draining	readiness	blocking_ranges
+3	true	30	true	decommissioning	false	ready	0
+id	is_live	replicas	is_decommissioning	membership	is_draining	readiness	blocking_ranges
+3	true	28	true	decommissioning	false	ready	0
+
+
+id	is_live	replicas	is_decommissioning	membership	is_draining	readiness	blocking_ranges
+3	true	27	true	decommissioning	false	ready	0
+
+id	is_live	replicas	is_decommissioning	membership	is_draining	readiness	blocking_ranges
+3	true	24	true	decommissioning	false	ready	0
+.id	is_live	replicas	is_decommissioning	membership	is_draining	readiness	blocking_ranges
+3	true	23	true	decommissioning	false	ready	0
+
+
+id	is_live	replicas	is_decommissioning	membership	is_draining	readiness	blocking_ranges
+3	true	20	true	decommissioning	false	ready	0
+id	is_live	replicas	is_decommissioning	membership	is_draining	readiness	blocking_ranges
+3	true	19	true	decommissioning	false	ready	0
+
+.
+id	is_live	replicas	is_decommissioning	membership	is_draining	readiness	blocking_ranges
+3	true	17	true	decommissioning	false	ready	0
+
+id	is_live	replicas	is_decommissioning	membership	is_draining	readiness	blocking_ranges
+3	true	16	true	decommissioning	false	ready	0
+
+id	is_live	replicas	is_decommissioning	membership	is_draining	readiness	blocking_ranges
+3	true	14	true	decommissioning	false	ready	0
+id	is_live	replicas	is_decommissioning	membership	is_draining	readiness	blocking_ranges
+3	true	13	true	decommissioning	false	ready	0
+
+.id	is_live	replicas	is_decommissioning	membership	is_draining	readiness	blocking_ranges
+3	true	12	true	decommissioning	false	ready	0
+
+id	is_live	replicas	is_decommissioning	membership	is_draining	readiness	blocking_ranges
+3	true	11	true	decommissioning	false	ready	0
+
+
+id	is_live	replicas	is_decommissioning	membership	is_draining	readiness	blocking_ranges
+3	true	10	true	decommissioning	false	ready	0
+.id	is_live	replicas	is_decommissioning	membership	is_draining	readiness	blocking_ranges
+3	true	9	true	decommissioning	false	ready	0
+
+id	is_live	replicas	is_decommissioning	membership	is_draining	readiness	blocking_ranges
+3	true	8	true	decommissioning	false	ready	0
+
+
+id	is_live	replicas	is_decommissioning	membership	is_draining	readiness	blocking_ranges
+3	true	7	true	decommissioning	false	ready	0
+
+id	is_live	replicas	is_decommissioning	membership	is_draining	readiness	blocking_ranges
+3	true	6	true	decommissioning	false	ready	0
+.
+id	is_live	replicas	is_decommissioning	membership	is_draining	readiness	blocking_ranges
+3	true	5	true	decommissioning	false	ready	0
+
+id	is_live	replicas	is_decommissioning	membership	is_draining	readiness	blocking_ranges
+3	true	4	true	decommissioning	false	ready	0
+.
+id	is_live	replicas	is_decommissioning	membership	is_draining	readiness	blocking_ranges
+3	true	3	true	decommissioning	false	ready	0
+.
+id	is_live	replicas	is_decommissioning	membership	is_draining	readiness	blocking_ranges
+3	true	2	true	decommissioning	false	ready	0
+.id	is_live	replicas	is_decommissioning	membership	is_draining	readiness	blocking_ranges
+3	true	1	true	decommissioning	false	ready	0
+
+
+id	is_live	replicas	is_decommissioning	membership	is_draining	readiness	blocking_ranges
+3	true	0	true	decommissioning	false	ready	0
+
+No more data reported on target nodes. Please verify cluster health before removing the nodes.
+
+codex
+Node ID `3` is drained of replicas and reports zero blocking ranges. I’m checking the table read now, then I’ll decommission node ID `5` the same way.
+exec
+/bin/zsh -lc 'kubectl -n cockroachdb exec crdb-cluster-0 -- ./cockroach sql --insecure -e "SELECT count(*) FROM bench.decom_data;"' in /Users/jinyige/Karma/runs/new-added-workflows/cockroachdb-version-decommission-20260625_205421/stages/stage_01
+exec
+/bin/zsh -lc 'kubectl -n cockroachdb exec crdb-cluster-0 -- ./cockroach node status --insecure' in /Users/jinyige/Karma/runs/new-added-workflows/cockroachdb-version-decommission-20260625_205421/stages/stage_01
+ succeeded in 1614ms:
+id	address	sql_address	build	started_at	updated_at	locality	is_available	is_live
+1	crdb-cluster-0.crdb-cluster.cockroachdb.svc.cluster.local:26257	crdb-cluster-0.crdb-cluster.cockroachdb.svc.cluster.local:26257	v24.1.0	2026-06-25 20:54:43.838761 +0000 UTC	2026-06-25 20:55:40.879165 +0000 UTC		true	true
+2	crdb-cluster-1.crdb-cluster.cockroachdb.svc.cluster.local:26257	crdb-cluster-1.crdb-cluster.cockroachdb.svc.cluster.local:26257	v24.1.0	2026-06-25 20:54:44.258717 +0000 UTC	2026-06-25 20:55:41.289472 +0000 UTC		true	true
+4	crdb-cluster-2.crdb-cluster.cockroachdb.svc.cluster.local:26257	crdb-cluster-2.crdb-cluster.cockroachdb.svc.cluster.local:26257	v24.1.0	2026-06-25 20:54:45.476811 +0000 UTC	2026-06-25 20:55:42.517842 +0000 UTC		true	true
+5	crdb-cluster-3.crdb-cluster.cockroachdb.svc.cluster.local:26257	crdb-cluster-3.crdb-cluster.cockroachdb.svc.cluster.local:26257	v24.1.0	2026-06-25 20:54:45.480253 +0000 UTC	2026-06-25 20:55:42.517816 +0000 UTC		true	true
+
+ succeeded in 1669ms:
+count
+3
+
+codex
+The table still returns the seeded count after the first decommission, and `node status` now lists four active members. I’m decommissioning ID `5`, which is `crdb-cluster-3`, the other pod that will be removed by the scale-down.
+exec
+/bin/zsh -lc 'kubectl -n cockroachdb exec crdb-cluster-0 -- ./cockroach node decommission 5 --insecure' in /Users/jinyige/Karma/runs/new-added-workflows/cockroachdb-version-decommission-20260625_205421/stages/stage_01
+ succeeded in 4368ms:
+
+id	is_live	replicas	is_decommissioning	membership	is_draining	readiness	blocking_ranges
+5	true	52	true	decommissioning	false	ready	0
+
+id	is_live	replicas	is_decommissioning	membership	is_draining	readiness	blocking_ranges
+5	true	50	true	decommissioning	false	ready	0
+
+id	is_live	replicas	is_decommissioning	membership	is_draining	readiness	blocking_ranges
+5	true	46	true	decommissioning	false	ready	0
+id	is_live	replicas	is_decommissioning	membership	is_draining	readiness	blocking_ranges
+5	true	44	true	decommissioning	false	ready	0
+
+
+id	is_live	replicas	is_decommissioning	membership	is_draining	readiness	blocking_ranges
+5	true	42	true	decommissioning	false	ready	0
+id	is_live	replicas	is_decommissioning	membership	is_draining	readiness	blocking_ranges
+5	true	37	true	decommissioning	false	ready	0
+
+.id	is_live	replicas	is_decommissioning	membership	is_draining	readiness	blocking_ranges
+5	true	33	true	decommissioning	false	ready	0
+
+id	is_live	replicas	is_decommissioning	membership	is_draining	readiness	blocking_ranges
+5	true	31	true	decommissioning	false	ready	0
+
+id	is_live	replicas	is_decommissioning	membership	is_draining	readiness	blocking_ranges
+5	true	28	true	decommissioning	false	ready	0
+
+
+id	is_live	replicas	is_decommissioning	membership	is_draining	readiness	blocking_ranges
+5	true	25	true	decommissioning	false	ready	0
+
+id	is_live	replicas	is_decommissioning	membership	is_draining	readiness	blocking_ranges
+5	true	23	true	decommissioning	false	ready	0
+id	is_live	replicas	is_decommissioning	membership	is_draining	readiness	blocking_ranges
+5	true	19	true	decommissioning	false	ready	0
+
+id	is_live	replicas	is_decommissioning	membership	is_draining	readiness	blocking_ranges
+5	true	17	true	decommissioning	false	ready	0
+
+
+id	is_live	replicas	is_decommissioning	membership	is_draining	readiness	blocking_ranges
+5	true	13	true	decommissioning	false	ready	0
+id	is_live	replicas	is_decommissioning	membership	is_draining	readiness	blocking_ranges
+5	true	12	true	decommissioning	false	ready	0
+
+
+id	is_live	replicas	is_decommissioning	membership	is_draining	readiness	blocking_ranges
+5	true	10	true	decommissioning	false	ready	0
+..
+id	is_live	replicas	is_decommissioning	membership	is_draining	readiness	blocking_ranges
+5	true	9	true	decommissioning	false	ready	0
+.
+id	is_live	replicas	is_decommissioning	membership	is_draining	readiness	blocking_ranges
+5	true	7	true	decommissioning	false	ready	0
+....
+id	is_live	replicas	is_decommissioning	membership	is_draining	readiness	blocking_ranges
+5	true	6	true	decommissioning	false	ready	0
+....
+id	is_live	replicas	is_decommissioning	membership	is_draining	readiness	blocking_ranges
+5	true	5	true	decommissioning	false	ready	0
+....id	is_live	replicas	is_decommissioning	membership	is_draining	readiness	blocking_ranges
+5	true	4	true	decommissioning	false	ready	0
+
+....id	is_live	replicas	is_decommissioning	membership	is_draining	readiness	blocking_ranges
+5	true	3	true	decommissioning	false	ready	0
+
+...
+id	is_live	replicas	is_decommissioning	membership	is_draining	readiness	blocking_ranges
+5	true	2	true	decommissioning	false	ready	0
+..
+id	is_live	replicas	is_decommissioning	membership	is_draining	readiness	blocking_ranges
+5	true	1	true	decommissioning	false	ready	0
+....
+id	is_live	replicas	is_decommissioning	membership	is_draining	readiness	blocking_ranges
+5	true	0	true	decommissioning	false	ready	0
+
+No more data reported on target nodes. Please verify cluster health before removing the nodes.
+
+codex
+Node ID `5` also reached zero replicas and zero blocking ranges. I’m doing one more SQL read before scaling Kubernetes, then I’ll reduce the StatefulSet to three replicas and wait for it to settle.
+exec
+/bin/zsh -lc 'kubectl -n cockroachdb exec crdb-cluster-0 -- ./cockroach node status --insecure' in /Users/jinyige/Karma/runs/new-added-workflows/cockroachdb-version-decommission-20260625_205421/stages/stage_01
+exec
+/bin/zsh -lc 'kubectl -n cockroachdb exec crdb-cluster-0 -- ./cockroach sql --insecure -e "SELECT count(*) FROM bench.decom_data;"' in /Users/jinyige/Karma/runs/new-added-workflows/cockroachdb-version-decommission-20260625_205421/stages/stage_01
+ succeeded in 1031ms:
+id	address	sql_address	build	started_at	updated_at	locality	is_available	is_live
+1	crdb-cluster-0.crdb-cluster.cockroachdb.svc.cluster.local:26257	crdb-cluster-0.crdb-cluster.cockroachdb.svc.cluster.local:26257	v24.1.0	2026-06-25 20:54:43.838761 +0000 UTC	2026-06-25 20:55:58.878692 +0000 UTC		true	true
+2	crdb-cluster-1.crdb-cluster.cockroachdb.svc.cluster.local:26257	crdb-cluster-1.crdb-cluster.cockroachdb.svc.cluster.local:26257	v24.1.0	2026-06-25 20:54:44.258717 +0000 UTC	2026-06-25 20:55:59.290644 +0000 UTC		true	true
+4	crdb-cluster-2.crdb-cluster.cockroachdb.svc.cluster.local:26257	crdb-cluster-2.crdb-cluster.cockroachdb.svc.cluster.local:26257	v24.1.0	2026-06-25 20:54:45.476811 +0000 UTC	2026-06-25 20:56:00.518236 +0000 UTC		true	true
+
+ succeeded in 1047ms:
+count
+3
+
+codex
+CockroachDB now reports only the three remaining nodes as live and SQL still reads the table. I’m scaling the StatefulSet from `5` to `3` replicas now.
+exec
+/bin/zsh -lc 'kubectl -n cockroachdb scale sts crdb-cluster --replicas=3 && kubectl -n cockroachdb rollout status sts/crdb-cluster --timeout=180s' in /Users/jinyige/Karma/runs/new-added-workflows/cockroachdb-version-decommission-20260625_205421/stages/stage_01
+ succeeded in 173ms:
+partitioned roll out complete: 3 new pods have been updated...
+
+codex
+The StatefulSet scale command completed. I’m running the requested final checks: Cockroach node status, StatefulSet readiness, and the table count.
+exec
+/bin/zsh -lc 'kubectl -n cockroachdb exec crdb-cluster-0 -- ./cockroach node status --insecure' in /Users/jinyige/Karma/runs/new-added-workflows/cockroachdb-version-decommission-20260625_205421/stages/stage_01
+exec
+/bin/zsh -lc 'kubectl -n cockroachdb exec crdb-cluster-0 -- ./cockroach sql --insecure -e "SELECT count(*) FROM bench.decom_data;"' in /Users/jinyige/Karma/runs/new-added-workflows/cockroachdb-version-decommission-20260625_205421/stages/stage_01
+exec
+/bin/zsh -lc 'kubectl -n cockroachdb get pods -l app.kubernetes.io/name=cockroachdb -o wide' in /Users/jinyige/Karma/runs/new-added-workflows/cockroachdb-version-decommission-20260625_205421/stages/stage_01
+exec
+/bin/zsh -lc 'kubectl -n cockroachdb get sts crdb-cluster' in /Users/jinyige/Karma/runs/new-added-workflows/cockroachdb-version-decommission-20260625_205421/stages/stage_01
+ succeeded in 0ms:
+NAME           READY   AGE
+crdb-cluster   3/3     105s
+
+ succeeded in 0ms:
+NAME             READY   STATUS    RESTARTS   AGE    IP            NODE           NOMINATED NODE   READINESS GATES
+crdb-cluster-0   1/1     Running   0          105s   10.244.1.22   kind-worker    <none>           <none>
+crdb-cluster-1   1/1     Running   0          105s   10.244.3.23   kind-worker3   <none>           <none>
+crdb-cluster-2   1/1     Running   0          105s   10.244.2.19   kind-worker2   <none>           <none>
+
+ succeeded in 1055ms:
+id	address	sql_address	build	started_at	updated_at	locality	is_available	is_live
+1	crdb-cluster-0.crdb-cluster.cockroachdb.svc.cluster.local:26257	crdb-cluster-0.crdb-cluster.cockroachdb.svc.cluster.local:26257	v24.1.0	2026-06-25 20:54:43.838761 +0000 UTC	2026-06-25 20:56:13.897986 +0000 UTC		true	true
+2	crdb-cluster-1.crdb-cluster.cockroachdb.svc.cluster.local:26257	crdb-cluster-1.crdb-cluster.cockroachdb.svc.cluster.local:26257	v24.1.0	2026-06-25 20:54:44.258717 +0000 UTC	2026-06-25 20:56:14.29283 +0000 UTC		true	true
+4	crdb-cluster-2.crdb-cluster.cockroachdb.svc.cluster.local:26257	crdb-cluster-2.crdb-cluster.cockroachdb.svc.cluster.local:26257	v24.1.0	2026-06-25 20:54:45.476811 +0000 UTC	2026-06-25 20:56:12.517861 +0000 UTC		true	true
+
+ succeeded in 1060ms:
+count
+3
+
+codex
+The required final checks already pass. I’m doing one extra membership check for the removed IDs so the decommission state is explicit, since the normal `node status` output hides removed members.
+exec
+/bin/zsh -lc 'kubectl -n cockroachdb exec crdb-cluster-0 -- ./cockroach node status --insecure --decommission' in /Users/jinyige/Karma/runs/new-added-workflows/cockroachdb-version-decommission-20260625_205421/stages/stage_01
+ succeeded in 570ms:
+id	address	sql_address	build	started_at	updated_at	locality	is_available	is_live	gossiped_replicas	is_decommissioning	membership	is_draining
+1	crdb-cluster-0.crdb-cluster.cockroachdb.svc.cluster.local:26257	crdb-cluster-0.crdb-cluster.cockroachdb.svc.cluster.local:26257	v24.1.0	2026-06-25 20:54:43.838761 +0000 UTC	2026-06-25 20:56:25.880499 +0000 UTC		true	true	69	false	active	false
+2	crdb-cluster-1.crdb-cluster.cockroachdb.svc.cluster.local:26257	crdb-cluster-1.crdb-cluster.cockroachdb.svc.cluster.local:26257	v24.1.0	2026-06-25 20:54:44.258717 +0000 UTC	2026-06-25 20:56:26.291529 +0000 UTC		true	true	69	false	active	false
+3	crdb-cluster-4.crdb-cluster.cockroachdb.svc.cluster.local:26257	crdb-cluster-4.crdb-cluster.cockroachdb.svc.cluster.local:26257	v24.1.0	2026-06-25 20:54:44.546744 +0000 UTC	2026-06-25 20:55:35.601114 +0000 UTC		false	false	0	true	decommissioned	false
+4	crdb-cluster-2.crdb-cluster.cockroachdb.svc.cluster.local:26257	crdb-cluster-2.crdb-cluster.cockroachdb.svc.cluster.local:26257	v24.1.0	2026-06-25 20:54:45.476811 +0000 UTC	2026-06-25 20:56:27.517328 +0000 UTC		true	true	69	false	active	false
+5	crdb-cluster-3.crdb-cluster.cockroachdb.svc.cluster.local:26257	crdb-cluster-3.crdb-cluster.cockroachdb.svc.cluster.local:26257	v24.1.0	2026-06-25 20:54:45.480253 +0000 UTC	2026-06-25 20:55:51.948881 +0000 UTC		false	false	0	true	decommissioned	false
+
+codex
+Completed.
+
+Decommissioned:
+- Node ID `3` (`crdb-cluster-4`) -> `membership=decommissioned`, `gossiped_replicas=0`
+- Node ID `5` (`crdb-cluster-3`) -> `membership=decommissioned`, `gossiped_replicas=0`
+
+Final verification:
+- CockroachDB live nodes: `1`, `2`, `4` only, all `is_available=true`, `is_live=true`
+- StatefulSet: `crdb-cluster 3/3`
+- Remaining pods: `crdb-cluster-0`, `crdb-cluster-1`, `crdb-cluster-2`
+- `SELECT count(*) FROM bench.decom_data;` returns `3`
+
+The cluster is scaled to 3 replicas, removed nodes are fully decommissioned, and SQL remains ready.
+tokens used
+35,102
+Completed.
+
+Decommissioned:
+- Node ID `3` (`crdb-cluster-4`) -> `membership=decommissioned`, `gossiped_replicas=0`
+- Node ID `5` (`crdb-cluster-3`) -> `membership=decommissioned`, `gossiped_replicas=0`
+
+Final verification:
+- CockroachDB live nodes: `1`, `2`, `4` only, all `is_available=true`, `is_live=true`
+- StatefulSet: `crdb-cluster 3/3`
+- Remaining pods: `crdb-cluster-0`, `crdb-cluster-1`, `crdb-cluster-2`
+- `SELECT count(*) FROM bench.decom_data;` returns `3`
+
+The cluster is scaled to 3 replicas, removed nodes are fully decommissioned, and SQL remains ready.

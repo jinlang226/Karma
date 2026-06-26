@@ -20,9 +20,25 @@ SETUP_TIMEOUT="${KARMA_SETUP_TIMEOUT:-}"
 VERIFY_TIMEOUT="${KARMA_VERIFY_TIMEOUT:-}"
 CLEANUP_TIMEOUT="${KARMA_CLEANUP_TIMEOUT:-}"
 STOP_ON_FAILURE="${KARMA_STOP_ON_FAILURE:-0}"
+RESET_NAMESPACES="${KARMA_RESET_NAMESPACES:-1}"
+RESET_NAMESPACE_LIST="${KARMA_RESET_NAMESPACE_LIST:-cockroachdb elasticsearch mongodb rabbitmq ray spark-pi spark-skew spark-etl spark-team-a spark-team-b spark-history demo ingress-nginx ingress-nginx-2 monitoring otel}"
+RESET_WAIT_TIMEOUT="${KARMA_RESET_WAIT_TIMEOUT:-240s}"
+KUBECTL_REQUEST_TIMEOUT="${KARMA_KUBECTL_REQUEST_TIMEOUT:-5s}"
+CLUSTER_CHECK_ATTEMPTS="${KARMA_CLUSTER_CHECK_ATTEMPTS:-2}"
+CLUSTER_CHECK_SLEEP="${KARMA_CLUSTER_CHECK_SLEEP:-2}"
 
 STAMP="$(date +%Y%m%d_%H%M%S)"
 BATCH_DIR="${1:-$RUNS_ROOT/new-workflows-${AGENT}-${STAMP}}"
+LOG_FILE="$BATCH_DIR/batch.log"
+PROGRESS_FILE="$BATCH_DIR/batch-progress.jsonl"
+
+mkdir -p "$BATCH_DIR"
+touch "$LOG_FILE"
+touch "$PROGRESS_FILE"
+
+log() {
+  echo "$@" | tee -a "$LOG_FILE"
+}
 
 if [ "$AGENT" = "codex" ] && ! command -v codex >/dev/null 2>&1; then
   CODEX_BIN="$(find "$HOME/.vscode/extensions" -path '*/openai.chatgpt-*/bin/*/codex' -type f 2>/dev/null | sort -r | head -n 1 || true)"
@@ -37,12 +53,36 @@ if [ "$AGENT" = "codex" ] && ! command -v codex >/dev/null 2>&1; then
   exit 1
 fi
 
-if [ "${KARMA_SKIP_CLUSTER_CHECK:-0}" != "1" ]; then
-  echo "Checking Kubernetes cluster..."
-  kubectl get nodes >/dev/null
-fi
+check_cluster() {
+  if [ "${KARMA_SKIP_CLUSTER_CHECK:-0}" = "1" ]; then
+    log "Skipping Kubernetes cluster preflight because KARMA_SKIP_CLUSTER_CHECK=1."
+    return 0
+  fi
 
-mkdir -p "$BATCH_DIR"
+  log "Checking Kubernetes cluster..."
+  local attempt
+  local err_file="$BATCH_DIR/cluster-check.err"
+  for attempt in $(seq 1 "$CLUSTER_CHECK_ATTEMPTS"); do
+    if kubectl --request-timeout="$KUBECTL_REQUEST_TIMEOUT" get nodes > /dev/null 2> "$err_file"; then
+      rm -f "$err_file"
+      log "Kubernetes cluster reachable."
+      return 0
+    fi
+
+    log "Cluster check failed (attempt $attempt/$CLUSTER_CHECK_ATTEMPTS): $(tr '\n' ' ' < "$err_file")"
+    if [ "$attempt" -lt "$CLUSTER_CHECK_ATTEMPTS" ]; then
+      sleep "$CLUSTER_CHECK_SLEEP"
+    fi
+  done
+
+  log "error: Kubernetes cluster is unreachable; no workflows were started."
+  log "Fix the local cluster first, then rerun: ./scripts/run-added-workflows.sh $BATCH_DIR"
+  log "Useful checks: kubectl --request-timeout=$KUBECTL_REQUEST_TIMEOUT get nodes"
+  log "YAML-only validation still works with: .venv/bin/python -m pytest tests/integration/test_added_workflow_suite.py"
+  exit 1
+}
+
+check_cluster
 
 WORKFLOWS=()
 while IFS= read -r workflow; do
@@ -85,6 +125,8 @@ cat > "$BATCH_DIR/manifest.json" <<EOF
   "max_attempts": $MAX_ATTEMPTS,
   "stage_failure_mode": "$STAGE_FAILURE_MODE",
   "final_sweep_mode": "$FINAL_SWEEP_MODE",
+  "reset_namespaces": "$RESET_NAMESPACES",
+  "reset_namespace_list": "$RESET_NAMESPACE_LIST",
   "workflow_count": ${#WORKFLOWS[@]},
   "workflows_file": "workflows.txt",
   "progress_file": "batch-progress.jsonl",
@@ -92,8 +134,6 @@ cat > "$BATCH_DIR/manifest.json" <<EOF
 }
 EOF
 
-LOG_FILE="$BATCH_DIR/batch.log"
-PROGRESS_FILE="$BATCH_DIR/batch-progress.jsonl"
 # : > "$LOG_FILE"
 # : > "$PROGRESS_FILE"
 touch "$LOG_FILE"
@@ -104,7 +144,27 @@ echo "Workflow count: ${#WORKFLOWS[@]}" | tee -a "$LOG_FILE"
 echo "Agent: $AGENT" | tee -a "$LOG_FILE"
 echo "Sandbox: $SANDBOX" | tee -a "$LOG_FILE"
 echo "Resume mode: completed workflows in this batch folder will be skipped." | tee -a "$LOG_FILE"
+echo "Namespace reset: $RESET_NAMESPACES" | tee -a "$LOG_FILE"
 echo "Results UI: open the Results tab and refresh; look for $(basename "$BATCH_DIR")." | tee -a "$LOG_FILE"
+
+reset_workflow_namespaces() {
+  if [ "$RESET_NAMESPACES" != "1" ]; then
+    return 0
+  fi
+
+  if ! kubectl --request-timeout="$KUBECTL_REQUEST_TIMEOUT" get namespace default > /dev/null 2>&1; then
+    echo "error: Kubernetes cluster became unreachable before namespace reset." | tee -a "$LOG_FILE"
+    return 1
+  fi
+
+  echo "Resetting app namespaces before workflow: $RESET_NAMESPACE_LIST" | tee -a "$LOG_FILE"
+  for ns in $RESET_NAMESPACE_LIST; do
+    kubectl --request-timeout="$KUBECTL_REQUEST_TIMEOUT" delete namespace "$ns" --ignore-not-found=true --wait=false >/dev/null 2>&1 || true
+  done
+  for ns in $RESET_NAMESPACE_LIST; do
+    kubectl --request-timeout="$KUBECTL_REQUEST_TIMEOUT" wait --for=delete "namespace/$ns" --timeout="$RESET_WAIT_TIMEOUT" >/dev/null 2>&1 || true
+  done
+}
 
 failures=0
 total="${#WORKFLOWS[@]}"
@@ -158,6 +218,7 @@ PY
 
   echo "" | tee -a "$LOG_FILE"
   echo "[$display_index/$total] START $workflow" | tee -a "$LOG_FILE"
+  reset_workflow_namespaces
 
   cmd=(
     "$PYTHON" orchestrator.py run-workflow "$workflow"

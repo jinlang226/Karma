@@ -1,0 +1,977 @@
+OpenAI Codex v0.142.2
+--------
+workdir: /Users/jinyige/Karma/runs/new-added-workflows/elasticsearch-deploy-scale-transform-snapshot-20260625_223911/stages/stage_02
+model: gpt-5.5
+provider: openai
+approval: never
+sandbox: danger-full-access
+reasoning effort: xhigh
+reasoning summaries: none
+session id: 019f00f3-4690-78b0-acf9-efa843d754f0
+--------
+user
+A 3-node Elasticsearch cluster is running.
+
+Goal:
+- Add two new data nodes with a different allocation attribute from the existing nodes.
+- Ensure shards for index "app-data" relocate onto the new nodes.
+- Keep the cluster healthy.
+
+Constraints:
+- Do not install operators or CRDs.
+
+Verification:
+1. Cluster health is yellow/green with 5 nodes.
+2. app-data shards are present on nodes outside the original 3.
+3. New nodes have a different allocation attribute than the original nodes.
+4. es-cluster StatefulSet remains at 3 replicas.
+codex
+I’ll inspect the stage files and current Kubernetes/Elasticsearch state first, then make the smallest manifest or cluster changes needed without touching operators or CRDs.
+exec
+/bin/zsh -lc 'pwd && rg --files' in /Users/jinyige/Karma/runs/new-added-workflows/elasticsearch-deploy-scale-transform-snapshot-20260625_223911/stages/stage_02
+ succeeded in 0ms:
+/Users/jinyige/Karma/runs/new-added-workflows/elasticsearch-deploy-scale-transform-snapshot-20260625_223911/stages/stage_02
+proxy-client.crt
+agent.log
+precondition.log
+prompt.txt
+proxy-client.key
+
+exec
+/bin/zsh -lc 'kubectl get sts -A' in /Users/jinyige/Karma/runs/new-added-workflows/elasticsearch-deploy-scale-transform-snapshot-20260625_223911/stages/stage_02
+exec
+/bin/zsh -lc 'kubectl get pods -A -o wide' in /Users/jinyige/Karma/runs/new-added-workflows/elasticsearch-deploy-scale-transform-snapshot-20260625_223911/stages/stage_02
+ succeeded in 252ms:
+NAMESPACE                                                  NAME         READY   AGE
+elasticsearch                                              es-cluster   3/3     3m46s
+karma-rabbitmq-security-marathon-2026-e9526b7b-cluster-a   rabbitmq     3/3     3d1h
+
+ succeeded in 254ms:
+NAMESPACE                                                  NAME                                         READY   STATUS      RESTARTS         AGE     IP            NODE                 NOMINATED NODE   READINESS GATES
+elasticsearch                                              curl-test                                    1/1     Running     0                3m46s   10.244.1.59   kind-worker          <none>           <none>
+elasticsearch                                              es-cluster-0                                 1/1     Running     0                3m46s   10.244.1.60   kind-worker          <none>           <none>
+elasticsearch                                              es-cluster-1                                 1/1     Running     0                3m46s   10.244.2.54   kind-worker2         <none>           <none>
+elasticsearch                                              es-cluster-2                                 1/1     Running     0                3m46s   10.244.3.59   kind-worker3         <none>           <none>
+elasticsearch                                              minio-776f448748-mm9cm                       1/1     Running     0                3m46s   10.244.3.57   kind-worker3         <none>           <none>
+elasticsearch                                              minio-init-pfsx8                             0/1     Completed   0                3m46s   10.244.3.56   kind-worker3         <none>           <none>
+karma-rabbitmq-security-marathon-2026-e9526b7b-cluster-a   app-client-5b47685ddb-hvgq5                  1/1     Running     13 (4h14m ago)   3d1h    10.244.1.4    kind-worker          <none>           <none>
+karma-rabbitmq-security-marathon-2026-e9526b7b-cluster-a   app-producer-77696467c6-wg7z9                1/1     Running     14 (7h45m ago)   3d1h    10.244.3.6    kind-worker3         <none>           <none>
+karma-rabbitmq-security-marathon-2026-e9526b7b-cluster-a   curl-test                                    1/1     Running     28 (86s ago)     3d1h    10.244.2.4    kind-worker2         <none>           <none>
+karma-rabbitmq-security-marathon-2026-e9526b7b-cluster-a   ops-client-8467495d-pst7r                    1/1     Running     11 (3h31m ago)   3d1h    10.244.2.3    kind-worker2         <none>           <none>
+karma-rabbitmq-security-marathon-2026-e9526b7b-cluster-a   rabbitmq-0                                   1/1     Running     5 (16h ago)      3d1h    10.244.2.2    kind-worker2         <none>           <none>
+karma-rabbitmq-security-marathon-2026-e9526b7b-cluster-a   rabbitmq-1                                   1/1     Running     5 (16h ago)      3d1h    10.244.3.4    kind-worker3         <none>           <none>
+karma-rabbitmq-security-marathon-2026-e9526b7b-cluster-a   rabbitmq-2                                   1/1     Running     5 (16h ago)      3d1h    10.244.1.8    kind-worker          <none>           <none>
+karma-rabbitmq-security-marathon-2026-e9526b7b-cluster-a   rabbitmq-setup-8cbf8                         0/1     Completed   0                3d1h    <none>        kind-worker          <none>           <none>
+kube-system                                                coredns-668d6bf9bc-6plsl                     1/1     Running     5 (16h ago)      14d     10.244.0.2    kind-control-plane   <none>           <none>
+kube-system                                                coredns-668d6bf9bc-zvnh5                     1/1     Running     6 (8h ago)       14d     10.244.0.4    kind-control-plane   <none>           <none>
+kube-system                                                etcd-kind-control-plane                      1/1     Running     1 (16h ago)      29h     172.22.0.5    kind-control-plane   <none>           <none>
+kube-system                                                kindnet-fl6rj                                1/1     Running     4 (16h ago)      14d     172.22.0.5    kind-control-plane   <none>           <none>
+kube-system                                                kindnet-jr8b4                                1/1     Running     3 (16h ago)      14d     172.22.0.3    kind-worker3         <none>           <none>
+kube-system                                                kindnet-sgtbd                                1/1     Running     4 (16h ago)      14d     172.22.0.4    kind-worker          <none>           <none>
+kube-system                                                kindnet-znrw6                                1/1     Running     3 (16h ago)      14d     172.22.0.2    kind-worker2         <none>           <none>
+kube-system                                                kube-apiserver-kind-control-plane            1/1     Running     2 (8h ago)       29h     172.22.0.5    kind-control-plane   <none>           <none>
+kube-system                                                kube-controller-manager-kind-control-plane   1/1     Running     129 (151m ago)   14d     172.22.0.5    kind-control-plane   <none>           <none>
+kube-system                                                kube-proxy-db7bb                             1/1     Running     3 (16h ago)      14d     172.22.0.2    kind-worker2         <none>           <none>
+kube-system                                                kube-proxy-gtj4l                             1/1     Running     4 (16h ago)      14d     172.22.0.4    kind-worker          <none>           <none>
+kube-system                                                kube-proxy-mk9l2                             1/1     Running     3 (16h ago)      14d     172.22.0.3    kind-worker3         <none>           <none>
+kube-system                                                kube-proxy-t5f4z                             1/1     Running     4 (16h ago)      14d     172.22.0.5    kind-control-plane   <none>           <none>
+kube-system                                                kube-scheduler-kind-control-plane            1/1     Running     133 (141m ago)   14d     172.22.0.5    kind-control-plane   <none>           <none>
+local-path-storage                                         local-path-provisioner-58cc7856b6-zfzps      1/1     Running     10 (16h ago)     14d     10.244.0.3    kind-control-plane   <none>           <none>
+
+codex
+The namespace already has the expected 3-node `es-cluster` StatefulSet. I’m going to read its rendered spec and the Elasticsearch cluster settings so the new data nodes use the same discovery/security setup but a different allocation attribute.
+exec
+/bin/zsh -lc 'kubectl -n elasticsearch get sts es-cluster -o yaml' in /Users/jinyige/Karma/runs/new-added-workflows/elasticsearch-deploy-scale-transform-snapshot-20260625_223911/stages/stage_02
+exec
+/bin/zsh -lc 'kubectl -n elasticsearch get svc,cm,secret,pvc -o wide' in /Users/jinyige/Karma/runs/new-added-workflows/elasticsearch-deploy-scale-transform-snapshot-20260625_223911/stages/stage_02
+exec
+/bin/zsh -lc "kubectl -n elasticsearch exec curl-test -- sh -c 'env | sort && echo --- && curl -sS http://es-cluster:9200/_cluster/health?pretty && echo --- && curl -sS http://es-cluster:9200/_cat/nodes?v\\&h=name,ip,node.role,master,attr.rack,attr.zone,attr.box_type,attr.data,attr.*'" in /Users/jinyige/Karma/runs/new-added-workflows/elasticsearch-deploy-scale-transform-snapshot-20260625_223911/stages/stage_02
+ succeeded in 188ms:
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  annotations:
+    kubectl.kubernetes.io/last-applied-configuration: |
+      {"apiVersion":"apps/v1","kind":"StatefulSet","metadata":{"annotations":{},"name":"es-cluster","namespace":"elasticsearch"},"spec":{"podManagementPolicy":"Parallel","replicas":3,"selector":{"matchLabels":{"app":"es-cluster"}},"serviceName":"es-cluster","template":{"metadata":{"labels":{"app":"es-cluster"}},"spec":{"containers":[{"env":[{"name":"POD_NAME","valueFrom":{"fieldRef":{"fieldPath":"metadata.name"}}},{"name":"ES_JAVA_OPTS","value":"-Xms512m -Xmx512m"}],"image":"docker.elastic.co/elasticsearch/elasticsearch:8.11.1","name":"elasticsearch","ports":[{"containerPort":9200,"name":"http"},{"containerPort":9300,"name":"transport"}],"readinessProbe":{"failureThreshold":6,"httpGet":{"path":"/_cluster/health?local=true","port":"http"},"initialDelaySeconds":10,"periodSeconds":5,"timeoutSeconds":2},"resources":{"limits":{"cpu":"1","memory":"2Gi"},"requests":{"cpu":"500m","memory":"1Gi"}},"volumeMounts":[{"mountPath":"/usr/share/elasticsearch/config/elasticsearch.yml","name":"es-config","subPath":"elasticsearch.yml"},{"mountPath":"/usr/share/elasticsearch/plugins","name":"es-plugins"},{"mountPath":"/mnt/secure-settings","name":"secure-settings","readOnly":true},{"mountPath":"/usr/share/elasticsearch/data","name":"data"}]}],"initContainers":[{"command":["/bin/sh","-c","set -e\nif [ ! -d /usr/share/elasticsearch/plugins/repository-s3 ]; then\n  /usr/share/elasticsearch/bin/elasticsearch-plugin install --batch repository-s3\nfi\n"],"image":"docker.elastic.co/elasticsearch/elasticsearch:8.11.1","name":"install-s3-plugin","volumeMounts":[{"mountPath":"/usr/share/elasticsearch/plugins","name":"es-plugins"}]}],"volumes":[{"configMap":{"items":[{"key":"elasticsearch.yml","path":"elasticsearch.yml"}],"name":"es-config"},"name":"es-config"},{"emptyDir":{},"name":"es-plugins"},{"name":"secure-settings","secret":{"secretName":"es-secure-settings"}}]}},"updateStrategy":{"type":"OnDelete"},"volumeClaimTemplates":[{"metadata":{"name":"data"},"spec":{"accessModes":["ReadWriteOnce"],"resources":{"requests":{"storage":"5Gi"}}}}]}}
+  creationTimestamp: "2026-06-25T22:39:14Z"
+  generation: 1
+  name: es-cluster
+  namespace: elasticsearch
+  resourceVersion: "285815"
+  uid: 2e2839ff-6d26-4149-8d69-dda15c64b2cf
+spec:
+  persistentVolumeClaimRetentionPolicy:
+    whenDeleted: Retain
+    whenScaled: Retain
+  podManagementPolicy: Parallel
+  replicas: 3
+  revisionHistoryLimit: 10
+  selector:
+    matchLabels:
+      app: es-cluster
+  serviceName: es-cluster
+  template:
+    metadata:
+      creationTimestamp: null
+      labels:
+        app: es-cluster
+    spec:
+      containers:
+      - env:
+        - name: POD_NAME
+          valueFrom:
+            fieldRef:
+              apiVersion: v1
+              fieldPath: metadata.name
+        - name: ES_JAVA_OPTS
+          value: -Xms512m -Xmx512m
+        image: docker.elastic.co/elasticsearch/elasticsearch:8.11.1
+        imagePullPolicy: IfNotPresent
+        name: elasticsearch
+        ports:
+        - containerPort: 9200
+          name: http
+          protocol: TCP
+        - containerPort: 9300
+          name: transport
+          protocol: TCP
+        readinessProbe:
+          failureThreshold: 6
+          httpGet:
+            path: /_cluster/health?local=true
+            port: http
+            scheme: HTTP
+          initialDelaySeconds: 10
+          periodSeconds: 5
+          successThreshold: 1
+          timeoutSeconds: 2
+        resources:
+          limits:
+            cpu: "1"
+            memory: 2Gi
+          requests:
+            cpu: 500m
+            memory: 1Gi
+        terminationMessagePath: /dev/termination-log
+        terminationMessagePolicy: File
+        volumeMounts:
+        - mountPath: /usr/share/elasticsearch/config/elasticsearch.yml
+          name: es-config
+          subPath: elasticsearch.yml
+        - mountPath: /usr/share/elasticsearch/plugins
+          name: es-plugins
+        - mountPath: /mnt/secure-settings
+          name: secure-settings
+          readOnly: true
+        - mountPath: /usr/share/elasticsearch/data
+          name: data
+      dnsPolicy: ClusterFirst
+      initContainers:
+      - command:
+        - /bin/sh
+        - -c
+        - |
+          set -e
+          if [ ! -d /usr/share/elasticsearch/plugins/repository-s3 ]; then
+            /usr/share/elasticsearch/bin/elasticsearch-plugin install --batch repository-s3
+          fi
+        image: docker.elastic.co/elasticsearch/elasticsearch:8.11.1
+        imagePullPolicy: IfNotPresent
+        name: install-s3-plugin
+        resources: {}
+        terminationMessagePath: /dev/termination-log
+        terminationMessagePolicy: File
+        volumeMounts:
+        - mountPath: /usr/share/elasticsearch/plugins
+          name: es-plugins
+      restartPolicy: Always
+      schedulerName: default-scheduler
+      securityContext: {}
+      terminationGracePeriodSeconds: 30
+      volumes:
+      - configMap:
+          defaultMode: 420
+          items:
+          - key: elasticsearch.yml
+            path: elasticsearch.yml
+          name: es-config
+        name: es-config
+      - emptyDir: {}
+        name: es-plugins
+      - name: secure-settings
+        secret:
+          defaultMode: 420
+          secretName: es-secure-settings
+  updateStrategy:
+    type: OnDelete
+  volumeClaimTemplates:
+  - apiVersion: v1
+    kind: PersistentVolumeClaim
+    metadata:
+      creationTimestamp: null
+      name: data
+    spec:
+      accessModes:
+      - ReadWriteOnce
+      resources:
+        requests:
+          storage: 5Gi
+      volumeMode: Filesystem
+    status:
+      phase: Pending
+status:
+  availableReplicas: 3
+  collisionCount: 0
+  currentReplicas: 3
+  currentRevision: es-cluster-96f876476
+  observedGeneration: 1
+  readyReplicas: 3
+  replicas: 3
+  updateRevision: es-cluster-96f876476
+  updatedReplicas: 3
+
+ succeeded in 215ms:
+NAME                 TYPE        CLUSTER-IP      EXTERNAL-IP   PORT(S)    AGE     SELECTOR
+service/es-cluster   ClusterIP   None            <none>        9300/TCP   3m57s   app=es-cluster
+service/es-http      ClusterIP   10.96.169.192   <none>        9200/TCP   3m57s   app=es-cluster
+service/minio        ClusterIP   10.96.6.103     <none>        9000/TCP   3m57s   app=minio
+
+NAME                         DATA   AGE
+configmap/es-config          1      3m57s
+configmap/kube-root-ca.crt   1      3m58s
+
+NAME                        TYPE     DATA   AGE
+secret/es-secure-settings   Opaque   2      3m57s
+secret/minio-root           Opaque   2      3m57s
+
+NAME                                      STATUS   VOLUME                                     CAPACITY   ACCESS MODES   STORAGECLASS   VOLUMEATTRIBUTESCLASS   AGE     VOLUMEMODE
+persistentvolumeclaim/data-es-cluster-0   Bound    pvc-2dc899f4-ba8f-4ec1-b3ba-d4ba422ced20   5Gi        RWO            standard       <unset>                 3m57s   Filesystem
+persistentvolumeclaim/data-es-cluster-1   Bound    pvc-71153faf-a3ee-4ca8-ba6a-c5e907c5cbd2   5Gi        RWO            standard       <unset>                 3m57s   Filesystem
+persistentvolumeclaim/data-es-cluster-2   Bound    pvc-f234dac9-4962-459e-a1d3-6c6158e44b38   5Gi        RWO            standard       <unset>                 3m57s   Filesystem
+
+ succeeded in 268ms:
+CURL_CA_BUNDLE=/cacert.pem
+ES_HTTP_PORT=tcp://10.96.169.192:9200
+ES_HTTP_PORT_9200_TCP=tcp://10.96.169.192:9200
+ES_HTTP_PORT_9200_TCP_ADDR=10.96.169.192
+ES_HTTP_PORT_9200_TCP_PORT=9200
+ES_HTTP_PORT_9200_TCP_PROTO=tcp
+ES_HTTP_SERVICE_HOST=10.96.169.192
+ES_HTTP_SERVICE_PORT=9200
+ES_HTTP_SERVICE_PORT_HTTP=9200
+HOME=/home/curl_user
+HOSTNAME=curl-test
+KUBERNETES_PORT=tcp://10.96.0.1:443
+KUBERNETES_PORT_443_TCP=tcp://10.96.0.1:443
+KUBERNETES_PORT_443_TCP_ADDR=10.96.0.1
+KUBERNETES_PORT_443_TCP_PORT=443
+KUBERNETES_PORT_443_TCP_PROTO=tcp
+KUBERNETES_SERVICE_HOST=10.96.0.1
+KUBERNETES_SERVICE_PORT=443
+KUBERNETES_SERVICE_PORT_HTTPS=443
+MINIO_PORT=tcp://10.96.6.103:9000
+MINIO_PORT_9000_TCP=tcp://10.96.6.103:9000
+MINIO_PORT_9000_TCP_ADDR=10.96.6.103
+MINIO_PORT_9000_TCP_PORT=9000
+MINIO_PORT_9000_TCP_PROTO=tcp
+MINIO_SERVICE_HOST=10.96.6.103
+MINIO_SERVICE_PORT=9000
+MINIO_SERVICE_PORT_API=9000
+PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+PWD=/home/curl_user
+SHLVL=1
+---
+{
+  "cluster_name" : "es-cluster",
+  "status" : "green",
+  "timed_out" : false,
+  "number_of_nodes" : 3,
+  "number_of_data_nodes" : 3,
+  "active_primary_shards" : 3,
+  "active_shards" : 6,
+  "relocating_shards" : 0,
+  "initializing_shards" : 0,
+  "unassigned_shards" : 0,
+  "delayed_unassigned_shards" : 0,
+  "number_of_pending_tasks" : 0,
+  "number_of_in_flight_fetch" : 0,
+  "task_max_waiting_in_queue_millis" : 0,
+  "active_shards_percent_as_number" : 100.0
+}
+---
+name         ip          node.role master
+es-cluster-2 10.244.3.59 dim       *
+es-cluster-0 10.244.1.60 dim       -
+es-cluster-1 10.244.2.54 dim       -
+
+codex
+The existing cluster is plain HTTP and the three nodes currently report no allocation attribute in `_cat/nodes`. I’m checking the config map next so the added nodes join the same cluster cleanly while advertising a distinct node attribute.
+exec
+/bin/zsh -lc 'kubectl -n elasticsearch get cm es-config -o yaml' in /Users/jinyige/Karma/runs/new-added-workflows/elasticsearch-deploy-scale-transform-snapshot-20260625_223911/stages/stage_02
+ succeeded in 0ms:
+apiVersion: v1
+data:
+  elasticsearch.yml: |
+    cluster.name: es-cluster
+    node.name: ${POD_NAME}
+    node.roles: [ master, data, ingest ]
+    network.host: 0.0.0.0
+    discovery.seed_hosts:
+      - es-cluster-0.es-cluster.elasticsearch.svc.cluster.local
+      - es-cluster-1.es-cluster.elasticsearch.svc.cluster.local
+      - es-cluster-2.es-cluster.elasticsearch.svc.cluster.local
+    cluster.initial_master_nodes:
+      - es-cluster-0
+      - es-cluster-1
+      - es-cluster-2
+    node.store.allow_mmap: false
+    xpack.security.enabled: false
+    xpack.security.http.ssl.enabled: false
+    xpack.security.transport.ssl.enabled: false
+    s3.client.default.endpoint: minio.elasticsearch.svc.cluster.local:9000
+    s3.client.default.protocol: http
+    s3.client.default.path_style_access: true
+kind: ConfigMap
+metadata:
+  annotations:
+    kubectl.kubernetes.io/last-applied-configuration: |
+      {"apiVersion":"v1","data":{"elasticsearch.yml":"cluster.name: es-cluster\nnode.name: ${POD_NAME}\nnode.roles: [ master, data, ingest ]\nnetwork.host: 0.0.0.0\ndiscovery.seed_hosts:\n  - es-cluster-0.es-cluster.elasticsearch.svc.cluster.local\n  - es-cluster-1.es-cluster.elasticsearch.svc.cluster.local\n  - es-cluster-2.es-cluster.elasticsearch.svc.cluster.local\ncluster.initial_master_nodes:\n  - es-cluster-0\n  - es-cluster-1\n  - es-cluster-2\nnode.store.allow_mmap: false\nxpack.security.enabled: false\nxpack.security.http.ssl.enabled: false\nxpack.security.transport.ssl.enabled: false\ns3.client.default.endpoint: minio.elasticsearch.svc.cluster.local:9000\ns3.client.default.protocol: http\ns3.client.default.path_style_access: true\n"},"kind":"ConfigMap","metadata":{"annotations":{},"name":"es-config","namespace":"elasticsearch"}}
+  creationTimestamp: "2026-06-25T22:39:14Z"
+  name: es-config
+  namespace: elasticsearch
+  resourceVersion: "285488"
+  uid: a1a900a5-4042-4ab3-9ca1-121bb419c0a1
+
+exec
+/bin/zsh -lc 'kubectl get nodes -o wide' in /Users/jinyige/Karma/runs/new-added-workflows/elasticsearch-deploy-scale-transform-snapshot-20260625_223911/stages/stage_02
+ succeeded in 0ms:
+NAME                 STATUS   ROLES           AGE   VERSION   INTERNAL-IP   EXTERNAL-IP   OS-IMAGE                         KERNEL-VERSION     CONTAINER-RUNTIME
+kind-control-plane   Ready    control-plane   14d   v1.32.1   172.22.0.5    <none>        Debian GNU/Linux 12 (bookworm)   6.10.14-linuxkit   containerd://2.0.2
+kind-worker          Ready    <none>          14d   v1.32.1   172.22.0.4    <none>        Debian GNU/Linux 12 (bookworm)   6.10.14-linuxkit   containerd://2.0.2
+kind-worker2         Ready    <none>          14d   v1.32.1   172.22.0.2    <none>        Debian GNU/Linux 12 (bookworm)   6.10.14-linuxkit   containerd://2.0.2
+kind-worker3         Ready    <none>          14d   v1.32.1   172.22.0.3    <none>        Debian GNU/Linux 12 (bookworm)   6.10.14-linuxkit   containerd://2.0.2
+
+exec
+/bin/zsh -lc "kubectl -n elasticsearch exec curl-test -- sh -c 'curl -sS http://es-http:9200/_cat/indices?v && echo --- && curl -sS http://es-http:9200/app-data/_settings?pretty && echo --- && curl -sS http://es-http:9200/_cat/shards/app-data?v'" in /Users/jinyige/Karma/runs/new-added-workflows/elasticsearch-deploy-scale-transform-snapshot-20260625_223911/stages/stage_02
+ succeeded in 165ms:
+health status index    uuid                   pri rep docs.count docs.deleted store.size pri.store.size dataset.size
+green  open   app-data OL2TtymHSJ20SUTBLbu8oQ   3   1          3            0       23kb         13.6kb       13.6kb
+---
+{
+  "app-data" : {
+    "settings" : {
+      "index" : {
+        "routing" : {
+          "allocation" : {
+            "include" : {
+              "_tier_preference" : "data_content"
+            }
+          }
+        },
+        "number_of_shards" : "3",
+        "provided_name" : "app-data",
+        "creation_date" : "1782427367187",
+        "number_of_replicas" : "1",
+        "uuid" : "OL2TtymHSJ20SUTBLbu8oQ",
+        "version" : {
+          "created" : "8500003"
+        }
+      }
+    }
+  }
+}
+---
+index    shard prirep state   docs store dataset ip          node
+app-data 0     p      STARTED    0  227b    227b 10.244.2.54 es-cluster-1
+app-data 0     r      STARTED    0  227b    227b 10.244.1.60 es-cluster-0
+app-data 1     p      STARTED    2 8.8kb   8.8kb 10.244.1.60 es-cluster-0
+app-data 1     r      STARTED    2 4.6kb   4.6kb 10.244.3.59 es-cluster-2
+app-data 2     r      STARTED    1 4.5kb   4.5kb 10.244.2.54 es-cluster-1
+app-data 2     p      STARTED    1 4.5kb   4.5kb 10.244.3.59 es-cluster-2
+
+codex
+I have enough context now. I’ll add a separate two-replica StatefulSet for the new data nodes, keep `es-cluster` unchanged at 3 replicas, then pin `app-data` with a node allocation attribute so its shards move to the new nodes.
+  → Create separate two-node Elasticsearch data StatefulSet with allocation attribute
+  • Wait for five-node cluster health
+  • Set app-data allocation to the new node attribute and wait for relocation
+  • Verify health, shard placement, node attributes, and original StatefulSet replicas
+codex
+I’m applying a new headless service, config map, and StatefulSet for `es-data` with `node.attr.node_group: expansion`. The original `es-cluster` StatefulSet will not be modified.
+exec
+/bin/zsh -lc "kubectl apply -f - <<'EOF'
+apiVersion: v1
+kind: Service
+metadata:
+  name: es-data
+  namespace: elasticsearch
+spec:
+  clusterIP: None
+  selector:
+    app: es-data
+  ports:
+    - name: transport
+      port: 9300
+      targetPort: transport
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: es-data-config
+  namespace: elasticsearch
+data:
+  elasticsearch.yml: |
+    cluster.name: es-cluster
+    node.name: "'${POD_NAME}
+    node.roles: [ data, ingest ]
+    node.attr.node_group: expansion
+    network.host: 0.0.0.0
+    discovery.seed_hosts:
+      - es-cluster-0.es-cluster.elasticsearch.svc.cluster.local
+      - es-cluster-1.es-cluster.elasticsearch.svc.cluster.local
+      - es-cluster-2.es-cluster.elasticsearch.svc.cluster.local
+    node.store.allow_mmap: false
+    xpack.security.enabled: false
+    xpack.security.http.ssl.enabled: false
+    xpack.security.transport.ssl.enabled: false
+    s3.client.default.endpoint: minio.elasticsearch.svc.cluster.local:9000
+    s3.client.default.protocol: http
+    s3.client.default.path_style_access: true
+---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: es-data
+  namespace: elasticsearch
+spec:
+  podManagementPolicy: Parallel
+  replicas: 2
+  selector:
+    matchLabels:
+      app: es-data
+  serviceName: es-data
+  updateStrategy:
+    type: OnDelete
+  template:
+    metadata:
+      labels:
+        app: es-data
+    spec:
+      initContainers:
+        - name: install-s3-plugin
+          image: docker.elastic.co/elasticsearch/elasticsearch:8.11.1
+          imagePullPolicy: IfNotPresent
+          command:
+            - /bin/sh
+            - -c
+            - |
+              set -e
+              if [ ! -d /usr/share/elasticsearch/plugins/repository-s3 ]; then
+                /usr/share/elasticsearch/bin/elasticsearch-plugin install --batch repository-s3
+              fi
+          volumeMounts:
+            - name: es-plugins
+              mountPath: /usr/share/elasticsearch/plugins
+      containers:
+        - name: elasticsearch
+          image: docker.elastic.co/elasticsearch/elasticsearch:8.11.1
+          imagePullPolicy: IfNotPresent
+          env:
+            - name: POD_NAME
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.name
+            - name: ES_JAVA_OPTS
+              value: -Xms512m -Xmx512m
+          ports:
+            - name: http
+              containerPort: 9200
+            - name: transport
+              containerPort: 9300
+          readinessProbe:
+            httpGet:
+              path: /_cluster/health?local=true
+              port: http
+            initialDelaySeconds: 10
+            periodSeconds: 5
+            timeoutSeconds: 2
+            failureThreshold: 6
+          resources:
+            requests:
+              cpu: 500m
+              memory: 1Gi
+            limits:
+              cpu: "1"
+              memory: 2Gi
+          volumeMounts:
+            - name: es-data-config
+              mountPath: /usr/share/elasticsearch/config/elasticsearch.yml
+              subPath: elasticsearch.yml
+            - name: es-plugins
+              mountPath: /usr/share/elasticsearch/plugins
+            - name: secure-settings
+              mountPath: /mnt/secure-settings
+              readOnly: true
+            - name: data
+              mountPath: /usr/share/elasticsearch/data
+      volumes:
+        - name: es-data-config
+          configMap:
+            name: es-data-config
+            items:
+              - key: elasticsearch.yml
+                path: elasticsearch.yml
+        - name: es-plugins
+          emptyDir: {}
+        - name: secure-settings
+          secret:
+            secretName: es-secure-settings
+  volumeClaimTemplates:
+    - metadata:
+        name: data
+      spec:
+        accessModes:
+          - ReadWriteOnce
+        resources:
+          requests:
+            storage: 5Gi
+EOF' in /Users/jinyige/Karma/runs/new-added-workflows/elasticsearch-deploy-scale-transform-snapshot-20260625_223911/stages/stage_02
+ succeeded in 467ms:
+service/es-data created
+configmap/es-data-config created
+statefulset.apps/es-data created
+
+codex
+The new resources were created. I’m waiting for the two data pods to start and join the existing cluster before changing index allocation.
+  ✓ Create separate two-node Elasticsearch data StatefulSet with allocation attribute
+  → Wait for five-node cluster health
+  • Set app-data allocation to the new node attribute and wait for relocation
+  • Verify health, shard placement, node attributes, and original StatefulSet replicas
+exec
+/bin/zsh -lc 'kubectl -n elasticsearch rollout status sts/es-data --timeout=300s' in /Users/jinyige/Karma/runs/new-added-workflows/elasticsearch-deploy-scale-transform-snapshot-20260625_223911/stages/stage_02
+ exited 1 in 0ms:
+error: rollout status is only available for RollingUpdate strategy type
+
+codex
+`rollout status` does not apply because this StatefulSet uses `OnDelete`, matching the existing cluster pattern. I’m switching to direct pod readiness and Elasticsearch health checks.
+exec
+/bin/zsh -lc 'kubectl -n elasticsearch wait --for=condition=Ready pod -l app=es-data --timeout=300s' in /Users/jinyige/Karma/runs/new-added-workflows/elasticsearch-deploy-scale-transform-snapshot-20260625_223911/stages/stage_02
+codex
+The readiness wait is still running; the S3 plugin init can take a bit on first start. I’m checking pod state in parallel so any image/init issues show up early.
+exec
+/bin/zsh -lc 'kubectl -n elasticsearch get pods -l app=es-data -o wide' in /Users/jinyige/Karma/runs/new-added-workflows/elasticsearch-deploy-scale-transform-snapshot-20260625_223911/stages/stage_02
+exec
+/bin/zsh -lc 'kubectl -n elasticsearch get pvc -l app=es-data -o wide' in /Users/jinyige/Karma/runs/new-added-workflows/elasticsearch-deploy-scale-transform-snapshot-20260625_223911/stages/stage_02
+ succeeded in 0ms:
+NAME             STATUS   VOLUME                                     CAPACITY   ACCESS MODES   STORAGECLASS   VOLUMEATTRIBUTESCLASS   AGE   VOLUMEMODE
+data-es-data-0   Bound    pvc-6dbd796a-b1ea-48f1-b019-6159854283bf   5Gi        RWO            standard       <unset>                 18s   Filesystem
+data-es-data-1   Bound    pvc-45797a56-3f0f-43e0-95b7-5840b5bcd2d7   5Gi        RWO            standard       <unset>                 18s   Filesystem
+
+ succeeded in 0ms:
+NAME        READY   STATUS    RESTARTS   AGE   IP            NODE           NOMINATED NODE   READINESS GATES
+es-data-0   0/1     Running   0          18s   10.244.1.62   kind-worker    <none>           <none>
+es-data-1   0/1     Running   0          18s   10.244.2.56   kind-worker2   <none>           <none>
+
+exec
+/bin/zsh -lc 'kubectl -n elasticsearch describe pods -l app=es-data' in /Users/jinyige/Karma/runs/new-added-workflows/elasticsearch-deploy-scale-transform-snapshot-20260625_223911/stages/stage_02
+ succeeded in 158ms:
+Name:             es-data-0
+Namespace:        elasticsearch
+Priority:         0
+Service Account:  default
+Node:             kind-worker/172.22.0.4
+Start Time:       Thu, 25 Jun 2026 17:44:18 -0500
+Labels:           app=es-data
+                  apps.kubernetes.io/pod-index=0
+                  controller-revision-hash=es-data-8fcdd8497
+                  statefulset.kubernetes.io/pod-name=es-data-0
+Annotations:      <none>
+Status:           Running
+IP:               10.244.1.62
+IPs:
+  IP:           10.244.1.62
+Controlled By:  StatefulSet/es-data
+Init Containers:
+  install-s3-plugin:
+    Container ID:  containerd://3586dacd1196fc62dd4581c087bddf78169bfe47f7d46d3019543e53ce1a6ce0
+    Image:         docker.elastic.co/elasticsearch/elasticsearch:8.11.1
+    Image ID:      docker.elastic.co/elasticsearch/elasticsearch@sha256:cf3edd6518b0159d50c0f932f6cacd63930db01e1fb740499eca477543d42b34
+    Port:          <none>
+    Host Port:     <none>
+    Command:
+      /bin/sh
+      -c
+      set -e
+      if [ ! -d /usr/share/elasticsearch/plugins/repository-s3 ]; then
+        /usr/share/elasticsearch/bin/elasticsearch-plugin install --batch repository-s3
+      fi
+      
+    State:          Terminated
+      Reason:       Completed
+      Exit Code:    0
+      Started:      Thu, 25 Jun 2026 17:44:19 -0500
+      Finished:     Thu, 25 Jun 2026 17:44:20 -0500
+    Ready:          True
+    Restart Count:  0
+    Environment:    <none>
+    Mounts:
+      /usr/share/elasticsearch/plugins from es-plugins (rw)
+      /var/run/secrets/kubernetes.io/serviceaccount from kube-api-access-qxkr2 (ro)
+Containers:
+  elasticsearch:
+    Container ID:   containerd://9879c8d401ad2187d87b004150e7f7bae55f400c232edcaaa829fbb45628d084
+    Image:          docker.elastic.co/elasticsearch/elasticsearch:8.11.1
+    Image ID:       docker.elastic.co/elasticsearch/elasticsearch@sha256:cf3edd6518b0159d50c0f932f6cacd63930db01e1fb740499eca477543d42b34
+    Ports:          9200/TCP (http), 9300/TCP (transport)
+    Host Ports:     0/TCP (http), 0/TCP (transport)
+    State:          Running
+      Started:      Thu, 25 Jun 2026 17:44:20 -0500
+    Ready:          False
+    Restart Count:  0
+    Limits:
+      cpu:     1
+      memory:  2Gi
+    Requests:
+      cpu:      500m
+      memory:   1Gi
+    Readiness:  http-get http://:http/_cluster/health%3Flocal=true delay=10s timeout=2s period=5s #success=1 #failure=6
+    Environment:
+      POD_NAME:      es-data-0 (v1:metadata.name)
+      ES_JAVA_OPTS:  -Xms512m -Xmx512m
+    Mounts:
+      /mnt/secure-settings from secure-settings (ro)
+      /usr/share/elasticsearch/config/elasticsearch.yml from es-data-config (rw,path="elasticsearch.yml")
+      /usr/share/elasticsearch/data from data (rw)
+      /usr/share/elasticsearch/plugins from es-plugins (rw)
+      /var/run/secrets/kubernetes.io/serviceaccount from kube-api-access-qxkr2 (ro)
+Conditions:
+  Type                        Status
+  PodReadyToStartContainers   True 
+  Initialized                 True 
+  Ready                       False 
+  ContainersReady             False 
+  PodScheduled                True 
+Volumes:
+  data:
+    Type:       PersistentVolumeClaim (a reference to a PersistentVolumeClaim in the same namespace)
+    ClaimName:  data-es-data-0
+    ReadOnly:   false
+  es-data-config:
+    Type:      ConfigMap (a volume populated by a ConfigMap)
+    Name:      es-data-config
+    Optional:  false
+  es-plugins:
+    Type:       EmptyDir (a temporary directory that shares a pod's lifetime)
+    Medium:     
+    SizeLimit:  <unset>
+  secure-settings:
+    Type:        Secret (a volume populated by a Secret)
+    SecretName:  es-secure-settings
+    Optional:    false
+  kube-api-access-qxkr2:
+    Type:                    Projected (a volume that contains injected data from multiple sources)
+    TokenExpirationSeconds:  3607
+    ConfigMapName:           kube-root-ca.crt
+    Optional:                false
+    DownwardAPI:             true
+QoS Class:                   Burstable
+Node-Selectors:              <none>
+Tolerations:                 node.kubernetes.io/not-ready:NoExecute op=Exists for 300s
+                             node.kubernetes.io/unreachable:NoExecute op=Exists for 300s
+Events:
+  Type     Reason     Age   From               Message
+  ----     ------     ----  ----               -------
+  Normal   Scheduled  15s   default-scheduler  Successfully assigned elasticsearch/es-data-0 to kind-worker
+  Normal   Pulled     14s   kubelet            Container image "docker.elastic.co/elasticsearch/elasticsearch:8.11.1" already present on machine
+  Normal   Created    14s   kubelet            Created container: install-s3-plugin
+  Normal   Started    14s   kubelet            Started container install-s3-plugin
+  Normal   Pulled     13s   kubelet            Container image "docker.elastic.co/elasticsearch/elasticsearch:8.11.1" already present on machine
+  Normal   Created    13s   kubelet            Created container: elasticsearch
+  Normal   Started    13s   kubelet            Started container elasticsearch
+  Warning  Unhealthy  1s    kubelet            Readiness probe failed: Get "http://10.244.1.62:9200/_cluster/health?local=true": dial tcp 10.244.1.62:9200: connect: connection refused
+
+
+Name:             es-data-1
+Namespace:        elasticsearch
+Priority:         0
+Service Account:  default
+Node:             kind-worker2/172.22.0.2
+Start Time:       Thu, 25 Jun 2026 17:44:19 -0500
+Labels:           app=es-data
+                  apps.kubernetes.io/pod-index=1
+                  controller-revision-hash=es-data-8fcdd8497
+                  statefulset.kubernetes.io/pod-name=es-data-1
+Annotations:      <none>
+Status:           Running
+IP:               10.244.2.56
+IPs:
+  IP:           10.244.2.56
+Controlled By:  StatefulSet/es-data
+Init Containers:
+  install-s3-plugin:
+    Container ID:  containerd://e1d1a7a661bf75745c503ab67fd0f6f28779c14269a352cf6e98f2600d065008
+    Image:         docker.elastic.co/elasticsearch/elasticsearch:8.11.1
+    Image ID:      docker.elastic.co/elasticsearch/elasticsearch@sha256:cf3edd6518b0159d50c0f932f6cacd63930db01e1fb740499eca477543d42b34
+    Port:          <none>
+    Host Port:     <none>
+    Command:
+      /bin/sh
+      -c
+      set -e
+      if [ ! -d /usr/share/elasticsearch/plugins/repository-s3 ]; then
+        /usr/share/elasticsearch/bin/elasticsearch-plugin install --batch repository-s3
+      fi
+      
+    State:          Terminated
+      Reason:       Completed
+      Exit Code:    0
+      Started:      Thu, 25 Jun 2026 17:44:20 -0500
+      Finished:     Thu, 25 Jun 2026 17:44:20 -0500
+    Ready:          True
+    Restart Count:  0
+    Environment:    <none>
+    Mounts:
+      /usr/share/elasticsearch/plugins from es-plugins (rw)
+      /var/run/secrets/kubernetes.io/serviceaccount from kube-api-access-z4q4r (ro)
+Containers:
+  elasticsearch:
+    Container ID:   containerd://4e0cccf5e5be1e1f20eaa0ee499aed276f838f36d0f0d8814abf4513078d6a92
+    Image:          docker.elastic.co/elasticsearch/elasticsearch:8.11.1
+    Image ID:       docker.elastic.co/elasticsearch/elasticsearch@sha256:cf3edd6518b0159d50c0f932f6cacd63930db01e1fb740499eca477543d42b34
+    Ports:          9200/TCP (http), 9300/TCP (transport)
+    Host Ports:     0/TCP (http), 0/TCP (transport)
+    State:          Running
+      Started:      Thu, 25 Jun 2026 17:44:20 -0500
+    Ready:          False
+    Restart Count:  0
+    Limits:
+      cpu:     1
+      memory:  2Gi
+    Requests:
+      cpu:      500m
+      memory:   1Gi
+    Readiness:  http-get http://:http/_cluster/health%3Flocal=true delay=10s timeout=2s period=5s #success=1 #failure=6
+    Environment:
+      POD_NAME:      es-data-1 (v1:metadata.name)
+      ES_JAVA_OPTS:  -Xms512m -Xmx512m
+    Mounts:
+      /mnt/secure-settings from secure-settings (ro)
+      /usr/share/elasticsearch/config/elasticsearch.yml from es-data-config (rw,path="elasticsearch.yml")
+      /usr/share/elasticsearch/data from data (rw)
+      /usr/share/elasticsearch/plugins from es-plugins (rw)
+      /var/run/secrets/kubernetes.io/serviceaccount from kube-api-access-z4q4r (ro)
+Conditions:
+  Type                        Status
+  PodReadyToStartContainers   True 
+  Initialized                 True 
+  Ready                       False 
+  ContainersReady             False 
+  PodScheduled                True 
+Volumes:
+  data:
+    Type:       PersistentVolumeClaim (a reference to a PersistentVolumeClaim in the same namespace)
+    ClaimName:  data-es-data-1
+    ReadOnly:   false
+  es-data-config:
+    Type:      ConfigMap (a volume populated by a ConfigMap)
+    Name:      es-data-config
+    Optional:  false
+  es-plugins:
+    Type:       EmptyDir (a temporary directory that shares a pod's lifetime)
+    Medium:     
+    SizeLimit:  <unset>
+  secure-settings:
+    Type:        Secret (a volume populated by a Secret)
+    SecretName:  es-secure-settings
+    Optional:    false
+  kube-api-access-z4q4r:
+    Type:                    Projected (a volume that contains injected data from multiple sources)
+    TokenExpirationSeconds:  3607
+    ConfigMapName:           kube-root-ca.crt
+    Optional:                false
+    DownwardAPI:             true
+QoS Class:                   Burstable
+Node-Selectors:              <none>
+Tolerations:                 node.kubernetes.io/not-ready:NoExecute op=Exists for 300s
+                             node.kubernetes.io/unreachable:NoExecute op=Exists for 300s
+Events:
+  Type     Reason     Age   From               Message
+  ----     ------     ----  ----               -------
+  Normal   Scheduled  14s   default-scheduler  Successfully assigned elasticsearch/es-data-1 to kind-worker2
+  Normal   Pulled     13s   kubelet            Container image "docker.elastic.co/elasticsearch/elasticsearch:8.11.1" already present on machine
+  Normal   Created    13s   kubelet            Created container: install-s3-plugin
+  Normal   Started    13s   kubelet            Started container install-s3-plugin
+  Normal   Pulled     13s   kubelet            Container image "docker.elastic.co/elasticsearch/elasticsearch:8.11.1" already present on machine
+  Normal   Created    13s   kubelet            Created container: elasticsearch
+  Normal   Started    13s   kubelet            Started container elasticsearch
+  Warning  Unhealthy  1s    kubelet            Readiness probe failed: Get "http://10.244.2.56:9200/_cluster/health?local=true": dial tcp 10.244.2.56:9200: connect: connection refused
+
+codex
+Both new pods are running and their PVCs are bound; Elasticsearch is still coming up inside the containers. I’m continuing the readiness wait.
+ succeeded in 17230ms:
+pod/es-data-0 condition met
+pod/es-data-1 condition met
+
+codex
+The two new data pods are ready. I’m confirming Elasticsearch sees all five nodes before applying the `app-data` allocation rule.
+exec
+/bin/zsh -lc "kubectl -n elasticsearch exec curl-test -- sh -c 'for i in "'$(seq 1 60); do health=$(curl -sS http://es-http:9200/_cluster/health?pretty); nodes=$(printf "%s" "$health" | sed -n "s/.*'"\\\"number_of_nodes\\\" : \\([0-9]*\\).*/\\1/p\"); status="'$(printf "%s" "$health" | sed -n "s/.*'"\\\"status\\\" : \\\"\\(["'^"]*'"\\)\\\".*/\\1/p\"); if [ \""'$nodes" = "5" ] && { [ "$status" = "green" ] || [ "$status" = "yellow" ]; }; then printf "%s'"\\n\" \""'$health"; exit 0; fi; sleep 5; done; curl -sS http://es-http:9200/_cluster/health?pretty; exit 1'"'" in /Users/jinyige/Karma/runs/new-added-workflows/elasticsearch-deploy-scale-transform-snapshot-20260625_223911/stages/stage_02
+ exited 2 in 106ms:
+command terminated with exit code 2
+
+codex
+The first health wait had a local shell quoting error, not a cluster issue. I’m rerunning it using Elasticsearch’s built-in `wait_for_nodes` and `wait_for_status` parameters.
+exec
+/bin/zsh -lc "kubectl -n elasticsearch exec curl-test -- curl -sS 'http://es-http:9200/_cluster/health?wait_for_nodes=5&wait_for_status=yellow&timeout=300s&pretty'" in /Users/jinyige/Karma/runs/new-added-workflows/elasticsearch-deploy-scale-transform-snapshot-20260625_223911/stages/stage_02
+ succeeded in 139ms:
+{
+  "cluster_name" : "es-cluster",
+  "status" : "green",
+  "timed_out" : false,
+  "number_of_nodes" : 5,
+  "number_of_data_nodes" : 5,
+  "active_primary_shards" : 3,
+  "active_shards" : 6,
+  "relocating_shards" : 0,
+  "initializing_shards" : 0,
+  "unassigned_shards" : 0,
+  "delayed_unassigned_shards" : 0,
+  "number_of_pending_tasks" : 0,
+  "number_of_in_flight_fetch" : 0,
+  "task_max_waiting_in_queue_millis" : 0,
+  "active_shards_percent_as_number" : 100.0
+}
+
+codex
+Elasticsearch now reports 5 nodes and green health. I’m setting `app-data` to require the new `node_group=expansion` attribute so the shard copies move onto `es-data-0` and `es-data-1`.
+  ✓ Create separate two-node Elasticsearch data StatefulSet with allocation attribute
+  ✓ Wait for five-node cluster health
+  → Set app-data allocation to the new node attribute and wait for relocation
+  • Verify health, shard placement, node attributes, and original StatefulSet replicas
+exec
+/bin/zsh -lc "kubectl -n elasticsearch exec curl-test -- curl -sS -X PUT 'http://es-http:9200/app-data/_settings?pretty' -H 'Content-Type: application/json' -d '{\"index\":{\"routing\":{\"allocation\":{\"require\":{\"node_group\":\"expansion\"}}}}}'" in /Users/jinyige/Karma/runs/new-added-workflows/elasticsearch-deploy-scale-transform-snapshot-20260625_223911/stages/stage_02
+ succeeded in 232ms:
+{
+  "acknowledged" : true
+}
+
+codex
+The allocation setting was acknowledged. I’m waiting for relocation to finish and the cluster to settle back to yellow or green.
+exec
+/bin/zsh -lc "kubectl -n elasticsearch exec curl-test -- curl -sS 'http://es-http:9200/_cluster/health/app-data?wait_for_no_relocating_shards=true&wait_for_no_initializing_shards=true&wait_for_status=yellow&timeout=300s&pretty'" in /Users/jinyige/Karma/runs/new-added-workflows/elasticsearch-deploy-scale-transform-snapshot-20260625_223911/stages/stage_02
+ succeeded in 119ms:
+{
+  "cluster_name" : "es-cluster",
+  "status" : "green",
+  "timed_out" : false,
+  "number_of_nodes" : 5,
+  "number_of_data_nodes" : 5,
+  "active_primary_shards" : 3,
+  "active_shards" : 6,
+  "relocating_shards" : 0,
+  "initializing_shards" : 0,
+  "unassigned_shards" : 0,
+  "delayed_unassigned_shards" : 0,
+  "number_of_pending_tasks" : 0,
+  "number_of_in_flight_fetch" : 0,
+  "task_max_waiting_in_queue_millis" : 0,
+  "active_shards_percent_as_number" : 100.0
+}
+
+codex
+Relocation is complete and health is green. I’m collecting the final verification outputs now: node count/health, `app-data` shard placement, node attributes, and the original StatefulSet replica count.
+  ✓ Create separate two-node Elasticsearch data StatefulSet with allocation attribute
+  ✓ Wait for five-node cluster health
+  ✓ Set app-data allocation to the new node attribute and wait for relocation
+  → Verify health, shard placement, node attributes, and original StatefulSet replicas
+exec
+/bin/zsh -lc "kubectl -n elasticsearch exec curl-test -- curl -sS 'http://es-http:9200/_cluster/health?pretty'" in /Users/jinyige/Karma/runs/new-added-workflows/elasticsearch-deploy-scale-transform-snapshot-20260625_223911/stages/stage_02
+exec
+/bin/zsh -lc "kubectl -n elasticsearch exec curl-test -- curl -sS 'http://es-http:9200/_cat/shards/app-data?v&h=index,shard,prirep,state,node'" in /Users/jinyige/Karma/runs/new-added-workflows/elasticsearch-deploy-scale-transform-snapshot-20260625_223911/stages/stage_02
+exec
+/bin/zsh -lc "kubectl -n elasticsearch exec curl-test -- curl -sS 'http://es-http:9200/_cat/nodeattrs?v&h=node,attr,value'" in /Users/jinyige/Karma/runs/new-added-workflows/elasticsearch-deploy-scale-transform-snapshot-20260625_223911/stages/stage_02
+exec
+/bin/zsh -lc 'kubectl -n elasticsearch get sts es-cluster es-data -o custom-columns=NAME:.metadata.name,READY:.status.readyReplicas,REPLICAS:.spec.replicas' in /Users/jinyige/Karma/runs/new-added-workflows/elasticsearch-deploy-scale-transform-snapshot-20260625_223911/stages/stage_02
+ succeeded in 0ms:
+NAME         READY   REPLICAS
+es-cluster   3       3
+es-data      2       2
+
+ succeeded in 161ms:
+{
+  "cluster_name" : "es-cluster",
+  "status" : "green",
+  "timed_out" : false,
+  "number_of_nodes" : 5,
+  "number_of_data_nodes" : 5,
+  "active_primary_shards" : 3,
+  "active_shards" : 6,
+  "relocating_shards" : 0,
+  "initializing_shards" : 0,
+  "unassigned_shards" : 0,
+  "delayed_unassigned_shards" : 0,
+  "number_of_pending_tasks" : 0,
+  "number_of_in_flight_fetch" : 0,
+  "task_max_waiting_in_queue_millis" : 0,
+  "active_shards_percent_as_number" : 100.0
+}
+
+ succeeded in 180ms:
+index    shard prirep state   node
+app-data 0     p      STARTED es-data-0
+app-data 0     r      STARTED es-data-1
+app-data 1     r      STARTED es-data-0
+app-data 1     p      STARTED es-data-1
+app-data 2     p      STARTED es-data-0
+app-data 2     r      STARTED es-data-1
+
+ succeeded in 178ms:
+node         attr                     value
+es-cluster-2 transform.config_version 10.0.0
+es-cluster-2 xpack.installed          true
+es-cluster-2 ml.config_version        11.0.0
+es-data-1    ml.config_version        11.0.0
+es-data-1    node_group               expansion
+es-data-1    transform.config_version 10.0.0
+es-data-1    xpack.installed          true
+es-cluster-0 xpack.installed          true
+es-cluster-0 transform.config_version 10.0.0
+es-cluster-0 ml.config_version        11.0.0
+es-data-0    node_group               expansion
+es-data-0    ml.config_version        11.0.0
+es-data-0    xpack.installed          true
+es-data-0    transform.config_version 10.0.0
+es-cluster-1 transform.config_version 10.0.0
+es-cluster-1 xpack.installed          true
+es-cluster-1 ml.config_version        11.0.0
+
+  ✓ Create separate two-node Elasticsearch data StatefulSet with allocation attribute
+  ✓ Wait for five-node cluster health
+  ✓ Set app-data allocation to the new node attribute and wait for relocation
+  ✓ Verify health, shard placement, node attributes, and original StatefulSet replicas
+codex
+Done.
+
+I added a separate `es-data` StatefulSet with 2 replicas and `node.attr.node_group: expansion`, leaving `es-cluster` unchanged at 3 replicas. Then I set `app-data` allocation to require `node_group=expansion`.
+
+Verification:
+- Cluster health: `green`
+- Nodes: `5`
+- `app-data` shards: all relocated to `es-data-0` and `es-data-1`
+- New node attribute: `node_group=expansion` only on the new data nodes
+- `es-cluster` StatefulSet: still `3/3` replicas
+
+No operators or CRDs were installed.
+tokens used
+73,279
+Done.
+
+I added a separate `es-data` StatefulSet with 2 replicas and `node.attr.node_group: expansion`, leaving `es-cluster` unchanged at 3 replicas. Then I set `app-data` allocation to require `node_group=expansion`.
+
+Verification:
+- Cluster health: `green`
+- Nodes: `5`
+- `app-data` shards: all relocated to `es-data-0` and `es-data-1`
+- New node attribute: `node_group=expansion` only on the new data nodes
+- `es-cluster` StatefulSet: still `3/3` replicas
+
+No operators or CRDs were installed.

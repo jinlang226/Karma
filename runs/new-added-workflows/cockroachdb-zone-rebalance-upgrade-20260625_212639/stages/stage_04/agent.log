@@ -1,0 +1,414 @@
+OpenAI Codex v0.142.2
+--------
+workdir: /Users/jinyige/Karma/runs/new-added-workflows/cockroachdb-zone-rebalance-upgrade-20260625_212639/stages/stage_04
+model: gpt-5.5
+provider: openai
+approval: never
+sandbox: danger-full-access
+reasoning effort: xhigh
+reasoning summaries: none
+session id: 019f00b2-e15f-7702-9fe4-f5b9caed2d84
+--------
+user
+A 3-node CockroachDB cluster is running an older minor version.
+
+Your task:
+Upgrade the cluster to v24.1.1 with a controlled rolling update.
+
+Requirements:
+- Keep the cluster available during the upgrade.
+- Ensure the rollout fully completes.
+
+Useful commands:
+```bash
+kubectl -n cockroachdb get pods
+kubectl -n cockroachdb get sts crdb-cluster -o jsonpath='{.spec.updateStrategy.rollingUpdate.partition}'
+```
+
+Verification:
+1. All pods running new version:
+   kubectl -n cockroachdb get pods -o jsonpath='{range .items[*]}{.metadata.name}: {.spec.containers[0].image}{"\n"}{end}'
+   (All should show v24.1.1)
+
+2. StatefulSet uses new image:
+   kubectl -n cockroachdb get sts crdb-cluster -o jsonpath='{.spec.template.spec.containers[0].image}'
+   (Should be cockroachdb/cockroach:v24.1.1)
+
+3. Verify version via SQL:
+   kubectl -n cockroachdb exec crdb-cluster-0 -- ./cockroach sql --insecure -e "SELECT version();"
+   (Should show v24.1.1)
+
+4. All pods ready:
+   kubectl -n cockroachdb get pods
+   (All 3 pods should be Running and Ready 1/1)
+
+5. Cluster health:
+   kubectl -n cockroachdb exec crdb-cluster-0 -- ./cockroach node status --insecure
+   (All 3 nodes should be healthy)
+
+6. No partition set:
+   kubectl -n cockroachdb get sts crdb-cluster -o jsonpath='{.spec.updateStrategy.rollingUpdate.partition}'
+   (Should be 0 or empty)
+codex
+I’ll inspect the StatefulSet and current pod state first, then move the StatefulSet image forward one ordinal at a time so only one Cockroach node restarts at once.
+  → Inspect current cluster and StatefulSet state
+  • Patch StatefulSet for v24.1.1 with rolling partition control
+  • Roll pods one ordinal at a time and verify readiness
+  • Run final image, SQL, readiness, health, and partition checks
+exec
+/bin/zsh -lc 'kubectl -n cockroachdb get pods -o wide' in /Users/jinyige/Karma/runs/new-added-workflows/cockroachdb-zone-rebalance-upgrade-20260625_212639/stages/stage_04
+exec
+/bin/zsh -lc "kubectl -n cockroachdb get sts crdb-cluster -o jsonpath='{.spec.updateStrategy.rollingUpdate.partition}'" in /Users/jinyige/Karma/runs/new-added-workflows/cockroachdb-zone-rebalance-upgrade-20260625_212639/stages/stage_04
+exec
+/bin/zsh -lc 'kubectl -n cockroachdb get sts crdb-cluster -o yaml' in /Users/jinyige/Karma/runs/new-added-workflows/cockroachdb-zone-rebalance-upgrade-20260625_212639/stages/stage_04
+ succeeded in 241ms:
+NAME             READY   STATUS    RESTARTS   AGE     IP            NODE           NOMINATED NODE   READINESS GATES
+crdb-cluster-0   1/1     Running   0          2m45s   10.244.3.31   kind-worker3   <none>           <none>
+crdb-cluster-1   1/1     Running   0          2m45s   10.244.1.30   kind-worker    <none>           <none>
+crdb-cluster-2   1/1     Running   0          2m45s   10.244.2.27   kind-worker2   <none>           <none>
+
+ succeeded in 241ms:
+0
+ succeeded in 241ms:
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  annotations:
+    kubectl.kubernetes.io/last-applied-configuration: |
+      {"apiVersion":"apps/v1","kind":"StatefulSet","metadata":{"annotations":{},"labels":{"app.kubernetes.io/instance":"crdb-cluster","app.kubernetes.io/name":"cockroachdb"},"name":"crdb-cluster","namespace":"cockroachdb"},"spec":{"podManagementPolicy":"Parallel","replicas":3,"selector":{"matchLabels":{"app.kubernetes.io/instance":"crdb-cluster","app.kubernetes.io/name":"cockroachdb"}},"serviceName":"crdb-cluster","template":{"metadata":{"labels":{"app.kubernetes.io/instance":"crdb-cluster","app.kubernetes.io/name":"cockroachdb"}},"spec":{"containers":[{"command":["/bin/bash","-c","exec /cockroach/cockroach start --logtostderr=INFO --insecure --advertise-host=$(POD_NAME).crdb-cluster.cockroachdb.svc.cluster.local --http-addr=0.0.0.0:8080 --port=26257 --cache=25% --max-sql-memory=25% --join=crdb-cluster-0.crdb-cluster.cockroachdb.svc.cluster.local:26257,crdb-cluster-1.crdb-cluster.cockroachdb.svc.cluster.local:26257,crdb-cluster-2.crdb-cluster.cockroachdb.svc.cluster.local:26257"],"env":[{"name":"POD_NAME","valueFrom":{"fieldRef":{"fieldPath":"metadata.name"}}},{"name":"POD_NAMESPACE","valueFrom":{"fieldRef":{"fieldPath":"metadata.namespace"}}}],"image":"cockroachdb/cockroach:v24.1.0","imagePullPolicy":"IfNotPresent","livenessProbe":{"httpGet":{"path":"/health","port":"http"},"initialDelaySeconds":30,"periodSeconds":5},"name":"db","ports":[{"containerPort":26257,"name":"grpc"},{"containerPort":8080,"name":"http"}],"readinessProbe":{"failureThreshold":2,"httpGet":{"path":"/health?ready=1","port":"http"},"initialDelaySeconds":10,"periodSeconds":5},"resources":{"limits":{"cpu":"1","memory":"2Gi"},"requests":{"cpu":"1","memory":"2Gi"}},"volumeMounts":[{"mountPath":"/cockroach/cockroach-data","name":"datadir"}]}],"serviceAccountName":"crdb-cluster-sa","terminationGracePeriodSeconds":10}},"volumeClaimTemplates":[{"metadata":{"labels":{"app.kubernetes.io/instance":"crdb-cluster","app.kubernetes.io/name":"cockroachdb"},"name":"datadir"},"spec":{"accessModes":["ReadWriteOnce"],"resources":{"requests":{"storage":"10Gi"}},"volumeMode":"Filesystem"}}]}}
+  creationTimestamp: "2026-06-25T21:30:07Z"
+  generation: 1
+  labels:
+    app.kubernetes.io/instance: crdb-cluster
+    app.kubernetes.io/name: cockroachdb
+  name: crdb-cluster
+  namespace: cockroachdb
+  resourceVersion: "276283"
+  uid: bc21a8c4-1a85-4226-9f44-b6fcf7c4643a
+spec:
+  persistentVolumeClaimRetentionPolicy:
+    whenDeleted: Retain
+    whenScaled: Retain
+  podManagementPolicy: Parallel
+  replicas: 3
+  revisionHistoryLimit: 10
+  selector:
+    matchLabels:
+      app.kubernetes.io/instance: crdb-cluster
+      app.kubernetes.io/name: cockroachdb
+  serviceName: crdb-cluster
+  template:
+    metadata:
+      creationTimestamp: null
+      labels:
+        app.kubernetes.io/instance: crdb-cluster
+        app.kubernetes.io/name: cockroachdb
+    spec:
+      containers:
+      - command:
+        - /bin/bash
+        - -c
+        - exec /cockroach/cockroach start --logtostderr=INFO --insecure --advertise-host=$(POD_NAME).crdb-cluster.cockroachdb.svc.cluster.local
+          --http-addr=0.0.0.0:8080 --port=26257 --cache=25% --max-sql-memory=25% --join=crdb-cluster-0.crdb-cluster.cockroachdb.svc.cluster.local:26257,crdb-cluster-1.crdb-cluster.cockroachdb.svc.cluster.local:26257,crdb-cluster-2.crdb-cluster.cockroachdb.svc.cluster.local:26257
+        env:
+        - name: POD_NAME
+          valueFrom:
+            fieldRef:
+              apiVersion: v1
+              fieldPath: metadata.name
+        - name: POD_NAMESPACE
+          valueFrom:
+            fieldRef:
+              apiVersion: v1
+              fieldPath: metadata.namespace
+        image: cockroachdb/cockroach:v24.1.0
+        imagePullPolicy: IfNotPresent
+        livenessProbe:
+          failureThreshold: 3
+          httpGet:
+            path: /health
+            port: http
+            scheme: HTTP
+          initialDelaySeconds: 30
+          periodSeconds: 5
+          successThreshold: 1
+          timeoutSeconds: 1
+        name: db
+        ports:
+        - containerPort: 26257
+          name: grpc
+          protocol: TCP
+        - containerPort: 8080
+          name: http
+          protocol: TCP
+        readinessProbe:
+          failureThreshold: 2
+          httpGet:
+            path: /health?ready=1
+            port: http
+            scheme: HTTP
+          initialDelaySeconds: 10
+          periodSeconds: 5
+          successThreshold: 1
+          timeoutSeconds: 1
+        resources:
+          limits:
+            cpu: "1"
+            memory: 2Gi
+          requests:
+            cpu: "1"
+            memory: 2Gi
+        terminationMessagePath: /dev/termination-log
+        terminationMessagePolicy: File
+        volumeMounts:
+        - mountPath: /cockroach/cockroach-data
+          name: datadir
+      dnsPolicy: ClusterFirst
+      restartPolicy: Always
+      schedulerName: default-scheduler
+      securityContext: {}
+      serviceAccount: crdb-cluster-sa
+      serviceAccountName: crdb-cluster-sa
+      terminationGracePeriodSeconds: 10
+  updateStrategy:
+    rollingUpdate:
+      partition: 0
+    type: RollingUpdate
+  volumeClaimTemplates:
+  - apiVersion: v1
+    kind: PersistentVolumeClaim
+    metadata:
+      creationTimestamp: null
+      labels:
+        app.kubernetes.io/instance: crdb-cluster
+        app.kubernetes.io/name: cockroachdb
+      name: datadir
+    spec:
+      accessModes:
+      - ReadWriteOnce
+      resources:
+        requests:
+          storage: 10Gi
+      volumeMode: Filesystem
+    status:
+      phase: Pending
+status:
+  availableReplicas: 3
+  collisionCount: 0
+  currentReplicas: 3
+  currentRevision: crdb-cluster-76646fb9b9
+  observedGeneration: 1
+  readyReplicas: 3
+  replicas: 3
+  updateRevision: crdb-cluster-76646fb9b9
+  updatedReplicas: 3
+
+codex
+The cluster is currently healthy at the Kubernetes level: all three pods are `1/1 Running`, and the StatefulSet template is on `cockroachdb/cockroach:v24.1.0` with partition `0`. I’m going to set the partition to `3` first so changing the template cannot restart any pod until we deliberately lower the partition.
+exec
+/bin/zsh -lc "kubectl -n cockroachdb get pods -o jsonpath='{range .items[*]}{.metadata.name}: {.spec.containers[0].image}{\"\\n\"}{end}'" in /Users/jinyige/Karma/runs/new-added-workflows/cockroachdb-zone-rebalance-upgrade-20260625_212639/stages/stage_04
+ succeeded in 0ms:
+crdb-cluster-0: cockroachdb/cockroach:v24.1.0
+crdb-cluster-1: cockroachdb/cockroach:v24.1.0
+crdb-cluster-2: cockroachdb/cockroach:v24.1.0
+
+exec
+/bin/zsh -lc 'kubectl -n cockroachdb exec crdb-cluster-0 -- ./cockroach node status --insecure' in /Users/jinyige/Karma/runs/new-added-workflows/cockroachdb-zone-rebalance-upgrade-20260625_212639/stages/stage_04
+ succeeded in 653ms:
+id	address	sql_address	build	started_at	updated_at	locality	is_available	is_live
+1	crdb-cluster-0.crdb-cluster.cockroachdb.svc.cluster.local:26257	crdb-cluster-0.crdb-cluster.cockroachdb.svc.cluster.local:26257	v24.1.0	2026-06-25 21:31:04.346212 +0000 UTC	2026-06-25 21:33:07.371638 +0000 UTC		true	true
+2	crdb-cluster-2.crdb-cluster.cockroachdb.svc.cluster.local:26257	crdb-cluster-2.crdb-cluster.cockroachdb.svc.cluster.local:26257	v24.1.0	2026-06-25 21:31:05.026283 +0000 UTC	2026-06-25 21:33:08.06965 +0000 UTC		true	true
+3	crdb-cluster-1.crdb-cluster.cockroachdb.svc.cluster.local:26257	crdb-cluster-1.crdb-cluster.cockroachdb.svc.cluster.local:26257	v24.1.0	2026-06-25 21:31:06.013124 +0000 UTC	2026-06-25 21:33:06.075012 +0000 UTC		true	true
+
+exec
+/bin/zsh -lc "kubectl -n cockroachdb patch sts crdb-cluster --type=merge -p '{\"spec\":{\"updateStrategy\":{\"type\":\"RollingUpdate\",\"rollingUpdate\":{\"partition\":3}}}}'" in /Users/jinyige/Karma/runs/new-added-workflows/cockroachdb-zone-rebalance-upgrade-20260625_212639/stages/stage_04
+ succeeded in 0ms:
+statefulset.apps/crdb-cluster patched
+
+codex
+The preflight Cockroach node check shows all three nodes live and available on `v24.1.0`. Partition is now staged at `3`; next I’m updating only the StatefulSet template image to `v24.1.1`.
+  ✓ Inspect current cluster and StatefulSet state
+  → Patch StatefulSet for v24.1.1 with rolling partition control
+  • Roll pods one ordinal at a time and verify readiness
+  • Run final image, SQL, readiness, health, and partition checks
+exec
+/bin/zsh -lc 'kubectl -n cockroachdb set image sts/crdb-cluster db=cockroachdb/cockroach:v24.1.1' in /Users/jinyige/Karma/runs/new-added-workflows/cockroachdb-zone-rebalance-upgrade-20260625_212639/stages/stage_04
+ succeeded in 0ms:
+statefulset.apps/crdb-cluster image updated
+
+exec
+/bin/zsh -lc "kubectl -n cockroachdb get sts crdb-cluster -o jsonpath='{.spec.template.spec.containers[0].image}'" in /Users/jinyige/Karma/runs/new-added-workflows/cockroachdb-zone-rebalance-upgrade-20260625_212639/stages/stage_04
+exec
+/bin/zsh -lc "kubectl -n cockroachdb get sts crdb-cluster -o jsonpath='{.spec.updateStrategy.rollingUpdate.partition}'" in /Users/jinyige/Karma/runs/new-added-workflows/cockroachdb-zone-rebalance-upgrade-20260625_212639/stages/stage_04
+ succeeded in 0ms:
+3
+ succeeded in 0ms:
+cockroachdb/cockroach:v24.1.1
+exec
+/bin/zsh -lc "kubectl -n cockroachdb get pods -o jsonpath='{range .items[*]}{.metadata.name}: {.spec.containers[0].image}{\"\\n\"}{end}'" in /Users/jinyige/Karma/runs/new-added-workflows/cockroachdb-zone-rebalance-upgrade-20260625_212639/stages/stage_04
+ succeeded in 0ms:
+crdb-cluster-0: cockroachdb/cockroach:v24.1.0
+crdb-cluster-1: cockroachdb/cockroach:v24.1.0
+crdb-cluster-2: cockroachdb/cockroach:v24.1.0
+
+codex
+The template now points at `cockroachdb/cockroach:v24.1.1`, while all existing pods are still on `v24.1.0` because the partition is `3`. I’m lowering the partition to `2` now, which targets only `crdb-cluster-2`.
+  ✓ Inspect current cluster and StatefulSet state
+  ✓ Patch StatefulSet for v24.1.1 with rolling partition control
+  → Roll pods one ordinal at a time and verify readiness
+  • Run final image, SQL, readiness, health, and partition checks
+exec
+/bin/zsh -lc "kubectl -n cockroachdb patch sts crdb-cluster --type=merge -p '{\"spec\":{\"updateStrategy\":{\"rollingUpdate\":{\"partition\":2}}}}'" in /Users/jinyige/Karma/runs/new-added-workflows/cockroachdb-zone-rebalance-upgrade-20260625_212639/stages/stage_04
+ succeeded in 0ms:
+statefulset.apps/crdb-cluster patched
+
+exec
+/bin/zsh -lc 'kubectl -n cockroachdb rollout status sts/crdb-cluster --timeout=300s' in /Users/jinyige/Karma/runs/new-added-workflows/cockroachdb-zone-rebalance-upgrade-20260625_212639/stages/stage_04
+ succeeded in 11322ms:
+partitioned roll out complete: 1 new pods have been updated...
+
+exec
+/bin/zsh -lc "kubectl -n cockroachdb get pod crdb-cluster-2 -o jsonpath='{.metadata.name}: {.status.phase} {.status.containerStatuses[0].ready} {.spec.containers[0].image}'" in /Users/jinyige/Karma/runs/new-added-workflows/cockroachdb-zone-rebalance-upgrade-20260625_212639/stages/stage_04
+exec
+/bin/zsh -lc 'kubectl -n cockroachdb get pods' in /Users/jinyige/Karma/runs/new-added-workflows/cockroachdb-zone-rebalance-upgrade-20260625_212639/stages/stage_04
+ succeeded in 0ms:
+crdb-cluster-2: Running true cockroachdb/cockroach:v24.1.1
+ succeeded in 0ms:
+NAME             READY   STATUS    RESTARTS   AGE
+crdb-cluster-0   1/1     Running   0          3m52s
+crdb-cluster-1   1/1     Running   0          3m52s
+crdb-cluster-2   1/1     Running   0          19s
+
+exec
+/bin/zsh -lc 'kubectl -n cockroachdb exec crdb-cluster-0 -- ./cockroach node status --insecure' in /Users/jinyige/Karma/runs/new-added-workflows/cockroachdb-zone-rebalance-upgrade-20260625_212639/stages/stage_04
+ succeeded in 478ms:
+id	address	sql_address	build	started_at	updated_at	locality	is_available	is_live
+1	crdb-cluster-0.crdb-cluster.cockroachdb.svc.cluster.local:26257	crdb-cluster-0.crdb-cluster.cockroachdb.svc.cluster.local:26257	v24.1.0	2026-06-25 21:31:04.346212 +0000 UTC	2026-06-25 21:33:58.374266 +0000 UTC		true	true
+2	crdb-cluster-2.crdb-cluster.cockroachdb.svc.cluster.local:26257	crdb-cluster-2.crdb-cluster.cockroachdb.svc.cluster.local:26257	v24.1.1	2026-06-25 21:33:41.906009 +0000 UTC	2026-06-25 21:33:59.944389 +0000 UTC		true	true
+3	crdb-cluster-1.crdb-cluster.cockroachdb.svc.cluster.local:26257	crdb-cluster-1.crdb-cluster.cockroachdb.svc.cluster.local:26257	v24.1.0	2026-06-25 21:31:06.013124 +0000 UTC	2026-06-25 21:34:00.035496 +0000 UTC		true	true
+
+codex
+`crdb-cluster-2` is back `Running` and Ready on `v24.1.1`; node status still reports all three nodes live and available. I’m lowering the partition to `1` to roll `crdb-cluster-1` next.
+exec
+/bin/zsh -lc "kubectl -n cockroachdb patch sts crdb-cluster --type=merge -p '{\"spec\":{\"updateStrategy\":{\"rollingUpdate\":{\"partition\":1}}}}'" in /Users/jinyige/Karma/runs/new-added-workflows/cockroachdb-zone-rebalance-upgrade-20260625_212639/stages/stage_04
+ succeeded in 0ms:
+statefulset.apps/crdb-cluster patched
+
+exec
+/bin/zsh -lc 'kubectl -n cockroachdb rollout status sts/crdb-cluster --timeout=300s' in /Users/jinyige/Karma/runs/new-added-workflows/cockroachdb-zone-rebalance-upgrade-20260625_212639/stages/stage_04
+ succeeded in 12611ms:
+Waiting for 1 pods to be ready...
+Waiting for 1 pods to be ready...
+Waiting for 1 pods to be ready...
+partitioned roll out complete: 2 new pods have been updated...
+
+codex
+The second rollout step completed after Kubernetes waited for the replacement pod to become Ready. I’m checking the image and Cockroach membership before moving on to ordinal `0`.
+exec
+/bin/zsh -lc 'kubectl -n cockroachdb get pods' in /Users/jinyige/Karma/runs/new-added-workflows/cockroachdb-zone-rebalance-upgrade-20260625_212639/stages/stage_04
+exec
+/bin/zsh -lc "kubectl -n cockroachdb get pod crdb-cluster-1 -o jsonpath='{.metadata.name}: {.status.phase} {.status.containerStatuses[0].ready} {.spec.containers[0].image}'" in /Users/jinyige/Karma/runs/new-added-workflows/cockroachdb-zone-rebalance-upgrade-20260625_212639/stages/stage_04
+ succeeded in 0ms:
+NAME             READY   STATUS    RESTARTS   AGE
+crdb-cluster-0   1/1     Running   0          4m24s
+crdb-cluster-1   1/1     Running   0          23s
+crdb-cluster-2   1/1     Running   0          51s
+
+ succeeded in 0ms:
+crdb-cluster-1: Running true cockroachdb/cockroach:v24.1.1
+exec
+/bin/zsh -lc 'kubectl -n cockroachdb exec crdb-cluster-0 -- ./cockroach node status --insecure' in /Users/jinyige/Karma/runs/new-added-workflows/cockroachdb-zone-rebalance-upgrade-20260625_212639/stages/stage_04
+ succeeded in 442ms:
+id	address	sql_address	build	started_at	updated_at	locality	is_available	is_live
+1	crdb-cluster-0.crdb-cluster.cockroachdb.svc.cluster.local:26257	crdb-cluster-0.crdb-cluster.cockroachdb.svc.cluster.local:26257	v24.1.0	2026-06-25 21:31:04.346212 +0000 UTC	2026-06-25 21:34:31.371585 +0000 UTC		true	true
+2	crdb-cluster-2.crdb-cluster.cockroachdb.svc.cluster.local:26257	crdb-cluster-2.crdb-cluster.cockroachdb.svc.cluster.local:26257	v24.1.1	2026-06-25 21:33:41.906009 +0000 UTC	2026-06-25 21:34:30.71909 +0000 UTC		true	true
+3	crdb-cluster-1.crdb-cluster.cockroachdb.svc.cluster.local:26257	crdb-cluster-1.crdb-cluster.cockroachdb.svc.cluster.local:26257	v24.1.1	2026-06-25 21:34:10.191845 +0000 UTC	2026-06-25 21:34:31.224372 +0000 UTC		true	true
+
+codex
+`crdb-cluster-1` is Ready on `v24.1.1`, and Cockroach still shows all three nodes live and available. I’m lowering the partition to `0` now to complete the StatefulSet rollout with `crdb-cluster-0`.
+exec
+/bin/zsh -lc "kubectl -n cockroachdb patch sts crdb-cluster --type=merge -p '{\"spec\":{\"updateStrategy\":{\"rollingUpdate\":{\"partition\":0}}}}'" in /Users/jinyige/Karma/runs/new-added-workflows/cockroachdb-zone-rebalance-upgrade-20260625_212639/stages/stage_04
+ succeeded in 0ms:
+statefulset.apps/crdb-cluster patched
+
+exec
+/bin/zsh -lc 'kubectl -n cockroachdb rollout status sts/crdb-cluster --timeout=300s' in /Users/jinyige/Karma/runs/new-added-workflows/cockroachdb-zone-rebalance-upgrade-20260625_212639/stages/stage_04
+ succeeded in 12900ms:
+Waiting for 1 pods to be ready...
+Waiting for 1 pods to be ready...
+partitioned roll out complete: 3 new pods have been updated...
+
+codex
+The last pod replacement has completed, so the rollout is at partition `0`. I’m running the requested final verification commands now: pod images, StatefulSet image, SQL version, pod readiness, node health, and partition.
+  ✓ Inspect current cluster and StatefulSet state
+  ✓ Patch StatefulSet for v24.1.1 with rolling partition control
+  ✓ Roll pods one ordinal at a time and verify readiness
+  → Run final image, SQL, readiness, health, and partition checks
+exec
+/bin/zsh -lc "kubectl -n cockroachdb get sts crdb-cluster -o jsonpath='{.spec.template.spec.containers[0].image}'" in /Users/jinyige/Karma/runs/new-added-workflows/cockroachdb-zone-rebalance-upgrade-20260625_212639/stages/stage_04
+exec
+/bin/zsh -lc 'kubectl -n cockroachdb get pods' in /Users/jinyige/Karma/runs/new-added-workflows/cockroachdb-zone-rebalance-upgrade-20260625_212639/stages/stage_04
+ succeeded in 0ms:
+cockroachdb/cockroach:v24.1.1
+ succeeded in 0ms:
+NAME             READY   STATUS    RESTARTS   AGE
+crdb-cluster-0   1/1     Running   0          25s
+crdb-cluster-1   1/1     Running   0          57s
+crdb-cluster-2   1/1     Running   0          85s
+
+exec
+/bin/zsh -lc "kubectl -n cockroachdb get pods -o jsonpath='{range .items[*]}{.metadata.name}: {.spec.containers[0].image}{\"\\n\"}{end}'" in /Users/jinyige/Karma/runs/new-added-workflows/cockroachdb-zone-rebalance-upgrade-20260625_212639/stages/stage_04
+ succeeded in 0ms:
+crdb-cluster-0: cockroachdb/cockroach:v24.1.1
+crdb-cluster-1: cockroachdb/cockroach:v24.1.1
+crdb-cluster-2: cockroachdb/cockroach:v24.1.1
+
+exec
+/bin/zsh -lc "kubectl -n cockroachdb get sts crdb-cluster -o jsonpath='{.spec.updateStrategy.rollingUpdate.partition}'" in /Users/jinyige/Karma/runs/new-added-workflows/cockroachdb-zone-rebalance-upgrade-20260625_212639/stages/stage_04
+ succeeded in 0ms:
+0
+exec
+/bin/zsh -lc 'kubectl -n cockroachdb exec crdb-cluster-0 -- ./cockroach sql --insecure -e "SELECT version();"' in /Users/jinyige/Karma/runs/new-added-workflows/cockroachdb-zone-rebalance-upgrade-20260625_212639/stages/stage_04
+exec
+/bin/zsh -lc 'kubectl -n cockroachdb exec crdb-cluster-0 -- ./cockroach node status --insecure' in /Users/jinyige/Karma/runs/new-added-workflows/cockroachdb-zone-rebalance-upgrade-20260625_212639/stages/stage_04
+ succeeded in 912ms:
+version
+CockroachDB CCL v24.1.1 (aarch64-unknown-linux-gnu, built 2024/06/14 07:25:10, go1.22.3 X:nocoverageredesign)
+
+ succeeded in 931ms:
+id	address	sql_address	build	started_at	updated_at	locality	is_available	is_live
+1	crdb-cluster-0.crdb-cluster.cockroachdb.svc.cluster.local:26257	crdb-cluster-0.crdb-cluster.cockroachdb.svc.cluster.local:26257	v24.1.1	2026-06-25 21:34:41.960683 +0000 UTC	2026-06-25 21:35:08.997389 +0000 UTC		true	true
+2	crdb-cluster-2.crdb-cluster.cockroachdb.svc.cluster.local:26257	crdb-cluster-2.crdb-cluster.cockroachdb.svc.cluster.local:26257	v24.1.1	2026-06-25 21:33:41.906009 +0000 UTC	2026-06-25 21:35:08.941217 +0000 UTC		true	true
+3	crdb-cluster-1.crdb-cluster.cockroachdb.svc.cluster.local:26257	crdb-cluster-1.crdb-cluster.cockroachdb.svc.cluster.local:26257	v24.1.1	2026-06-25 21:34:10.191845 +0000 UTC	2026-06-25 21:35:10.254337 +0000 UTC		true	true
+
+codex
+Final checks are clean: all pod specs and the StatefulSet template are on `v24.1.1`, SQL reports `v24.1.1`, all pods are `1/1 Running`, and Cockroach node status shows all three nodes live and available.
+  ✓ Inspect current cluster and StatefulSet state
+  ✓ Patch StatefulSet for v24.1.1 with rolling partition control
+  ✓ Roll pods one ordinal at a time and verify readiness
+  ✓ Run final image, SQL, readiness, health, and partition checks
+codex
+Upgrade completed successfully.
+
+Rolled the StatefulSet from `cockroachdb/cockroach:v24.1.0` to `cockroachdb/cockroach:v24.1.1` with partition-controlled steps: `3 -> 2 -> 1 -> 0`, so only one pod restarted at a time.
+
+Verification passed:
+- All pods use `cockroachdb/cockroach:v24.1.1`
+- StatefulSet template uses `cockroachdb/cockroach:v24.1.1`
+- `SELECT version();` reports `CockroachDB CCL v24.1.1`
+- All 3 pods are `1/1 Running`
+- `cockroach node status` shows all 3 nodes `is_available=true` and `is_live=true`
+- StatefulSet rolling partition is `0`
+tokens used
+58,590
+Upgrade completed successfully.
+
+Rolled the StatefulSet from `cockroachdb/cockroach:v24.1.0` to `cockroachdb/cockroach:v24.1.1` with partition-controlled steps: `3 -> 2 -> 1 -> 0`, so only one pod restarted at a time.
+
+Verification passed:
+- All pods use `cockroachdb/cockroach:v24.1.1`
+- StatefulSet template uses `cockroachdb/cockroach:v24.1.1`
+- `SELECT version();` reports `CockroachDB CCL v24.1.1`
+- All 3 pods are `1/1 Running`
+- `cockroach node status` shows all 3 nodes `is_available=true` and `is_live=true`
+- StatefulSet rolling partition is `0`

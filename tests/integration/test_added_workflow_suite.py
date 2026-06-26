@@ -131,6 +131,15 @@ ADDED_WORKFLOW_PATHS = (
     "short/spark-worker-scale-down-adversary.yaml",
 )
 
+_ELASTICSEARCH_STANDALONE_FIXTURE_CASES = {
+    # These cases create distinct Elasticsearch topologies/resources in their
+    # fresh precondition path. When they are placed after another ES stage, the
+    # fresh path is skipped and their oracle can end up validating the wrong
+    # cluster shape.
+    "internal-http-service-drift",
+    "transform-job-recovery",
+}
+
 
 def _load_added_workflow(rel_path: str) -> tuple[dict, list[dict]]:
     path = _WORKFLOWS_DIR / rel_path
@@ -189,3 +198,35 @@ def test_added_workflows_are_visible_and_ok_in_ui_catalog():
 
     assert missing == []
     assert invalid == []
+
+
+@pytest.mark.skipif(
+    not _RESOURCES_DIR.exists() or not _WORKFLOWS_DIR.exists(),
+    reason="cases/ or workflows/ directory not present in this environment",
+)
+@pytest.mark.parametrize("rel_path", ADDED_WORKFLOW_PATHS)
+def test_added_workflows_have_supported_stage_composition(rel_path: str):
+    workflow, _rows = _load_added_workflow(rel_path)
+    stages = workflow["stages"]
+
+    cockroach_cases = [
+        stage["case_name"] for stage in stages if stage["service"] == "cockroachdb"
+    ]
+    if "decommission" in cockroach_cases:
+        assert cockroach_cases[0] == "decommission"
+
+    elasticsearch_stages = [
+        stage for stage in stages if stage["service"] == "elasticsearch"
+    ]
+    elasticsearch_cases = [stage["case_name"] for stage in elasticsearch_stages]
+
+    for case_name in _ELASTICSEARCH_STANDALONE_FIXTURE_CASES:
+        if case_name in elasticsearch_cases:
+            assert elasticsearch_cases[0] == case_name
+
+    for index, stage in enumerate(elasticsearch_stages):
+        if stage["case_name"] != "full-restart-upgrade-ha":
+            continue
+        previous_cases = set(elasticsearch_cases[:index])
+        if "seed-hosts-repair" in previous_cases:
+            assert stage.get("param_overrides", {}).get("expected_doc_count") == 4

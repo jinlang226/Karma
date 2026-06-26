@@ -1,0 +1,3542 @@
+OpenAI Codex v0.142.2
+--------
+workdir: /Users/jinyige/Karma/runs/new-added-workflows/elasticsearch-deploy-scale-transform-snapshot-concat-stateful-20260625_222341/stages/stage_02
+model: gpt-5.5
+provider: openai
+approval: never
+sandbox: danger-full-access
+reasoning effort: xhigh
+reasoning summaries: none
+session id: 019f00e4-6528-75f0-91a9-cd5b8910b3eb
+--------
+user
+(STAGE 1) (ACTIVE) A 3-node Elasticsearch cluster and a MinIO server are running in the elasticsearch namespace.
+Snapshots to object storage are failing.
+
+Your task:
+- Configure secure settings so Elasticsearch can authenticate to MinIO.
+- Register a snapshot repository named "minio-repo" and create one successful snapshot.
+
+Notes:
+- MinIO endpoint: minio.elasticsearch.svc.cluster.local:9000
+- Bucket: es-backups
+- Credentials are stored in the Secret "es-secure-settings".
+- Do not place credentials in elasticsearch.yml or env vars.
+- Restart Elasticsearch pods only if needed.
+
+(ACTIVE) A 3-node Elasticsearch cluster is running.
+
+Goal:
+- Add two new data nodes with a different allocation attribute from the existing nodes.
+- Ensure shards for index "app-data" relocate onto the new nodes.
+- Keep the cluster healthy.
+
+Constraints:
+- Do not install operators or CRDs.
+
+Verification:
+1. Cluster health is yellow/green with 5 nodes.
+2. app-data shards are present on nodes outside the original 3.
+3. New nodes have a different allocation attribute than the original nodes.
+4. es-cluster StatefulSet remains at 3 replicas.
+codex
+I’ll inspect the workspace and current Kubernetes objects first, then make the smallest changes needed to add the new nodes and move `app-data` shards while preserving the existing StatefulSet.
+exec
+/bin/zsh -lc "pwd && rg --files -g '"'!*vendor*'"' -g '"'!*.png'"' -g '"'!*.jpg'"' | head -200" in /Users/jinyige/Karma/runs/new-added-workflows/elasticsearch-deploy-scale-transform-snapshot-concat-stateful-20260625_222341/stages/stage_02
+ succeeded in 0ms:
+/Users/jinyige/Karma/runs/new-added-workflows/elasticsearch-deploy-scale-transform-snapshot-concat-stateful-20260625_222341/stages/stage_02
+proxy-client.crt
+agent.log
+precondition.log
+prompt.txt
+proxy-client.key
+
+exec
+/bin/zsh -lc 'kubectl get sts es-cluster -n elasticsearch -o yaml' in /Users/jinyige/Karma/runs/new-added-workflows/elasticsearch-deploy-scale-transform-snapshot-concat-stateful-20260625_222341/stages/stage_02
+exec
+/bin/zsh -lc 'kubectl get pods,svc,sts,deploy,secret,cm -n elasticsearch -o wide' in /Users/jinyige/Karma/runs/new-added-workflows/elasticsearch-deploy-scale-transform-snapshot-concat-stateful-20260625_222341/stages/stage_02
+ succeeded in 237ms:
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  annotations:
+    kubectl.kubernetes.io/last-applied-configuration: |
+      {"apiVersion":"apps/v1","kind":"StatefulSet","metadata":{"annotations":{},"name":"es-cluster","namespace":"elasticsearch"},"spec":{"podManagementPolicy":"Parallel","replicas":3,"selector":{"matchLabels":{"app":"es-cluster"}},"serviceName":"es-cluster","template":{"metadata":{"labels":{"app":"es-cluster"}},"spec":{"containers":[{"env":[{"name":"POD_NAME","valueFrom":{"fieldRef":{"fieldPath":"metadata.name"}}},{"name":"ES_JAVA_OPTS","value":"-Xms512m -Xmx512m"}],"image":"docker.elastic.co/elasticsearch/elasticsearch:8.11.1","name":"elasticsearch","ports":[{"containerPort":9200,"name":"http"},{"containerPort":9300,"name":"transport"}],"readinessProbe":{"failureThreshold":6,"httpGet":{"path":"/_cluster/health?local=true","port":"http"},"initialDelaySeconds":10,"periodSeconds":5,"timeoutSeconds":2},"resources":{"limits":{"cpu":"1","memory":"2Gi"},"requests":{"cpu":"500m","memory":"1Gi"}},"volumeMounts":[{"mountPath":"/usr/share/elasticsearch/config/elasticsearch.yml","name":"es-config","subPath":"elasticsearch.yml"},{"mountPath":"/usr/share/elasticsearch/plugins","name":"es-plugins"},{"mountPath":"/mnt/secure-settings","name":"secure-settings","readOnly":true},{"mountPath":"/usr/share/elasticsearch/data","name":"data"}]}],"initContainers":[{"command":["/bin/sh","-c","set -e\nif [ ! -d /usr/share/elasticsearch/plugins/repository-s3 ]; then\n  /usr/share/elasticsearch/bin/elasticsearch-plugin install --batch repository-s3\nfi\n"],"image":"docker.elastic.co/elasticsearch/elasticsearch:8.11.1","name":"install-s3-plugin","volumeMounts":[{"mountPath":"/usr/share/elasticsearch/plugins","name":"es-plugins"}]}],"volumes":[{"configMap":{"items":[{"key":"elasticsearch.yml","path":"elasticsearch.yml"}],"name":"es-config"},"name":"es-config"},{"emptyDir":{},"name":"es-plugins"},{"name":"secure-settings","secret":{"secretName":"es-secure-settings"}}]}},"updateStrategy":{"type":"OnDelete"},"volumeClaimTemplates":[{"metadata":{"name":"data"},"spec":{"accessModes":["ReadWriteOnce"],"resources":{"requests":{"storage":"5Gi"}}}}]}}
+  creationTimestamp: "2026-06-25T22:23:44Z"
+  generation: 1
+  name: es-cluster
+  namespace: elasticsearch
+  resourceVersion: "283747"
+  uid: 5b6d3b9d-7834-4f5a-8f17-9ee3a8fb061c
+spec:
+  persistentVolumeClaimRetentionPolicy:
+    whenDeleted: Retain
+    whenScaled: Retain
+  podManagementPolicy: Parallel
+  replicas: 3
+  revisionHistoryLimit: 10
+  selector:
+    matchLabels:
+      app: es-cluster
+  serviceName: es-cluster
+  template:
+    metadata:
+      creationTimestamp: null
+      labels:
+        app: es-cluster
+    spec:
+      containers:
+      - env:
+        - name: POD_NAME
+          valueFrom:
+            fieldRef:
+              apiVersion: v1
+              fieldPath: metadata.name
+        - name: ES_JAVA_OPTS
+          value: -Xms512m -Xmx512m
+        image: docker.elastic.co/elasticsearch/elasticsearch:8.11.1
+        imagePullPolicy: IfNotPresent
+        name: elasticsearch
+        ports:
+        - containerPort: 9200
+          name: http
+          protocol: TCP
+        - containerPort: 9300
+          name: transport
+          protocol: TCP
+        readinessProbe:
+          failureThreshold: 6
+          httpGet:
+            path: /_cluster/health?local=true
+            port: http
+            scheme: HTTP
+          initialDelaySeconds: 10
+          periodSeconds: 5
+          successThreshold: 1
+          timeoutSeconds: 2
+        resources:
+          limits:
+            cpu: "1"
+            memory: 2Gi
+          requests:
+            cpu: 500m
+            memory: 1Gi
+        terminationMessagePath: /dev/termination-log
+        terminationMessagePolicy: File
+        volumeMounts:
+        - mountPath: /usr/share/elasticsearch/config/elasticsearch.yml
+          name: es-config
+          subPath: elasticsearch.yml
+        - mountPath: /usr/share/elasticsearch/plugins
+          name: es-plugins
+        - mountPath: /mnt/secure-settings
+          name: secure-settings
+          readOnly: true
+        - mountPath: /usr/share/elasticsearch/data
+          name: data
+      dnsPolicy: ClusterFirst
+      initContainers:
+      - command:
+        - /bin/sh
+        - -c
+        - |
+          set -e
+          if [ ! -d /usr/share/elasticsearch/plugins/repository-s3 ]; then
+            /usr/share/elasticsearch/bin/elasticsearch-plugin install --batch repository-s3
+          fi
+        image: docker.elastic.co/elasticsearch/elasticsearch:8.11.1
+        imagePullPolicy: IfNotPresent
+        name: install-s3-plugin
+        resources: {}
+        terminationMessagePath: /dev/termination-log
+        terminationMessagePolicy: File
+        volumeMounts:
+        - mountPath: /usr/share/elasticsearch/plugins
+          name: es-plugins
+      restartPolicy: Always
+      schedulerName: default-scheduler
+      securityContext: {}
+      terminationGracePeriodSeconds: 30
+      volumes:
+      - configMap:
+          defaultMode: 420
+          items:
+          - key: elasticsearch.yml
+            path: elasticsearch.yml
+          name: es-config
+        name: es-config
+      - emptyDir: {}
+        name: es-plugins
+      - name: secure-settings
+        secret:
+          defaultMode: 420
+          secretName: es-secure-settings
+  updateStrategy:
+    type: OnDelete
+  volumeClaimTemplates:
+  - apiVersion: v1
+    kind: PersistentVolumeClaim
+    metadata:
+      creationTimestamp: null
+      name: data
+    spec:
+      accessModes:
+      - ReadWriteOnce
+      resources:
+        requests:
+          storage: 5Gi
+      volumeMode: Filesystem
+    status:
+      phase: Pending
+status:
+  availableReplicas: 3
+  collisionCount: 0
+  currentReplicas: 3
+  currentRevision: es-cluster-96f876476
+  observedGeneration: 1
+  readyReplicas: 3
+  replicas: 3
+  updateRevision: es-cluster-96f876476
+  updatedReplicas: 3
+
+ succeeded in 317ms:
+NAME                         READY   STATUS      RESTARTS   AGE    IP            NODE           NOMINATED NODE   READINESS GATES
+pod/curl-test                1/1     Running     0          3m4s   10.244.1.53   kind-worker    <none>           <none>
+pod/es-cluster-0             1/1     Running     0          3m4s   10.244.3.51   kind-worker3   <none>           <none>
+pod/es-cluster-1             1/1     Running     0          3m4s   10.244.1.56   kind-worker    <none>           <none>
+pod/es-cluster-2             1/1     Running     0          3m4s   10.244.2.48   kind-worker2   <none>           <none>
+pod/minio-776f448748-48nrn   1/1     Running     0          3m4s   10.244.1.54   kind-worker    <none>           <none>
+pod/minio-init-xz75b         0/1     Completed   0          3m4s   10.244.3.49   kind-worker3   <none>           <none>
+
+NAME                 TYPE        CLUSTER-IP     EXTERNAL-IP   PORT(S)    AGE    SELECTOR
+service/es-cluster   ClusterIP   None           <none>        9300/TCP   3m4s   app=es-cluster
+service/es-http      ClusterIP   10.96.58.117   <none>        9200/TCP   3m4s   app=es-cluster
+service/minio        ClusterIP   10.96.110.64   <none>        9000/TCP   3m4s   app=minio
+
+NAME                          READY   AGE    CONTAINERS      IMAGES
+statefulset.apps/es-cluster   3/3     3m4s   elasticsearch   docker.elastic.co/elasticsearch/elasticsearch:8.11.1
+
+NAME                    READY   UP-TO-DATE   AVAILABLE   AGE    CONTAINERS   IMAGES                                     SELECTOR
+deployment.apps/minio   1/1     1            1           3m4s   minio        minio/minio:RELEASE.2024-01-16T16-07-38Z   app=minio
+
+NAME                        TYPE     DATA   AGE
+secret/es-secure-settings   Opaque   2      3m4s
+secret/minio-root           Opaque   2      3m4s
+
+NAME                         DATA   AGE
+configmap/es-config          1      3m4s
+configmap/kube-root-ca.crt   1      3m5s
+
+codex
+The current `es-cluster` StatefulSet already mounts the secure-settings Secret and installs the S3 repository plugin into an `emptyDir`, but it stays at 3 replicas. I’m checking the Elasticsearch config and live cluster settings next so the added nodes join with the right roles and attributes.
+exec
+/bin/zsh -lc "kubectl get secret es-secure-settings -n elasticsearch -o jsonpath='{.data}'" in /Users/jinyige/Karma/runs/new-added-workflows/elasticsearch-deploy-scale-transform-snapshot-concat-stateful-20260625_222341/stages/stage_02
+exec
+/bin/zsh -lc "kubectl exec -n elasticsearch curl-test -- sh -c 'curl -s http://es-http:9200/_cluster/health?pretty && echo && curl -s http://es-http:9200/_cat/nodes?v&h=name,ip,roles,attr.rack,attr.zone,attr.data_tier,heap.percent,ram.percent,node.role,master && echo && curl -s http://es-http:9200/_cat/indices?v && echo && curl -s http://es-http:9200/_cat/shards/app-data?v'" in /Users/jinyige/Karma/runs/new-added-workflows/elasticsearch-deploy-scale-transform-snapshot-concat-stateful-20260625_222341/stages/stage_02
+exec
+/bin/zsh -lc 'kubectl get cm es-config -n elasticsearch -o yaml' in /Users/jinyige/Karma/runs/new-added-workflows/elasticsearch-deploy-scale-transform-snapshot-concat-stateful-20260625_222341/stages/stage_02
+ succeeded in 200ms:
+{"s3.client.default.access_key":"bWluaW9hZG1pbg==","s3.client.default.secret_key":"bWluaW9hZG1pbg=="}
+ succeeded in 198ms:
+apiVersion: v1
+data:
+  elasticsearch.yml: |
+    cluster.name: es-cluster
+    node.name: ${POD_NAME}
+    node.roles: [ master, data, ingest ]
+    network.host: 0.0.0.0
+    discovery.seed_hosts:
+      - es-cluster-0.es-cluster.elasticsearch.svc.cluster.local
+      - es-cluster-1.es-cluster.elasticsearch.svc.cluster.local
+      - es-cluster-2.es-cluster.elasticsearch.svc.cluster.local
+    cluster.initial_master_nodes:
+      - es-cluster-0
+      - es-cluster-1
+      - es-cluster-2
+    node.store.allow_mmap: false
+    xpack.security.enabled: false
+    xpack.security.http.ssl.enabled: false
+    xpack.security.transport.ssl.enabled: false
+    s3.client.default.endpoint: minio.elasticsearch.svc.cluster.local:9000
+    s3.client.default.protocol: http
+    s3.client.default.path_style_access: true
+kind: ConfigMap
+metadata:
+  annotations:
+    kubectl.kubernetes.io/last-applied-configuration: |
+      {"apiVersion":"v1","data":{"elasticsearch.yml":"cluster.name: es-cluster\nnode.name: ${POD_NAME}\nnode.roles: [ master, data, ingest ]\nnetwork.host: 0.0.0.0\ndiscovery.seed_hosts:\n  - es-cluster-0.es-cluster.elasticsearch.svc.cluster.local\n  - es-cluster-1.es-cluster.elasticsearch.svc.cluster.local\n  - es-cluster-2.es-cluster.elasticsearch.svc.cluster.local\ncluster.initial_master_nodes:\n  - es-cluster-0\n  - es-cluster-1\n  - es-cluster-2\nnode.store.allow_mmap: false\nxpack.security.enabled: false\nxpack.security.http.ssl.enabled: false\nxpack.security.transport.ssl.enabled: false\ns3.client.default.endpoint: minio.elasticsearch.svc.cluster.local:9000\ns3.client.default.protocol: http\ns3.client.default.path_style_access: true\n"},"kind":"ConfigMap","metadata":{"annotations":{},"name":"es-config","namespace":"elasticsearch"}}
+  creationTimestamp: "2026-06-25T22:23:44Z"
+  name: es-config
+  namespace: elasticsearch
+  resourceVersion: "283428"
+  uid: dc2f3944-23d1-4ed8-b49c-a52580d6b821
+
+ succeeded in 368ms:
+
+{
+  "cluster_name" : "es-cluster",
+  "status" : "green",
+  "timed_out" : false,
+  "number_of_nodes" : 3,
+  "number_of_data_nodes" : 3,
+  "active_primary_shards" : 3,
+  "active_shards" : 6,
+  "relocating_shards" : 0,
+  "initializing_shards" : 0,
+  "unassigned_shards" : 0,
+  "delayed_unassigned_shards" : 0,
+  "number_of_pending_tasks" : 0,
+  "number_of_in_flight_fetch" : 0,
+  "task_max_waiting_in_queue_millis" : 0,
+  "active_shards_percent_as_number" : 100.0
+}
+
+health status index    uuid                   pri rep docs.count docs.deleted store.size pri.store.size dataset.size
+green  open   app-data mRCzCHu3SkG6_tOVOuawRw   3   1          3            0       23kb          9.3kb        9.3kb
+
+ip          heap.percent ram.percent cpu load_1m load_5m load_15m node.role master name
+10.244.3.51           26          48  10    2.74    3.53     4.09 dim       -      es-cluster-0
+10.244.1.56           49          48   8    2.74    3.53     4.09 dim       *      es-cluster-1
+10.244.2.48           67          48  11    2.74    3.53     4.09 dim       -      es-cluster-2
+index    shard prirep state   docs store dataset ip          node
+app-data 0     p      STARTED    0  227b    227b 10.244.1.56 es-cluster-1
+app-data 0     r      STARTED    0  227b    227b 10.244.3.51 es-cluster-0
+app-data 1     p      STARTED    2 4.6kb   4.6kb 10.244.3.51 es-cluster-0
+app-data 1     r      STARTED    2 8.8kb   8.8kb 10.244.2.48 es-cluster-2
+app-data 2     r      STARTED    1 4.5kb   4.5kb 10.244.1.56 es-cluster-1
+app-data 2     p      STARTED    1 4.5kb   4.5kb 10.244.2.48 es-cluster-2
+
+codex
+The existing nodes do not advertise a custom allocation attribute. I’m going to add a separate two-replica StatefulSet for new data nodes with `node.attr.node_pool: expansion`, then use index routing allocation on `app-data` so those shards move onto the new nodes without scaling `es-cluster`.
+exec
+/bin/zsh -lc "sed -n '1,240p' prompt.txt" in /Users/jinyige/Karma/runs/new-added-workflows/elasticsearch-deploy-scale-transform-snapshot-concat-stateful-20260625_222341/stages/stage_02
+ succeeded in 0ms:
+(STAGE 1) (ACTIVE) A 3-node Elasticsearch cluster and a MinIO server are running in the elasticsearch namespace.
+Snapshots to object storage are failing.
+
+Your task:
+- Configure secure settings so Elasticsearch can authenticate to MinIO.
+- Register a snapshot repository named "minio-repo" and create one successful snapshot.
+
+Notes:
+- MinIO endpoint: minio.elasticsearch.svc.cluster.local:9000
+- Bucket: es-backups
+- Credentials are stored in the Secret "es-secure-settings".
+- Do not place credentials in elasticsearch.yml or env vars.
+- Restart Elasticsearch pods only if needed.
+
+(ACTIVE) A 3-node Elasticsearch cluster is running.
+
+Goal:
+- Add two new data nodes with a different allocation attribute from the existing nodes.
+- Ensure shards for index "app-data" relocate onto the new nodes.
+- Keep the cluster healthy.
+
+Constraints:
+- Do not install operators or CRDs.
+
+Verification:
+1. Cluster health is yellow/green with 5 nodes.
+2. app-data shards are present on nodes outside the original 3.
+3. New nodes have a different allocation attribute than the original nodes.
+4. es-cluster StatefulSet remains at 3 replicas.
+exec
+/bin/zsh -lc "kubectl exec -n elasticsearch es-cluster-0 -- sh -c 'ls -l /usr/share/elasticsearch/config && echo secure: && ls -l /mnt/secure-settings && echo keystore: && /usr/share/elasticsearch/bin/elasticsearch-keystore list || true'" in /Users/jinyige/Karma/runs/new-added-workflows/elasticsearch-deploy-scale-transform-snapshot-concat-stateful-20260625_222341/stages/stage_02
+exec
+/bin/zsh -lc "kubectl exec -n elasticsearch curl-test -- sh -c 'curl -s \"http://es-http:9200/_nodes?filter_path=nodes.*.name,nodes.*.settings.node.attr,nodes.*.roles\" | sed \"s/,/,&\\n/g\" && echo && curl -s \"http://es-http:9200/_cluster/settings?include_defaults=false&pretty\" && echo && curl -s \"http://es-http:9200/app-data/_settings?pretty\"'" in /Users/jinyige/Karma/runs/new-added-workflows/elasticsearch-deploy-scale-transform-snapshot-concat-stateful-20260625_222341/stages/stage_02
+ succeeded in 182ms:
+{"nodes":{"szFT2hMqS1OumXc9mECLOQ":{"name":"es-cluster-1",,
+"roles":["data",,
+"ingest",,
+"master"],,
+"settings":{"node":{"attr":{"transform":{"config_version":"10.0.0"},,
+"xpack":{"installed":"true"},,
+"ml":{"config_version":"11.0.0"}}}}},,
+"rUMo0YthRyybr9d4w7t-XA":{"name":"es-cluster-2",,
+"roles":["data",,
+"ingest",,
+"master"],,
+"settings":{"node":{"attr":{"transform":{"config_version":"10.0.0"},,
+"xpack":{"installed":"true"},,
+"ml":{"config_version":"11.0.0"}}}}},,
+"5wdFEaIpS5qPZXDCUQhuUQ":{"name":"es-cluster-0",,
+"roles":["data",,
+"ingest",,
+"master"],,
+"settings":{"node":{"attr":{"transform":{"config_version":"10.0.0"},,
+"xpack":{"installed":"true"},,
+"ml":{"config_version":"11.0.0"}}}}}}}
+{
+  "persistent" : { },
+  "transient" : { }
+}
+
+{
+  "app-data" : {
+    "settings" : {
+      "index" : {
+        "routing" : {
+          "allocation" : {
+            "include" : {
+              "_tier_preference" : "data_content"
+            }
+          }
+        },
+        "number_of_shards" : "3",
+        "provided_name" : "app-data",
+        "creation_date" : "1782426392229",
+        "number_of_replicas" : "1",
+        "uuid" : "mRCzCHu3SkG6_tOVOuawRw",
+        "version" : {
+          "created" : "8500003"
+        }
+      }
+    }
+  }
+}
+
+ succeeded in 1211ms:
+total 64
+-rw-rw-r-- 1 root          root           1042 Nov 11  2023 elasticsearch-plugins.example.yml
+-rw-rw---- 1 elasticsearch elasticsearch   287 Jun 25 22:24 elasticsearch.keystore
+-rw-r--r-- 1 root          root            678 Jun 25 22:23 elasticsearch.yml
+-rw-rw-r-- 1 root          root           2727 Nov 11  2023 jvm.options
+drwxrwxr-x 1 elasticsearch root           4096 Nov 11  2023 jvm.options.d
+-rw-rw-r-- 1 root          root          17969 Nov 11  2023 log4j2.file.properties
+-rw-rw-r-- 1 root          root          12549 Nov 11  2023 log4j2.properties
+-rw-rw-r-- 1 root          root            473 Nov 11  2023 role_mapping.yml
+-rw-rw-r-- 1 root          root            197 Nov 11  2023 roles.yml
+-rw-rw-r-- 1 root          root              0 Nov 11  2023 users
+-rw-rw-r-- 1 root          root              0 Nov 11  2023 users_roles
+secure:
+total 0
+lrwxrwxrwx 1 root root 35 Jun 25 22:23 s3.client.default.access_key -> ..data/s3.client.default.access_key
+lrwxrwxrwx 1 root root 35 Jun 25 22:23 s3.client.default.secret_key -> ..data/s3.client.default.secret_key
+keystore:
+keystore.seed
+s3.client.default.access_key
+s3.client.default.secret_key
+
+codex
+The mounted secret is already present in the live Elasticsearch keystore on the original pods, so the secure-settings mechanism is working there. I’m going to mirror that setup on the added data nodes so repository verification and snapshots do not fail after the cluster grows.
+exec
+/bin/zsh -lc 'kubectl get nodes -o wide && kubectl get storageclass' in /Users/jinyige/Karma/runs/new-added-workflows/elasticsearch-deploy-scale-transform-snapshot-concat-stateful-20260625_222341/stages/stage_02
+exec
+/bin/zsh -lc "kubectl exec -n elasticsearch curl-test -- sh -c 'curl -s -o /tmp/repo_resp -w \"%{http_code}\" -XPUT \"http://es-http:9200/_snapshot/minio-repo?pretty\" -H \"Content-Type: application/json\" -d \"{\\\"type\\\":\\\"s3\\\",\\\"settings\\\":{\\\"bucket\\\":\\\"es-backups\\\",\\\"client\\\":\\\"default\\\"}}\"; echo; cat /tmp/repo_resp'" in /Users/jinyige/Karma/runs/new-added-workflows/elasticsearch-deploy-scale-transform-snapshot-concat-stateful-20260625_222341/stages/stage_02
+exec
+/bin/zsh -lc "kubectl exec -n elasticsearch es-cluster-0 -- sh -c 'grep -R \"secure-settings\\|elasticsearch-keystore\" -n /usr/local/bin /usr/share/elasticsearch/bin 2>/dev/null | head -80'" in /Users/jinyige/Karma/runs/new-added-workflows/elasticsearch-deploy-scale-transform-snapshot-concat-stateful-20260625_222341/stages/stage_02
+ succeeded in 128ms:
+/usr/local/bin/docker-entrypoint.sh:43:    [[ -f /usr/share/elasticsearch/config/elasticsearch.keystore ]] || (elasticsearch-keystore create)
+/usr/local/bin/docker-entrypoint.sh:44:    if ! (elasticsearch-keystore has-passwd --silent) ; then
+/usr/local/bin/docker-entrypoint.sh:46:      if ! (elasticsearch-keystore list | grep -q '^bootstrap.password$'); then
+/usr/local/bin/docker-entrypoint.sh:47:        (echo "$ELASTIC_PASSWORD" | elasticsearch-keystore add -x 'bootstrap.password')
+/usr/local/bin/docker-entrypoint.sh:52:          | elasticsearch-keystore list | grep -q '^bootstrap.password$') ; then
+/usr/local/bin/docker-entrypoint.sh:54:        (echo "$COMMANDS" | elasticsearch-keystore add -x 'bootstrap.password')
+
+ succeeded in 141ms:
+NAME                 PROVISIONER             RECLAIMPOLICY   VOLUMEBINDINGMODE      ALLOWVOLUMEEXPANSION   AGE
+standard (default)   rancher.io/local-path   Delete          WaitForFirstConsumer   false                  14d
+
+ succeeded in 290ms:
+200
+{
+  "acknowledged" : true
+}
+
+codex
+The repository registration now succeeds against MinIO, which confirms the current keystore contents are valid. For the new StatefulSet I need an explicit startup command to load the secret files into the Elasticsearch keystore before the node process starts, because the stock entrypoint only creates the keystore.
+exec
+/bin/zsh -lc 'kubectl get pvc -n elasticsearch -o wide' in /Users/jinyige/Karma/runs/new-added-workflows/elasticsearch-deploy-scale-transform-snapshot-concat-stateful-20260625_222341/stages/stage_02
+exec
+/bin/zsh -lc "kubectl get sts es-cluster -n elasticsearch -o jsonpath='{.spec.template.spec.containers[0].securityContext}{\"\\n\"}{.spec.template.spec.securityContext}{\"\\n\"}'" in /Users/jinyige/Karma/runs/new-added-workflows/elasticsearch-deploy-scale-transform-snapshot-concat-stateful-20260625_222341/stages/stage_02
+ succeeded in 0ms:
+
+{}
+
+ succeeded in 0ms:
+NAME                STATUS   VOLUME                                     CAPACITY   ACCESS MODES   STORAGECLASS   VOLUMEATTRIBUTESCLASS   AGE     VOLUMEMODE
+data-es-cluster-0   Bound    pvc-dc6acacd-628d-4760-8b1d-37687a02ae40   5Gi        RWO            standard       <unset>                 4m19s   Filesystem
+data-es-cluster-1   Bound    pvc-da631f7c-a49c-4cde-a4bd-2d8589f40d03   5Gi        RWO            standard       <unset>                 4m19s   Filesystem
+data-es-cluster-2   Bound    pvc-0e5e366f-4253-4c6a-a0c6-b09acaf8dc65   5Gi        RWO            standard       <unset>                 4m19s   Filesystem
+
+exec
+/bin/zsh -lc "kubectl exec -n elasticsearch es-cluster-0 -- sed -n '1,180p' /usr/local/bin/docker-entrypoint.sh" in /Users/jinyige/Karma/runs/new-added-workflows/elasticsearch-deploy-scale-transform-snapshot-concat-stateful-20260625_222341/stages/stage_02
+ succeeded in 109ms:
+#!/bin/bash
+set -e
+
+# Files created by Elasticsearch should always be group writable too
+umask 0002
+
+# Allow user specify custom CMD, maybe bin/elasticsearch itself
+# for example to directly specify `-E` style parameters for elasticsearch on k8s
+# or simply to run /bin/bash to check the image
+if [[ "$1" == "eswrapper" || $(basename "$1") == "elasticsearch" ]]; then
+  # Rewrite CMD args to remove the explicit command,
+  # so that we are backwards compatible with the docs
+  # from the previous Elasticsearch versions < 6
+  # and configuration option:
+  # https://www.elastic.co/guide/en/elasticsearch/reference/5.6/docker.html#_d_override_the_image_8217_s_default_ulink_url_https_docs_docker_com_engine_reference_run_cmd_default_command_or_options_cmd_ulink
+  # Without this, user could specify `elasticsearch -E x.y=z` but
+  # `bin/elasticsearch -E x.y=z` would not work. In any case,
+  # we want to continue through this script, and not exec early.
+  set -- "${@:2}"
+else
+  # Run whatever command the user wanted
+  exec "$@"
+fi
+
+# Allow environment variables to be set by creating a file with the
+# contents, and setting an environment variable with the suffix _FILE to
+# point to it. This can be used to provide secrets to a container, without
+# the values being specified explicitly when running the container.
+#
+# This is also sourced in elasticsearch-env, and is only needed here
+# as well because we use ELASTIC_PASSWORD below. Sourcing this script
+# is idempotent.
+source /usr/share/elasticsearch/bin/elasticsearch-env-from-file
+
+if [[ -f bin/elasticsearch-users ]]; then
+  # Check for the ELASTIC_PASSWORD environment variable to set the
+  # bootstrap password for Security.
+  #
+  # This is only required for the first node in a cluster with Security
+  # enabled, but we have no way of knowing which node we are yet. We'll just
+  # honor the variable if it's present.
+  if [[ -n "$ELASTIC_PASSWORD" ]]; then
+    [[ -f /usr/share/elasticsearch/config/elasticsearch.keystore ]] || (elasticsearch-keystore create)
+    if ! (elasticsearch-keystore has-passwd --silent) ; then
+      # keystore is unencrypted
+      if ! (elasticsearch-keystore list | grep -q '^bootstrap.password$'); then
+        (echo "$ELASTIC_PASSWORD" | elasticsearch-keystore add -x 'bootstrap.password')
+      fi
+    else
+      # keystore requires password
+      if ! (echo "$KEYSTORE_PASSWORD" \
+          | elasticsearch-keystore list | grep -q '^bootstrap.password$') ; then
+        COMMANDS="$(printf "%s\n%s" "$KEYSTORE_PASSWORD" "$ELASTIC_PASSWORD")"
+        (echo "$COMMANDS" | elasticsearch-keystore add -x 'bootstrap.password')
+      fi
+    fi
+  fi
+fi
+
+if [[ -n "$ES_LOG_STYLE" ]]; then
+  case "$ES_LOG_STYLE" in
+    console)
+      # This is the default. Nothing to do.
+      ;;
+    file)
+      # Overwrite the default config with the stack config. Do this as a
+      # copy, not a move, in case the container is restarted.
+      cp -f /usr/share/elasticsearch/config/log4j2.file.properties /usr/share/elasticsearch/config/log4j2.properties
+      ;;
+    *)
+      echo "ERROR: ES_LOG_STYLE set to [$ES_LOG_STYLE]. Expected [console] or [file]" >&2
+      exit 1 ;;
+  esac
+fi
+
+if [[ -n "$ENROLLMENT_TOKEN" ]]; then
+  POSITIONAL_PARAMETERS="--enrollment-token $ENROLLMENT_TOKEN"
+else
+  POSITIONAL_PARAMETERS=""
+fi
+
+# Signal forwarding and child reaping is handled by `tini`, which is the
+# actual entrypoint of the container
+exec /usr/share/elasticsearch/bin/elasticsearch "$@" $POSITIONAL_PARAMETERS <<<"$KEYSTORE_PASSWORD"
+
+exec
+/bin/zsh -lc 'kubectl top nodes 2>/dev/null || true' in /Users/jinyige/Karma/runs/new-added-workflows/elasticsearch-deploy-scale-transform-snapshot-concat-stateful-20260625_222341/stages/stage_02
+exec
+/bin/zsh -lc 'kubectl describe nodes | rg -n "Name:|Taints:|Allocatable:|cpu:|memory:|Allocated resources"' in /Users/jinyige/Karma/runs/new-added-workflows/elasticsearch-deploy-scale-transform-snapshot-concat-stateful-20260625_222341/stages/stage_02
+ succeeded in 222ms:
+ succeeded in 507ms:
+1:Name:               kind-control-plane
+14:Taints:             node-role.kubernetes.io/control-plane:NoSchedule
+31:  cpu:                8
+37:  memory:             8025700Ki
+39:Allocatable:
+40:  cpu:                8
+46:  memory:             8025700Ki
+74:Allocated resources:
+88:Name:               kind-worker
+99:Taints:             <none>
+116:  cpu:                8
+122:  memory:             8025700Ki
+124:Allocatable:
+125:  cpu:                8
+131:  memory:             8025700Ki
+157:Allocated resources:
+171:Name:               kind-worker2
+182:Taints:             <none>
+199:  cpu:                8
+205:  memory:             8025700Ki
+207:Allocatable:
+208:  cpu:                8
+214:  memory:             8025700Ki
+239:Allocated resources:
+253:Name:               kind-worker3
+264:Taints:             <none>
+281:  cpu:                8
+287:  memory:             8025700Ki
+289:Allocatable:
+290:  cpu:                8
+296:  memory:             8025700Ki
+320:Allocated resources:
+
+codex
+I’m adding a small manifest for the expansion nodes now: a dedicated ConfigMap with the new allocation attribute, a headless service for the new StatefulSet identity, and a two-replica StatefulSet. The original `es-cluster` StatefulSet is left at 3 replicas.
+apply patch
+patch: completed
+/Users/jinyige/Karma/runs/new-added-workflows/elasticsearch-deploy-scale-transform-snapshot-concat-stateful-20260625_222341/stages/stage_02/elasticsearch-extra-data-nodes.yaml
+diff --git a/runs/new-added-workflows/elasticsearch-deploy-scale-transform-snapshot-concat-stateful-20260625_222341/stages/stage_02/elasticsearch-extra-data-nodes.yaml b/runs/new-added-workflows/elasticsearch-deploy-scale-transform-snapshot-concat-stateful-20260625_222341/stages/stage_02/elasticsearch-extra-data-nodes.yaml
+new file mode 100644
+index 0000000000000000000000000000000000000000..dae8b793dfb27efca3c999bf189f0e1febbf0eee
+--- /dev/null
++++ b/runs/new-added-workflows/elasticsearch-deploy-scale-transform-snapshot-concat-stateful-20260625_222341/stages/stage_02/elasticsearch-extra-data-nodes.yaml
+@@ -0,0 +1,150 @@
++apiVersion: v1
++kind: ConfigMap
++metadata:
++  name: es-extra-config
++  namespace: elasticsearch
++data:
++  elasticsearch.yml: |
++    cluster.name: es-cluster
++    node.name: ${POD_NAME}
++    node.roles: [ data, ingest ]
++    network.host: 0.0.0.0
++    discovery.seed_hosts:
++      - es-cluster-0.es-cluster.elasticsearch.svc.cluster.local
++      - es-cluster-1.es-cluster.elasticsearch.svc.cluster.local
++      - es-cluster-2.es-cluster.elasticsearch.svc.cluster.local
++    node.attr.node_pool: expansion
++    node.store.allow_mmap: false
++    xpack.security.enabled: false
++    xpack.security.http.ssl.enabled: false
++    xpack.security.transport.ssl.enabled: false
++    s3.client.default.endpoint: minio.elasticsearch.svc.cluster.local:9000
++    s3.client.default.protocol: http
++    s3.client.default.path_style_access: true
++---
++apiVersion: v1
++kind: Service
++metadata:
++  name: es-extra
++  namespace: elasticsearch
++spec:
++  clusterIP: None
++  selector:
++    app: es-extra
++  ports:
++    - name: http
++      port: 9200
++      targetPort: http
++    - name: transport
++      port: 9300
++      targetPort: transport
++---
++apiVersion: apps/v1
++kind: StatefulSet
++metadata:
++  name: es-extra
++  namespace: elasticsearch
++spec:
++  podManagementPolicy: Parallel
++  replicas: 2
++  selector:
++    matchLabels:
++      app: es-extra
++  serviceName: es-extra
++  template:
++    metadata:
++      labels:
++        app: es-extra
++        cluster: es-cluster
++    spec:
++      initContainers:
++        - name: install-s3-plugin
++          image: docker.elastic.co/elasticsearch/elasticsearch:8.11.1
++          command:
++            - /bin/sh
++            - -c
++            - |
++              set -e
++              if [ ! -d /usr/share/elasticsearch/plugins/repository-s3 ]; then
++                /usr/share/elasticsearch/bin/elasticsearch-plugin install --batch repository-s3
++              fi
++          volumeMounts:
++            - name: es-plugins
++              mountPath: /usr/share/elasticsearch/plugins
++      containers:
++        - name: elasticsearch
++          image: docker.elastic.co/elasticsearch/elasticsearch:8.11.1
++          command:
++            - /bin/bash
++            - -c
++            - |
++              set -euo pipefail
++              /usr/share/elasticsearch/bin/elasticsearch-keystore create >/dev/null 2>&1 || true
++              for setting in /mnt/secure-settings/*; do
++                [ -f "$setting" ] || continue
++                key="$(basename "$setting")"
++                if /usr/share/elasticsearch/bin/elasticsearch-keystore list | grep -Fxq "$key"; then
++                  continue
++                fi
++                /usr/share/elasticsearch/bin/elasticsearch-keystore add-file "$key" "$setting"
++              done
++              exec /usr/local/bin/docker-entrypoint.sh eswrapper
++          env:
++            - name: POD_NAME
++              valueFrom:
++                fieldRef:
++                  fieldPath: metadata.name
++            - name: ES_JAVA_OPTS
++              value: -Xms512m -Xmx512m
++          ports:
++            - name: http
++              containerPort: 9200
++            - name: transport
++              containerPort: 9300
++          readinessProbe:
++            httpGet:
++              path: /_cluster/health?local=true
++              port: http
++            initialDelaySeconds: 10
++            periodSeconds: 5
++            timeoutSeconds: 2
++            failureThreshold: 6
++          resources:
++            requests:
++              cpu: 500m
++              memory: 1Gi
++            limits:
++              cpu: "1"
++              memory: 2Gi
++          volumeMounts:
++            - name: es-extra-config
++              mountPath: /usr/share/elasticsearch/config/elasticsearch.yml
++              subPath: elasticsearch.yml
++            - name: es-plugins
++              mountPath: /usr/share/elasticsearch/plugins
++            - name: secure-settings
++              mountPath: /mnt/secure-settings
++              readOnly: true
++            - name: data
++              mountPath: /usr/share/elasticsearch/data
++      volumes:
++        - name: es-extra-config
++          configMap:
++            name: es-extra-config
++            items:
++              - key: elasticsearch.yml
++                path: elasticsearch.yml
++        - name: es-plugins
++          emptyDir: {}
++        - name: secure-settings
++          secret:
++            secretName: es-secure-settings
++  volumeClaimTemplates:
++    - metadata:
++        name: data
++      spec:
++        accessModes:
++          - ReadWriteOnce
++        resources:
++          requests:
++            storage: 5Gi
+
+diff --git a/runs/new-added-workflows/elasticsearch-deploy-scale-transform-snapshot-concat-stateful-20260625_222341/stages/stage_02/elasticsearch-extra-data-nodes.yaml b/runs/new-added-workflows/elasticsearch-deploy-scale-transform-snapshot-concat-stateful-20260625_222341/stages/stage_02/elasticsearch-extra-data-nodes.yaml
+new file mode 100644
+index 0000000000000000000000000000000000000000..dae8b793dfb27efca3c999bf189f0e1febbf0eee
+--- /dev/null
++++ b/runs/new-added-workflows/elasticsearch-deploy-scale-transform-snapshot-concat-stateful-20260625_222341/stages/stage_02/elasticsearch-extra-data-nodes.yaml
+@@ -0,0 +1,150 @@
++apiVersion: v1
++kind: ConfigMap
++metadata:
++  name: es-extra-config
++  namespace: elasticsearch
++data:
++  elasticsearch.yml: |
++    cluster.name: es-cluster
++    node.name: ${POD_NAME}
++    node.roles: [ data, ingest ]
++    network.host: 0.0.0.0
++    discovery.seed_hosts:
++      - es-cluster-0.es-cluster.elasticsearch.svc.cluster.local
++      - es-cluster-1.es-cluster.elasticsearch.svc.cluster.local
++      - es-cluster-2.es-cluster.elasticsearch.svc.cluster.local
++    node.attr.node_pool: expansion
++    node.store.allow_mmap: false
++    xpack.security.enabled: false
++    xpack.security.http.ssl.enabled: false
++    xpack.security.transport.ssl.enabled: false
++    s3.client.default.endpoint: minio.elasticsearch.svc.cluster.local:9000
++    s3.client.default.protocol: http
++    s3.client.default.path_style_access: true
++---
++apiVersion: v1
++kind: Service
++metadata:
++  name: es-extra
++  namespace: elasticsearch
++spec:
++  clusterIP: None
++  selector:
++    app: es-extra
++  ports:
++    - name: http
++      port: 9200
++      targetPort: http
++    - name: transport
++      port: 9300
++      targetPort: transport
++---
++apiVersion: apps/v1
++kind: StatefulSet
++metadata:
++  name: es-extra
++  namespace: elasticsearch
++spec:
++  podManagementPolicy: Parallel
++  replicas: 2
++  selector:
++    matchLabels:
++      app: es-extra
++  serviceName: es-extra
++  template:
++    metadata:
++      labels:
++        app: es-extra
++        cluster: es-cluster
++    spec:
++      initContainers:
++        - name: install-s3-plugin
++          image: docker.elastic.co/elasticsearch/elasticsearch:8.11.1
++          command:
++            - /bin/sh
++            - -c
++            - |
++              set -e
++              if [ ! -d /usr/share/elasticsearch/plugins/repository-s3 ]; then
++                /usr/share/elasticsearch/bin/elasticsearch-plugin install --batch repository-s3
++              fi
++          volumeMounts:
++            - name: es-plugins
++              mountPath: /usr/share/elasticsearch/plugins
++      containers:
++        - name: elasticsearch
++          image: docker.elastic.co/elasticsearch/elasticsearch:8.11.1
++          command:
++            - /bin/bash
++            - -c
++            - |
++              set -euo pipefail
++              /usr/share/elasticsearch/bin/elasticsearch-keystore create >/dev/null 2>&1 || true
++              for setting in /mnt/secure-settings/*; do
++                [ -f "$setting" ] || continue
++                key="$(basename "$setting")"
++                if /usr/share/elasticsearch/bin/elasticsearch-keystore list | grep -Fxq "$key"; then
++                  continue
++                fi
++                /usr/share/elasticsearch/bin/elasticsearch-keystore add-file "$key" "$setting"
++              done
++              exec /usr/local/bin/docker-entrypoint.sh eswrapper
++          env:
++            - name: POD_NAME
++              valueFrom:
++                fieldRef:
++                  fieldPath: metadata.name
++            - name: ES_JAVA_OPTS
++              value: -Xms512m -Xmx512m
++          ports:
++            - name: http
++              containerPort: 9200
++            - name: transport
++              containerPort: 9300
++          readinessProbe:
++            httpGet:
++              path: /_cluster/health?local=true
++              port: http
++            initialDelaySeconds: 10
++            periodSeconds: 5
++            timeoutSeconds: 2
++            failureThreshold: 6
++          resources:
++            requests:
++              cpu: 500m
++              memory: 1Gi
++            limits:
++              cpu: "1"
++              memory: 2Gi
++          volumeMounts:
++            - name: es-extra-config
++              mountPath: /usr/share/elasticsearch/config/elasticsearch.yml
++              subPath: elasticsearch.yml
++            - name: es-plugins
++              mountPath: /usr/share/elasticsearch/plugins
++            - name: secure-settings
++              mountPath: /mnt/secure-settings
++              readOnly: true
++            - name: data
++              mountPath: /usr/share/elasticsearch/data
++      volumes:
++        - name: es-extra-config
++          configMap:
++            name: es-extra-config
++            items:
++              - key: elasticsearch.yml
++                path: elasticsearch.yml
++        - name: es-plugins
++          emptyDir: {}
++        - name: secure-settings
++          secret:
++            secretName: es-secure-settings
++  volumeClaimTemplates:
++    - metadata:
++        name: data
++      spec:
++        accessModes:
++          - ReadWriteOnce
++        resources:
++          requests:
++            storage: 5Gi
+
+codex
+The expansion manifest is in place. I’m applying it and then I’ll wait for the two new Elasticsearch pods to join before changing `app-data` allocation.
+exec
+/bin/zsh -lc 'kubectl apply -f elasticsearch-extra-data-nodes.yaml && kubectl rollout status sts/es-extra -n elasticsearch --timeout=180s' in /Users/jinyige/Karma/runs/new-added-workflows/elasticsearch-deploy-scale-transform-snapshot-concat-stateful-20260625_222341/stages/stage_02
+diff --git a/runs/new-added-workflows/elasticsearch-deploy-scale-transform-snapshot-concat-stateful-20260625_222341/stages/stage_02/elasticsearch-extra-data-nodes.yaml b/runs/new-added-workflows/elasticsearch-deploy-scale-transform-snapshot-concat-stateful-20260625_222341/stages/stage_02/elasticsearch-extra-data-nodes.yaml
+new file mode 100644
+index 0000000000000000000000000000000000000000..dae8b793dfb27efca3c999bf189f0e1febbf0eee
+--- /dev/null
++++ b/runs/new-added-workflows/elasticsearch-deploy-scale-transform-snapshot-concat-stateful-20260625_222341/stages/stage_02/elasticsearch-extra-data-nodes.yaml
+@@ -0,0 +1,150 @@
++apiVersion: v1
++kind: ConfigMap
++metadata:
++  name: es-extra-config
++  namespace: elasticsearch
++data:
++  elasticsearch.yml: |
++    cluster.name: es-cluster
++    node.name: ${POD_NAME}
++    node.roles: [ data, ingest ]
++    network.host: 0.0.0.0
++    discovery.seed_hosts:
++      - es-cluster-0.es-cluster.elasticsearch.svc.cluster.local
++      - es-cluster-1.es-cluster.elasticsearch.svc.cluster.local
++      - es-cluster-2.es-cluster.elasticsearch.svc.cluster.local
++    node.attr.node_pool: expansion
++    node.store.allow_mmap: false
++    xpack.security.enabled: false
++    xpack.security.http.ssl.enabled: false
++    xpack.security.transport.ssl.enabled: false
++    s3.client.default.endpoint: minio.elasticsearch.svc.cluster.local:9000
++    s3.client.default.protocol: http
++    s3.client.default.path_style_access: true
++---
++apiVersion: v1
++kind: Service
++metadata:
++  name: es-extra
++  namespace: elasticsearch
++spec:
++  clusterIP: None
++  selector:
++    app: es-extra
++  ports:
++    - name: http
++      port: 9200
++      targetPort: http
++    - name: transport
++      port: 9300
++      targetPort: transport
++---
++apiVersion: apps/v1
++kind: StatefulSet
++metadata:
++  name: es-extra
++  namespace: elasticsearch
++spec:
++  podManagementPolicy: Parallel
++  replicas: 2
++  selector:
++    matchLabels:
++      app: es-extra
++  serviceName: es-extra
++  template:
++    metadata:
++      labels:
++        app: es-extra
++        cluster: es-cluster
++    spec:
++      initContainers:
++        - name: install-s3-plugin
++          image: docker.elastic.co/elasticsearch/elasticsearch:8.11.1
++          command:
++            - /bin/sh
++            - -c
++            - |
++              set -e
++              if [ ! -d /usr/share/elasticsearch/plugins/repository-s3 ]; then
++                /usr/share/elasticsearch/bin/elasticsearch-plugin install --batch repository-s3
++              fi
++          volumeMounts:
++            - name: es-plugins
++              mountPath: /usr/share/elasticsearch/plugins
++      containers:
++        - name: elasticsearch
++          image: docker.elastic.co/elasticsearch/elasticsearch:8.11.1
++          command:
++            - /bin/bash
++            - -c
++            - |
++              set -euo pipefail
++              /usr/share/elasticsearch/bin/elasticsearch-keystore create >/dev/null 2>&1 || true
++              for setting in /mnt/secure-settings/*; do
++                [ -f "$setting" ] || continue
++                key="$(basename "$setting")"
++                if /usr/share/elasticsearch/bin/elasticsearch-keystore list | grep -Fxq "$key"; then
++                  continue
++                fi
++                /usr/share/elasticsearch/bin/elasticsearch-keystore add-file "$key" "$setting"
++              done
++              exec /usr/local/bin/docker-entrypoint.sh eswrapper
++          env:
++            - name: POD_NAME
++              valueFrom:
++                fieldRef:
++                  fieldPath: metadata.name
++            - name: ES_JAVA_OPTS
++              value: -Xms512m -Xmx512m
++          ports:
++            - name: http
++              containerPort: 9200
++            - name: transport
++              containerPort: 9300
++          readinessProbe:
++            httpGet:
++              path: /_cluster/health?local=true
++              port: http
++            initialDelaySeconds: 10
++            periodSeconds: 5
++            timeoutSeconds: 2
++            failureThreshold: 6
++          resources:
++            requests:
++              cpu: 500m
++              memory: 1Gi
++            limits:
++              cpu: "1"
++              memory: 2Gi
++          volumeMounts:
++            - name: es-extra-config
++              mountPath: /usr/share/elasticsearch/config/elasticsearch.yml
++              subPath: elasticsearch.yml
++            - name: es-plugins
++              mountPath: /usr/share/elasticsearch/plugins
++            - name: secure-settings
++              mountPath: /mnt/secure-settings
++              readOnly: true
++            - name: data
++              mountPath: /usr/share/elasticsearch/data
++      volumes:
++        - name: es-extra-config
++          configMap:
++            name: es-extra-config
++            items:
++              - key: elasticsearch.yml
++                path: elasticsearch.yml
++        - name: es-plugins
++          emptyDir: {}
++        - name: secure-settings
++          secret:
++            secretName: es-secure-settings
++  volumeClaimTemplates:
++    - metadata:
++        name: data
++      spec:
++        accessModes:
++          - ReadWriteOnce
++        resources:
++          requests:
++            storage: 5Gi
+
+ succeeded in 33814ms:
+configmap/es-extra-config created
+service/es-extra created
+statefulset.apps/es-extra created
+Waiting for 2 pods to be ready...
+Waiting for 1 pods to be ready...
+partitioned roll out complete: 2 new pods have been updated...
+
+codex
+The new StatefulSet has been created and Kubernetes is waiting on readiness. I’m checking pod logs/events now in case startup needs adjustment before Elasticsearch can join the cluster.
+exec
+/bin/zsh -lc 'kubectl get pods,pvc -n elasticsearch -o wide' in /Users/jinyige/Karma/runs/new-added-workflows/elasticsearch-deploy-scale-transform-snapshot-concat-stateful-20260625_222341/stages/stage_02
+exec
+/bin/zsh -lc 'kubectl describe pod -n elasticsearch es-extra-0 | tail -80 && kubectl logs -n elasticsearch es-extra-0 -c elasticsearch --tail=80' in /Users/jinyige/Karma/runs/new-added-workflows/elasticsearch-deploy-scale-transform-snapshot-concat-stateful-20260625_222341/stages/stage_02
+ succeeded in 137ms:
+NAME                         READY   STATUS      RESTARTS   AGE     IP            NODE           NOMINATED NODE   READINESS GATES
+pod/curl-test                1/1     Running     0          6m14s   10.244.1.53   kind-worker    <none>           <none>
+pod/es-cluster-0             1/1     Running     0          6m14s   10.244.3.51   kind-worker3   <none>           <none>
+pod/es-cluster-1             1/1     Running     0          6m14s   10.244.1.56   kind-worker    <none>           <none>
+pod/es-cluster-2             1/1     Running     0          6m14s   10.244.2.48   kind-worker2   <none>           <none>
+pod/es-extra-0               1/1     Running     0          37s     10.244.3.53   kind-worker3   <none>           <none>
+pod/es-extra-1               1/1     Running     0          37s     10.244.2.50   kind-worker2   <none>           <none>
+pod/minio-776f448748-48nrn   1/1     Running     0          6m14s   10.244.1.54   kind-worker    <none>           <none>
+pod/minio-init-xz75b         0/1     Completed   0          6m14s   10.244.3.49   kind-worker3   <none>           <none>
+
+NAME                                      STATUS   VOLUME                                     CAPACITY   ACCESS MODES   STORAGECLASS   VOLUMEATTRIBUTESCLASS   AGE     VOLUMEMODE
+persistentvolumeclaim/data-es-cluster-0   Bound    pvc-dc6acacd-628d-4760-8b1d-37687a02ae40   5Gi        RWO            standard       <unset>                 6m14s   Filesystem
+persistentvolumeclaim/data-es-cluster-1   Bound    pvc-da631f7c-a49c-4cde-a4bd-2d8589f40d03   5Gi        RWO            standard       <unset>                 6m14s   Filesystem
+persistentvolumeclaim/data-es-cluster-2   Bound    pvc-0e5e366f-4253-4c6a-a0c6-b09acaf8dc65   5Gi        RWO            standard       <unset>                 6m14s   Filesystem
+persistentvolumeclaim/data-es-extra-0     Bound    pvc-563870fb-6108-421c-a80b-58564836bd41   5Gi        RWO            standard       <unset>                 37s     Filesystem
+persistentvolumeclaim/data-es-extra-1     Bound    pvc-659e4b2e-8ec0-4d4d-be26-41c647d5f9a6   5Gi        RWO            standard       <unset>                 37s     Filesystem
+
+diff --git a/runs/new-added-workflows/elasticsearch-deploy-scale-transform-snapshot-concat-stateful-20260625_222341/stages/stage_02/elasticsearch-extra-data-nodes.yaml b/runs/new-added-workflows/elasticsearch-deploy-scale-transform-snapshot-concat-stateful-20260625_222341/stages/stage_02/elasticsearch-extra-data-nodes.yaml
+new file mode 100644
+index 0000000000000000000000000000000000000000..dae8b793dfb27efca3c999bf189f0e1febbf0eee
+--- /dev/null
++++ b/runs/new-added-workflows/elasticsearch-deploy-scale-transform-snapshot-concat-stateful-20260625_222341/stages/stage_02/elasticsearch-extra-data-nodes.yaml
+@@ -0,0 +1,150 @@
++apiVersion: v1
++kind: ConfigMap
++metadata:
++  name: es-extra-config
++  namespace: elasticsearch
++data:
++  elasticsearch.yml: |
++    cluster.name: es-cluster
++    node.name: ${POD_NAME}
++    node.roles: [ data, ingest ]
++    network.host: 0.0.0.0
++    discovery.seed_hosts:
++      - es-cluster-0.es-cluster.elasticsearch.svc.cluster.local
++      - es-cluster-1.es-cluster.elasticsearch.svc.cluster.local
++      - es-cluster-2.es-cluster.elasticsearch.svc.cluster.local
++    node.attr.node_pool: expansion
++    node.store.allow_mmap: false
++    xpack.security.enabled: false
++    xpack.security.http.ssl.enabled: false
++    xpack.security.transport.ssl.enabled: false
++    s3.client.default.endpoint: minio.elasticsearch.svc.cluster.local:9000
++    s3.client.default.protocol: http
++    s3.client.default.path_style_access: true
++---
++apiVersion: v1
++kind: Service
++metadata:
++  name: es-extra
++  namespace: elasticsearch
++spec:
++  clusterIP: None
++  selector:
++    app: es-extra
++  ports:
++    - name: http
++      port: 9200
++      targetPort: http
++    - name: transport
++      port: 9300
++      targetPort: transport
++---
++apiVersion: apps/v1
++kind: StatefulSet
++metadata:
++  name: es-extra
++  namespace: elasticsearch
++spec:
++  podManagementPolicy: Parallel
++  replicas: 2
++  selector:
++    matchLabels:
++      app: es-extra
++  serviceName: es-extra
++  template:
++    metadata:
++      labels:
++        app: es-extra
++        cluster: es-cluster
++    spec:
++      initContainers:
++        - name: install-s3-plugin
++          image: docker.elastic.co/elasticsearch/elasticsearch:8.11.1
++          command:
++            - /bin/sh
++            - -c
++            - |
++              set -e
++              if [ ! -d /usr/share/elasticsearch/plugins/repository-s3 ]; then
++                /usr/share/elasticsearch/bin/elasticsearch-plugin install --batch repository-s3
++              fi
++          volumeMounts:
++            - name: es-plugins
++              mountPath: /usr/share/elasticsearch/plugins
++      containers:
++        - name: elasticsearch
++          image: docker.elastic.co/elasticsearch/elasticsearch:8.11.1
++          command:
++            - /bin/bash
++            - -c
++            - |
++              set -euo pipefail
++              /usr/share/elasticsearch/bin/elasticsearch-keystore create >/dev/null 2>&1 || true
++              for setting in /mnt/secure-settings/*; do
++                [ -f "$setting" ] || continue
++                key="$(basename "$setting")"
++                if /usr/share/elasticsearch/bin/elasticsearch-keystore list | grep -Fxq "$key"; then
++                  continue
++                fi
++                /usr/share/elasticsearch/bin/elasticsearch-keystore add-file "$key" "$setting"
++              done
++              exec /usr/local/bin/docker-entrypoint.sh eswrapper
++          env:
++            - name: POD_NAME
++              valueFrom:
++                fieldRef:
++                  fieldPath: metadata.name
++            - name: ES_JAVA_OPTS
++              value: -Xms512m -Xmx512m
++          ports:
++            - name: http
++              containerPort: 9200
++            - name: transport
++              containerPort: 9300
++          readinessProbe:
++            httpGet:
++              path: /_cluster/health?local=true
++              port: http
++            initialDelaySeconds: 10
++            periodSeconds: 5
++            timeoutSeconds: 2
++            failureThreshold: 6
++          resources:
++            requests:
++              cpu: 500m
++              memory: 1Gi
++            limits:
++              cpu: "1"
++              memory: 2Gi
++          volumeMounts:
++            - name: es-extra-config
++              mountPath: /usr/share/elasticsearch/config/elasticsearch.yml
++              subPath: elasticsearch.yml
++            - name: es-plugins
++              mountPath: /usr/share/elasticsearch/plugins
++            - name: secure-settings
++              mountPath: /mnt/secure-settings
++              readOnly: true
++            - name: data
++              mountPath: /usr/share/elasticsearch/data
++      volumes:
++        - name: es-extra-config
++          configMap:
++            name: es-extra-config
++            items:
++              - key: elasticsearch.yml
++                path: elasticsearch.yml
++        - name: es-plugins
++          emptyDir: {}
++        - name: secure-settings
++          secret:
++            secretName: es-secure-settings
++  volumeClaimTemplates:
++    - metadata:
++        name: data
++      spec:
++        accessModes:
++          - ReadWriteOnce
++        resources:
++          requests:
++            storage: 5Gi
+
+ succeeded in 244ms:
+    Command:
+      /bin/bash
+      -c
+      set -euo pipefail
+      /usr/share/elasticsearch/bin/elasticsearch-keystore create >/dev/null 2>&1 || true
+      for setting in /mnt/secure-settings/*; do
+        [ -f "$setting" ] || continue
+        key="$(basename "$setting")"
+        if /usr/share/elasticsearch/bin/elasticsearch-keystore list | grep -Fxq "$key"; then
+          continue
+        fi
+        /usr/share/elasticsearch/bin/elasticsearch-keystore add-file "$key" "$setting"
+      done
+      exec /usr/local/bin/docker-entrypoint.sh eswrapper
+      
+    State:          Running
+      Started:      Thu, 25 Jun 2026 17:29:27 -0500
+    Ready:          True
+    Restart Count:  0
+    Limits:
+      cpu:     1
+      memory:  2Gi
+    Requests:
+      cpu:      500m
+      memory:   1Gi
+    Readiness:  http-get http://:http/_cluster/health%3Flocal=true delay=10s timeout=2s period=5s #success=1 #failure=6
+    Environment:
+      POD_NAME:      es-extra-0 (v1:metadata.name)
+      ES_JAVA_OPTS:  -Xms512m -Xmx512m
+    Mounts:
+      /mnt/secure-settings from secure-settings (ro)
+      /usr/share/elasticsearch/config/elasticsearch.yml from es-extra-config (rw,path="elasticsearch.yml")
+      /usr/share/elasticsearch/data from data (rw)
+      /usr/share/elasticsearch/plugins from es-plugins (rw)
+      /var/run/secrets/kubernetes.io/serviceaccount from kube-api-access-t4plq (ro)
+Conditions:
+  Type                        Status
+  PodReadyToStartContainers   True 
+  Initialized                 True 
+  Ready                       True 
+  ContainersReady             True 
+  PodScheduled                True 
+Volumes:
+  data:
+    Type:       PersistentVolumeClaim (a reference to a PersistentVolumeClaim in the same namespace)
+    ClaimName:  data-es-extra-0
+    ReadOnly:   false
+  es-extra-config:
+    Type:      ConfigMap (a volume populated by a ConfigMap)
+    Name:      es-extra-config
+    Optional:  false
+  es-plugins:
+    Type:       EmptyDir (a temporary directory that shares a pod's lifetime)
+    Medium:     
+    SizeLimit:  <unset>
+  secure-settings:
+    Type:        Secret (a volume populated by a Secret)
+    SecretName:  es-secure-settings
+    Optional:    false
+  kube-api-access-t4plq:
+    Type:                    Projected (a volume that contains injected data from multiple sources)
+    TokenExpirationSeconds:  3607
+    ConfigMapName:           kube-root-ca.crt
+    Optional:                false
+    DownwardAPI:             true
+QoS Class:                   Burstable
+Node-Selectors:              <none>
+Tolerations:                 node.kubernetes.io/not-ready:NoExecute op=Exists for 300s
+                             node.kubernetes.io/unreachable:NoExecute op=Exists for 300s
+Events:
+  Type     Reason     Age                From               Message
+  ----     ------     ----               ----               -------
+  Normal   Scheduled  32s                default-scheduler  Successfully assigned elasticsearch/es-extra-0 to kind-worker3
+  Normal   Pulled     32s                kubelet            Container image "docker.elastic.co/elasticsearch/elasticsearch:8.11.1" already present on machine
+  Normal   Created    32s                kubelet            Created container: install-s3-plugin
+  Normal   Started    32s                kubelet            Started container install-s3-plugin
+  Normal   Pulled     32s                kubelet            Container image "docker.elastic.co/elasticsearch/elasticsearch:8.11.1" already present on machine
+  Normal   Created    31s                kubelet            Created container: elasticsearch
+  Normal   Started    31s                kubelet            Started container elasticsearch
+  Warning  Unhealthy  10s (x3 over 20s)  kubelet            Readiness probe failed: Get "http://10.244.3.53:9200/_cluster/health?local=true": dial tcp 10.244.3.53:9200: connect: connection refused
+{"@timestamp":"2026-06-25T22:29:40.847Z", "log.level": "INFO", "message":"loaded module [aggregations]", "ecs.version": "1.2.0","service.name":"ES_ECS","event.dataset":"elasticsearch.server","process.thread.name":"main","log.logger":"org.elasticsearch.plugins.PluginsService","elasticsearch.node.name":"es-extra-0","elasticsearch.cluster.name":"es-cluster"}
+{"@timestamp":"2026-06-25T22:29:40.847Z", "log.level": "INFO", "message":"loaded module [ingest-common]", "ecs.version": "1.2.0","service.name":"ES_ECS","event.dataset":"elasticsearch.server","process.thread.name":"main","log.logger":"org.elasticsearch.plugins.PluginsService","elasticsearch.node.name":"es-extra-0","elasticsearch.cluster.name":"es-cluster"}
+{"@timestamp":"2026-06-25T22:29:40.847Z", "log.level": "INFO", "message":"loaded module [frozen-indices]", "ecs.version": "1.2.0","service.name":"ES_ECS","event.dataset":"elasticsearch.server","process.thread.name":"main","log.logger":"org.elasticsearch.plugins.PluginsService","elasticsearch.node.name":"es-extra-0","elasticsearch.cluster.name":"es-cluster"}
+{"@timestamp":"2026-06-25T22:29:40.847Z", "log.level": "INFO", "message":"loaded module [x-pack-identity-provider]", "ecs.version": "1.2.0","service.name":"ES_ECS","event.dataset":"elasticsearch.server","process.thread.name":"main","log.logger":"org.elasticsearch.plugins.PluginsService","elasticsearch.node.name":"es-extra-0","elasticsearch.cluster.name":"es-cluster"}
+{"@timestamp":"2026-06-25T22:29:40.847Z", "log.level": "INFO", "message":"loaded module [x-pack-text-structure]", "ecs.version": "1.2.0","service.name":"ES_ECS","event.dataset":"elasticsearch.server","process.thread.name":"main","log.logger":"org.elasticsearch.plugins.PluginsService","elasticsearch.node.name":"es-extra-0","elasticsearch.cluster.name":"es-cluster"}
+{"@timestamp":"2026-06-25T22:29:40.847Z", "log.level": "INFO", "message":"loaded module [x-pack-shutdown]", "ecs.version": "1.2.0","service.name":"ES_ECS","event.dataset":"elasticsearch.server","process.thread.name":"main","log.logger":"org.elasticsearch.plugins.PluginsService","elasticsearch.node.name":"es-extra-0","elasticsearch.cluster.name":"es-cluster"}
+{"@timestamp":"2026-06-25T22:29:40.847Z", "log.level": "INFO", "message":"loaded module [snapshot-repo-test-kit]", "ecs.version": "1.2.0","service.name":"ES_ECS","event.dataset":"elasticsearch.server","process.thread.name":"main","log.logger":"org.elasticsearch.plugins.PluginsService","elasticsearch.node.name":"es-extra-0","elasticsearch.cluster.name":"es-cluster"}
+{"@timestamp":"2026-06-25T22:29:40.847Z", "log.level": "INFO", "message":"loaded module [ml-package-loader]", "ecs.version": "1.2.0","service.name":"ES_ECS","event.dataset":"elasticsearch.server","process.thread.name":"main","log.logger":"org.elasticsearch.plugins.PluginsService","elasticsearch.node.name":"es-extra-0","elasticsearch.cluster.name":"es-cluster"}
+{"@timestamp":"2026-06-25T22:29:40.847Z", "log.level": "INFO", "message":"loaded module [kibana]", "ecs.version": "1.2.0","service.name":"ES_ECS","event.dataset":"elasticsearch.server","process.thread.name":"main","log.logger":"org.elasticsearch.plugins.PluginsService","elasticsearch.node.name":"es-extra-0","elasticsearch.cluster.name":"es-cluster"}
+{"@timestamp":"2026-06-25T22:29:40.847Z", "log.level": "INFO", "message":"loaded module [constant-keyword]", "ecs.version": "1.2.0","service.name":"ES_ECS","event.dataset":"elasticsearch.server","process.thread.name":"main","log.logger":"org.elasticsearch.plugins.PluginsService","elasticsearch.node.name":"es-extra-0","elasticsearch.cluster.name":"es-cluster"}
+{"@timestamp":"2026-06-25T22:29:40.847Z", "log.level": "INFO", "message":"loaded module [x-pack-logstash]", "ecs.version": "1.2.0","service.name":"ES_ECS","event.dataset":"elasticsearch.server","process.thread.name":"main","log.logger":"org.elasticsearch.plugins.PluginsService","elasticsearch.node.name":"es-extra-0","elasticsearch.cluster.name":"es-cluster"}
+{"@timestamp":"2026-06-25T22:29:40.848Z", "log.level": "INFO", "message":"loaded module [x-pack-graph]", "ecs.version": "1.2.0","service.name":"ES_ECS","event.dataset":"elasticsearch.server","process.thread.name":"main","log.logger":"org.elasticsearch.plugins.PluginsService","elasticsearch.node.name":"es-extra-0","elasticsearch.cluster.name":"es-cluster"}
+{"@timestamp":"2026-06-25T22:29:40.848Z", "log.level": "INFO", "message":"loaded module [x-pack-ccr]", "ecs.version": "1.2.0","service.name":"ES_ECS","event.dataset":"elasticsearch.server","process.thread.name":"main","log.logger":"org.elasticsearch.plugins.PluginsService","elasticsearch.node.name":"es-extra-0","elasticsearch.cluster.name":"es-cluster"}
+{"@timestamp":"2026-06-25T22:29:40.848Z", "log.level": "INFO", "message":"loaded module [x-pack-esql]", "ecs.version": "1.2.0","service.name":"ES_ECS","event.dataset":"elasticsearch.server","process.thread.name":"main","log.logger":"org.elasticsearch.plugins.PluginsService","elasticsearch.node.name":"es-extra-0","elasticsearch.cluster.name":"es-cluster"}
+{"@timestamp":"2026-06-25T22:29:40.848Z", "log.level": "INFO", "message":"loaded module [parent-join]", "ecs.version": "1.2.0","service.name":"ES_ECS","event.dataset":"elasticsearch.server","process.thread.name":"main","log.logger":"org.elasticsearch.plugins.PluginsService","elasticsearch.node.name":"es-extra-0","elasticsearch.cluster.name":"es-cluster"}
+{"@timestamp":"2026-06-25T22:29:40.848Z", "log.level": "INFO", "message":"loaded module [x-pack-enrich]", "ecs.version": "1.2.0","service.name":"ES_ECS","event.dataset":"elasticsearch.server","process.thread.name":"main","log.logger":"org.elasticsearch.plugins.PluginsService","elasticsearch.node.name":"es-extra-0","elasticsearch.cluster.name":"es-cluster"}
+{"@timestamp":"2026-06-25T22:29:40.848Z", "log.level": "INFO", "message":"loaded module [repositories-metering-api]", "ecs.version": "1.2.0","service.name":"ES_ECS","event.dataset":"elasticsearch.server","process.thread.name":"main","log.logger":"org.elasticsearch.plugins.PluginsService","elasticsearch.node.name":"es-extra-0","elasticsearch.cluster.name":"es-cluster"}
+{"@timestamp":"2026-06-25T22:29:40.848Z", "log.level": "INFO", "message":"loaded module [transform]", "ecs.version": "1.2.0","service.name":"ES_ECS","event.dataset":"elasticsearch.server","process.thread.name":"main","log.logger":"org.elasticsearch.plugins.PluginsService","elasticsearch.node.name":"es-extra-0","elasticsearch.cluster.name":"es-cluster"}
+{"@timestamp":"2026-06-25T22:29:40.848Z", "log.level": "INFO", "message":"loaded module [repository-azure]", "ecs.version": "1.2.0","service.name":"ES_ECS","event.dataset":"elasticsearch.server","process.thread.name":"main","log.logger":"org.elasticsearch.plugins.PluginsService","elasticsearch.node.name":"es-extra-0","elasticsearch.cluster.name":"es-cluster"}
+{"@timestamp":"2026-06-25T22:29:40.848Z", "log.level": "INFO", "message":"loaded module [repository-gcs]", "ecs.version": "1.2.0","service.name":"ES_ECS","event.dataset":"elasticsearch.server","process.thread.name":"main","log.logger":"org.elasticsearch.plugins.PluginsService","elasticsearch.node.name":"es-extra-0","elasticsearch.cluster.name":"es-cluster"}
+{"@timestamp":"2026-06-25T22:29:40.848Z", "log.level": "INFO", "message":"loaded module [spatial]", "ecs.version": "1.2.0","service.name":"ES_ECS","event.dataset":"elasticsearch.server","process.thread.name":"main","log.logger":"org.elasticsearch.plugins.PluginsService","elasticsearch.node.name":"es-extra-0","elasticsearch.cluster.name":"es-cluster"}
+{"@timestamp":"2026-06-25T22:29:40.848Z", "log.level": "INFO", "message":"loaded module [mapper-extras]", "ecs.version": "1.2.0","service.name":"ES_ECS","event.dataset":"elasticsearch.server","process.thread.name":"main","log.logger":"org.elasticsearch.plugins.PluginsService","elasticsearch.node.name":"es-extra-0","elasticsearch.cluster.name":"es-cluster"}
+{"@timestamp":"2026-06-25T22:29:40.848Z", "log.level": "INFO", "message":"loaded module [mapper-version]", "ecs.version": "1.2.0","service.name":"ES_ECS","event.dataset":"elasticsearch.server","process.thread.name":"main","log.logger":"org.elasticsearch.plugins.PluginsService","elasticsearch.node.name":"es-extra-0","elasticsearch.cluster.name":"es-cluster"}
+{"@timestamp":"2026-06-25T22:29:40.848Z", "log.level": "INFO", "message":"loaded module [apm]", "ecs.version": "1.2.0","service.name":"ES_ECS","event.dataset":"elasticsearch.server","process.thread.name":"main","log.logger":"org.elasticsearch.plugins.PluginsService","elasticsearch.node.name":"es-extra-0","elasticsearch.cluster.name":"es-cluster"}
+{"@timestamp":"2026-06-25T22:29:40.848Z", "log.level": "INFO", "message":"loaded module [x-pack-rollup]", "ecs.version": "1.2.0","service.name":"ES_ECS","event.dataset":"elasticsearch.server","process.thread.name":"main","log.logger":"org.elasticsearch.plugins.PluginsService","elasticsearch.node.name":"es-extra-0","elasticsearch.cluster.name":"es-cluster"}
+{"@timestamp":"2026-06-25T22:29:40.848Z", "log.level": "INFO", "message":"loaded module [percolator]", "ecs.version": "1.2.0","service.name":"ES_ECS","event.dataset":"elasticsearch.server","process.thread.name":"main","log.logger":"org.elasticsearch.plugins.PluginsService","elasticsearch.node.name":"es-extra-0","elasticsearch.cluster.name":"es-cluster"}
+{"@timestamp":"2026-06-25T22:29:40.848Z", "log.level": "INFO", "message":"loaded module [x-pack-stack]", "ecs.version": "1.2.0","service.name":"ES_ECS","event.dataset":"elasticsearch.server","process.thread.name":"main","log.logger":"org.elasticsearch.plugins.PluginsService","elasticsearch.node.name":"es-extra-0","elasticsearch.cluster.name":"es-cluster"}
+{"@timestamp":"2026-06-25T22:29:40.848Z", "log.level": "INFO", "message":"loaded module [data-streams]", "ecs.version": "1.2.0","service.name":"ES_ECS","event.dataset":"elasticsearch.server","process.thread.name":"main","log.logger":"org.elasticsearch.plugins.PluginsService","elasticsearch.node.name":"es-extra-0","elasticsearch.cluster.name":"es-cluster"}
+{"@timestamp":"2026-06-25T22:29:40.848Z", "log.level": "INFO", "message":"loaded module [reindex]", "ecs.version": "1.2.0","service.name":"ES_ECS","event.dataset":"elasticsearch.server","process.thread.name":"main","log.logger":"org.elasticsearch.plugins.PluginsService","elasticsearch.node.name":"es-extra-0","elasticsearch.cluster.name":"es-cluster"}
+{"@timestamp":"2026-06-25T22:29:40.849Z", "log.level": "INFO", "message":"loaded module [rank-eval]", "ecs.version": "1.2.0","service.name":"ES_ECS","event.dataset":"elasticsearch.server","process.thread.name":"main","log.logger":"org.elasticsearch.plugins.PluginsService","elasticsearch.node.name":"es-extra-0","elasticsearch.cluster.name":"es-cluster"}
+{"@timestamp":"2026-06-25T22:29:40.849Z", "log.level": "INFO", "message":"loaded module [x-pack-security]", "ecs.version": "1.2.0","service.name":"ES_ECS","event.dataset":"elasticsearch.server","process.thread.name":"main","log.logger":"org.elasticsearch.plugins.PluginsService","elasticsearch.node.name":"es-extra-0","elasticsearch.cluster.name":"es-cluster"}
+{"@timestamp":"2026-06-25T22:29:40.849Z", "log.level": "INFO", "message":"loaded module [blob-cache]", "ecs.version": "1.2.0","service.name":"ES_ECS","event.dataset":"elasticsearch.server","process.thread.name":"main","log.logger":"org.elasticsearch.plugins.PluginsService","elasticsearch.node.name":"es-extra-0","elasticsearch.cluster.name":"es-cluster"}
+{"@timestamp":"2026-06-25T22:29:40.849Z", "log.level": "INFO", "message":"loaded module [searchable-snapshots]", "ecs.version": "1.2.0","service.name":"ES_ECS","event.dataset":"elasticsearch.server","process.thread.name":"main","log.logger":"org.elasticsearch.plugins.PluginsService","elasticsearch.node.name":"es-extra-0","elasticsearch.cluster.name":"es-cluster"}
+{"@timestamp":"2026-06-25T22:29:40.849Z", "log.level": "INFO", "message":"loaded module [x-pack-slm]", "ecs.version": "1.2.0","service.name":"ES_ECS","event.dataset":"elasticsearch.server","process.thread.name":"main","log.logger":"org.elasticsearch.plugins.PluginsService","elasticsearch.node.name":"es-extra-0","elasticsearch.cluster.name":"es-cluster"}
+{"@timestamp":"2026-06-25T22:29:40.849Z", "log.level": "INFO", "message":"loaded module [snapshot-based-recoveries]", "ecs.version": "1.2.0","service.name":"ES_ECS","event.dataset":"elasticsearch.server","process.thread.name":"main","log.logger":"org.elasticsearch.plugins.PluginsService","elasticsearch.node.name":"es-extra-0","elasticsearch.cluster.name":"es-cluster"}
+{"@timestamp":"2026-06-25T22:29:40.849Z", "log.level": "INFO", "message":"loaded module [x-pack-watcher]", "ecs.version": "1.2.0","service.name":"ES_ECS","event.dataset":"elasticsearch.server","process.thread.name":"main","log.logger":"org.elasticsearch.plugins.PluginsService","elasticsearch.node.name":"es-extra-0","elasticsearch.cluster.name":"es-cluster"}
+{"@timestamp":"2026-06-25T22:29:40.849Z", "log.level": "INFO", "message":"loaded module [old-lucene-versions]", "ecs.version": "1.2.0","service.name":"ES_ECS","event.dataset":"elasticsearch.server","process.thread.name":"main","log.logger":"org.elasticsearch.plugins.PluginsService","elasticsearch.node.name":"es-extra-0","elasticsearch.cluster.name":"es-cluster"}
+{"@timestamp":"2026-06-25T22:29:40.849Z", "log.level": "INFO", "message":"loaded module [x-pack-ilm]", "ecs.version": "1.2.0","service.name":"ES_ECS","event.dataset":"elasticsearch.server","process.thread.name":"main","log.logger":"org.elasticsearch.plugins.PluginsService","elasticsearch.node.name":"es-extra-0","elasticsearch.cluster.name":"es-cluster"}
+{"@timestamp":"2026-06-25T22:29:40.849Z", "log.level": "INFO", "message":"loaded module [x-pack-voting-only-node]", "ecs.version": "1.2.0","service.name":"ES_ECS","event.dataset":"elasticsearch.server","process.thread.name":"main","log.logger":"org.elasticsearch.plugins.PluginsService","elasticsearch.node.name":"es-extra-0","elasticsearch.cluster.name":"es-cluster"}
+{"@timestamp":"2026-06-25T22:29:40.849Z", "log.level": "INFO", "message":"loaded module [x-pack-deprecation]", "ecs.version": "1.2.0","service.name":"ES_ECS","event.dataset":"elasticsearch.server","process.thread.name":"main","log.logger":"org.elasticsearch.plugins.PluginsService","elasticsearch.node.name":"es-extra-0","elasticsearch.cluster.name":"es-cluster"}
+{"@timestamp":"2026-06-25T22:29:40.849Z", "log.level": "INFO", "message":"loaded module [x-pack-fleet]", "ecs.version": "1.2.0","service.name":"ES_ECS","event.dataset":"elasticsearch.server","process.thread.name":"main","log.logger":"org.elasticsearch.plugins.PluginsService","elasticsearch.node.name":"es-extra-0","elasticsearch.cluster.name":"es-cluster"}
+{"@timestamp":"2026-06-25T22:29:40.849Z", "log.level": "INFO", "message":"loaded module [x-pack-aggregate-metric]", "ecs.version": "1.2.0","service.name":"ES_ECS","event.dataset":"elasticsearch.server","process.thread.name":"main","log.logger":"org.elasticsearch.plugins.PluginsService","elasticsearch.node.name":"es-extra-0","elasticsearch.cluster.name":"es-cluster"}
+{"@timestamp":"2026-06-25T22:29:40.849Z", "log.level": "INFO", "message":"loaded module [x-pack-downsample]", "ecs.version": "1.2.0","service.name":"ES_ECS","event.dataset":"elasticsearch.server","process.thread.name":"main","log.logger":"org.elasticsearch.plugins.PluginsService","elasticsearch.node.name":"es-extra-0","elasticsearch.cluster.name":"es-cluster"}
+{"@timestamp":"2026-06-25T22:29:40.849Z", "log.level": "INFO", "message":"loaded module [x-pack-profiling]", "ecs.version": "1.2.0","service.name":"ES_ECS","event.dataset":"elasticsearch.server","process.thread.name":"main","log.logger":"org.elasticsearch.plugins.PluginsService","elasticsearch.node.name":"es-extra-0","elasticsearch.cluster.name":"es-cluster"}
+{"@timestamp":"2026-06-25T22:29:40.849Z", "log.level": "INFO", "message":"loaded module [ingest-geoip]", "ecs.version": "1.2.0","service.name":"ES_ECS","event.dataset":"elasticsearch.server","process.thread.name":"main","log.logger":"org.elasticsearch.plugins.PluginsService","elasticsearch.node.name":"es-extra-0","elasticsearch.cluster.name":"es-cluster"}
+{"@timestamp":"2026-06-25T22:29:40.849Z", "log.level": "INFO", "message":"loaded module [inference]", "ecs.version": "1.2.0","service.name":"ES_ECS","event.dataset":"elasticsearch.server","process.thread.name":"main","log.logger":"org.elasticsearch.plugins.PluginsService","elasticsearch.node.name":"es-extra-0","elasticsearch.cluster.name":"es-cluster"}
+{"@timestamp":"2026-06-25T22:29:40.850Z", "log.level": "INFO", "message":"loaded module [x-pack-write-load-forecaster]", "ecs.version": "1.2.0","service.name":"ES_ECS","event.dataset":"elasticsearch.server","process.thread.name":"main","log.logger":"org.elasticsearch.plugins.PluginsService","elasticsearch.node.name":"es-extra-0","elasticsearch.cluster.name":"es-cluster"}
+{"@timestamp":"2026-06-25T22:29:40.850Z", "log.level": "INFO", "message":"loaded module [search-business-rules]", "ecs.version": "1.2.0","service.name":"ES_ECS","event.dataset":"elasticsearch.server","process.thread.name":"main","log.logger":"org.elasticsearch.plugins.PluginsService","elasticsearch.node.name":"es-extra-0","elasticsearch.cluster.name":"es-cluster"}
+{"@timestamp":"2026-06-25T22:29:40.850Z", "log.level": "INFO", "message":"loaded module [ingest-attachment]", "ecs.version": "1.2.0","service.name":"ES_ECS","event.dataset":"elasticsearch.server","process.thread.name":"main","log.logger":"org.elasticsearch.plugins.PluginsService","elasticsearch.node.name":"es-extra-0","elasticsearch.cluster.name":"es-cluster"}
+{"@timestamp":"2026-06-25T22:29:40.850Z", "log.level": "INFO", "message":"loaded module [wildcard]", "ecs.version": "1.2.0","service.name":"ES_ECS","event.dataset":"elasticsearch.server","process.thread.name":"main","log.logger":"org.elasticsearch.plugins.PluginsService","elasticsearch.node.name":"es-extra-0","elasticsearch.cluster.name":"es-cluster"}
+{"@timestamp":"2026-06-25T22:29:40.850Z", "log.level": "INFO", "message":"loaded module [x-pack-sql]", "ecs.version": "1.2.0","service.name":"ES_ECS","event.dataset":"elasticsearch.server","process.thread.name":"main","log.logger":"org.elasticsearch.plugins.PluginsService","elasticsearch.node.name":"es-extra-0","elasticsearch.cluster.name":"es-cluster"}
+{"@timestamp":"2026-06-25T22:29:40.850Z", "log.level": "INFO", "message":"loaded module [unsigned-long]", "ecs.version": "1.2.0","service.name":"ES_ECS","event.dataset":"elasticsearch.server","process.thread.name":"main","log.logger":"org.elasticsearch.plugins.PluginsService","elasticsearch.node.name":"es-extra-0","elasticsearch.cluster.name":"es-cluster"}
+{"@timestamp":"2026-06-25T22:29:40.850Z", "log.level": "INFO", "message":"loaded module [runtime-fields-common]", "ecs.version": "1.2.0","service.name":"ES_ECS","event.dataset":"elasticsearch.server","process.thread.name":"main","log.logger":"org.elasticsearch.plugins.PluginsService","elasticsearch.node.name":"es-extra-0","elasticsearch.cluster.name":"es-cluster"}
+{"@timestamp":"2026-06-25T22:29:40.850Z", "log.level": "INFO", "message":"loaded module [x-pack-async]", "ecs.version": "1.2.0","service.name":"ES_ECS","event.dataset":"elasticsearch.server","process.thread.name":"main","log.logger":"org.elasticsearch.plugins.PluginsService","elasticsearch.node.name":"es-extra-0","elasticsearch.cluster.name":"es-cluster"}
+{"@timestamp":"2026-06-25T22:29:40.850Z", "log.level": "INFO", "message":"loaded module [vector-tile]", "ecs.version": "1.2.0","service.name":"ES_ECS","event.dataset":"elasticsearch.server","process.thread.name":"main","log.logger":"org.elasticsearch.plugins.PluginsService","elasticsearch.node.name":"es-extra-0","elasticsearch.cluster.name":"es-cluster"}
+{"@timestamp":"2026-06-25T22:29:40.850Z", "log.level": "INFO", "message":"loaded module [lang-expression]", "ecs.version": "1.2.0","service.name":"ES_ECS","event.dataset":"elasticsearch.server","process.thread.name":"main","log.logger":"org.elasticsearch.plugins.PluginsService","elasticsearch.node.name":"es-extra-0","elasticsearch.cluster.name":"es-cluster"}
+{"@timestamp":"2026-06-25T22:29:40.850Z", "log.level": "INFO", "message":"loaded module [x-pack-eql]", "ecs.version": "1.2.0","service.name":"ES_ECS","event.dataset":"elasticsearch.server","process.thread.name":"main","log.logger":"org.elasticsearch.plugins.PluginsService","elasticsearch.node.name":"es-extra-0","elasticsearch.cluster.name":"es-cluster"}
+{"@timestamp":"2026-06-25T22:29:43.567Z", "log.level": "INFO", "message":"using [1] data paths, mounts [[/usr/share/elasticsearch/data (/dev/vda1)]], net usable_space [350gb], net total_space [452.1gb], types [ext4]", "ecs.version": "1.2.0","service.name":"ES_ECS","event.dataset":"elasticsearch.server","process.thread.name":"main","log.logger":"org.elasticsearch.env.NodeEnvironment","elasticsearch.node.name":"es-extra-0","elasticsearch.cluster.name":"es-cluster"}
+{"@timestamp":"2026-06-25T22:29:43.568Z", "log.level": "INFO", "message":"heap size [512mb], compressed ordinary object pointers [true]", "ecs.version": "1.2.0","service.name":"ES_ECS","event.dataset":"elasticsearch.server","process.thread.name":"main","log.logger":"org.elasticsearch.env.NodeEnvironment","elasticsearch.node.name":"es-extra-0","elasticsearch.cluster.name":"es-cluster"}
+{"@timestamp":"2026-06-25T22:29:43.628Z", "log.level": "INFO", "message":"node name [es-extra-0], node ID [e65D653eQ1iJgTTSfJCKiA], cluster name [es-cluster], roles [data, ingest]", "ecs.version": "1.2.0","service.name":"ES_ECS","event.dataset":"elasticsearch.server","process.thread.name":"main","log.logger":"org.elasticsearch.node.Node","elasticsearch.node.name":"es-extra-0","elasticsearch.cluster.name":"es-cluster"}
+{"@timestamp":"2026-06-25T22:29:46.358Z", "log.level": "INFO", "message":"[controller/211] [Main.cc@123] controller (64 bit): Version 8.11.1 (Build cfde477416d25b) Copyright (c) 2023 Elasticsearch BV", "ecs.version": "1.2.0","service.name":"ES_ECS","event.dataset":"elasticsearch.server","process.thread.name":"ml-cpp-log-tail-thread","log.logger":"org.elasticsearch.xpack.ml.process.logging.CppLogMessageHandler","elasticsearch.node.name":"es-extra-0","elasticsearch.cluster.name":"es-cluster"}
+{"@timestamp":"2026-06-25T22:29:46.647Z", "log.level": "INFO", "message":"Security is disabled", "ecs.version": "1.2.0","service.name":"ES_ECS","event.dataset":"elasticsearch.server","process.thread.name":"main","log.logger":"org.elasticsearch.xpack.security.Security","elasticsearch.node.name":"es-extra-0","elasticsearch.cluster.name":"es-cluster"}
+{"@timestamp":"2026-06-25T22:29:46.867Z", "log.level": "INFO", "message":"Profiling is enabled", "ecs.version": "1.2.0","service.name":"ES_ECS","event.dataset":"elasticsearch.server","process.thread.name":"main","log.logger":"org.elasticsearch.xpack.profiling.ProfilingPlugin","elasticsearch.node.name":"es-extra-0","elasticsearch.cluster.name":"es-cluster"}
+{"@timestamp":"2026-06-25T22:29:46.877Z", "log.level": "INFO", "message":"profiling index templates will not be installed or reinstalled", "ecs.version": "1.2.0","service.name":"ES_ECS","event.dataset":"elasticsearch.server","process.thread.name":"main","log.logger":"org.elasticsearch.xpack.profiling.ProfilingPlugin","elasticsearch.node.name":"es-extra-0","elasticsearch.cluster.name":"es-cluster"}
+{"@timestamp":"2026-06-25T22:29:47.471Z", "log.level": "INFO", "message":"creating NettyAllocator with the following configs: [name=unpooled, suggested_max_allocation_size=1mb, factors={es.unsafe.use_unpooled_allocator=null, g1gc_enabled=true, g1gc_region_size=4mb, heap_size=512mb}]", "ecs.version": "1.2.0","service.name":"ES_ECS","event.dataset":"elasticsearch.server","process.thread.name":"main","log.logger":"org.elasticsearch.transport.netty4.NettyAllocator","elasticsearch.node.name":"es-extra-0","elasticsearch.cluster.name":"es-cluster"}
+{"@timestamp":"2026-06-25T22:29:47.526Z", "log.level": "INFO", "message":"using rate limit [40mb] with [default=40mb, read=0b, write=0b, max=0b]", "ecs.version": "1.2.0","service.name":"ES_ECS","event.dataset":"elasticsearch.server","process.thread.name":"main","log.logger":"org.elasticsearch.indices.recovery.RecoverySettings","elasticsearch.node.name":"es-extra-0","elasticsearch.cluster.name":"es-cluster"}
+{"@timestamp":"2026-06-25T22:29:47.560Z", "log.level": "INFO", "message":"using discovery type [multi-node] and seed hosts providers [settings]", "ecs.version": "1.2.0","service.name":"ES_ECS","event.dataset":"elasticsearch.server","process.thread.name":"main","log.logger":"org.elasticsearch.discovery.DiscoveryModule","elasticsearch.node.name":"es-extra-0","elasticsearch.cluster.name":"es-cluster"}
+{"@timestamp":"2026-06-25T22:29:49.180Z", "log.level": "INFO", "message":"initialized", "ecs.version": "1.2.0","service.name":"ES_ECS","event.dataset":"elasticsearch.server","process.thread.name":"main","log.logger":"org.elasticsearch.node.Node","elasticsearch.node.name":"es-extra-0","elasticsearch.cluster.name":"es-cluster"}
+{"@timestamp":"2026-06-25T22:29:49.180Z", "log.level": "INFO", "message":"starting ...", "ecs.version": "1.2.0","service.name":"ES_ECS","event.dataset":"elasticsearch.server","process.thread.name":"main","log.logger":"org.elasticsearch.node.Node","elasticsearch.node.name":"es-extra-0","elasticsearch.cluster.name":"es-cluster"}
+{"@timestamp":"2026-06-25T22:29:49.231Z", "log.level": "INFO", "message":"persistent cache index loaded", "ecs.version": "1.2.0","service.name":"ES_ECS","event.dataset":"elasticsearch.server","process.thread.name":"main","log.logger":"org.elasticsearch.xpack.searchablesnapshots.cache.full.PersistentCache","elasticsearch.node.name":"es-extra-0","elasticsearch.cluster.name":"es-cluster"}
+{"@timestamp":"2026-06-25T22:29:49.231Z", "log.level": "INFO", "message":"deprecation component started", "ecs.version": "1.2.0","service.name":"ES_ECS","event.dataset":"elasticsearch.server","process.thread.name":"main","log.logger":"org.elasticsearch.xpack.deprecation.logging.DeprecationIndexingComponent","elasticsearch.node.name":"es-extra-0","elasticsearch.cluster.name":"es-cluster"}
+{"@timestamp":"2026-06-25T22:29:49.332Z", "log.level": "INFO", "message":"publish_address {10.244.3.53:9300}, bound_addresses {[::]:9300}", "ecs.version": "1.2.0","service.name":"ES_ECS","event.dataset":"elasticsearch.server","process.thread.name":"main","log.logger":"org.elasticsearch.transport.TransportService","elasticsearch.node.name":"es-extra-0","elasticsearch.cluster.name":"es-cluster"}
+{"@timestamp":"2026-06-25T22:29:49.459Z", "log.level": "INFO", "message":"bound or publishing to a non-loopback address, enforcing bootstrap checks", "ecs.version": "1.2.0","service.name":"ES_ECS","event.dataset":"elasticsearch.server","process.thread.name":"main","log.logger":"org.elasticsearch.bootstrap.BootstrapChecks","elasticsearch.node.name":"es-extra-0","elasticsearch.cluster.name":"es-cluster"}
+{"@timestamp":"2026-06-25T22:29:49.461Z", "log.level": "INFO", "message":"this node has not joined a bootstrapped cluster yet; [cluster.initial_master_nodes] is set to []", "ecs.version": "1.2.0","service.name":"ES_ECS","event.dataset":"elasticsearch.server","process.thread.name":"main","log.logger":"org.elasticsearch.cluster.coordination.ClusterBootstrapService","elasticsearch.node.name":"es-extra-0","elasticsearch.cluster.name":"es-cluster"}
+{"@timestamp":"2026-06-25T22:29:49.750Z", "log.level": "INFO", "message":"master node changed {previous [], current [{es-cluster-1}{szFT2hMqS1OumXc9mECLOQ}{peoth3amQBeqf7bES1qvMg}{es-cluster-1}{10.244.1.56}{10.244.1.56:9300}{dim}{8.11.1}{7000099-8500003}]}, added {{es-cluster-2}{rUMo0YthRyybr9d4w7t-XA}{upHObSlaRNqVr6ksKkUYvA}{es-cluster-2}{10.244.2.48}{10.244.2.48:9300}{dim}{8.11.1}{7000099-8500003}, {es-cluster-0}{5wdFEaIpS5qPZXDCUQhuUQ}{g8ACJJ9WTXq2H3a_mdKgAA}{es-cluster-0}{10.244.3.51}{10.244.3.51:9300}{dim}{8.11.1}{7000099-8500003}, {es-cluster-1}{szFT2hMqS1OumXc9mECLOQ}{peoth3amQBeqf7bES1qvMg}{es-cluster-1}{10.244.1.56}{10.244.1.56:9300}{dim}{8.11.1}{7000099-8500003}}, term: 1, version: 54, reason: ApplyCommitRequest{term=1, version=54, sourceNode={es-cluster-1}{szFT2hMqS1OumXc9mECLOQ}{peoth3amQBeqf7bES1qvMg}{es-cluster-1}{10.244.1.56}{10.244.1.56:9300}{dim}{8.11.1}{7000099-8500003}{ml.config_version=11.0.0, transform.config_version=10.0.0, xpack.installed=true}}", "ecs.version": "1.2.0","service.name":"ES_ECS","event.dataset":"elasticsearch.server","process.thread.name":"elasticsearch[es-extra-0][clusterApplierService#updateTask][T#1]","log.logger":"org.elasticsearch.cluster.service.ClusterApplierService","elasticsearch.node.name":"es-extra-0","elasticsearch.cluster.name":"es-cluster"}
+{"@timestamp":"2026-06-25T22:29:50.247Z", "log.level": "INFO", "message":"license [71400ea9-16be-4f74-82d7-7cb9d262cdfd] mode [basic] - valid", "ecs.version": "1.2.0","service.name":"ES_ECS","event.dataset":"elasticsearch.server","process.thread.name":"elasticsearch[es-extra-0][clusterApplierService#updateTask][T#1]","log.logger":"org.elasticsearch.license.ClusterStateLicenseService","elasticsearch.node.name":"es-extra-0","elasticsearch.cluster.name":"es-cluster"}
+{"@timestamp":"2026-06-25T22:29:50.256Z", "log.level": "INFO", "message":"publish_address {10.244.3.53:9200}, bound_addresses {[::]:9200}", "ecs.version": "1.2.0","service.name":"ES_ECS","event.dataset":"elasticsearch.server","process.thread.name":"main","log.logger":"org.elasticsearch.http.AbstractHttpServerTransport","elasticsearch.cluster.uuid":"AQAStNcqSOqwz02-DHXSsw","elasticsearch.node.id":"e65D653eQ1iJgTTSfJCKiA","elasticsearch.node.name":"es-extra-0","elasticsearch.cluster.name":"es-cluster"}
+{"@timestamp":"2026-06-25T22:29:50.256Z", "log.level": "INFO", "message":"started {es-extra-0}{e65D653eQ1iJgTTSfJCKiA}{L6q7taJyRHanztitN_vcYQ}{es-extra-0}{10.244.3.53}{10.244.3.53:9300}{di}{8.11.1}{7000099-8500003}{transform.config_version=10.0.0, xpack.installed=true, ml.config_version=11.0.0, node_pool=expansion}", "ecs.version": "1.2.0","service.name":"ES_ECS","event.dataset":"elasticsearch.server","process.thread.name":"main","log.logger":"org.elasticsearch.node.Node","elasticsearch.cluster.uuid":"AQAStNcqSOqwz02-DHXSsw","elasticsearch.node.id":"e65D653eQ1iJgTTSfJCKiA","elasticsearch.node.name":"es-extra-0","elasticsearch.cluster.name":"es-cluster"}
+{"@timestamp":"2026-06-25T22:29:50.552Z", "log.level": "INFO", "message":"reloading search analyzers", "ecs.version": "1.2.0","service.name":"ES_ECS","event.dataset":"elasticsearch.server","process.thread.name":"elasticsearch[es-extra-0][generic][T#4]","log.logger":"org.elasticsearch.index.mapper.MapperService","elasticsearch.cluster.uuid":"AQAStNcqSOqwz02-DHXSsw","elasticsearch.node.id":"e65D653eQ1iJgTTSfJCKiA","elasticsearch.node.name":"es-extra-0","elasticsearch.cluster.name":"es-cluster","tags":[" [app-data]"]}
+{"@timestamp":"2026-06-25T22:29:51.087Z", "log.level": "INFO", "message":"added {{es-extra-1}{AdKk1PX4QISi2fdGr3FhLw}{9sNBRoU4ToaVfDs3W20fZQ}{es-extra-1}{10.244.2.50}{10.244.2.50:9300}{di}{8.11.1}{7000099-8500003}}, term: 1, version: 57, reason: ApplyCommitRequest{term=1, version=57, sourceNode={es-cluster-1}{szFT2hMqS1OumXc9mECLOQ}{peoth3amQBeqf7bES1qvMg}{es-cluster-1}{10.244.1.56}{10.244.1.56:9300}{dim}{8.11.1}{7000099-8500003}{ml.config_version=11.0.0, transform.config_version=10.0.0, xpack.installed=true}}", "ecs.version": "1.2.0","service.name":"ES_ECS","event.dataset":"elasticsearch.server","process.thread.name":"elasticsearch[es-extra-0][clusterApplierService#updateTask][T#1]","log.logger":"org.elasticsearch.cluster.service.ClusterApplierService","elasticsearch.cluster.uuid":"AQAStNcqSOqwz02-DHXSsw","elasticsearch.node.id":"e65D653eQ1iJgTTSfJCKiA","elasticsearch.node.name":"es-extra-0","elasticsearch.cluster.name":"es-cluster"}
+
+codex
+Both new pods are ready and joined as data/ingest nodes with `node_pool=expansion`. I’m now applying the index-level allocation rule so `app-data` shard copies become eligible only on the expansion nodes, then I’ll wait for relocation to settle.
+exec
+/bin/zsh -lc "kubectl exec -n elasticsearch curl-test -- sh -c 'curl -s -XPUT \"http://es-http:9200/app-data/_settings?pretty\" -H \"Content-Type: application/json\" -d \"{\\\"index.routing.allocation.require.node_pool\\\":\\\"expansion\\\"}\" && echo && curl -s \"http://es-http:9200/_cat/shards/app-data?v\"'" in /Users/jinyige/Karma/runs/new-added-workflows/elasticsearch-deploy-scale-transform-snapshot-concat-stateful-20260625_222341/stages/stage_02
+diff --git a/runs/new-added-workflows/elasticsearch-deploy-scale-transform-snapshot-concat-stateful-20260625_222341/stages/stage_02/elasticsearch-extra-data-nodes.yaml b/runs/new-added-workflows/elasticsearch-deploy-scale-transform-snapshot-concat-stateful-20260625_222341/stages/stage_02/elasticsearch-extra-data-nodes.yaml
+new file mode 100644
+index 0000000000000000000000000000000000000000..dae8b793dfb27efca3c999bf189f0e1febbf0eee
+--- /dev/null
++++ b/runs/new-added-workflows/elasticsearch-deploy-scale-transform-snapshot-concat-stateful-20260625_222341/stages/stage_02/elasticsearch-extra-data-nodes.yaml
+@@ -0,0 +1,150 @@
++apiVersion: v1
++kind: ConfigMap
++metadata:
++  name: es-extra-config
++  namespace: elasticsearch
++data:
++  elasticsearch.yml: |
++    cluster.name: es-cluster
++    node.name: ${POD_NAME}
++    node.roles: [ data, ingest ]
++    network.host: 0.0.0.0
++    discovery.seed_hosts:
++      - es-cluster-0.es-cluster.elasticsearch.svc.cluster.local
++      - es-cluster-1.es-cluster.elasticsearch.svc.cluster.local
++      - es-cluster-2.es-cluster.elasticsearch.svc.cluster.local
++    node.attr.node_pool: expansion
++    node.store.allow_mmap: false
++    xpack.security.enabled: false
++    xpack.security.http.ssl.enabled: false
++    xpack.security.transport.ssl.enabled: false
++    s3.client.default.endpoint: minio.elasticsearch.svc.cluster.local:9000
++    s3.client.default.protocol: http
++    s3.client.default.path_style_access: true
++---
++apiVersion: v1
++kind: Service
++metadata:
++  name: es-extra
++  namespace: elasticsearch
++spec:
++  clusterIP: None
++  selector:
++    app: es-extra
++  ports:
++    - name: http
++      port: 9200
++      targetPort: http
++    - name: transport
++      port: 9300
++      targetPort: transport
++---
++apiVersion: apps/v1
++kind: StatefulSet
++metadata:
++  name: es-extra
++  namespace: elasticsearch
++spec:
++  podManagementPolicy: Parallel
++  replicas: 2
++  selector:
++    matchLabels:
++      app: es-extra
++  serviceName: es-extra
++  template:
++    metadata:
++      labels:
++        app: es-extra
++        cluster: es-cluster
++    spec:
++      initContainers:
++        - name: install-s3-plugin
++          image: docker.elastic.co/elasticsearch/elasticsearch:8.11.1
++          command:
++            - /bin/sh
++            - -c
++            - |
++              set -e
++              if [ ! -d /usr/share/elasticsearch/plugins/repository-s3 ]; then
++                /usr/share/elasticsearch/bin/elasticsearch-plugin install --batch repository-s3
++              fi
++          volumeMounts:
++            - name: es-plugins
++              mountPath: /usr/share/elasticsearch/plugins
++      containers:
++        - name: elasticsearch
++          image: docker.elastic.co/elasticsearch/elasticsearch:8.11.1
++          command:
++            - /bin/bash
++            - -c
++            - |
++              set -euo pipefail
++              /usr/share/elasticsearch/bin/elasticsearch-keystore create >/dev/null 2>&1 || true
++              for setting in /mnt/secure-settings/*; do
++                [ -f "$setting" ] || continue
++                key="$(basename "$setting")"
++                if /usr/share/elasticsearch/bin/elasticsearch-keystore list | grep -Fxq "$key"; then
++                  continue
++                fi
++                /usr/share/elasticsearch/bin/elasticsearch-keystore add-file "$key" "$setting"
++              done
++              exec /usr/local/bin/docker-entrypoint.sh eswrapper
++          env:
++            - name: POD_NAME
++              valueFrom:
++                fieldRef:
++                  fieldPath: metadata.name
++            - name: ES_JAVA_OPTS
++              value: -Xms512m -Xmx512m
++          ports:
++            - name: http
++              containerPort: 9200
++            - name: transport
++              containerPort: 9300
++          readinessProbe:
++            httpGet:
++              path: /_cluster/health?local=true
++              port: http
++            initialDelaySeconds: 10
++            periodSeconds: 5
++            timeoutSeconds: 2
++            failureThreshold: 6
++          resources:
++            requests:
++              cpu: 500m
++              memory: 1Gi
++            limits:
++              cpu: "1"
++              memory: 2Gi
++          volumeMounts:
++            - name: es-extra-config
++              mountPath: /usr/share/elasticsearch/config/elasticsearch.yml
++              subPath: elasticsearch.yml
++            - name: es-plugins
++              mountPath: /usr/share/elasticsearch/plugins
++            - name: secure-settings
++              mountPath: /mnt/secure-settings
++              readOnly: true
++            - name: data
++              mountPath: /usr/share/elasticsearch/data
++      volumes:
++        - name: es-extra-config
++          configMap:
++            name: es-extra-config
++            items:
++              - key: elasticsearch.yml
++                path: elasticsearch.yml
++        - name: es-plugins
++          emptyDir: {}
++        - name: secure-settings
++          secret:
++            secretName: es-secure-settings
++  volumeClaimTemplates:
++    - metadata:
++        name: data
++      spec:
++        accessModes:
++          - ReadWriteOnce
++        resources:
++          requests:
++            storage: 5Gi
+
+ succeeded in 391ms:
+{
+  "acknowledged" : true
+}
+
+index    shard prirep state      docs store dataset ip          node
+app-data 0     p      RELOCATING    0  476b    476b 10.244.1.56 es-cluster-1 -> 10.244.2.50 AdKk1PX4QISi2fdGr3FhLw es-extra-1
+app-data 0     r      RELOCATING    0  227b    227b 10.244.3.51 es-cluster-0 -> 10.244.3.53 e65D653eQ1iJgTTSfJCKiA es-extra-0
+app-data 1     p      STARTED       2 4.7kb   4.7kb 10.244.2.50 es-extra-1
+app-data 1     r      RELOCATING    2   9kb     9kb 10.244.2.48 es-cluster-2 -> 10.244.3.53 e65D653eQ1iJgTTSfJCKiA es-extra-0
+app-data 2     r      RELOCATING    1 4.6kb   4.6kb 10.244.1.56 es-cluster-1 -> 10.244.2.50 AdKk1PX4QISi2fdGr3FhLw es-extra-1
+app-data 2     p      STARTED       1 4.6kb   4.6kb 10.244.3.53 es-extra-0
+
+codex
+Relocation has started and two shard copies are already on the expansion nodes. I’m waiting for the cluster to finish relocating before verifying the repository and taking the snapshot.
+exec
+/bin/zsh -lc "kubectl exec -n elasticsearch curl-test -- sh -c '
+set -e
+for i in "'$(seq 1 60); do
+  health=$(curl -s "http://es-http:9200/_cluster/health?pretty=false")
+  relocating=$(printf "%s" "$health" | sed -n "s/.*'"\\\"relocating_shards\\\":\\([0-9]*\\).*/\\1/p\")
+  initializing="'$(printf "%s" "$health" | sed -n "s/.*'"\\\"initializing_shards\\\":\\([0-9]*\\).*/\\1/p\")
+  unassigned="'$(printf "%s" "$health" | sed -n "s/.*'"\\\"unassigned_shards\\\":\\([0-9]*\\).*/\\1/p\")
+  nodes="'$(printf "%s" "$health" | sed -n "s/.*'"\\\"number_of_nodes\\\":\\([0-9]*\\).*/\\1/p\")
+  status="'$(printf "%s" "$health" | sed -n "s/.*'"\\\"status\\\":\\\"\\(["'^'"\\\"]*\\)\\\".*/\\1/p\")
+  echo \"status="'$status nodes=$nodes relocating=$relocating initializing=$initializing unassigned=$unassigned"
+  if [ "$nodes" = "5" ] && [ "$relocating" = "0" ] && [ "$initializing" = "0" ] && [ "$unassigned" = "0" ] && { [ "$status" = "green" ] || [ "$status" = "yellow" ]; }; then
+    break
+  fi
+  sleep 2
+done
+curl -s "http://es-http:9200/_cluster/health?pretty"
+echo
+curl -s "http://es-http:9200/_cat/shards/app-data?v"
+'"'" in /Users/jinyige/Karma/runs/new-added-workflows/elasticsearch-deploy-scale-transform-snapshot-concat-stateful-20260625_222341/stages/stage_02
+diff --git a/runs/new-added-workflows/elasticsearch-deploy-scale-transform-snapshot-concat-stateful-20260625_222341/stages/stage_02/elasticsearch-extra-data-nodes.yaml b/runs/new-added-workflows/elasticsearch-deploy-scale-transform-snapshot-concat-stateful-20260625_222341/stages/stage_02/elasticsearch-extra-data-nodes.yaml
+new file mode 100644
+index 0000000000000000000000000000000000000000..dae8b793dfb27efca3c999bf189f0e1febbf0eee
+--- /dev/null
++++ b/runs/new-added-workflows/elasticsearch-deploy-scale-transform-snapshot-concat-stateful-20260625_222341/stages/stage_02/elasticsearch-extra-data-nodes.yaml
+@@ -0,0 +1,150 @@
++apiVersion: v1
++kind: ConfigMap
++metadata:
++  name: es-extra-config
++  namespace: elasticsearch
++data:
++  elasticsearch.yml: |
++    cluster.name: es-cluster
++    node.name: ${POD_NAME}
++    node.roles: [ data, ingest ]
++    network.host: 0.0.0.0
++    discovery.seed_hosts:
++      - es-cluster-0.es-cluster.elasticsearch.svc.cluster.local
++      - es-cluster-1.es-cluster.elasticsearch.svc.cluster.local
++      - es-cluster-2.es-cluster.elasticsearch.svc.cluster.local
++    node.attr.node_pool: expansion
++    node.store.allow_mmap: false
++    xpack.security.enabled: false
++    xpack.security.http.ssl.enabled: false
++    xpack.security.transport.ssl.enabled: false
++    s3.client.default.endpoint: minio.elasticsearch.svc.cluster.local:9000
++    s3.client.default.protocol: http
++    s3.client.default.path_style_access: true
++---
++apiVersion: v1
++kind: Service
++metadata:
++  name: es-extra
++  namespace: elasticsearch
++spec:
++  clusterIP: None
++  selector:
++    app: es-extra
++  ports:
++    - name: http
++      port: 9200
++      targetPort: http
++    - name: transport
++      port: 9300
++      targetPort: transport
++---
++apiVersion: apps/v1
++kind: StatefulSet
++metadata:
++  name: es-extra
++  namespace: elasticsearch
++spec:
++  podManagementPolicy: Parallel
++  replicas: 2
++  selector:
++    matchLabels:
++      app: es-extra
++  serviceName: es-extra
++  template:
++    metadata:
++      labels:
++        app: es-extra
++        cluster: es-cluster
++    spec:
++      initContainers:
++        - name: install-s3-plugin
++          image: docker.elastic.co/elasticsearch/elasticsearch:8.11.1
++          command:
++            - /bin/sh
++            - -c
++            - |
++              set -e
++              if [ ! -d /usr/share/elasticsearch/plugins/repository-s3 ]; then
++                /usr/share/elasticsearch/bin/elasticsearch-plugin install --batch repository-s3
++              fi
++          volumeMounts:
++            - name: es-plugins
++              mountPath: /usr/share/elasticsearch/plugins
++      containers:
++        - name: elasticsearch
++          image: docker.elastic.co/elasticsearch/elasticsearch:8.11.1
++          command:
++            - /bin/bash
++            - -c
++            - |
++              set -euo pipefail
++              /usr/share/elasticsearch/bin/elasticsearch-keystore create >/dev/null 2>&1 || true
++              for setting in /mnt/secure-settings/*; do
++                [ -f "$setting" ] || continue
++                key="$(basename "$setting")"
++                if /usr/share/elasticsearch/bin/elasticsearch-keystore list | grep -Fxq "$key"; then
++                  continue
++                fi
++                /usr/share/elasticsearch/bin/elasticsearch-keystore add-file "$key" "$setting"
++              done
++              exec /usr/local/bin/docker-entrypoint.sh eswrapper
++          env:
++            - name: POD_NAME
++              valueFrom:
++                fieldRef:
++                  fieldPath: metadata.name
++            - name: ES_JAVA_OPTS
++              value: -Xms512m -Xmx512m
++          ports:
++            - name: http
++              containerPort: 9200
++            - name: transport
++              containerPort: 9300
++          readinessProbe:
++            httpGet:
++              path: /_cluster/health?local=true
++              port: http
++            initialDelaySeconds: 10
++            periodSeconds: 5
++            timeoutSeconds: 2
++            failureThreshold: 6
++          resources:
++            requests:
++              cpu: 500m
++              memory: 1Gi
++            limits:
++              cpu: "1"
++              memory: 2Gi
++          volumeMounts:
++            - name: es-extra-config
++              mountPath: /usr/share/elasticsearch/config/elasticsearch.yml
++              subPath: elasticsearch.yml
++            - name: es-plugins
++              mountPath: /usr/share/elasticsearch/plugins
++            - name: secure-settings
++              mountPath: /mnt/secure-settings
++              readOnly: true
++            - name: data
++              mountPath: /usr/share/elasticsearch/data
++      volumes:
++        - name: es-extra-config
++          configMap:
++            name: es-extra-config
++            items:
++              - key: elasticsearch.yml
++                path: elasticsearch.yml
++        - name: es-plugins
++          emptyDir: {}
++        - name: secure-settings
++          secret:
++            secretName: es-secure-settings
++  volumeClaimTemplates:
++    - metadata:
++        name: data
++      spec:
++        accessModes:
++          - ReadWriteOnce
++        resources:
++          requests:
++            storage: 5Gi
+
+ succeeded in 125ms:
+{
+  "cluster_name" : "es-cluster",
+  "status" : "green",
+  "timed_out" : false,
+  "number_of_nodes" : 5,
+  "number_of_data_nodes" : 5,
+  "active_primary_shards" : 3,
+  "active_shards" : 6,
+  "relocating_shards" : 0,
+  "initializing_shards" : 0,
+  "unassigned_shards" : 0,
+  "delayed_unassigned_shards" : 0,
+  "number_of_pending_tasks" : 0,
+  "number_of_in_flight_fetch" : 0,
+  "task_max_waiting_in_queue_millis" : 0,
+  "active_shards_percent_as_number" : 100.0
+}
+
+index    shard prirep state   docs store dataset ip          node
+app-data 0     p      STARTED    0  227b    227b 10.244.2.50 es-extra-1
+app-data 0     r      STARTED    0  227b    227b 10.244.3.53 es-extra-0
+app-data 1     p      STARTED    2 4.7kb   4.7kb 10.244.2.50 es-extra-1
+app-data 1     r      STARTED    2 4.7kb   4.7kb 10.244.3.53 es-extra-0
+app-data 2     r      STARTED    1 4.6kb   4.6kb 10.244.2.50 es-extra-1
+app-data 2     p      STARTED    1 4.6kb   4.6kb 10.244.3.53 es-extra-0
+
+codex
+`app-data` has fully moved to `es-extra-0` and `es-extra-1`, and the cluster is green with 5 nodes. I’m verifying the MinIO repository across the expanded cluster and taking the required snapshot now.
+exec
+/bin/zsh -lc "kubectl exec -n elasticsearch curl-test -- sh -c '
+set -e
+printf \"verify repository:\\n\"
+curl -s -XPOST \"http://es-http:9200/_snapshot/minio-repo/_verify?pretty\"
+printf \"\\ncreate snapshot:\\n\"
+snap=\"snapshot-"'$(date +%Y%m%d%H%M%S)"
+echo "snapshot_name=$snap"
+curl -s -XPUT "http://es-http:9200/_snapshot/minio-repo/$snap?wait_for_completion=true&pretty" -H "Content-Type: application/json" -d "{'"\\\"indices\\\":\\\"app-data\\\",\\\"include_global_state\\\":false}\"
+printf \"\\nsnapshots:\\n\"
+curl -s \"http://es-http:9200/_snapshot/minio-repo/_all?pretty\"
+'" in /Users/jinyige/Karma/runs/new-added-workflows/elasticsearch-deploy-scale-transform-snapshot-concat-stateful-20260625_222341/stages/stage_02
+diff --git a/runs/new-added-workflows/elasticsearch-deploy-scale-transform-snapshot-concat-stateful-20260625_222341/stages/stage_02/elasticsearch-extra-data-nodes.yaml b/runs/new-added-workflows/elasticsearch-deploy-scale-transform-snapshot-concat-stateful-20260625_222341/stages/stage_02/elasticsearch-extra-data-nodes.yaml
+new file mode 100644
+index 0000000000000000000000000000000000000000..dae8b793dfb27efca3c999bf189f0e1febbf0eee
+--- /dev/null
++++ b/runs/new-added-workflows/elasticsearch-deploy-scale-transform-snapshot-concat-stateful-20260625_222341/stages/stage_02/elasticsearch-extra-data-nodes.yaml
+@@ -0,0 +1,150 @@
++apiVersion: v1
++kind: ConfigMap
++metadata:
++  name: es-extra-config
++  namespace: elasticsearch
++data:
++  elasticsearch.yml: |
++    cluster.name: es-cluster
++    node.name: ${POD_NAME}
++    node.roles: [ data, ingest ]
++    network.host: 0.0.0.0
++    discovery.seed_hosts:
++      - es-cluster-0.es-cluster.elasticsearch.svc.cluster.local
++      - es-cluster-1.es-cluster.elasticsearch.svc.cluster.local
++      - es-cluster-2.es-cluster.elasticsearch.svc.cluster.local
++    node.attr.node_pool: expansion
++    node.store.allow_mmap: false
++    xpack.security.enabled: false
++    xpack.security.http.ssl.enabled: false
++    xpack.security.transport.ssl.enabled: false
++    s3.client.default.endpoint: minio.elasticsearch.svc.cluster.local:9000
++    s3.client.default.protocol: http
++    s3.client.default.path_style_access: true
++---
++apiVersion: v1
++kind: Service
++metadata:
++  name: es-extra
++  namespace: elasticsearch
++spec:
++  clusterIP: None
++  selector:
++    app: es-extra
++  ports:
++    - name: http
++      port: 9200
++      targetPort: http
++    - name: transport
++      port: 9300
++      targetPort: transport
++---
++apiVersion: apps/v1
++kind: StatefulSet
++metadata:
++  name: es-extra
++  namespace: elasticsearch
++spec:
++  podManagementPolicy: Parallel
++  replicas: 2
++  selector:
++    matchLabels:
++      app: es-extra
++  serviceName: es-extra
++  template:
++    metadata:
++      labels:
++        app: es-extra
++        cluster: es-cluster
++    spec:
++      initContainers:
++        - name: install-s3-plugin
++          image: docker.elastic.co/elasticsearch/elasticsearch:8.11.1
++          command:
++            - /bin/sh
++            - -c
++            - |
++              set -e
++              if [ ! -d /usr/share/elasticsearch/plugins/repository-s3 ]; then
++                /usr/share/elasticsearch/bin/elasticsearch-plugin install --batch repository-s3
++              fi
++          volumeMounts:
++            - name: es-plugins
++              mountPath: /usr/share/elasticsearch/plugins
++      containers:
++        - name: elasticsearch
++          image: docker.elastic.co/elasticsearch/elasticsearch:8.11.1
++          command:
++            - /bin/bash
++            - -c
++            - |
++              set -euo pipefail
++              /usr/share/elasticsearch/bin/elasticsearch-keystore create >/dev/null 2>&1 || true
++              for setting in /mnt/secure-settings/*; do
++                [ -f "$setting" ] || continue
++                key="$(basename "$setting")"
++                if /usr/share/elasticsearch/bin/elasticsearch-keystore list | grep -Fxq "$key"; then
++                  continue
++                fi
++                /usr/share/elasticsearch/bin/elasticsearch-keystore add-file "$key" "$setting"
++              done
++              exec /usr/local/bin/docker-entrypoint.sh eswrapper
++          env:
++            - name: POD_NAME
++              valueFrom:
++                fieldRef:
++                  fieldPath: metadata.name
++            - name: ES_JAVA_OPTS
++              value: -Xms512m -Xmx512m
++          ports:
++            - name: http
++              containerPort: 9200
++            - name: transport
++              containerPort: 9300
++          readinessProbe:
++            httpGet:
++              path: /_cluster/health?local=true
++              port: http
++            initialDelaySeconds: 10
++            periodSeconds: 5
++            timeoutSeconds: 2
++            failureThreshold: 6
++          resources:
++            requests:
++              cpu: 500m
++              memory: 1Gi
++            limits:
++              cpu: "1"
++              memory: 2Gi
++          volumeMounts:
++            - name: es-extra-config
++              mountPath: /usr/share/elasticsearch/config/elasticsearch.yml
++              subPath: elasticsearch.yml
++            - name: es-plugins
++              mountPath: /usr/share/elasticsearch/plugins
++            - name: secure-settings
++              mountPath: /mnt/secure-settings
++              readOnly: true
++            - name: data
++              mountPath: /usr/share/elasticsearch/data
++      volumes:
++        - name: es-extra-config
++          configMap:
++            name: es-extra-config
++            items:
++              - key: elasticsearch.yml
++                path: elasticsearch.yml
++        - name: es-plugins
++          emptyDir: {}
++        - name: secure-settings
++          secret:
++            secretName: es-secure-settings
++  volumeClaimTemplates:
++    - metadata:
++        name: data
++      spec:
++        accessModes:
++          - ReadWriteOnce
++        resources:
++          requests:
++            storage: 5Gi
+
+ succeeded in 928ms:
+{
+  "nodes" : {
+    "e65D653eQ1iJgTTSfJCKiA" : {
+      "name" : "es-extra-0"
+    },
+    "AdKk1PX4QISi2fdGr3FhLw" : {
+      "name" : "es-extra-1"
+    },
+    "szFT2hMqS1OumXc9mECLOQ" : {
+      "name" : "es-cluster-1"
+    },
+    "5wdFEaIpS5qPZXDCUQhuUQ" : {
+      "name" : "es-cluster-0"
+    },
+    "rUMo0YthRyybr9d4w7t-XA" : {
+      "name" : "es-cluster-2"
+    }
+  }
+}
+
+create snapshot:
+snapshot_name=snapshot-20260625223035
+{
+  "snapshot" : {
+    "snapshot" : "snapshot-20260625223035",
+    "uuid" : "SJ_yfKBlSD6Nz1YiQzi2lg",
+    "repository" : "minio-repo",
+    "version_id" : 8500003,
+    "version" : "8500003",
+    "indices" : [
+      "app-data"
+    ],
+    "data_streams" : [ ],
+    "include_global_state" : false,
+    "state" : "SUCCESS",
+    "start_time" : "2026-06-25T22:30:35.321Z",
+    "start_time_in_millis" : 1782426635321,
+    "end_time" : "2026-06-25T22:30:35.523Z",
+    "end_time_in_millis" : 1782426635523,
+    "duration_in_millis" : 202,
+    "failures" : [ ],
+    "shards" : {
+      "total" : 3,
+      "failed" : 0,
+      "successful" : 3
+    },
+    "feature_states" : [ ]
+  }
+}
+
+snapshots:
+{
+  "snapshots" : [
+    {
+      "snapshot" : "snapshot-20260625222600",
+      "uuid" : "noQ5sMtBRxWcIAeb8E0KmA",
+      "repository" : "minio-repo",
+      "version_id" : 8500003,
+      "version" : "8500003",
+      "indices" : [ ],
+      "data_streams" : [ ],
+      "include_global_state" : true,
+      "state" : "SUCCESS",
+      "start_time" : "2026-06-25T22:26:00.710Z",
+      "start_time_in_millis" : 1782426360710,
+      "end_time" : "2026-06-25T22:26:00.710Z",
+      "end_time_in_millis" : 1782426360710,
+      "duration_in_millis" : 0,
+      "failures" : [ ],
+      "shards" : {
+        "total" : 0,
+        "failed" : 0,
+        "successful" : 0
+      },
+      "feature_states" : [ ]
+    },
+    {
+      "snapshot" : "snapshot-20260625223035",
+      "uuid" : "SJ_yfKBlSD6Nz1YiQzi2lg",
+      "repository" : "minio-repo",
+      "version_id" : 8500003,
+      "version" : "8500003",
+      "indices" : [
+        "app-data"
+      ],
+      "data_streams" : [ ],
+      "include_global_state" : false,
+      "state" : "SUCCESS",
+      "start_time" : "2026-06-25T22:30:35.321Z",
+      "start_time_in_millis" : 1782426635321,
+      "end_time" : "2026-06-25T22:30:35.523Z",
+      "end_time_in_millis" : 1782426635523,
+      "duration_in_millis" : 202,
+      "failures" : [ ],
+      "shards" : {
+        "total" : 3,
+        "failed" : 0,
+        "successful" : 3
+      },
+      "feature_states" : [ ]
+    }
+  ],
+  "total" : 2,
+  "remaining" : 0
+}
+
+codex
+The repository verified on all five Elasticsearch nodes, including the two new data nodes, and the new snapshot completed with `state: SUCCESS`. I’m running the final checks for health, shard placement, node attributes, and the original StatefulSet replica count.
+exec
+/bin/zsh -lc "kubectl exec -n elasticsearch curl-test -- sh -c 'curl -s \"http://es-http:9200/_cluster/health?pretty\" && echo && curl -s \"http://es-http:9200/_cat/nodes?v&h=name,ip,node.role,master,attr.node_pool\" && echo && curl -s \"http://es-http:9200/_cat/nodeattrs?v\" && echo && curl -s \"http://es-http:9200/_cat/shards/app-data?v\" && echo && curl -s \"http://es-http:9200/app-data/_settings?pretty\"'" in /Users/jinyige/Karma/runs/new-added-workflows/elasticsearch-deploy-scale-transform-snapshot-concat-stateful-20260625_222341/stages/stage_02
+exec
+/bin/zsh -lc "kubectl get sts -n elasticsearch -o wide && kubectl get sts es-cluster -n elasticsearch -o jsonpath='es-cluster replicas={.spec.replicas} ready={.status.readyReplicas}{\"\\n\"}'" in /Users/jinyige/Karma/runs/new-added-workflows/elasticsearch-deploy-scale-transform-snapshot-concat-stateful-20260625_222341/stages/stage_02
+exec
+/bin/zsh -lc "kubectl exec -n elasticsearch curl-test -- sh -c 'curl -s \"http://es-http:9200/_snapshot/minio-repo/snapshot-20260625223035?pretty\"'" in /Users/jinyige/Karma/runs/new-added-workflows/elasticsearch-deploy-scale-transform-snapshot-concat-stateful-20260625_222341/stages/stage_02
+diff --git a/runs/new-added-workflows/elasticsearch-deploy-scale-transform-snapshot-concat-stateful-20260625_222341/stages/stage_02/elasticsearch-extra-data-nodes.yaml b/runs/new-added-workflows/elasticsearch-deploy-scale-transform-snapshot-concat-stateful-20260625_222341/stages/stage_02/elasticsearch-extra-data-nodes.yaml
+new file mode 100644
+index 0000000000000000000000000000000000000000..dae8b793dfb27efca3c999bf189f0e1febbf0eee
+--- /dev/null
++++ b/runs/new-added-workflows/elasticsearch-deploy-scale-transform-snapshot-concat-stateful-20260625_222341/stages/stage_02/elasticsearch-extra-data-nodes.yaml
+@@ -0,0 +1,150 @@
++apiVersion: v1
++kind: ConfigMap
++metadata:
++  name: es-extra-config
++  namespace: elasticsearch
++data:
++  elasticsearch.yml: |
++    cluster.name: es-cluster
++    node.name: ${POD_NAME}
++    node.roles: [ data, ingest ]
++    network.host: 0.0.0.0
++    discovery.seed_hosts:
++      - es-cluster-0.es-cluster.elasticsearch.svc.cluster.local
++      - es-cluster-1.es-cluster.elasticsearch.svc.cluster.local
++      - es-cluster-2.es-cluster.elasticsearch.svc.cluster.local
++    node.attr.node_pool: expansion
++    node.store.allow_mmap: false
++    xpack.security.enabled: false
++    xpack.security.http.ssl.enabled: false
++    xpack.security.transport.ssl.enabled: false
++    s3.client.default.endpoint: minio.elasticsearch.svc.cluster.local:9000
++    s3.client.default.protocol: http
++    s3.client.default.path_style_access: true
++---
++apiVersion: v1
++kind: Service
++metadata:
++  name: es-extra
++  namespace: elasticsearch
++spec:
++  clusterIP: None
++  selector:
++    app: es-extra
++  ports:
++    - name: http
++      port: 9200
++      targetPort: http
++    - name: transport
++      port: 9300
++      targetPort: transport
++---
++apiVersion: apps/v1
++kind: StatefulSet
++metadata:
++  name: es-extra
++  namespace: elasticsearch
++spec:
++  podManagementPolicy: Parallel
++  replicas: 2
++  selector:
++    matchLabels:
++      app: es-extra
++  serviceName: es-extra
++  template:
++    metadata:
++      labels:
++        app: es-extra
++        cluster: es-cluster
++    spec:
++      initContainers:
++        - name: install-s3-plugin
++          image: docker.elastic.co/elasticsearch/elasticsearch:8.11.1
++          command:
++            - /bin/sh
++            - -c
++            - |
++              set -e
++              if [ ! -d /usr/share/elasticsearch/plugins/repository-s3 ]; then
++                /usr/share/elasticsearch/bin/elasticsearch-plugin install --batch repository-s3
++              fi
++          volumeMounts:
++            - name: es-plugins
++              mountPath: /usr/share/elasticsearch/plugins
++      containers:
++        - name: elasticsearch
++          image: docker.elastic.co/elasticsearch/elasticsearch:8.11.1
++          command:
++            - /bin/bash
++            - -c
++            - |
++              set -euo pipefail
++              /usr/share/elasticsearch/bin/elasticsearch-keystore create >/dev/null 2>&1 || true
++              for setting in /mnt/secure-settings/*; do
++                [ -f "$setting" ] || continue
++                key="$(basename "$setting")"
++                if /usr/share/elasticsearch/bin/elasticsearch-keystore list | grep -Fxq "$key"; then
++                  continue
++                fi
++                /usr/share/elasticsearch/bin/elasticsearch-keystore add-file "$key" "$setting"
++              done
++              exec /usr/local/bin/docker-entrypoint.sh eswrapper
++          env:
++            - name: POD_NAME
++              valueFrom:
++                fieldRef:
++                  fieldPath: metadata.name
++            - name: ES_JAVA_OPTS
++              value: -Xms512m -Xmx512m
++          ports:
++            - name: http
++              containerPort: 9200
++            - name: transport
++              containerPort: 9300
++          readinessProbe:
++            httpGet:
++              path: /_cluster/health?local=true
++              port: http
++            initialDelaySeconds: 10
++            periodSeconds: 5
++            timeoutSeconds: 2
++            failureThreshold: 6
++          resources:
++            requests:
++              cpu: 500m
++              memory: 1Gi
++            limits:
++              cpu: "1"
++              memory: 2Gi
++          volumeMounts:
++            - name: es-extra-config
++              mountPath: /usr/share/elasticsearch/config/elasticsearch.yml
++              subPath: elasticsearch.yml
++            - name: es-plugins
++              mountPath: /usr/share/elasticsearch/plugins
++            - name: secure-settings
++              mountPath: /mnt/secure-settings
++              readOnly: true
++            - name: data
++              mountPath: /usr/share/elasticsearch/data
++      volumes:
++        - name: es-extra-config
++          configMap:
++            name: es-extra-config
++            items:
++              - key: elasticsearch.yml
++                path: elasticsearch.yml
++        - name: es-plugins
++          emptyDir: {}
++        - name: secure-settings
++          secret:
++            secretName: es-secure-settings
++  volumeClaimTemplates:
++    - metadata:
++        name: data
++      spec:
++        accessModes:
++          - ReadWriteOnce
++        resources:
++          requests:
++            storage: 5Gi
+
+ succeeded in 223ms:
+NAME         READY   AGE    CONTAINERS      IMAGES
+es-cluster   3/3     7m6s   elasticsearch   docker.elastic.co/elasticsearch/elasticsearch:8.11.1
+es-extra     2/2     89s    elasticsearch   docker.elastic.co/elasticsearch/elasticsearch:8.11.1
+es-cluster replicas=3 ready=3
+
+ succeeded in 236ms:
+{
+  "snapshots" : [
+    {
+      "snapshot" : "snapshot-20260625223035",
+      "uuid" : "SJ_yfKBlSD6Nz1YiQzi2lg",
+      "repository" : "minio-repo",
+      "version_id" : 8500003,
+      "version" : "8500003",
+      "indices" : [
+        "app-data"
+      ],
+      "data_streams" : [ ],
+      "include_global_state" : false,
+      "state" : "SUCCESS",
+      "start_time" : "2026-06-25T22:30:35.321Z",
+      "start_time_in_millis" : 1782426635321,
+      "end_time" : "2026-06-25T22:30:35.523Z",
+      "end_time_in_millis" : 1782426635523,
+      "duration_in_millis" : 202,
+      "failures" : [ ],
+      "shards" : {
+        "total" : 3,
+        "failed" : 0,
+        "successful" : 3
+      },
+      "feature_states" : [ ]
+    }
+  ],
+  "total" : 1,
+  "remaining" : 0
+}
+
+ succeeded in 312ms:
+{
+  "cluster_name" : "es-cluster",
+  "status" : "green",
+  "timed_out" : false,
+  "number_of_nodes" : 5,
+  "number_of_data_nodes" : 5,
+  "active_primary_shards" : 3,
+  "active_shards" : 6,
+  "relocating_shards" : 0,
+  "initializing_shards" : 0,
+  "unassigned_shards" : 0,
+  "delayed_unassigned_shards" : 0,
+  "number_of_pending_tasks" : 0,
+  "number_of_in_flight_fetch" : 0,
+  "task_max_waiting_in_queue_millis" : 0,
+  "active_shards_percent_as_number" : 100.0
+}
+
+name         ip          node.role master
+es-cluster-0 10.244.3.51 dim       -
+es-cluster-1 10.244.1.56 dim       *
+es-extra-1   10.244.2.50 di        -
+es-extra-0   10.244.3.53 di        -
+es-cluster-2 10.244.2.48 dim       -
+
+node         host        ip          attr                     value
+es-extra-0   10.244.3.53 10.244.3.53 node_pool                expansion
+es-extra-0   10.244.3.53 10.244.3.53 ml.config_version        11.0.0
+es-extra-0   10.244.3.53 10.244.3.53 transform.config_version 10.0.0
+es-extra-0   10.244.3.53 10.244.3.53 xpack.installed          true
+es-extra-1   10.244.2.50 10.244.2.50 node_pool                expansion
+es-extra-1   10.244.2.50 10.244.2.50 ml.config_version        11.0.0
+es-extra-1   10.244.2.50 10.244.2.50 xpack.installed          true
+es-extra-1   10.244.2.50 10.244.2.50 transform.config_version 10.0.0
+es-cluster-1 10.244.1.56 10.244.1.56 xpack.installed          true
+es-cluster-1 10.244.1.56 10.244.1.56 transform.config_version 10.0.0
+es-cluster-1 10.244.1.56 10.244.1.56 ml.config_version        11.0.0
+es-cluster-0 10.244.3.51 10.244.3.51 transform.config_version 10.0.0
+es-cluster-0 10.244.3.51 10.244.3.51 xpack.installed          true
+es-cluster-0 10.244.3.51 10.244.3.51 ml.config_version        11.0.0
+es-cluster-2 10.244.2.48 10.244.2.48 transform.config_version 10.0.0
+es-cluster-2 10.244.2.48 10.244.2.48 xpack.installed          true
+es-cluster-2 10.244.2.48 10.244.2.48 ml.config_version        11.0.0
+
+index    shard prirep state   docs store dataset ip          node
+app-data 0     p      STARTED    0  227b    227b 10.244.2.50 es-extra-1
+app-data 0     r      STARTED    0  227b    227b 10.244.3.53 es-extra-0
+app-data 1     p      STARTED    2 4.7kb   4.7kb 10.244.2.50 es-extra-1
+app-data 1     r      STARTED    2 4.7kb   4.7kb 10.244.3.53 es-extra-0
+app-data 2     r      STARTED    1 4.6kb   4.6kb 10.244.2.50 es-extra-1
+app-data 2     p      STARTED    1 4.6kb   4.6kb 10.244.3.53 es-extra-0
+
+{
+  "app-data" : {
+    "settings" : {
+      "index" : {
+        "routing" : {
+          "allocation" : {
+            "include" : {
+              "_tier_preference" : "data_content"
+            },
+            "require" : {
+              "node_pool" : "expansion"
+            }
+          }
+        },
+        "number_of_shards" : "3",
+        "provided_name" : "app-data",
+        "creation_date" : "1782426392229",
+        "number_of_replicas" : "1",
+        "uuid" : "mRCzCHu3SkG6_tOVOuawRw",
+        "version" : {
+          "created" : "8500003"
+        }
+      }
+    }
+  }
+}
+
+codex
+The final checks pass: health is green with 5 nodes, `app-data` is entirely on `es-extra-0` and `es-extra-1`, and `es-cluster` remains `3/3`. I’m doing one last workspace/status check so I can report exactly what changed.
+exec
+/bin/zsh -lc "kubectl exec -n elasticsearch curl-test -- sh -c 'curl -s \"http://es-http:9200/_cat/nodes?v&h=name,ip,node.role,master,attr.node_pool\"'" in /Users/jinyige/Karma/runs/new-added-workflows/elasticsearch-deploy-scale-transform-snapshot-concat-stateful-20260625_222341/stages/stage_02
+exec
+/bin/zsh -lc "kubectl exec -n elasticsearch es-extra-0 -- sh -c '/usr/share/elasticsearch/bin/elasticsearch-keystore list | sort'" in /Users/jinyige/Karma/runs/new-added-workflows/elasticsearch-deploy-scale-transform-snapshot-concat-stateful-20260625_222341/stages/stage_02
+exec
+/bin/zsh -lc 'git status --short' in /Users/jinyige/Karma/runs/new-added-workflows/elasticsearch-deploy-scale-transform-snapshot-concat-stateful-20260625_222341/stages/stage_02
+ succeeded in 157ms:
+name         ip          node.role master
+es-extra-0   10.244.3.53 di        -
+es-extra-1   10.244.2.50 di        -
+es-cluster-1 10.244.1.56 dim       *
+es-cluster-0 10.244.3.51 dim       -
+es-cluster-2 10.244.2.48 dim       -
+
+ succeeded in 219ms:
+ M ../../../../../README.md
+ M ../../../../../main.py
+ M ../../../batch-progress.jsonl
+ M ../../../batch.log
+ D ../../../cockroachdb-storage-lifecycle-20260624_025759/bundle/env.json
+ D ../../../cockroachdb-storage-lifecycle-20260624_025759/bundle/kubeconfig
+ D ../../../cockroachdb-storage-lifecycle-20260624_025759/config.json
+ D ../../../cockroachdb-storage-lifecycle-20260624_025759/judge.json
+ D ../../../cockroachdb-storage-lifecycle-20260624_025759/judge.log
+ D ../../../cockroachdb-storage-lifecycle-20260624_025759/run.json
+ D ../../../cockroachdb-storage-lifecycle-20260624_025759/stages/stage_01/agent.log
+ D ../../../cockroachdb-storage-lifecycle-20260624_025759/stages/stage_01/cockroachdb-cluster.yaml
+ D ../../../cockroachdb-storage-lifecycle-20260624_025759/stages/stage_01/evidence.json
+ D ../../../cockroachdb-storage-lifecycle-20260624_025759/stages/stage_01/kubectl_log.jsonl
+ D ../../../cockroachdb-storage-lifecycle-20260624_025759/stages/stage_01/oracle.json
+ D ../../../cockroachdb-storage-lifecycle-20260624_025759/stages/stage_01/precondition.log
+ D ../../../cockroachdb-storage-lifecycle-20260624_025759/stages/stage_01/prompt.txt
+ D ../../../cockroachdb-storage-lifecycle-20260624_025759/stages/stage_01/proxy-client.crt
+ D ../../../cockroachdb-storage-lifecycle-20260624_025759/stages/stage_01/proxy-client.key
+ D ../../../cockroachdb-storage-lifecycle-20260624_025759/stages/stage_01/submit.txt
+ D ../../../cockroachdb-storage-lifecycle-20260624_025759/stages/stage_02/agent.log
+ D ../../../cockroachdb-storage-lifecycle-20260624_025759/stages/stage_02/evidence.json
+ D ../../../cockroachdb-storage-lifecycle-20260624_025759/stages/stage_02/kubectl_log.jsonl
+ D ../../../cockroachdb-storage-lifecycle-20260624_025759/stages/stage_02/oracle.json
+ D ../../../cockroachdb-storage-lifecycle-20260624_025759/stages/stage_02/precondition.log
+ D ../../../cockroachdb-storage-lifecycle-20260624_025759/stages/stage_02/prompt.txt
+ D ../../../cockroachdb-storage-lifecycle-20260624_025759/stages/stage_02/proxy-client.crt
+ D ../../../cockroachdb-storage-lifecycle-20260624_025759/stages/stage_02/proxy-client.key
+ D ../../../cockroachdb-storage-lifecycle-20260624_025759/stages/stage_02/submit.txt
+ D ../../../cockroachdb-storage-lifecycle-20260624_025759/stages/stage_03/agent.log
+ D ../../../cockroachdb-storage-lifecycle-20260624_025759/stages/stage_03/evidence.json
+ D ../../../cockroachdb-storage-lifecycle-20260624_025759/stages/stage_03/kubectl_log.jsonl
+ D ../../../cockroachdb-storage-lifecycle-20260624_025759/stages/stage_03/oracle.json
+ D ../../../cockroachdb-storage-lifecycle-20260624_025759/stages/stage_03/precondition.log
+ D ../../../cockroachdb-storage-lifecycle-20260624_025759/stages/stage_03/prompt.txt
+ D ../../../cockroachdb-storage-lifecycle-20260624_025759/stages/stage_03/proxy-client.crt
+ D ../../../cockroachdb-storage-lifecycle-20260624_025759/stages/stage_03/proxy-client.key
+ D ../../../cockroachdb-storage-lifecycle-20260624_025759/stages/stage_03/submit.txt
+ D ../../../cockroachdb-storage-lifecycle-20260624_025759/stages/stage_04/agent.log
+ D ../../../cockroachdb-storage-lifecycle-20260624_025759/stages/stage_04/evidence.json
+ D ../../../cockroachdb-storage-lifecycle-20260624_025759/stages/stage_04/kubectl_log.jsonl
+ D ../../../cockroachdb-storage-lifecycle-20260624_025759/stages/stage_04/oracle.json
+ D ../../../cockroachdb-storage-lifecycle-20260624_025759/stages/stage_04/precondition.log
+ D ../../../cockroachdb-storage-lifecycle-20260624_025759/stages/stage_04/prompt.txt
+ D ../../../cockroachdb-storage-lifecycle-20260624_025759/stages/stage_04/proxy-client.crt
+ D ../../../cockroachdb-storage-lifecycle-20260624_025759/stages/stage_04/proxy-client.key
+ D ../../../cockroachdb-storage-lifecycle-20260624_025759/stages/stage_04/submit.txt
+ D ../../../cockroachdb-storage-lifecycle-20260624_025759/stages/stage_05/agent.log
+ D ../../../cockroachdb-storage-lifecycle-20260624_025759/stages/stage_05/evidence.json
+ D ../../../cockroachdb-storage-lifecycle-20260624_025759/stages/stage_05/kubectl_log.jsonl
+ D ../../../cockroachdb-storage-lifecycle-20260624_025759/stages/stage_05/oracle.json
+ D ../../../cockroachdb-storage-lifecycle-20260624_025759/stages/stage_05/precondition.log
+ D ../../../cockroachdb-storage-lifecycle-20260624_025759/stages/stage_05/prompt.txt
+ D ../../../cockroachdb-storage-lifecycle-20260624_025759/stages/stage_05/proxy-client.crt
+ D ../../../cockroachdb-storage-lifecycle-20260624_025759/stages/stage_05/proxy-client.key
+ D ../../../cockroachdb-storage-lifecycle-20260624_025759/stages/stage_05/submit.txt
+ D ../../../cockroachdb-storage-lifecycle-20260624_025759/workflow_state.json
+ D ../../../cockroachdb-version-decommission-20260624_032914/bundle/env.json
+ D ../../../cockroachdb-version-decommission-20260624_032914/bundle/kubeconfig
+ D ../../../cockroachdb-version-decommission-20260624_032914/config.json
+ D ../../../cockroachdb-version-decommission-20260624_032914/judge.json
+ D ../../../cockroachdb-version-decommission-20260624_032914/judge.log
+ D ../../../cockroachdb-version-decommission-20260624_032914/run.json
+ D ../../../cockroachdb-version-decommission-20260624_032914/stages/stage_01/agent.log
+ D ../../../cockroachdb-version-decommission-20260624_032914/stages/stage_01/evidence.json
+ D ../../../cockroachdb-version-decommission-20260624_032914/stages/stage_01/kubectl_log.jsonl
+ D ../../../cockroachdb-version-decommission-20260624_032914/stages/stage_01/oracle.json
+ D ../../../cockroachdb-version-decommission-20260624_032914/stages/stage_01/precondition.log
+ D ../../../cockroachdb-version-decommission-20260624_032914/stages/stage_01/prompt.txt
+ D ../../../cockroachdb-version-decommission-20260624_032914/stages/stage_01/proxy-client.crt
+ D ../../../cockroachdb-version-decommission-20260624_032914/stages/stage_01/proxy-client.key
+ D ../../../cockroachdb-version-decommission-20260624_032914/stages/stage_01/submit.txt
+ D ../../../cockroachdb-version-decommission-20260624_032914/stages/stage_02/agent.log
+ D ../../../cockroachdb-version-decommission-20260624_032914/stages/stage_02/evidence.json
+ D ../../../cockroachdb-version-decommission-20260624_032914/stages/stage_02/kubectl_log.jsonl
+ D ../../../cockroachdb-version-decommission-20260624_032914/stages/stage_02/oracle.json
+ D ../../../cockroachdb-version-decommission-20260624_032914/stages/stage_02/precondition.log
+ D ../../../cockroachdb-version-decommission-20260624_032914/stages/stage_02/prompt.txt
+ D ../../../cockroachdb-version-decommission-20260624_032914/stages/stage_02/proxy-client.crt
+ D ../../../cockroachdb-version-decommission-20260624_032914/stages/stage_02/proxy-client.key
+ D ../../../cockroachdb-version-decommission-20260624_032914/stages/stage_02/submit.txt
+ D ../../../cockroachdb-version-decommission-20260624_032914/stages/stage_03/agent.log
+ D ../../../cockroachdb-version-decommission-20260624_032914/stages/stage_03/evidence.json
+ D ../../../cockroachdb-version-decommission-20260624_032914/stages/stage_03/kubectl_log.jsonl
+ D ../../../cockroachdb-version-decommission-20260624_032914/stages/stage_03/oracle.json
+ D ../../../cockroachdb-version-decommission-20260624_032914/stages/stage_03/precondition.log
+ D ../../../cockroachdb-version-decommission-20260624_032914/stages/stage_03/prompt.txt
+ D ../../../cockroachdb-version-decommission-20260624_032914/stages/stage_03/proxy-client.crt
+ D ../../../cockroachdb-version-decommission-20260624_032914/stages/stage_03/proxy-client.key
+ D ../../../cockroachdb-version-decommission-20260624_032914/stages/stage_03/submit.txt
+ D ../../../cockroachdb-version-decommission-20260624_032914/stages/stage_04/agent.log
+ D ../../../cockroachdb-version-decommission-20260624_032914/stages/stage_04/evidence.json
+ D ../../../cockroachdb-version-decommission-20260624_032914/stages/stage_04/kubectl_log.jsonl
+ D ../../../cockroachdb-version-decommission-20260624_032914/stages/stage_04/oracle.json
+ D ../../../cockroachdb-version-decommission-20260624_032914/stages/stage_04/precondition.log
+ D ../../../cockroachdb-version-decommission-20260624_032914/stages/stage_04/prompt.txt
+ D ../../../cockroachdb-version-decommission-20260624_032914/stages/stage_04/proxy-client.crt
+ D ../../../cockroachdb-version-decommission-20260624_032914/stages/stage_04/proxy-client.key
+ D ../../../cockroachdb-version-decommission-20260624_032914/stages/stage_04/submit.txt
+ D ../../../cockroachdb-version-decommission-20260624_032914/workflow_state.json
+ D ../../../cockroachdb-zone-rebalance-upgrade-20260624_033644/bundle/env.json
+ D ../../../cockroachdb-zone-rebalance-upgrade-20260624_033644/bundle/kubeconfig
+ D ../../../cockroachdb-zone-rebalance-upgrade-20260624_033644/config.json
+ D ../../../cockroachdb-zone-rebalance-upgrade-20260624_033644/judge.json
+ D ../../../cockroachdb-zone-rebalance-upgrade-20260624_033644/judge.log
+ D ../../../cockroachdb-zone-rebalance-upgrade-20260624_033644/run.json
+ D ../../../cockroachdb-zone-rebalance-upgrade-20260624_033644/stages/stage_01/agent.log
+ D ../../../cockroachdb-zone-rebalance-upgrade-20260624_033644/stages/stage_01/evidence.json
+ D ../../../cockroachdb-zone-rebalance-upgrade-20260624_033644/stages/stage_01/kubectl_log.jsonl
+ D ../../../cockroachdb-zone-rebalance-upgrade-20260624_033644/stages/stage_01/oracle.json
+ D ../../../cockroachdb-zone-rebalance-upgrade-20260624_033644/stages/stage_01/precondition.log
+ D ../../../cockroachdb-zone-rebalance-upgrade-20260624_033644/stages/stage_01/prompt.txt
+ D ../../../cockroachdb-zone-rebalance-upgrade-20260624_033644/stages/stage_01/proxy-client.crt
+ D ../../../cockroachdb-zone-rebalance-upgrade-20260624_033644/stages/stage_01/proxy-client.key
+ D ../../../cockroachdb-zone-rebalance-upgrade-20260624_033644/stages/stage_01/submit.txt
+ D ../../../cockroachdb-zone-rebalance-upgrade-20260624_033644/stages/stage_02/agent.log
+ D ../../../cockroachdb-zone-rebalance-upgrade-20260624_033644/stages/stage_02/evidence.json
+ D ../../../cockroachdb-zone-rebalance-upgrade-20260624_033644/stages/stage_02/kubectl_log.jsonl
+ D ../../../cockroachdb-zone-rebalance-upgrade-20260624_033644/stages/stage_02/oracle.json
+ D ../../../cockroachdb-zone-rebalance-upgrade-20260624_033644/stages/stage_02/precondition.log
+ D ../../../cockroachdb-zone-rebalance-upgrade-20260624_033644/stages/stage_02/prompt.txt
+ D ../../../cockroachdb-zone-rebalance-upgrade-20260624_033644/stages/stage_02/proxy-client.crt
+ D ../../../cockroachdb-zone-rebalance-upgrade-20260624_033644/stages/stage_02/proxy-client.key
+ D ../../../cockroachdb-zone-rebalance-upgrade-20260624_033644/stages/stage_02/submit.txt
+ D ../../../cockroachdb-zone-rebalance-upgrade-20260624_033644/stages/stage_03/agent.log
+ D ../../../cockroachdb-zone-rebalance-upgrade-20260624_033644/stages/stage_03/evidence.json
+ D ../../../cockroachdb-zone-rebalance-upgrade-20260624_033644/stages/stage_03/kubectl_log.jsonl
+ D ../../../cockroachdb-zone-rebalance-upgrade-20260624_033644/stages/stage_03/oracle.json
+ D ../../../cockroachdb-zone-rebalance-upgrade-20260624_033644/stages/stage_03/precondition.log
+ D ../../../cockroachdb-zone-rebalance-upgrade-20260624_033644/stages/stage_03/prompt.txt
+ D ../../../cockroachdb-zone-rebalance-upgrade-20260624_033644/stages/stage_03/proxy-client.crt
+ D ../../../cockroachdb-zone-rebalance-upgrade-20260624_033644/stages/stage_03/proxy-client.key
+ D ../../../cockroachdb-zone-rebalance-upgrade-20260624_033644/stages/stage_03/submit.txt
+ D ../../../cockroachdb-zone-rebalance-upgrade-20260624_033644/stages/stage_04/agent.log
+ D ../../../cockroachdb-zone-rebalance-upgrade-20260624_033644/stages/stage_04/evidence.json
+ D ../../../cockroachdb-zone-rebalance-upgrade-20260624_033644/stages/stage_04/kubectl_log.jsonl
+ D ../../../cockroachdb-zone-rebalance-upgrade-20260624_033644/stages/stage_04/oracle.json
+ D ../../../cockroachdb-zone-rebalance-upgrade-20260624_033644/stages/stage_04/precondition.log
+ D ../../../cockroachdb-zone-rebalance-upgrade-20260624_033644/stages/stage_04/prompt.txt
+ D ../../../cockroachdb-zone-rebalance-upgrade-20260624_033644/stages/stage_04/proxy-client.crt
+ D ../../../cockroachdb-zone-rebalance-upgrade-20260624_033644/stages/stage_04/proxy-client.key
+ D ../../../cockroachdb-zone-rebalance-upgrade-20260624_033644/stages/stage_04/submit.txt
+ D ../../../cockroachdb-zone-rebalance-upgrade-20260624_033644/stages/stage_05/agent.log
+ D ../../../cockroachdb-zone-rebalance-upgrade-20260624_033644/stages/stage_05/evidence.json
+ D ../../../cockroachdb-zone-rebalance-upgrade-20260624_033644/stages/stage_05/kubectl_log.jsonl
+ D ../../../cockroachdb-zone-rebalance-upgrade-20260624_033644/stages/stage_05/oracle.json
+ D ../../../cockroachdb-zone-rebalance-upgrade-20260624_033644/stages/stage_05/precondition.log
+ D ../../../cockroachdb-zone-rebalance-upgrade-20260624_033644/stages/stage_05/prompt.txt
+ D ../../../cockroachdb-zone-rebalance-upgrade-20260624_033644/stages/stage_05/proxy-client.crt
+ D ../../../cockroachdb-zone-rebalance-upgrade-20260624_033644/stages/stage_05/proxy-client.key
+ D ../../../cockroachdb-zone-rebalance-upgrade-20260624_033644/stages/stage_05/submit.txt
+ D ../../../cockroachdb-zone-rebalance-upgrade-20260624_033644/workflow_state.json
+ D ../../../elasticsearch-certs-password-users-20260624_034754/bundle/env.json
+ D ../../../elasticsearch-certs-password-users-20260624_034754/bundle/kubeconfig
+ D ../../../elasticsearch-certs-password-users-20260624_034754/config.json
+ D ../../../elasticsearch-certs-password-users-20260624_034754/run.json
+ D ../../../elasticsearch-certs-password-users-20260624_034754/stages/stage_01/agent.log
+ D ../../../elasticsearch-certs-password-users-20260624_034754/stages/stage_01/elasticsearch-native.yaml
+ D ../../../elasticsearch-certs-password-users-20260624_034754/stages/stage_01/evidence.json
+ D ../../../elasticsearch-certs-password-users-20260624_034754/stages/stage_01/kubectl_log.jsonl
+ D ../../../elasticsearch-certs-password-users-20260624_034754/stages/stage_01/oracle.json
+ D ../../../elasticsearch-certs-password-users-20260624_034754/stages/stage_01/precondition.log
+ D ../../../elasticsearch-certs-password-users-20260624_034754/stages/stage_01/prompt.txt
+ D ../../../elasticsearch-certs-password-users-20260624_034754/stages/stage_01/proxy-client.crt
+ D ../../../elasticsearch-certs-password-users-20260624_034754/stages/stage_01/proxy-client.key
+ D ../../../elasticsearch-certs-password-users-20260624_034754/stages/stage_01/submit.txt
+ D ../../../elasticsearch-certs-password-users-20260624_034754/stages/stage_02/agent.log
+ D ../../../elasticsearch-certs-password-users-20260624_034754/stages/stage_02/evidence.json
+ D ../../../elasticsearch-certs-password-users-20260624_034754/stages/stage_02/kubectl_log.jsonl
+ D ../../../elasticsearch-certs-password-users-20260624_034754/stages/stage_02/oracle.json
+ D ../../../elasticsearch-certs-password-users-20260624_034754/stages/stage_02/precondition.log
+ D ../../../elasticsearch-certs-password-users-20260624_034754/stages/stage_02/prompt.txt
+ D ../../../elasticsearch-certs-password-users-20260624_034754/stages/stage_02/proxy-client.crt
+ D ../../../elasticsearch-certs-password-users-20260624_034754/stages/stage_02/proxy-client.key
+ D ../../../elasticsearch-certs-password-users-20260624_034754/stages/stage_02/submit.txt
+ D ../../../elasticsearch-certs-password-users-20260624_034754/stages/stage_03/agent.log
+ D ../../../elasticsearch-certs-password-users-20260624_034754/stages/stage_03/evidence.json
+ D ../../../elasticsearch-certs-password-users-20260624_034754/stages/stage_03/kubectl_log.jsonl
+ D ../../../elasticsearch-certs-password-users-20260624_034754/stages/stage_03/oracle.json
+ D ../../../elasticsearch-certs-password-users-20260624_034754/stages/stage_03/precondition.log
+ D ../../../elasticsearch-certs-password-users-20260624_034754/stages/stage_03/prompt.txt
+ D ../../../elasticsearch-certs-password-users-20260624_034754/stages/stage_03/proxy-client.crt
+ D ../../../elasticsearch-certs-password-users-20260624_034754/stages/stage_03/proxy-client.key
+ D ../../../elasticsearch-certs-password-users-20260624_034754/stages/stage_03/submit.txt
+ D ../../../elasticsearch-certs-password-users-20260624_034754/stages/stage_04/agent.log
+ D ../../../elasticsearch-certs-password-users-20260624_034754/stages/stage_04/evidence.json
+ D ../../../elasticsearch-certs-password-users-20260624_034754/stages/stage_04/kubectl_log.jsonl
+ D ../../../elasticsearch-certs-password-users-20260624_034754/stages/stage_04/oracle.json
+ D ../../../elasticsearch-certs-password-users-20260624_034754/stages/stage_04/precondition.log
+ D ../../../elasticsearch-certs-password-users-20260624_034754/stages/stage_04/prompt.txt
+ D ../../../elasticsearch-certs-password-users-20260624_034754/stages/stage_04/proxy-client.crt
+ D ../../../elasticsearch-certs-password-users-20260624_034754/stages/stage_04/proxy-client.key
+ D ../../../elasticsearch-certs-password-users-20260624_034754/stages/stage_04/submit.txt
+ D ../../../elasticsearch-certs-password-users-20260624_034754/workflow_state.json
+ M ../../../manifest.json
+ M ../../../../../scripts/run-added-workflows.sh
+ M ../../../../../tests/integration/test_added_workflow_suite.py
+ M ../../../../../workflows/short/cockroachdb-storage-lifecycle.yaml
+ M ../../../../../workflows/short/cockroachdb-version-decommission.yaml
+ M ../../../../../workflows/short/elasticsearch-deploy-scale-transform-snapshot-concat-blind.yaml
+ M ../../../../../workflows/short/elasticsearch-deploy-scale-transform-snapshot-concat-stateful.yaml
+ M ../../../../../workflows/short/elasticsearch-deploy-scale-transform-snapshot.yaml
+ M ../../../../../workflows/short/elasticsearch-discovery-drift-adversary.yaml
+ M ../../../../../workflows/short/elasticsearch-http-selector-adversary.yaml
+ M ../../../../../workflows/short/elasticsearch-ingress-service-drift.yaml
+ M ../../../../../workflows/short/elasticsearch-master-downscale-sweep.yaml
+ M ../../../../../workflows/short/elasticsearch-monitoring-upgrade-certs-ca-trust.yaml
+ M ../../../../../workflows/short/elasticsearch-seed-hosts-shard-recovery.yaml
+ M ../../../../../workflows/short/elasticsearch-snapshot-secret-adversary.yaml
+ M ../../../../../workflows/short/elasticsearch-statefulset-down-adversary.yaml
+ M ../../../../../workflows/short/elasticsearch-transport-block-adversary.yaml
+ M ../../../../../workflows/short/platform-search-dual-adversary.yaml
+?? ../../../../error-prone-rerun/cockroachdb-tls-upgrade-zone-audit-rollback-change-plan-20260618_122551/judge.json
+?? ../../../../error-prone-rerun/cockroachdb-tls-upgrade-zone-audit-rollback-change-plan-20260618_122551/judge.log
+?? ../../../../error-prone-rerun/elasticsearch-password-ingress-audit-change-plan-20260618_123159/judge.json
+?? ../../../../error-prone-rerun/elasticsearch-password-ingress-audit-change-plan-20260618_123159/judge.log
+?? ../../../../error-prone-rerun/elasticsearch-scale-certs-password-snapshot-audit-rollback-20260618_123155/judge.json
+?? ../../../../error-prone-rerun/elasticsearch-scale-certs-password-snapshot-audit-rollback-20260618_123155/judge.log
+?? ../../../../error-prone-rerun/elasticsearch-scale-users-audit-20260618_123154/judge.json
+?? ../../../../error-prone-rerun/elasticsearch-scale-users-audit-20260618_123154/judge.log
+?? ../../../../error-prone-rerun/mongodb-snappy-probe-tune-lifecycle-change-plan-audit-rollback-20260618_124235/judge.json
+?? ../../../../error-prone-rerun/mongodb-snappy-probe-tune-lifecycle-change-plan-audit-rollback-20260618_124235/judge.log
+?? ../../../../error-prone-rerun/nginx-ingress-expose-ratelimit-canary-audit-change-plan-20260618_103116/judge.json
+?? ../../../../error-prone-rerun/nginx-ingress-expose-ratelimit-canary-audit-change-plan-20260618_103116/judge.log
+?? ../../../../error-prone-rerun/nginx-ingress-full-lifecycle-rollback-20260618_104312/judge.json
+?? ../../../../error-prone-rerun/nginx-ingress-full-lifecycle-rollback-20260618_104312/judge.log
+?? ../../../../error-prone-rerun/rabbitmq-maximal-lifecycle-rollback-change-plan-audit-20260618_105823/judge.json
+?? ../../../../error-prone-rerun/rabbitmq-maximal-lifecycle-rollback-change-plan-audit-20260618_105823/judge.log
+?? ../../../../error-prone-rerun/ray-hardening-chain-job-change-plan-audit-20260618_092129/judge.json
+?? ../../../../error-prone-rerun/ray-hardening-chain-job-change-plan-audit-20260618_092129/judge.log
+?? ../../../../error-prone-rerun/ray-scale-upgrade-dashboard-rollback-audit-20260618_092201/judge.json
+?? ../../../../error-prone-rerun/ray-scale-upgrade-dashboard-rollback-audit-20260618_092201/judge.log
+?? ../../../../error-prone-rerun/spark-etl-oom-multi-tenant-sparkpi-audit-change-plan-20260618_092437/judge.json
+?? ../../../../error-prone-rerun/spark-etl-oom-multi-tenant-sparkpi-audit-change-plan-20260618_092437/judge.log
+?? ../../../../error-prone-rerun/spark-streaming-data-skew-sparkpi-rollback-audit-20260618_105645/judge.json
+?? ../../../../error-prone-rerun/spark-streaming-data-skew-sparkpi-rollback-audit-20260618_105645/judge.log
+?? ../../../../examples-rerun/cockroachdb-certificate-rotation-20260618_125810/judge.json
+?? ../../../../examples-rerun/cockroachdb-certificate-rotation-20260618_125810/judge.log
+?? ../../../../examples-rerun/cockroachdb-change-plan-only-20260618_125956/judge.json
+?? ../../../../examples-rerun/cockroachdb-change-plan-only-20260618_125956/judge.log
+?? ../../../../examples-rerun/cockroachdb-cluster-settings-20260618_130350/judge.json
+?? ../../../../examples-rerun/cockroachdb-cluster-settings-20260618_130350/judge.log
+?? ../../../../examples-rerun/cockroachdb-decommission-20260618_131109/judge.json
+?? ../../../../examples-rerun/cockroachdb-decommission-20260618_131109/judge.log
+?? ../../../../examples-rerun/cockroachdb-deploy-20260618_131658/judge.json
+?? ../../../../examples-rerun/cockroachdb-deploy-20260618_131658/judge.log
+?? ../../../../examples-rerun/cockroachdb-expose-ingress-20260618_132000/judge.json
+?? ../../../../examples-rerun/cockroachdb-expose-ingress-20260618_132000/judge.log
+?? ../../../../examples-rerun/cockroachdb-generate-cert-20260618_131942/judge.json
+?? ../../../../examples-rerun/cockroachdb-generate-cert-20260618_131942/judge.log
+?? ../../../../examples-rerun/cockroachdb-health-check-recovery-20260618_132503/judge.json
+?? ../../../../examples-rerun/cockroachdb-health-check-recovery-20260618_132503/judge.log
+?? ../../../../examples-rerun/cockroachdb-initialize-20260618_132528/judge.json
+?? ../../../../examples-rerun/cockroachdb-initialize-20260618_132528/judge.log
+?? ../../../../examples-rerun/cockroachdb-major-upgrade-finalize-20260618_132716/judge.json
+?? ../../../../examples-rerun/cockroachdb-major-upgrade-finalize-20260618_132716/judge.log
+?? ../../../../examples-rerun/cockroachdb-monitoring-integration-20260618_133055/judge.json
+?? ../../../../examples-rerun/cockroachdb-monitoring-integration-20260618_133055/judge.log
+?? ../../../../examples-rerun/cockroachdb-partitioned-update-20260618_133214/judge.json
+?? ../../../../examples-rerun/cockroachdb-partitioned-update-20260618_133214/judge.log
+?? ../../../../examples-rerun/cockroachdb-readonly-audit-20260618_133127/judge.json
+?? ../../../../examples-rerun/cockroachdb-readonly-audit-20260618_133127/judge.log
+?? ../../../../examples-rerun/cockroachdb-rollback-rehearsal-20260618_133749/judge.json
+?? ../../../../examples-rerun/cockroachdb-rollback-rehearsal-20260618_133749/judge.log
+?? ../../../../examples-rerun/cockroachdb-version-check-20260618_134310/judge.json
+?? ../../../../examples-rerun/cockroachdb-version-check-20260618_134310/judge.log
+?? ../../../../examples-rerun/cockroachdb-zone-config-20260618_134532/judge.json
+?? ../../../../examples-rerun/cockroachdb-zone-config-20260618_134532/judge.log
+?? ../../../../examples-rerun/demo-configmap-update-20260618_093031/judge.json
+?? ../../../../examples-rerun/demo-configmap-update-20260618_093031/judge.log
+?? ../../../../examples-rerun/demo-configmap-update-two-ns-20260618_092949/judge.json
+?? ../../../../examples-rerun/demo-configmap-update-two-ns-20260618_092949/judge.log
+?? ../../../../examples-rerun/elasticsearch-bootstrap-initial-master-nodes-20260618_134725/judge.json
+?? ../../../../examples-rerun/elasticsearch-bootstrap-initial-master-nodes-20260618_134725/judge.log
+?? ../../../../examples-rerun/elasticsearch-change-plan-only-20260618_134814/judge.json
+?? ../../../../examples-rerun/elasticsearch-change-plan-only-20260618_134814/judge.log
+?? ../../../../examples-rerun/elasticsearch-deploy-core-cluster-20260618_134930/judge.json
+?? ../../../../examples-rerun/elasticsearch-deploy-core-cluster-20260618_134930/judge.log
+?? ../../../../examples-rerun/elasticsearch-file-realm-user-roles-merge-20260618_135251/judge.json
+?? ../../../../examples-rerun/elasticsearch-file-realm-user-roles-merge-20260618_135251/judge.log
+?? ../../../../examples-rerun/elasticsearch-full-restart-upgrade-ha-20260618_135258/judge.json
+?? ../../../../examples-rerun/elasticsearch-full-restart-upgrade-ha-20260618_135258/judge.log
+?? ../../../../examples-rerun/elasticsearch-full-restart-upgrade-ha-hard-20260618_135551/judge.json
+?? ../../../../examples-rerun/elasticsearch-full-restart-upgrade-ha-hard-20260618_135551/judge.log
+?? ../../../../examples-rerun/elasticsearch-internal-http-service-drift-20260618_135901/judge.json
+?? ../../../../examples-rerun/elasticsearch-internal-http-service-drift-20260618_135901/judge.log
+?? ../../../../examples-rerun/elasticsearch-master-downscale-voting-exclusions-20260618_135956/judge.json
+?? ../../../../examples-rerun/elasticsearch-master-downscale-voting-exclusions-20260618_135956/judge.log
+?? ../../../../examples-rerun/elasticsearch-readonly-audit-20260618_140220/judge.json
+?? ../../../../examples-rerun/elasticsearch-readonly-audit-20260618_140220/judge.log
+?? ../../../../examples-rerun/elasticsearch-rollback-rehearsal-20260618_140314/judge.json
+?? ../../../../examples-rerun/elasticsearch-rollback-rehearsal-20260618_140314/judge.log
+?? ../../../../examples-rerun/elasticsearch-rotate-elastic-password-20260618_140538/judge.json
+?? ../../../../examples-rerun/elasticsearch-rotate-elastic-password-20260618_140538/judge.log
+?? ../../../../examples-rerun/elasticsearch-rotate-http-certs-20260618_140753/judge.json
+?? ../../../../examples-rerun/elasticsearch-rotate-http-certs-20260618_140753/judge.log
+?? ../../../../examples-rerun/elasticsearch-safe-downscale-with-shard-migration-20260618_140858/judge.json
+?? ../../../../examples-rerun/elasticsearch-safe-downscale-with-shard-migration-20260618_140858/judge.log
+?? ../../../../examples-rerun/elasticsearch-scale-up-new-nodeset-20260618_140841/judge.json
+?? ../../../../examples-rerun/elasticsearch-scale-up-new-nodeset-20260618_140841/judge.log
+?? ../../../../examples-rerun/elasticsearch-secure-http-ingress-20260618_141450/judge.json
+?? ../../../../examples-rerun/elasticsearch-secure-http-ingress-20260618_141450/judge.log
+?? ../../../../examples-rerun/elasticsearch-seed-hosts-repair-20260618_141912/judge.json
+?? ../../../../examples-rerun/elasticsearch-seed-hosts-repair-20260618_141912/judge.log
+?? ../../../../examples-rerun/elasticsearch-snapshot-repo-setup-20260618_142234/judge.json
+?? ../../../../examples-rerun/elasticsearch-snapshot-repo-setup-20260618_142234/judge.log
+?? ../../../../examples-rerun/elasticsearch-stack-monitoring-sidecars-20260618_142404/judge.json
+?? ../../../../examples-rerun/elasticsearch-stack-monitoring-sidecars-20260618_142404/judge.log
+?? ../../../../examples-rerun/elasticsearch-transform-job-recovery-20260618_142442/judge.json
+?? ../../../../examples-rerun/elasticsearch-transform-job-recovery-20260618_142442/judge.log
+?? ../../../../examples-rerun/elasticsearch-transport-additional-ca-trust-20260618_142736/judge.json
+?? ../../../../examples-rerun/elasticsearch-transport-additional-ca-trust-20260618_142736/judge.log
+?? ../../../../examples-rerun/mongodb-arbiters-20260618_143149/judge.json
+?? ../../../../examples-rerun/mongodb-arbiters-20260618_143149/judge.log
+?? ../../../../examples-rerun/mongodb-certificate-rotation-20260618_143430/judge.json
+?? ../../../../examples-rerun/mongodb-certificate-rotation-20260618_143430/judge.log
+?? ../../../../examples-rerun/mongodb-change-plan-only-20260618_143519/judge.json
+?? ../../../../examples-rerun/mongodb-change-plan-only-20260618_143519/judge.log
+?? ../../../../examples-rerun/mongodb-custom-roles-20260618_143654/judge.json
+?? ../../../../examples-rerun/mongodb-custom-roles-20260618_143654/judge.log
+?? ../../../../examples-rerun/mongodb-decommission-20260618_143932/judge.json
+?? ../../../../examples-rerun/mongodb-decommission-20260618_143932/judge.log
+?? ../../../../examples-rerun/mongodb-deploy-20260618_143954/judge.json
+?? ../../../../examples-rerun/mongodb-deploy-20260618_143954/judge.log
+?? ../../../../examples-rerun/mongodb-external-access-horizons-20260618_144035/judge.json
+?? ../../../../examples-rerun/mongodb-external-access-horizons-20260618_144035/judge.log
+?? ../../../../examples-rerun/mongodb-health-check-recovery-20260618_144224/judge.json
+?? ../../../../examples-rerun/mongodb-health-check-recovery-20260618_144224/judge.log
+?? ../../../../examples-rerun/mongodb-initialize-20260618_144335/judge.json
+?? ../../../../examples-rerun/mongodb-initialize-20260618_144335/judge.log
+?? ../../../../examples-rerun/mongodb-mongod-config-update-20260618_144349/judge.json
+?? ../../../../examples-rerun/mongodb-mongod-config-update-20260618_144349/judge.log
+?? ../../../../examples-rerun/mongodb-monitoring-integration-20260618_144621/judge.json
+?? ../../../../examples-rerun/mongodb-monitoring-integration-20260618_144621/judge.log
+?? ../../../../examples-rerun/mongodb-password-rotation-20260618_144657/judge.json
+?? ../../../../examples-rerun/mongodb-password-rotation-20260618_144657/judge.log
+?? ../../../../examples-rerun/mongodb-readiness-probe-tuning-20260618_144928/judge.json
+?? ../../../../examples-rerun/mongodb-readiness-probe-tuning-20260618_144928/judge.log
+?? ../../../../examples-rerun/mongodb-readonly-audit-20260618_145112/judge.json
+?? ../../../../examples-rerun/mongodb-readonly-audit-20260618_145112/judge.log
+?? ../../../../examples-rerun/mongodb-replica-scaling-20260618_145138/judge.json
+?? ../../../../examples-rerun/mongodb-replica-scaling-20260618_145138/judge.log
+?? ../../../../examples-rerun/mongodb-rollback-rehearsal-20260618_145434/judge.json
+?? ../../../../examples-rerun/mongodb-rollback-rehearsal-20260618_145434/judge.log
+?? ../../../../examples-rerun/mongodb-statefulset-customization-20260618_145519/judge.json
+?? ../../../../examples-rerun/mongodb-statefulset-customization-20260618_145519/judge.log
+?? ../../../../examples-rerun/mongodb-tls-setup-20260618_145745/judge.json
+?? ../../../../examples-rerun/mongodb-tls-setup-20260618_145745/judge.log
+?? ../../../../examples-rerun/mongodb-user-management-20260618_145817/judge.json
+?? ../../../../examples-rerun/mongodb-user-management-20260618_145817/judge.log
+?? ../../../../examples-rerun/mongodb-version-upgrade-20260618_150426/judge.json
+?? ../../../../examples-rerun/mongodb-version-upgrade-20260618_150426/judge.log
+?? ../../../../examples-rerun/mongodb-version-upgrade-hard-20260618_150705/judge.json
+?? ../../../../examples-rerun/mongodb-version-upgrade-hard-20260618_150705/judge.log
+?? ../../../../examples-rerun/nginx-ingress-change-plan-only-20260618_093024/judge.json
+?? ../../../../examples-rerun/nginx-ingress-change-plan-only-20260618_093024/judge.log
+?? ../../../../examples-rerun/nginx-ingress-class_only_upgrade-20260618_105346/judge.json
+?? ../../../../examples-rerun/nginx-ingress-class_only_upgrade-20260618_105346/judge.log
+?? ../../../../examples-rerun/nginx-ingress-create_ingress-20260618_093446/judge.json
+?? ../../../../examples-rerun/nginx-ingress-create_ingress-20260618_093446/judge.log
+?? ../../../../examples-rerun/nginx-ingress-ingress_canary-20260618_105820/judge.json
+?? ../../../../examples-rerun/nginx-ingress-ingress_canary-20260618_105820/judge.log
+?? ../../../../examples-rerun/nginx-ingress-otel_log_format-20260618_093804/judge.json
+?? ../../../../examples-rerun/nginx-ingress-otel_log_format-20260618_093804/judge.log
+?? ../../../../examples-rerun/nginx-ingress-rate_limit_ingress_easy-20260618_094134/judge.json
+?? ../../../../examples-rerun/nginx-ingress-rate_limit_ingress_easy-20260618_094134/judge.log
+?? ../../../../examples-rerun/nginx-ingress-rate_limit_replica_hard-20260618_094147/judge.json
+?? ../../../../examples-rerun/nginx-ingress-rate_limit_replica_hard-20260618_094147/judge.log
+?? ../../../../examples-rerun/nginx-ingress-readonly-audit-20260618_094519/judge.json
+?? ../../../../examples-rerun/nginx-ingress-readonly-audit-20260618_094519/judge.log
+?? ../../../../examples-rerun/nginx-ingress-renew_tls_secret-20260618_094839/judge.json
+?? ../../../../examples-rerun/nginx-ingress-renew_tls_secret-20260618_094839/judge.log
+?? ../../../../examples-rerun/nginx-ingress-rollback-rehearsal-20260618_094845/judge.json
+?? ../../../../examples-rerun/nginx-ingress-rollback-rehearsal-20260618_094845/judge.log
+?? ../../../../examples-rerun/rabbitmq-blue_green_migration-20260618_095236/judge.json
+?? ../../../../examples-rerun/rabbitmq-blue_green_migration-20260618_095236/judge.log
+?? ../../../../examples-rerun/rabbitmq-change-plan-only-20260618_095431/judge.json
+?? ../../../../examples-rerun/rabbitmq-change-plan-only-20260618_095431/judge.log
+?? ../../../../examples-rerun/rabbitmq-classic_queue-20260618_100020/judge.json
+?? ../../../../examples-rerun/rabbitmq-classic_queue-20260618_100020/judge.log
+?? ../../../../examples-rerun/rabbitmq-failover-20260618_100147/judge.json
+?? ../../../../examples-rerun/rabbitmq-failover-20260618_100147/judge.log
+?? ../../../../examples-rerun/rabbitmq-manual_backup_restore-20260618_100423/judge.json
+?? ../../../../examples-rerun/rabbitmq-manual_backup_restore-20260618_100423/judge.log
+?? ../../../../examples-rerun/rabbitmq-manual_monitoring-20260618_100425/judge.json
+?? ../../../../examples-rerun/rabbitmq-manual_monitoring-20260618_100425/judge.log
+?? ../../../../examples-rerun/rabbitmq-manual_policy_sync-20260618_100523/judge.json
+?? ../../../../examples-rerun/rabbitmq-manual_policy_sync-20260618_100523/judge.log
+?? ../../../../examples-rerun/rabbitmq-manual_skip_upgrade-20260618_100509/judge.json
+?? ../../../../examples-rerun/rabbitmq-manual_skip_upgrade-20260618_100509/judge.log
+?? ../../../../examples-rerun/rabbitmq-manual_tls_rotation-20260618_100702/judge.json
+?? ../../../../examples-rerun/rabbitmq-manual_tls_rotation-20260618_100702/judge.log
+?? ../../../../examples-rerun/rabbitmq-manual_user_permission-20260618_101009/judge.json
+?? ../../../../examples-rerun/rabbitmq-manual_user_permission-20260618_101009/judge.log
+?? ../../../../examples-rerun/rabbitmq-readonly-audit-20260618_101049/judge.json
+?? ../../../../examples-rerun/rabbitmq-readonly-audit-20260618_101049/judge.log
+?? ../../../../examples-rerun/rabbitmq-rollback-rehearsal-20260618_101351/judge.json
+?? ../../../../examples-rerun/rabbitmq-rollback-rehearsal-20260618_101351/judge.log
+?? ../../../../examples-rerun/ray-change-plan-only-20260618_101414/judge.json
+?? ../../../../examples-rerun/ray-change-plan-only-20260618_101414/judge.log
+?? ../../../../examples-rerun/ray-dashboard_exposure-20260618_101549/judge.json
+?? ../../../../examples-rerun/ray-dashboard_exposure-20260618_101549/judge.log
+?? ../../../../examples-rerun/ray-deploy_cluster-20260618_101732/judge.json
+?? ../../../../examples-rerun/ray-deploy_cluster-20260618_101732/judge.log
+?? ../../../../examples-rerun/ray-job_submission-20260618_101729/judge.json
+?? ../../../../examples-rerun/ray-job_submission-20260618_101729/judge.log
+?? ../../../../examples-rerun/ray-readonly-audit-20260618_101726/judge.json
+?? ../../../../examples-rerun/ray-readonly-audit-20260618_101726/judge.log
+?? ../../../../examples-rerun/ray-rollback-rehearsal-20260618_101745/judge.json
+?? ../../../../examples-rerun/ray-rollback-rehearsal-20260618_101745/judge.log
+?? ../../../../examples-rerun/ray-scale_workers-20260618_101938/judge.json
+?? ../../../../examples-rerun/ray-scale_workers-20260618_101938/judge.log
+?? ../../../../examples-rerun/ray-teardown_cluster-20260618_101952/judge.json
+?? ../../../../examples-rerun/ray-teardown_cluster-20260618_101952/judge.log
+?? ../../../../examples-rerun/ray-upgrade_version-20260618_102100/judge.json
+?? ../../../../examples-rerun/ray-upgrade_version-20260618_102100/judge.log
+?? ../../../../examples-rerun/ray-worker_recovery-20260618_102133/judge.json
+?? ../../../../examples-rerun/ray-worker_recovery-20260618_102133/judge.log
+?? ../../../../examples-rerun/spark-change-plan-only-20260618_102328/judge.json
+?? ../../../../examples-rerun/spark-change-plan-only-20260618_102328/judge.log
+?? ../../../../examples-rerun/spark-deploy_spark_pi-20260618_102338/judge.json
+?? ../../../../examples-rerun/spark-deploy_spark_pi-20260618_102338/judge.log
+?? ../../../../examples-rerun/spark-readonly-audit-20260618_102402/judge.json
+?? ../../../../examples-rerun/spark-readonly-audit-20260618_102402/judge.log
+?? ../../../../examples-rerun/spark-rollback-rehearsal-20260618_102458/judge.json
+?? ../../../../examples-rerun/spark-rollback-rehearsal-20260618_102458/judge.log
+?? ../../../../examples-rerun/spark-spark_data_skew-20260618_102629/judge.json
+?? ../../../../examples-rerun/spark-spark_data_skew-20260618_102629/judge.log
+?? ../../../../examples-rerun/spark-spark_etl_skew_oom-20260618_102637/judge.json
+?? ../../../../examples-rerun/spark-spark_etl_skew_oom-20260618_102637/judge.log
+?? ../../../../examples-rerun/spark-spark_multi_tenant-20260618_102709/judge.json
+?? ../../../../examples-rerun/spark-spark_multi_tenant-20260618_102709/judge.log
+?? ../../../../examples-rerun/spark-spark_runtime_ops-20260618_102736/judge.json
+?? ../../../../examples-rerun/spark-spark_runtime_ops-20260618_102736/judge.log
+?? ../../../../examples-rerun/spark-spark_streaming_autoscale-20260618_102907/judge.json
+?? ../../../../examples-rerun/spark-spark_streaming_autoscale-20260618_102907/judge.log
+?? ../../../../long-examples/mongodb-long-all-cases-marathon-a-20260618_080426/judge.json
+?? ../../../../long-examples/mongodb-long-all-cases-marathon-a-20260618_080426/judge.log
+?? ../../../../long-rerun/cockroachdb-long-multi-version-upgrade-20260618_154353/judge.json
+?? ../../../../long-rerun/cockroachdb-long-multi-version-upgrade-20260618_154353/judge.log
+?? ../../../../long-rerun/cockroachdb-long-security-upgrade-adversary-20260618_150932/judge.json
+?? ../../../../long-rerun/cockroachdb-long-security-upgrade-adversary-20260618_150932/judge.log
+?? ../../../../long-rerun/elasticsearch-long-all-cases-marathon-20260618_084727/judge.json
+?? ../../../../long-rerun/elasticsearch-long-all-cases-marathon-20260618_084727/judge.log
+?? ../../../../long-rerun/mongodb-long-all-cases-marathon-a-20260618_155709/judge.json
+?? ../../../../long-rerun/mongodb-long-all-cases-marathon-a-20260618_155709/judge.log
+?? ../../../../long-rerun/nginx-ingress-long-06-canary-scale-fault-20260618_084704/judge.json
+?? ../../../../long-rerun/nginx-ingress-long-06-canary-scale-fault-20260618_084704/judge.log
+?? ../../../../long-rerun/nginx-ingress-long-22-upgrade-otel-scale-fault-20260618_084758/judge.json
+?? ../../../../long-rerun/nginx-ingress-long-22-upgrade-otel-scale-fault-20260618_084758/judge.log
+?? ../../../../long-rerun/ray-long-scale-down-upgrade-recovery-20260618_084830/judge.json
+?? ../../../../long-rerun/ray-long-scale-down-upgrade-recovery-20260618_084830/judge.log
+?? ../../../../long-rerun/spark-long-pipeline-buildout-20260618_084827/judge.json
+?? ../../../../long-rerun/spark-long-pipeline-buildout-20260618_084827/judge.log
+?? ../../../cockroachdb-storage-lifecycle-20260625_203854/
+?? ../../../cockroachdb-version-decommission-20260625_205421/
+?? ../../../cockroachdb-zone-rebalance-upgrade-20260625_212639/
+?? ../../../elasticsearch-certs-password-users-20260625_213837/
+?? ../../../elasticsearch-deploy-scale-transform-snapshot-concat-blind-20260625_220728/
+?? ../../
+?? ../../../../short-rerun/cockroachdb-cert-rotation-audit-adversary-20260618_154824/judge.json
+?? ../../../../short-rerun/cockroachdb-cert-rotation-audit-adversary-20260618_154824/judge.log
+?? ../../../../short-rerun/cockroachdb-enterprise-lifecycle-adversary-20260618_095021/judge.json
+?? ../../../../short-rerun/cockroachdb-enterprise-lifecycle-adversary-20260618_095021/judge.log
+?? ../../../../short-rerun/demo-configmap-update-20260618_085020/judge.json
+?? ../../../../short-rerun/demo-configmap-update-20260618_085020/judge.log
+?? ../../../../short-rerun/elasticsearch-drift-monitoring-seed-20260618_102231/judge.json
+?? ../../../../short-rerun/elasticsearch-drift-monitoring-seed-20260618_102231/judge.log
+?? ../../../../short-rerun/elasticsearch-full-lifecycle-20260618_105654/judge.json
+?? ../../../../short-rerun/elasticsearch-full-lifecycle-20260618_105654/judge.log
+?? ../../../../short-rerun/elasticsearch-incident-response-chain-20260618_114051/judge.json
+?? ../../../../short-rerun/elasticsearch-incident-response-chain-20260618_114051/judge.log
+?? ../../../../short-rerun/elasticsearch-service-and-network-repair-20260618_115905/judge.json
+?? ../../../../short-rerun/elasticsearch-service-and-network-repair-20260618_115905/judge.log
+?? ../../../../short-rerun/elasticsearch-transform-scale-upgrade-20260618_115945/judge.json
+?? ../../../../short-rerun/elasticsearch-transform-scale-upgrade-20260618_115945/judge.log
+?? ../../../../short-rerun/mongodb-comprehensive-ops-day-20260618_115945/judge.json
+?? ../../../../short-rerun/mongodb-comprehensive-ops-day-20260618_115945/judge.log
+?? ../../../../short-rerun/mongodb-deploy-arbiters-roles-20260618_120836/judge.json
+?? ../../../../short-rerun/mongodb-deploy-arbiters-roles-20260618_120836/judge.log
+?? ../../../../short-rerun/mongodb-incident-response-chain-adversary-20260618_121821/judge.json
+?? ../../../../short-rerun/mongodb-incident-response-chain-adversary-20260618_121821/judge.log
+?? ../../../../short-rerun/nginx-ingress-15-e2e-five-stage-20260618_103101/judge.json
+?? ../../../../short-rerun/nginx-ingress-15-e2e-five-stage-20260618_103101/judge.log
+?? ../../../../short-rerun/platform-compute-pipeline-ext-20260618_085136/judge.json
+?? ../../../../short-rerun/platform-compute-pipeline-ext-20260618_085136/judge.log
+?? ../../../../short-rerun/rabbitmq-dr-security-e2e-adversary-20260618_104114/judge.json
+?? ../../../../short-rerun/rabbitmq-dr-security-e2e-adversary-20260618_104114/judge.log
+?? ../../../../short-rerun/rabbitmq-full-lifecycle-01-20260618_104609/judge.json
+?? ../../../../short-rerun/rabbitmq-full-lifecycle-01-20260618_104609/judge.log
+?? ../../../../short-rerun/ray-e2e-recovery-mid-20260618_085151/judge.json
+?? ../../../../short-rerun/ray-e2e-recovery-mid-20260618_085151/judge.log
+?? ../../../../short-rerun/spark-exhaustive-chain-adversary-20260618_090506/judge.json
+?? ../../../../short-rerun/spark-exhaustive-chain-adversary-20260618_090506/judge.log
+
+diff --git a/runs/new-added-workflows/elasticsearch-deploy-scale-transform-snapshot-concat-stateful-20260625_222341/stages/stage_02/elasticsearch-extra-data-nodes.yaml b/runs/new-added-workflows/elasticsearch-deploy-scale-transform-snapshot-concat-stateful-20260625_222341/stages/stage_02/elasticsearch-extra-data-nodes.yaml
+new file mode 100644
+index 0000000000000000000000000000000000000000..dae8b793dfb27efca3c999bf189f0e1febbf0eee
+--- /dev/null
++++ b/runs/new-added-workflows/elasticsearch-deploy-scale-transform-snapshot-concat-stateful-20260625_222341/stages/stage_02/elasticsearch-extra-data-nodes.yaml
+@@ -0,0 +1,150 @@
++apiVersion: v1
++kind: ConfigMap
++metadata:
++  name: es-extra-config
++  namespace: elasticsearch
++data:
++  elasticsearch.yml: |
++    cluster.name: es-cluster
++    node.name: ${POD_NAME}
++    node.roles: [ data, ingest ]
++    network.host: 0.0.0.0
++    discovery.seed_hosts:
++      - es-cluster-0.es-cluster.elasticsearch.svc.cluster.local
++      - es-cluster-1.es-cluster.elasticsearch.svc.cluster.local
++      - es-cluster-2.es-cluster.elasticsearch.svc.cluster.local
++    node.attr.node_pool: expansion
++    node.store.allow_mmap: false
++    xpack.security.enabled: false
++    xpack.security.http.ssl.enabled: false
++    xpack.security.transport.ssl.enabled: false
++    s3.client.default.endpoint: minio.elasticsearch.svc.cluster.local:9000
++    s3.client.default.protocol: http
++    s3.client.default.path_style_access: true
++---
++apiVersion: v1
++kind: Service
++metadata:
++  name: es-extra
++  namespace: elasticsearch
++spec:
++  clusterIP: None
++  selector:
++    app: es-extra
++  ports:
++    - name: http
++      port: 9200
++      targetPort: http
++    - name: transport
++      port: 9300
++      targetPort: transport
++---
++apiVersion: apps/v1
++kind: StatefulSet
++metadata:
++  name: es-extra
++  namespace: elasticsearch
++spec:
++  podManagementPolicy: Parallel
++  replicas: 2
++  selector:
++    matchLabels:
++      app: es-extra
++  serviceName: es-extra
++  template:
++    metadata:
++      labels:
++        app: es-extra
++        cluster: es-cluster
++    spec:
++      initContainers:
++        - name: install-s3-plugin
++          image: docker.elastic.co/elasticsearch/elasticsearch:8.11.1
++          command:
++            - /bin/sh
++            - -c
++            - |
++              set -e
++              if [ ! -d /usr/share/elasticsearch/plugins/repository-s3 ]; then
++                /usr/share/elasticsearch/bin/elasticsearch-plugin install --batch repository-s3
++              fi
++          volumeMounts:
++            - name: es-plugins
++              mountPath: /usr/share/elasticsearch/plugins
++      containers:
++        - name: elasticsearch
++          image: docker.elastic.co/elasticsearch/elasticsearch:8.11.1
++          command:
++            - /bin/bash
++            - -c
++            - |
++              set -euo pipefail
++              /usr/share/elasticsearch/bin/elasticsearch-keystore create >/dev/null 2>&1 || true
++              for setting in /mnt/secure-settings/*; do
++                [ -f "$setting" ] || continue
++                key="$(basename "$setting")"
++                if /usr/share/elasticsearch/bin/elasticsearch-keystore list | grep -Fxq "$key"; then
++                  continue
++                fi
++                /usr/share/elasticsearch/bin/elasticsearch-keystore add-file "$key" "$setting"
++              done
++              exec /usr/local/bin/docker-entrypoint.sh eswrapper
++          env:
++            - name: POD_NAME
++              valueFrom:
++                fieldRef:
++                  fieldPath: metadata.name
++            - name: ES_JAVA_OPTS
++              value: -Xms512m -Xmx512m
++          ports:
++            - name: http
++              containerPort: 9200
++            - name: transport
++              containerPort: 9300
++          readinessProbe:
++            httpGet:
++              path: /_cluster/health?local=true
++              port: http
++            initialDelaySeconds: 10
++            periodSeconds: 5
++            timeoutSeconds: 2
++            failureThreshold: 6
++          resources:
++            requests:
++              cpu: 500m
++              memory: 1Gi
++            limits:
++              cpu: "1"
++              memory: 2Gi
++          volumeMounts:
++            - name: es-extra-config
++              mountPath: /usr/share/elasticsearch/config/elasticsearch.yml
++              subPath: elasticsearch.yml
++            - name: es-plugins
++              mountPath: /usr/share/elasticsearch/plugins
++            - name: secure-settings
++              mountPath: /mnt/secure-settings
++              readOnly: true
++            - name: data
++              mountPath: /usr/share/elasticsearch/data
++      volumes:
++        - name: es-extra-config
++          configMap:
++            name: es-extra-config
++            items:
++              - key: elasticsearch.yml
++                path: elasticsearch.yml
++        - name: es-plugins
++          emptyDir: {}
++        - name: secure-settings
++          secret:
++            secretName: es-secure-settings
++  volumeClaimTemplates:
++    - metadata:
++        name: data
++      spec:
++        accessModes:
++          - ReadWriteOnce
++        resources:
++          requests:
++            storage: 5Gi
+
+ succeeded in 1342ms:
+keystore.seed
+s3.client.default.access_key
+s3.client.default.secret_key
+
+codex
+One note from the workspace check: the broader repository already has many unrelated changes outside this stage. I only added `elasticsearch-extra-data-nodes.yaml` in the current stage and applied it to the cluster.
+exec
+/bin/zsh -lc 'git status --short -- elasticsearch-extra-data-nodes.yaml' in /Users/jinyige/Karma/runs/new-added-workflows/elasticsearch-deploy-scale-transform-snapshot-concat-stateful-20260625_222341/stages/stage_02
+ succeeded in 0ms:
+?? elasticsearch-extra-data-nodes.yaml
+
+exec
+/bin/zsh -lc "ls -l elasticsearch-extra-data-nodes.yaml && sed -n '1,220p' elasticsearch-extra-data-nodes.yaml" in /Users/jinyige/Karma/runs/new-added-workflows/elasticsearch-deploy-scale-transform-snapshot-concat-stateful-20260625_222341/stages/stage_02
+ succeeded in 0ms:
+-rw-r--r--  1 jinyige  staff  4462 Jun 25 17:29 elasticsearch-extra-data-nodes.yaml
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: es-extra-config
+  namespace: elasticsearch
+data:
+  elasticsearch.yml: |
+    cluster.name: es-cluster
+    node.name: ${POD_NAME}
+    node.roles: [ data, ingest ]
+    network.host: 0.0.0.0
+    discovery.seed_hosts:
+      - es-cluster-0.es-cluster.elasticsearch.svc.cluster.local
+      - es-cluster-1.es-cluster.elasticsearch.svc.cluster.local
+      - es-cluster-2.es-cluster.elasticsearch.svc.cluster.local
+    node.attr.node_pool: expansion
+    node.store.allow_mmap: false
+    xpack.security.enabled: false
+    xpack.security.http.ssl.enabled: false
+    xpack.security.transport.ssl.enabled: false
+    s3.client.default.endpoint: minio.elasticsearch.svc.cluster.local:9000
+    s3.client.default.protocol: http
+    s3.client.default.path_style_access: true
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: es-extra
+  namespace: elasticsearch
+spec:
+  clusterIP: None
+  selector:
+    app: es-extra
+  ports:
+    - name: http
+      port: 9200
+      targetPort: http
+    - name: transport
+      port: 9300
+      targetPort: transport
+---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: es-extra
+  namespace: elasticsearch
+spec:
+  podManagementPolicy: Parallel
+  replicas: 2
+  selector:
+    matchLabels:
+      app: es-extra
+  serviceName: es-extra
+  template:
+    metadata:
+      labels:
+        app: es-extra
+        cluster: es-cluster
+    spec:
+      initContainers:
+        - name: install-s3-plugin
+          image: docker.elastic.co/elasticsearch/elasticsearch:8.11.1
+          command:
+            - /bin/sh
+            - -c
+            - |
+              set -e
+              if [ ! -d /usr/share/elasticsearch/plugins/repository-s3 ]; then
+                /usr/share/elasticsearch/bin/elasticsearch-plugin install --batch repository-s3
+              fi
+          volumeMounts:
+            - name: es-plugins
+              mountPath: /usr/share/elasticsearch/plugins
+      containers:
+        - name: elasticsearch
+          image: docker.elastic.co/elasticsearch/elasticsearch:8.11.1
+          command:
+            - /bin/bash
+            - -c
+            - |
+              set -euo pipefail
+              /usr/share/elasticsearch/bin/elasticsearch-keystore create >/dev/null 2>&1 || true
+              for setting in /mnt/secure-settings/*; do
+                [ -f "$setting" ] || continue
+                key="$(basename "$setting")"
+                if /usr/share/elasticsearch/bin/elasticsearch-keystore list | grep -Fxq "$key"; then
+                  continue
+                fi
+                /usr/share/elasticsearch/bin/elasticsearch-keystore add-file "$key" "$setting"
+              done
+              exec /usr/local/bin/docker-entrypoint.sh eswrapper
+          env:
+            - name: POD_NAME
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.name
+            - name: ES_JAVA_OPTS
+              value: -Xms512m -Xmx512m
+          ports:
+            - name: http
+              containerPort: 9200
+            - name: transport
+              containerPort: 9300
+          readinessProbe:
+            httpGet:
+              path: /_cluster/health?local=true
+              port: http
+            initialDelaySeconds: 10
+            periodSeconds: 5
+            timeoutSeconds: 2
+            failureThreshold: 6
+          resources:
+            requests:
+              cpu: 500m
+              memory: 1Gi
+            limits:
+              cpu: "1"
+              memory: 2Gi
+          volumeMounts:
+            - name: es-extra-config
+              mountPath: /usr/share/elasticsearch/config/elasticsearch.yml
+              subPath: elasticsearch.yml
+            - name: es-plugins
+              mountPath: /usr/share/elasticsearch/plugins
+            - name: secure-settings
+              mountPath: /mnt/secure-settings
+              readOnly: true
+            - name: data
+              mountPath: /usr/share/elasticsearch/data
+      volumes:
+        - name: es-extra-config
+          configMap:
+            name: es-extra-config
+            items:
+              - key: elasticsearch.yml
+                path: elasticsearch.yml
+        - name: es-plugins
+          emptyDir: {}
+        - name: secure-settings
+          secret:
+            secretName: es-secure-settings
+  volumeClaimTemplates:
+    - metadata:
+        name: data
+      spec:
+        accessModes:
+          - ReadWriteOnce
+        resources:
+          requests:
+            storage: 5Gi
+
+diff --git a/runs/new-added-workflows/elasticsearch-deploy-scale-transform-snapshot-concat-stateful-20260625_222341/stages/stage_02/elasticsearch-extra-data-nodes.yaml b/runs/new-added-workflows/elasticsearch-deploy-scale-transform-snapshot-concat-stateful-20260625_222341/stages/stage_02/elasticsearch-extra-data-nodes.yaml
+new file mode 100644
+index 0000000000000000000000000000000000000000..dae8b793dfb27efca3c999bf189f0e1febbf0eee
+--- /dev/null
++++ b/runs/new-added-workflows/elasticsearch-deploy-scale-transform-snapshot-concat-stateful-20260625_222341/stages/stage_02/elasticsearch-extra-data-nodes.yaml
+@@ -0,0 +1,150 @@
++apiVersion: v1
++kind: ConfigMap
++metadata:
++  name: es-extra-config
++  namespace: elasticsearch
++data:
++  elasticsearch.yml: |
++    cluster.name: es-cluster
++    node.name: ${POD_NAME}
++    node.roles: [ data, ingest ]
++    network.host: 0.0.0.0
++    discovery.seed_hosts:
++      - es-cluster-0.es-cluster.elasticsearch.svc.cluster.local
++      - es-cluster-1.es-cluster.elasticsearch.svc.cluster.local
++      - es-cluster-2.es-cluster.elasticsearch.svc.cluster.local
++    node.attr.node_pool: expansion
++    node.store.allow_mmap: false
++    xpack.security.enabled: false
++    xpack.security.http.ssl.enabled: false
++    xpack.security.transport.ssl.enabled: false
++    s3.client.default.endpoint: minio.elasticsearch.svc.cluster.local:9000
++    s3.client.default.protocol: http
++    s3.client.default.path_style_access: true
++---
++apiVersion: v1
++kind: Service
++metadata:
++  name: es-extra
++  namespace: elasticsearch
++spec:
++  clusterIP: None
++  selector:
++    app: es-extra
++  ports:
++    - name: http
++      port: 9200
++      targetPort: http
++    - name: transport
++      port: 9300
++      targetPort: transport
++---
++apiVersion: apps/v1
++kind: StatefulSet
++metadata:
++  name: es-extra
++  namespace: elasticsearch
++spec:
++  podManagementPolicy: Parallel
++  replicas: 2
++  selector:
++    matchLabels:
++      app: es-extra
++  serviceName: es-extra
++  template:
++    metadata:
++      labels:
++        app: es-extra
++        cluster: es-cluster
++    spec:
++      initContainers:
++        - name: install-s3-plugin
++          image: docker.elastic.co/elasticsearch/elasticsearch:8.11.1
++          command:
++            - /bin/sh
++            - -c
++            - |
++              set -e
++              if [ ! -d /usr/share/elasticsearch/plugins/repository-s3 ]; then
++                /usr/share/elasticsearch/bin/elasticsearch-plugin install --batch repository-s3
++              fi
++          volumeMounts:
++            - name: es-plugins
++              mountPath: /usr/share/elasticsearch/plugins
++      containers:
++        - name: elasticsearch
++          image: docker.elastic.co/elasticsearch/elasticsearch:8.11.1
++          command:
++            - /bin/bash
++            - -c
++            - |
++              set -euo pipefail
++              /usr/share/elasticsearch/bin/elasticsearch-keystore create >/dev/null 2>&1 || true
++              for setting in /mnt/secure-settings/*; do
++                [ -f "$setting" ] || continue
++                key="$(basename "$setting")"
++                if /usr/share/elasticsearch/bin/elasticsearch-keystore list | grep -Fxq "$key"; then
++                  continue
++                fi
++                /usr/share/elasticsearch/bin/elasticsearch-keystore add-file "$key" "$setting"
++              done
++              exec /usr/local/bin/docker-entrypoint.sh eswrapper
++          env:
++            - name: POD_NAME
++              valueFrom:
++                fieldRef:
++                  fieldPath: metadata.name
++            - name: ES_JAVA_OPTS
++              value: -Xms512m -Xmx512m
++          ports:
++            - name: http
++              containerPort: 9200
++            - name: transport
++              containerPort: 9300
++          readinessProbe:
++            httpGet:
++              path: /_cluster/health?local=true
++              port: http
++            initialDelaySeconds: 10
++            periodSeconds: 5
++            timeoutSeconds: 2
++            failureThreshold: 6
++          resources:
++            requests:
++              cpu: 500m
++              memory: 1Gi
++            limits:
++              cpu: "1"
++              memory: 2Gi
++          volumeMounts:
++            - name: es-extra-config
++              mountPath: /usr/share/elasticsearch/config/elasticsearch.yml
++              subPath: elasticsearch.yml
++            - name: es-plugins
++              mountPath: /usr/share/elasticsearch/plugins
++            - name: secure-settings
++              mountPath: /mnt/secure-settings
++              readOnly: true
++            - name: data
++              mountPath: /usr/share/elasticsearch/data
++      volumes:
++        - name: es-extra-config
++          configMap:
++            name: es-extra-config
++            items:
++              - key: elasticsearch.yml
++                path: elasticsearch.yml
++        - name: es-plugins
++          emptyDir: {}
++        - name: secure-settings
++          secret:
++            secretName: es-secure-settings
++  volumeClaimTemplates:
++    - metadata:
++        name: data
++      spec:
++        accessModes:
++          - ReadWriteOnce
++        resources:
++          requests:
++            storage: 5Gi
+
+codex
+Done.
+
+I added [elasticsearch-extra-data-nodes.yaml](/Users/jinyige/Karma/runs/new-added-workflows/elasticsearch-deploy-scale-transform-snapshot-concat-stateful-20260625_222341/stages/stage_02/elasticsearch-extra-data-nodes.yaml:1) and applied it. It creates `es-extra` with 2 data/ingest nodes using `node.attr.node_pool: expansion`, loads MinIO credentials from `es-secure-settings` into the Elasticsearch keystore, and does not put credentials in YAML or env vars.
+
+Verification:
+- Cluster health: `green`, `number_of_nodes: 5`, `number_of_data_nodes: 5`
+- `es-cluster` StatefulSet remains `replicas=3 ready=3`
+- `es-extra` StatefulSet is `2/2`
+- `app-data` shards are all on `es-extra-0` and `es-extra-1`
+- New nodes expose `node_pool=expansion`; original nodes do not
+- Registered `minio-repo`
+- Created successful snapshot: `snapshot-20260625223035`, state `SUCCESS`, `3/3` shards successful
+
+No operators or CRDs were installed, and the original Elasticsearch pods were not restarted.
+diff --git a/runs/new-added-workflows/elasticsearch-deploy-scale-transform-snapshot-concat-stateful-20260625_222341/stages/stage_02/elasticsearch-extra-data-nodes.yaml b/runs/new-added-workflows/elasticsearch-deploy-scale-transform-snapshot-concat-stateful-20260625_222341/stages/stage_02/elasticsearch-extra-data-nodes.yaml
+new file mode 100644
+index 0000000000000000000000000000000000000000..dae8b793dfb27efca3c999bf189f0e1febbf0eee
+--- /dev/null
++++ b/runs/new-added-workflows/elasticsearch-deploy-scale-transform-snapshot-concat-stateful-20260625_222341/stages/stage_02/elasticsearch-extra-data-nodes.yaml
+@@ -0,0 +1,150 @@
++apiVersion: v1
++kind: ConfigMap
++metadata:
++  name: es-extra-config
++  namespace: elasticsearch
++data:
++  elasticsearch.yml: |
++    cluster.name: es-cluster
++    node.name: ${POD_NAME}
++    node.roles: [ data, ingest ]
++    network.host: 0.0.0.0
++    discovery.seed_hosts:
++      - es-cluster-0.es-cluster.elasticsearch.svc.cluster.local
++      - es-cluster-1.es-cluster.elasticsearch.svc.cluster.local
++      - es-cluster-2.es-cluster.elasticsearch.svc.cluster.local
++    node.attr.node_pool: expansion
++    node.store.allow_mmap: false
++    xpack.security.enabled: false
++    xpack.security.http.ssl.enabled: false
++    xpack.security.transport.ssl.enabled: false
++    s3.client.default.endpoint: minio.elasticsearch.svc.cluster.local:9000
++    s3.client.default.protocol: http
++    s3.client.default.path_style_access: true
++---
++apiVersion: v1
++kind: Service
++metadata:
++  name: es-extra
++  namespace: elasticsearch
++spec:
++  clusterIP: None
++  selector:
++    app: es-extra
++  ports:
++    - name: http
++      port: 9200
++      targetPort: http
++    - name: transport
++      port: 9300
++      targetPort: transport
++---
++apiVersion: apps/v1
++kind: StatefulSet
++metadata:
++  name: es-extra
++  namespace: elasticsearch
++spec:
++  podManagementPolicy: Parallel
++  replicas: 2
++  selector:
++    matchLabels:
++      app: es-extra
++  serviceName: es-extra
++  template:
++    metadata:
++      labels:
++        app: es-extra
++        cluster: es-cluster
++    spec:
++      initContainers:
++        - name: install-s3-plugin
++          image: docker.elastic.co/elasticsearch/elasticsearch:8.11.1
++          command:
++            - /bin/sh
++            - -c
++            - |
++              set -e
++              if [ ! -d /usr/share/elasticsearch/plugins/repository-s3 ]; then
++                /usr/share/elasticsearch/bin/elasticsearch-plugin install --batch repository-s3
++              fi
++          volumeMounts:
++            - name: es-plugins
++              mountPath: /usr/share/elasticsearch/plugins
++      containers:
++        - name: elasticsearch
++          image: docker.elastic.co/elasticsearch/elasticsearch:8.11.1
++          command:
++            - /bin/bash
++            - -c
++            - |
++              set -euo pipefail
++              /usr/share/elasticsearch/bin/elasticsearch-keystore create >/dev/null 2>&1 || true
++              for setting in /mnt/secure-settings/*; do
++                [ -f "$setting" ] || continue
++                key="$(basename "$setting")"
++                if /usr/share/elasticsearch/bin/elasticsearch-keystore list | grep -Fxq "$key"; then
++                  continue
++                fi
++                /usr/share/elasticsearch/bin/elasticsearch-keystore add-file "$key" "$setting"
++              done
++              exec /usr/local/bin/docker-entrypoint.sh eswrapper
++          env:
++            - name: POD_NAME
++              valueFrom:
++                fieldRef:
++                  fieldPath: metadata.name
++            - name: ES_JAVA_OPTS
++              value: -Xms512m -Xmx512m
++          ports:
++            - name: http
++              containerPort: 9200
++            - name: transport
++              containerPort: 9300
++          readinessProbe:
++            httpGet:
++              path: /_cluster/health?local=true
++              port: http
++            initialDelaySeconds: 10
++            periodSeconds: 5
++            timeoutSeconds: 2
++            failureThreshold: 6
++          resources:
++            requests:
++              cpu: 500m
++              memory: 1Gi
++            limits:
++              cpu: "1"
++              memory: 2Gi
++          volumeMounts:
++            - name: es-extra-config
++              mountPath: /usr/share/elasticsearch/config/elasticsearch.yml
++              subPath: elasticsearch.yml
++            - name: es-plugins
++              mountPath: /usr/share/elasticsearch/plugins
++            - name: secure-settings
++              mountPath: /mnt/secure-settings
++              readOnly: true
++            - name: data
++              mountPath: /usr/share/elasticsearch/data
++      volumes:
++        - name: es-extra-config
++          configMap:
++            name: es-extra-config
++            items:
++              - key: elasticsearch.yml
++                path: elasticsearch.yml
++        - name: es-plugins
++          emptyDir: {}
++        - name: secure-settings
++          secret:
++            secretName: es-secure-settings
++  volumeClaimTemplates:
++    - metadata:
++        name: data
++      spec:
++        accessModes:
++          - ReadWriteOnce
++        resources:
++          requests:
++            storage: 5Gi
+
+tokens used
+107,692
+Done.
+
+I added [elasticsearch-extra-data-nodes.yaml](/Users/jinyige/Karma/runs/new-added-workflows/elasticsearch-deploy-scale-transform-snapshot-concat-stateful-20260625_222341/stages/stage_02/elasticsearch-extra-data-nodes.yaml:1) and applied it. It creates `es-extra` with 2 data/ingest nodes using `node.attr.node_pool: expansion`, loads MinIO credentials from `es-secure-settings` into the Elasticsearch keystore, and does not put credentials in YAML or env vars.
+
+Verification:
+- Cluster health: `green`, `number_of_nodes: 5`, `number_of_data_nodes: 5`
+- `es-cluster` StatefulSet remains `replicas=3 ready=3`
+- `es-extra` StatefulSet is `2/2`
+- `app-data` shards are all on `es-extra-0` and `es-extra-1`
+- New nodes expose `node_pool=expansion`; original nodes do not
+- Registered `minio-repo`
+- Created successful snapshot: `snapshot-20260625223035`, state `SUCCESS`, `3/3` shards successful
+
+No operators or CRDs were installed, and the original Elasticsearch pods were not restarted.

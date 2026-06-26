@@ -1,0 +1,642 @@
+OpenAI Codex v0.142.2
+--------
+workdir: /Users/jinyige/Karma/runs/new-added-workflows/cockroachdb-zone-rebalance-upgrade-20260625_212639/stages/stage_02
+model: gpt-5.5
+provider: openai
+approval: never
+sandbox: danger-full-access
+reasoning effort: xhigh
+reasoning summaries: none
+session id: 019f00b0-e26f-7410-bbe6-b41be249f6ed
+--------
+user
+A 3-node CockroachDB cluster has been deployed but not yet initialized.
+
+OBSERVED STATE:
+- CockroachDB pods are running but the cluster is not forming
+- Pod logs show join/advertise errors when attempting to contact peer nodes
+
+YOUR TASK:
+Diagnose and fix the configuration so all 3 nodes can join.
+Initialize the CockroachDB cluster so it becomes SQL-ready.
+
+CONSTRAINTS:
+- Use existing resources; do not recreate the cluster.
+- No CRDs/operators/Helm.
+- Insecure mode (no TLS) for this case.
+
+HINT:
+Use in-cluster tooling available in the CockroachDB pods.
+
+GOAL:
+- Cluster accepts SQL connections.
+- 3 nodes are healthy and visible in cluster status.
+
+Useful commands:
+```bash
+# View pod logs
+kubectl -n cockroachdb logs crdb-cluster-0
+
+# Check all pods
+kubectl -n cockroachdb get pods
+
+# Interactive SQL shell
+kubectl -n cockroachdb exec -it crdb-cluster-0 -- ./cockroach sql --insecure
+```
+codex
+I’ll inspect the live Kubernetes resources first so the fix is scoped to the existing StatefulSet/services, then I’ll patch only the configuration needed for the pods to discover each other and initialize the cluster.
+exec
+/bin/zsh -lc 'kubectl -n cockroachdb get pods -o wide' in /Users/jinyige/Karma/runs/new-added-workflows/cockroachdb-zone-rebalance-upgrade-20260625_212639/stages/stage_02
+exec
+/bin/zsh -lc 'kubectl -n cockroachdb logs crdb-cluster-0 --tail=120' in /Users/jinyige/Karma/runs/new-added-workflows/cockroachdb-zone-rebalance-upgrade-20260625_212639/stages/stage_02
+exec
+/bin/zsh -lc 'kubectl -n cockroachdb get svc -o wide' in /Users/jinyige/Karma/runs/new-added-workflows/cockroachdb-zone-rebalance-upgrade-20260625_212639/stages/stage_02
+exec
+/bin/zsh -lc 'kubectl -n cockroachdb get statefulset crdb-cluster -o yaml' in /Users/jinyige/Karma/runs/new-added-workflows/cockroachdb-zone-rebalance-upgrade-20260625_212639/stages/stage_02
+ succeeded in 248ms:
+NAME             READY   STATUS    RESTARTS   AGE   IP            NODE           NOMINATED NODE   READINESS GATES
+crdb-cluster-0   0/1     Running   0          27s   10.244.3.31   kind-worker3   <none>           <none>
+crdb-cluster-1   0/1     Running   0          27s   10.244.1.30   kind-worker    <none>           <none>
+crdb-cluster-2   0/1     Running   0          27s   10.244.2.27   kind-worker2   <none>           <none>
+
+ succeeded in 246ms:
+NAME                  TYPE        CLUSTER-IP     EXTERNAL-IP   PORT(S)              AGE   SELECTOR
+crdb-cluster          ClusterIP   None           <none>        26257/TCP,8080/TCP   29s   app.kubernetes.io/instance=crdb-cluster,app.kubernetes.io/name=cockroachdb
+crdb-cluster-public   ClusterIP   10.96.149.97   <none>        26257/TCP,8080/TCP   29s   app.kubernetes.io/instance=crdb-cluster,app.kubernetes.io/name=cockroachdb
+
+ succeeded in 243ms:
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  annotations:
+    kubectl.kubernetes.io/last-applied-configuration: |
+      {"apiVersion":"apps/v1","kind":"StatefulSet","metadata":{"annotations":{},"labels":{"app.kubernetes.io/instance":"crdb-cluster","app.kubernetes.io/name":"cockroachdb"},"name":"crdb-cluster","namespace":"cockroachdb"},"spec":{"podManagementPolicy":"Parallel","replicas":3,"selector":{"matchLabels":{"app.kubernetes.io/instance":"crdb-cluster","app.kubernetes.io/name":"cockroachdb"}},"serviceName":"crdb-cluster","template":{"metadata":{"labels":{"app.kubernetes.io/instance":"crdb-cluster","app.kubernetes.io/name":"cockroachdb"}},"spec":{"containers":[{"command":["/bin/bash","-c","exec /cockroach/cockroach start --logtostderr=INFO --insecure --advertise-host=$(POD_NAME).crdb-cluster.cockroachdb.svc.cluster.local --http-addr=0.0.0.0:8080 --port=26257 --cache=25% --max-sql-memory=25% --join=crdb-cluster-0.crdb-cluster.cockroachdb.svc.cluster.local:26257,crdb-cluster-1.crdb-cluster.cockroachdb.svc.cluster.local:26257,crdb-cluster-2.crdb-cluster.cockroachdb.svc.cluster.local:26257"],"env":[{"name":"POD_NAME","valueFrom":{"fieldRef":{"fieldPath":"metadata.name"}}},{"name":"POD_NAMESPACE","valueFrom":{"fieldRef":{"fieldPath":"metadata.namespace"}}}],"image":"cockroachdb/cockroach:v24.1.0","imagePullPolicy":"IfNotPresent","livenessProbe":{"httpGet":{"path":"/health","port":"http"},"initialDelaySeconds":30,"periodSeconds":5},"name":"db","ports":[{"containerPort":26257,"name":"grpc"},{"containerPort":8080,"name":"http"}],"readinessProbe":{"failureThreshold":2,"httpGet":{"path":"/health?ready=1","port":"http"},"initialDelaySeconds":10,"periodSeconds":5},"resources":{"limits":{"cpu":"1","memory":"2Gi"},"requests":{"cpu":"1","memory":"2Gi"}},"volumeMounts":[{"mountPath":"/cockroach/cockroach-data","name":"datadir"}]}],"serviceAccountName":"crdb-cluster-sa","terminationGracePeriodSeconds":10}},"volumeClaimTemplates":[{"metadata":{"labels":{"app.kubernetes.io/instance":"crdb-cluster","app.kubernetes.io/name":"cockroachdb"},"name":"datadir"},"spec":{"accessModes":["ReadWriteOnce"],"resources":{"requests":{"storage":"10Gi"}},"volumeMode":"Filesystem"}}]}}
+  creationTimestamp: "2026-06-25T21:30:07Z"
+  generation: 1
+  labels:
+    app.kubernetes.io/instance: crdb-cluster
+    app.kubernetes.io/name: cockroachdb
+  name: crdb-cluster
+  namespace: cockroachdb
+  resourceVersion: "276064"
+  uid: bc21a8c4-1a85-4226-9f44-b6fcf7c4643a
+spec:
+  persistentVolumeClaimRetentionPolicy:
+    whenDeleted: Retain
+    whenScaled: Retain
+  podManagementPolicy: Parallel
+  replicas: 3
+  revisionHistoryLimit: 10
+  selector:
+    matchLabels:
+      app.kubernetes.io/instance: crdb-cluster
+      app.kubernetes.io/name: cockroachdb
+  serviceName: crdb-cluster
+  template:
+    metadata:
+      creationTimestamp: null
+      labels:
+        app.kubernetes.io/instance: crdb-cluster
+        app.kubernetes.io/name: cockroachdb
+    spec:
+      containers:
+      - command:
+        - /bin/bash
+        - -c
+        - exec /cockroach/cockroach start --logtostderr=INFO --insecure --advertise-host=$(POD_NAME).crdb-cluster.cockroachdb.svc.cluster.local
+          --http-addr=0.0.0.0:8080 --port=26257 --cache=25% --max-sql-memory=25% --join=crdb-cluster-0.crdb-cluster.cockroachdb.svc.cluster.local:26257,crdb-cluster-1.crdb-cluster.cockroachdb.svc.cluster.local:26257,crdb-cluster-2.crdb-cluster.cockroachdb.svc.cluster.local:26257
+        env:
+        - name: POD_NAME
+          valueFrom:
+            fieldRef:
+              apiVersion: v1
+              fieldPath: metadata.name
+        - name: POD_NAMESPACE
+          valueFrom:
+            fieldRef:
+              apiVersion: v1
+              fieldPath: metadata.namespace
+        image: cockroachdb/cockroach:v24.1.0
+        imagePullPolicy: IfNotPresent
+        livenessProbe:
+          failureThreshold: 3
+          httpGet:
+            path: /health
+            port: http
+            scheme: HTTP
+          initialDelaySeconds: 30
+          periodSeconds: 5
+          successThreshold: 1
+          timeoutSeconds: 1
+        name: db
+        ports:
+        - containerPort: 26257
+          name: grpc
+          protocol: TCP
+        - containerPort: 8080
+          name: http
+          protocol: TCP
+        readinessProbe:
+          failureThreshold: 2
+          httpGet:
+            path: /health?ready=1
+            port: http
+            scheme: HTTP
+          initialDelaySeconds: 10
+          periodSeconds: 5
+          successThreshold: 1
+          timeoutSeconds: 1
+        resources:
+          limits:
+            cpu: "1"
+            memory: 2Gi
+          requests:
+            cpu: "1"
+            memory: 2Gi
+        terminationMessagePath: /dev/termination-log
+        terminationMessagePolicy: File
+        volumeMounts:
+        - mountPath: /cockroach/cockroach-data
+          name: datadir
+      dnsPolicy: ClusterFirst
+      restartPolicy: Always
+      schedulerName: default-scheduler
+      securityContext: {}
+      serviceAccount: crdb-cluster-sa
+      serviceAccountName: crdb-cluster-sa
+      terminationGracePeriodSeconds: 10
+  updateStrategy:
+    rollingUpdate:
+      partition: 0
+    type: RollingUpdate
+  volumeClaimTemplates:
+  - apiVersion: v1
+    kind: PersistentVolumeClaim
+    metadata:
+      creationTimestamp: null
+      labels:
+        app.kubernetes.io/instance: crdb-cluster
+        app.kubernetes.io/name: cockroachdb
+      name: datadir
+    spec:
+      accessModes:
+      - ReadWriteOnce
+      resources:
+        requests:
+          storage: 10Gi
+      volumeMode: Filesystem
+    status:
+      phase: Pending
+status:
+  availableReplicas: 0
+  collisionCount: 0
+  currentReplicas: 3
+  currentRevision: crdb-cluster-76646fb9b9
+  observedGeneration: 1
+  replicas: 3
+  updateRevision: crdb-cluster-76646fb9b9
+  updatedReplicas: 3
+
+ succeeded in 269ms:
+W260625 21:30:10.935318 1 1@cli/start.go:1432 ⋮ [n?] 1  ALL SECURITY CONTROLS HAVE BEEN DISABLED!
+W260625 21:30:10.935318 1 1@cli/start.go:1432 ⋮ [n?] 1 +
+W260625 21:30:10.935318 1 1@cli/start.go:1432 ⋮ [n?] 1 +This mode is intended for non-production testing only.
+W260625 21:30:10.935318 1 1@cli/start.go:1432 ⋮ [n?] 1 +
+W260625 21:30:10.935318 1 1@cli/start.go:1432 ⋮ [n?] 1 +In this mode:
+W260625 21:30:10.935318 1 1@cli/start.go:1432 ⋮ [n?] 1 +- Your cluster is open to any client that can access ‹any of your IP addresses›.
+W260625 21:30:10.935318 1 1@cli/start.go:1432 ⋮ [n?] 1 +- Intruders with access to your machine or network can observe client-server traffic.
+W260625 21:30:10.935318 1 1@cli/start.go:1432 ⋮ [n?] 1 +- Intruders can log in without password and read or write any data in the cluster.
+W260625 21:30:10.935318 1 1@cli/start.go:1432 ⋮ [n?] 1 +- Intruders can consume all your server's resources and cause unavailability.
+I260625 21:30:10.935475 1 1@cli/start.go:1442 ⋮ [n?] 2  To start a secure server without mandating TLS for clients,
+I260625 21:30:10.935475 1 1@cli/start.go:1442 ⋮ [n?] 2 +consider --accept-sql-without-tls instead. For other options, see:
+I260625 21:30:10.935475 1 1@cli/start.go:1442 ⋮ [n?] 2 +
+I260625 21:30:10.935475 1 1@cli/start.go:1442 ⋮ [n?] 2 +- https://go.crdb.dev/issue-v/53404/v24.1
+I260625 21:30:10.935475 1 1@cli/start.go:1442 ⋮ [n?] 2 +- https://www.cockroachlabs.com/docs/v24.1/secure-a-cluster.html
+I260625 21:30:10.935592 1 1@cli/start.go:1471 ⋮ [n?] 3  ‹CockroachDB CCL v24.1.0 (aarch64-unknown-linux-gnu, built 2024/05/15 21:28:33, go1.22.2 X:nocoverageredesign)›
+I260625 21:30:10.935864 1 util/cgroups/cgroups.go:717 ⋮ [n?] 4  running in a container; setting GOMAXPROCS to 1
+I260625 21:30:10.936079 1 1@cli/start.go:552 ⋮ [n?] 5  soft memory limit of Go runtime is set to 1.1 GiB
+I260625 21:30:10.936099 1 1@cli/start.go:589 ⋮ [n?] 6  GC target percentage of Go runtime is set to 300%
+I260625 21:30:10.936294 1 server/config.go:679 ⋮ [T1,Vsystem,n?] 7  system total memory: 2.0 GiB
+I260625 21:30:10.936313 1 server/config.go:681 ⋮ [T1,Vsystem,n?] 8  server configuration:
+I260625 21:30:10.936313 1 server/config.go:681 ⋮ [T1,Vsystem,n?] 8 +‹max offset             500000000›
+I260625 21:30:10.936313 1 server/config.go:681 ⋮ [T1,Vsystem,n?] 8 +‹cache size             512 MiB›
+I260625 21:30:10.936313 1 server/config.go:681 ⋮ [T1,Vsystem,n?] 8 +‹SQL memory pool size   512 MiB›
+I260625 21:30:10.936313 1 server/config.go:681 ⋮ [T1,Vsystem,n?] 8 +‹scan interval          10m0s›
+I260625 21:30:10.936313 1 server/config.go:681 ⋮ [T1,Vsystem,n?] 8 +‹scan min idle time     10ms›
+I260625 21:30:10.936313 1 server/config.go:681 ⋮ [T1,Vsystem,n?] 8 +‹scan max idle time     1s›
+I260625 21:30:10.936313 1 server/config.go:681 ⋮ [T1,Vsystem,n?] 8 +‹event log enabled      true›
+I260625 21:30:10.936357 1 1@cli/start.go:1332 ⋮ [T1,Vsystem,n?] 9  using local environment variables:
+I260625 21:30:10.936357 1 1@cli/start.go:1332 ⋮ [T1,Vsystem,n?] 9 +COCKROACH_CHANNEL=official-docker
+I260625 21:30:10.936369 1 1@cli/start.go:1339 ⋮ [T1,Vsystem,n?] 10  process identity: ‹uid 0 euid 0 gid 0 egid 0›
+I260625 21:30:10.938874 1 1@cli/start.go:1494 ⋮ [T1,Vsystem,n?] 11  GEOS loaded from directory ‹/usr/local/lib/cockroach›
+I260625 21:30:10.938916 1 1@cli/start.go:778 ⋮ [T1,Vsystem,n?] 12  starting cockroach node
+I260625 21:30:10.940012 11 3@pebble/objstorage/objstorageprovider/remote.go:105 ⋮ [n?,s?,pebble] 13  remote storage configured; no creatorID yet
+I260625 21:30:10.941446 11 3@pebble/event.go:800 ⋮ [n?,s?,pebble] 14  [JOB 1] MANIFEST created 000001
+I260625 21:30:10.942422 11 3@pebble/event.go:828 ⋮ [n?,s?,pebble] 15  [JOB 1] WAL created 000002
+I260625 21:30:10.945573 11 3@pebble/event.go:796 ⋮ [n?,s?,pebble] 16  upgraded to format version: 014
+I260625 21:30:10.946481 11 3@pebble/event.go:796 ⋮ [n?,s?,pebble] 17  upgraded to format version: 015
+I260625 21:30:10.946964 11 3@pebble/event.go:796 ⋮ [n?,s?,pebble] 18  upgraded to format version: 016
+I260625 21:30:10.947024 11 server/config.go:875 ⋮ [T1,Vsystem,n?] 19  1 storage engine initialized
+I260625 21:30:10.947060 11 server/config.go:878 ⋮ [T1,Vsystem,n?] 20  Pebble cache size: 512 MiB
+I260625 21:30:10.947070 11 server/config.go:878 ⋮ [T1,Vsystem,n?] 21  store 0: max size 0 B, max open file limit 1043576
+I260625 21:30:10.947074 11 server/config.go:878 ⋮ [T1,Vsystem,n?] 22  store 0: /cockroach/cockroach-data: rw encrypted=false fs:{bdev=tmpfs fstype=tmpfs mountpoint=/sys/firmware mountopts=ro,relatime}
+I260625 21:30:10.962664 86 3@pebble/event.go:820 ⋮ [n?,s?,pebble] 23  [JOB 2] all initial table stats loaded
+I260625 21:30:10.965572 11 3@pebble/event.go:800 ⋮ [n?,s?,pebble] 24  [JOB 1] MANIFEST created 000001
+I260625 21:30:10.967053 11 3@pebble/event.go:828 ⋮ [n?,s?,pebble] 25  [JOB 1] WAL created 000002
+I260625 21:30:10.971482 11 3@pebble/event.go:796 ⋮ [n?,s?,pebble] 26  upgraded to format version: 014
+I260625 21:30:10.975869 11 3@pebble/event.go:796 ⋮ [n?,s?,pebble] 27  upgraded to format version: 015
+I260625 21:30:10.976373 11 3@pebble/event.go:796 ⋮ [n?,s?,pebble] 28  upgraded to format version: 016
+I260625 21:30:10.986797 117 3@pebble/event.go:820 ⋮ [n?,stemp,pebble] 29  [JOB 2] all initial table stats loaded
+I260625 21:30:10.997626 11 1@server/clock_monotonicity.go:66 ⋮ [T1,Vsystem,n?] 30  monitoring forward clock jumps based on server.clock.forward_jump_check.enabled
+W260625 21:30:10.998360 11 1@cli/start.go:1293 ⋮ [T1,Vsystem,n?] 31  Running a server without --sql-addr, with a combined RPC/SQL listener, is deprecated.
+W260625 21:30:10.998360 11 1@cli/start.go:1293 ⋮ [T1,Vsystem,n?] 31 +This feature will be removed in a later version of CockroachDB.
+I260625 21:30:10.998383 11 1@cli/start.go:1544 ⋮ [T1,Vsystem,n?] 32  initial startup completed.
+I260625 21:30:10.998383 11 1@cli/start.go:1544 ⋮ [T1,Vsystem,n?] 32 +Node will now attempt to join a running cluster, or wait for `cockroach init`.
+I260625 21:30:10.998383 11 1@cli/start.go:1544 ⋮ [T1,Vsystem,n?] 32 +Client connections will be accepted after this completes successfully.
+I260625 21:30:10.998383 11 1@cli/start.go:1544 ⋮ [T1,Vsystem,n?] 32 +Check the log file(s) for progress. 
+I260625 21:30:11.000359 11 server/init.go:229 ⋮ [T1,Vsystem,n?] 33  no stores initialized
+I260625 21:30:11.000431 11 server/init.go:230 ⋮ [T1,Vsystem,n?] 34  awaiting `cockroach init` or join with an already initialized node
+I260625 21:30:11.002315 170 server/init.go:405 ⋮ [T1,Vsystem,n?] 35  ‹crdb-cluster-1.crdb-cluster.cockroachdb.svc.cluster.local:26257› is itself waiting for init, will retry
+W260625 21:30:11.003439 170 server/init.go:407 ⋮ [T1,Vsystem,n?] 36  outgoing join rpc to ‹crdb-cluster-2.crdb-cluster.cockroachdb.svc.cluster.local:26257› unsuccessful: ‹rpc error: code = Unavailable desc = connection error: desc = "transport: error while dialing: dial tcp: lookup crdb-cluster-2.crdb-cluster.cockroachdb.svc.cluster.local: no such host"›
+I260625 21:30:12.005914 170 server/init.go:451 ⋮ [T1,Vsystem,n?] 37  ‹crdb-cluster-1.crdb-cluster.cockroachdb.svc.cluster.local:26257› is itself waiting for init, will retry
+I260625 21:30:13.006997 170 server/init.go:451 ⋮ [T1,Vsystem,n?] 38  ‹crdb-cluster-2.crdb-cluster.cockroachdb.svc.cluster.local:26257› is itself waiting for init, will retry
+I260625 21:30:14.006942 170 server/init.go:451 ⋮ [T1,Vsystem,n?] 39  ‹crdb-cluster-1.crdb-cluster.cockroachdb.svc.cluster.local:26257› is itself waiting for init, will retry
+I260625 21:30:15.006414 170 server/init.go:451 ⋮ [T1,Vsystem,n?] 40  ‹crdb-cluster-2.crdb-cluster.cockroachdb.svc.cluster.local:26257› is itself waiting for init, will retry
+I260625 21:30:16.006331 170 server/init.go:451 ⋮ [T1,Vsystem,n?] 41  ‹crdb-cluster-1.crdb-cluster.cockroachdb.svc.cluster.local:26257› is itself waiting for init, will retry
+I260625 21:30:17.006912 170 server/init.go:451 ⋮ [T1,Vsystem,n?] 42  ‹crdb-cluster-2.crdb-cluster.cockroachdb.svc.cluster.local:26257› is itself waiting for init, will retry
+I260625 21:30:18.007439 170 server/init.go:451 ⋮ [T1,Vsystem,n?] 43  ‹crdb-cluster-1.crdb-cluster.cockroachdb.svc.cluster.local:26257› is itself waiting for init, will retry
+I260625 21:30:19.006170 170 server/init.go:451 ⋮ [T1,Vsystem,n?] 44  ‹crdb-cluster-2.crdb-cluster.cockroachdb.svc.cluster.local:26257› is itself waiting for init, will retry
+I260625 21:30:20.005367 170 server/init.go:451 ⋮ [T1,Vsystem,n?] 45  ‹crdb-cluster-1.crdb-cluster.cockroachdb.svc.cluster.local:26257› is itself waiting for init, will retry
+I260625 21:30:21.008282 170 server/init.go:451 ⋮ [T1,Vsystem,n?] 46  ‹crdb-cluster-2.crdb-cluster.cockroachdb.svc.cluster.local:26257› is itself waiting for init, will retry
+I260625 21:30:22.008857 170 server/init.go:451 ⋮ [T1,Vsystem,n?] 47  ‹crdb-cluster-1.crdb-cluster.cockroachdb.svc.cluster.local:26257› is itself waiting for init, will retry
+I260625 21:30:23.009024 170 server/init.go:451 ⋮ [T1,Vsystem,n?] 48  ‹crdb-cluster-2.crdb-cluster.cockroachdb.svc.cluster.local:26257› is itself waiting for init, will retry
+I260625 21:30:24.007318 170 server/init.go:451 ⋮ [T1,Vsystem,n?] 49  ‹crdb-cluster-1.crdb-cluster.cockroachdb.svc.cluster.local:26257› is itself waiting for init, will retry
+I260625 21:30:25.007721 170 server/init.go:451 ⋮ [T1,Vsystem,n?] 50  ‹crdb-cluster-2.crdb-cluster.cockroachdb.svc.cluster.local:26257› is itself waiting for init, will retry
+I260625 21:30:26.009220 170 server/init.go:451 ⋮ [T1,Vsystem,n?] 51  ‹crdb-cluster-1.crdb-cluster.cockroachdb.svc.cluster.local:26257› is itself waiting for init, will retry
+I260625 21:30:27.007396 170 server/init.go:451 ⋮ [T1,Vsystem,n?] 52  ‹crdb-cluster-2.crdb-cluster.cockroachdb.svc.cluster.local:26257› is itself waiting for init, will retry
+I260625 21:30:28.007806 170 server/init.go:451 ⋮ [T1,Vsystem,n?] 53  ‹crdb-cluster-1.crdb-cluster.cockroachdb.svc.cluster.local:26257› is itself waiting for init, will retry
+I260625 21:30:29.004923 170 server/init.go:451 ⋮ [T1,Vsystem,n?] 54  ‹crdb-cluster-2.crdb-cluster.cockroachdb.svc.cluster.local:26257› is itself waiting for init, will retry
+I260625 21:30:30.006490 170 server/init.go:451 ⋮ [T1,Vsystem,n?] 55  ‹crdb-cluster-1.crdb-cluster.cockroachdb.svc.cluster.local:26257› is itself waiting for init, will retry
+I260625 21:30:31.011662 170 server/init.go:451 ⋮ [T1,Vsystem,n?] 56  ‹crdb-cluster-2.crdb-cluster.cockroachdb.svc.cluster.local:26257› is itself waiting for init, will retry
+I260625 21:30:32.005916 170 server/init.go:451 ⋮ [T1,Vsystem,n?] 57  ‹crdb-cluster-1.crdb-cluster.cockroachdb.svc.cluster.local:26257› is itself waiting for init, will retry
+I260625 21:30:33.006983 170 server/init.go:451 ⋮ [T1,Vsystem,n?] 58  ‹crdb-cluster-2.crdb-cluster.cockroachdb.svc.cluster.local:26257› is itself waiting for init, will retry
+I260625 21:30:34.008529 170 server/init.go:451 ⋮ [T1,Vsystem,n?] 59  ‹crdb-cluster-1.crdb-cluster.cockroachdb.svc.cluster.local:26257› is itself waiting for init, will retry
+
+codex
+The StatefulSet command is mostly sane, but the headless service is missing the setting that makes StatefulSet DNS names publish before readiness. That matters here because CockroachDB nodes are intentionally unready until after cluster init, so peer lookup can flap or fail before initialization.
+exec
+/bin/zsh -lc 'kubectl -n cockroachdb get svc crdb-cluster -o yaml' in /Users/jinyige/Karma/runs/new-added-workflows/cockroachdb-zone-rebalance-upgrade-20260625_212639/stages/stage_02
+exec
+/bin/zsh -lc 'kubectl -n cockroachdb get endpoints crdb-cluster -o yaml' in /Users/jinyige/Karma/runs/new-added-workflows/cockroachdb-zone-rebalance-upgrade-20260625_212639/stages/stage_02
+exec
+/bin/zsh -lc 'kubectl -n cockroachdb get endpointslice -l kubernetes.io/service-name=crdb-cluster -o yaml' in /Users/jinyige/Karma/runs/new-added-workflows/cockroachdb-zone-rebalance-upgrade-20260625_212639/stages/stage_02
+exec
+/bin/zsh -lc 'kubectl -n cockroachdb logs crdb-cluster-1 --tail=80' in /Users/jinyige/Karma/runs/new-added-workflows/cockroachdb-zone-rebalance-upgrade-20260625_212639/stages/stage_02
+ succeeded in 204ms:
+apiVersion: v1
+kind: Service
+metadata:
+  annotations:
+    kubectl.kubernetes.io/last-applied-configuration: |
+      {"apiVersion":"v1","kind":"Service","metadata":{"annotations":{},"labels":{"app.kubernetes.io/component":"database","app.kubernetes.io/instance":"crdb-cluster","app.kubernetes.io/name":"cockroachdb"},"name":"crdb-cluster","namespace":"cockroachdb"},"spec":{"clusterIP":"None","ports":[{"name":"grpc","port":26257,"targetPort":26257},{"name":"http","port":8080,"targetPort":8080}],"publishNotReadyAddresses":true,"selector":{"app.kubernetes.io/instance":"crdb-cluster","app.kubernetes.io/name":"cockroachdb"}}}
+  creationTimestamp: "2026-06-25T21:30:05Z"
+  labels:
+    app.kubernetes.io/component: database
+    app.kubernetes.io/instance: crdb-cluster
+    app.kubernetes.io/name: cockroachdb
+  name: crdb-cluster
+  namespace: cockroachdb
+  resourceVersion: "276029"
+  uid: a0ad6688-95ed-4f06-ba54-375ea6a57d39
+spec:
+  clusterIP: None
+  clusterIPs:
+  - None
+  internalTrafficPolicy: Cluster
+  ipFamilies:
+  - IPv4
+  ipFamilyPolicy: SingleStack
+  ports:
+  - name: grpc
+    port: 26257
+    protocol: TCP
+    targetPort: 26257
+  - name: http
+    port: 8080
+    protocol: TCP
+    targetPort: 8080
+  publishNotReadyAddresses: true
+  selector:
+    app.kubernetes.io/instance: crdb-cluster
+    app.kubernetes.io/name: cockroachdb
+  sessionAffinity: None
+  type: ClusterIP
+status:
+  loadBalancer: {}
+
+ succeeded in 200ms:
+apiVersion: v1
+items:
+- addressType: IPv4
+  apiVersion: discovery.k8s.io/v1
+  endpoints:
+  - addresses:
+    - 10.244.3.31
+    conditions:
+      ready: true
+      serving: false
+      terminating: false
+    hostname: crdb-cluster-0
+    nodeName: kind-worker3
+    targetRef:
+      kind: Pod
+      name: crdb-cluster-0
+      namespace: cockroachdb
+      uid: 518f55b2-ddac-427e-ab6f-adcc189b5f4a
+  - addresses:
+    - 10.244.1.30
+    conditions:
+      ready: true
+      serving: false
+      terminating: false
+    hostname: crdb-cluster-1
+    nodeName: kind-worker
+    targetRef:
+      kind: Pod
+      name: crdb-cluster-1
+      namespace: cockroachdb
+      uid: 4ffaaff2-1032-4a82-b265-6414e8b99050
+  - addresses:
+    - 10.244.2.27
+    conditions:
+      ready: true
+      serving: false
+      terminating: false
+    hostname: crdb-cluster-2
+    nodeName: kind-worker2
+    targetRef:
+      kind: Pod
+      name: crdb-cluster-2
+      namespace: cockroachdb
+      uid: ff3ae6df-1c95-4b52-bab5-2071bd7ec808
+  kind: EndpointSlice
+  metadata:
+    creationTimestamp: "2026-06-25T21:30:05Z"
+    generateName: crdb-cluster-
+    generation: 4
+    labels:
+      app.kubernetes.io/component: database
+      app.kubernetes.io/instance: crdb-cluster
+      app.kubernetes.io/name: cockroachdb
+      endpointslice.kubernetes.io/managed-by: endpointslice-controller.k8s.io
+      kubernetes.io/service-name: crdb-cluster
+      service.kubernetes.io/headless: ""
+    name: crdb-cluster-5p2dc
+    namespace: cockroachdb
+    ownerReferences:
+    - apiVersion: v1
+      blockOwnerDeletion: true
+      controller: true
+      kind: Service
+      name: crdb-cluster
+      uid: a0ad6688-95ed-4f06-ba54-375ea6a57d39
+    resourceVersion: "276148"
+    uid: 5d4599f2-189e-44a9-b9e8-c1eafb05b047
+  ports:
+  - name: http
+    port: 8080
+    protocol: TCP
+  - name: grpc
+    port: 26257
+    protocol: TCP
+kind: List
+metadata:
+  resourceVersion: ""
+
+ succeeded in 201ms:
+apiVersion: v1
+kind: Endpoints
+metadata:
+  annotations:
+    endpoints.kubernetes.io/last-change-trigger-time: "2026-06-25T21:30:11Z"
+  creationTimestamp: "2026-06-25T21:30:05Z"
+  labels:
+    app.kubernetes.io/component: database
+    app.kubernetes.io/instance: crdb-cluster
+    app.kubernetes.io/name: cockroachdb
+    service.kubernetes.io/headless: ""
+  name: crdb-cluster
+  namespace: cockroachdb
+  resourceVersion: "276149"
+  uid: 1d78523c-c8ef-4cd4-922d-0b17d7e5ce1b
+subsets:
+- addresses:
+  - hostname: crdb-cluster-1
+    ip: 10.244.1.30
+    nodeName: kind-worker
+    targetRef:
+      kind: Pod
+      name: crdb-cluster-1
+      namespace: cockroachdb
+      uid: 4ffaaff2-1032-4a82-b265-6414e8b99050
+  - hostname: crdb-cluster-2
+    ip: 10.244.2.27
+    nodeName: kind-worker2
+    targetRef:
+      kind: Pod
+      name: crdb-cluster-2
+      namespace: cockroachdb
+      uid: ff3ae6df-1c95-4b52-bab5-2071bd7ec808
+  - hostname: crdb-cluster-0
+    ip: 10.244.3.31
+    nodeName: kind-worker3
+    targetRef:
+      kind: Pod
+      name: crdb-cluster-0
+      namespace: cockroachdb
+      uid: 518f55b2-ddac-427e-ab6f-adcc189b5f4a
+  ports:
+  - name: grpc
+    port: 26257
+    protocol: TCP
+  - name: http
+    port: 8080
+    protocol: TCP
+
+ succeeded in 215ms:
+I260625 21:30:10.950373 1 1@cli/start.go:1339 ⋮ [T1,Vsystem,n?] 10  process identity: ‹uid 0 euid 0 gid 0 egid 0›
+I260625 21:30:10.952554 1 1@cli/start.go:1494 ⋮ [T1,Vsystem,n?] 11  GEOS loaded from directory ‹/usr/local/lib/cockroach›
+I260625 21:30:10.952582 1 1@cli/start.go:778 ⋮ [T1,Vsystem,n?] 12  starting cockroach node
+I260625 21:30:10.953722 12 3@pebble/objstorage/objstorageprovider/remote.go:105 ⋮ [n?,s?,pebble] 13  remote storage configured; no creatorID yet
+I260625 21:30:10.955173 12 3@pebble/event.go:800 ⋮ [n?,s?,pebble] 14  [JOB 1] MANIFEST created 000001
+I260625 21:30:10.956276 12 3@pebble/event.go:828 ⋮ [n?,s?,pebble] 15  [JOB 1] WAL created 000002
+I260625 21:30:10.958885 12 3@pebble/event.go:796 ⋮ [n?,s?,pebble] 16  upgraded to format version: 014
+I260625 21:30:10.959257 12 3@pebble/event.go:796 ⋮ [n?,s?,pebble] 17  upgraded to format version: 015
+I260625 21:30:10.959720 12 3@pebble/event.go:796 ⋮ [n?,s?,pebble] 18  upgraded to format version: 016
+I260625 21:30:10.959749 12 server/config.go:875 ⋮ [T1,Vsystem,n?] 19  1 storage engine initialized
+I260625 21:30:10.959770 12 server/config.go:878 ⋮ [T1,Vsystem,n?] 20  Pebble cache size: 512 MiB
+I260625 21:30:10.959778 12 server/config.go:878 ⋮ [T1,Vsystem,n?] 21  store 0: max size 0 B, max open file limit 1043576
+I260625 21:30:10.959785 12 server/config.go:878 ⋮ [T1,Vsystem,n?] 22  store 0: /cockroach/cockroach-data: rw encrypted=false fs:{bdev=tmpfs fstype=tmpfs mountpoint=/sys/firmware mountopts=ro,relatime}
+I260625 21:30:10.963585 71 3@pebble/event.go:820 ⋮ [n?,s?,pebble] 23  [JOB 2] all initial table stats loaded
+I260625 21:30:10.964316 12 3@pebble/event.go:800 ⋮ [n?,s?,pebble] 24  [JOB 1] MANIFEST created 000001
+I260625 21:30:10.965918 12 3@pebble/event.go:828 ⋮ [n?,s?,pebble] 25  [JOB 1] WAL created 000002
+I260625 21:30:10.970505 12 3@pebble/event.go:796 ⋮ [n?,s?,pebble] 26  upgraded to format version: 014
+I260625 21:30:10.971156 12 3@pebble/event.go:796 ⋮ [n?,s?,pebble] 27  upgraded to format version: 015
+I260625 21:30:10.971818 12 3@pebble/event.go:796 ⋮ [n?,s?,pebble] 28  upgraded to format version: 016
+I260625 21:30:10.975821 102 3@pebble/event.go:820 ⋮ [n?,stemp,pebble] 29  [JOB 2] all initial table stats loaded
+I260625 21:30:10.993832 12 1@server/clock_monotonicity.go:66 ⋮ [T1,Vsystem,n?] 30  monitoring forward clock jumps based on server.clock.forward_jump_check.enabled
+W260625 21:30:10.994563 12 1@cli/start.go:1293 ⋮ [T1,Vsystem,n?] 31  Running a server without --sql-addr, with a combined RPC/SQL listener, is deprecated.
+W260625 21:30:10.994563 12 1@cli/start.go:1293 ⋮ [T1,Vsystem,n?] 31 +This feature will be removed in a later version of CockroachDB.
+I260625 21:30:10.994644 12 1@cli/start.go:1544 ⋮ [T1,Vsystem,n?] 32  initial startup completed.
+I260625 21:30:10.994644 12 1@cli/start.go:1544 ⋮ [T1,Vsystem,n?] 32 +Node will now attempt to join a running cluster, or wait for `cockroach init`.
+I260625 21:30:10.994644 12 1@cli/start.go:1544 ⋮ [T1,Vsystem,n?] 32 +Client connections will be accepted after this completes successfully.
+I260625 21:30:10.994644 12 1@cli/start.go:1544 ⋮ [T1,Vsystem,n?] 32 +Check the log file(s) for progress. 
+I260625 21:30:10.996712 12 server/init.go:229 ⋮ [T1,Vsystem,n?] 33  no stores initialized
+I260625 21:30:10.996736 12 server/init.go:230 ⋮ [T1,Vsystem,n?] 34  awaiting `cockroach init` or join with an already initialized node
+W260625 21:30:10.997795 155 server/init.go:407 ⋮ [T1,Vsystem,n?] 35  outgoing join rpc to ‹crdb-cluster-0.crdb-cluster.cockroachdb.svc.cluster.local:26257› unsuccessful: ‹rpc error: code = Unavailable desc = connection error: desc = "transport: error while dialing: dial tcp 10.244.3.31:26257: connect: connection refused"›
+W260625 21:30:10.999128 155 server/init.go:407 ⋮ [T1,Vsystem,n?] 36  outgoing join rpc to ‹crdb-cluster-2.crdb-cluster.cockroachdb.svc.cluster.local:26257› unsuccessful: ‹rpc error: code = Unavailable desc = connection error: desc = "transport: error while dialing: dial tcp: lookup crdb-cluster-2.crdb-cluster.cockroachdb.svc.cluster.local: no such host"›
+I260625 21:30:12.001011 155 server/init.go:451 ⋮ [T1,Vsystem,n?] 37  ‹crdb-cluster-0.crdb-cluster.cockroachdb.svc.cluster.local:26257› is itself waiting for init, will retry
+I260625 21:30:13.005741 155 server/init.go:451 ⋮ [T1,Vsystem,n?] 38  ‹crdb-cluster-2.crdb-cluster.cockroachdb.svc.cluster.local:26257› is itself waiting for init, will retry
+I260625 21:30:14.002421 155 server/init.go:451 ⋮ [T1,Vsystem,n?] 39  ‹crdb-cluster-0.crdb-cluster.cockroachdb.svc.cluster.local:26257› is itself waiting for init, will retry
+I260625 21:30:15.004018 155 server/init.go:451 ⋮ [T1,Vsystem,n?] 40  ‹crdb-cluster-2.crdb-cluster.cockroachdb.svc.cluster.local:26257› is itself waiting for init, will retry
+I260625 21:30:16.003638 155 server/init.go:451 ⋮ [T1,Vsystem,n?] 41  ‹crdb-cluster-0.crdb-cluster.cockroachdb.svc.cluster.local:26257› is itself waiting for init, will retry
+I260625 21:30:17.003394 155 server/init.go:451 ⋮ [T1,Vsystem,n?] 42  ‹crdb-cluster-2.crdb-cluster.cockroachdb.svc.cluster.local:26257› is itself waiting for init, will retry
+I260625 21:30:18.006833 155 server/init.go:451 ⋮ [T1,Vsystem,n?] 43  ‹crdb-cluster-0.crdb-cluster.cockroachdb.svc.cluster.local:26257› is itself waiting for init, will retry
+I260625 21:30:19.003347 155 server/init.go:451 ⋮ [T1,Vsystem,n?] 44  ‹crdb-cluster-2.crdb-cluster.cockroachdb.svc.cluster.local:26257› is itself waiting for init, will retry
+I260625 21:30:20.003325 155 server/init.go:451 ⋮ [T1,Vsystem,n?] 45  ‹crdb-cluster-0.crdb-cluster.cockroachdb.svc.cluster.local:26257› is itself waiting for init, will retry
+I260625 21:30:21.007206 155 server/init.go:451 ⋮ [T1,Vsystem,n?] 46  ‹crdb-cluster-2.crdb-cluster.cockroachdb.svc.cluster.local:26257› is itself waiting for init, will retry
+I260625 21:30:22.008224 155 server/init.go:451 ⋮ [T1,Vsystem,n?] 47  ‹crdb-cluster-0.crdb-cluster.cockroachdb.svc.cluster.local:26257› is itself waiting for init, will retry
+I260625 21:30:23.007226 155 server/init.go:451 ⋮ [T1,Vsystem,n?] 48  ‹crdb-cluster-2.crdb-cluster.cockroachdb.svc.cluster.local:26257› is itself waiting for init, will retry
+I260625 21:30:24.003152 155 server/init.go:451 ⋮ [T1,Vsystem,n?] 49  ‹crdb-cluster-0.crdb-cluster.cockroachdb.svc.cluster.local:26257› is itself waiting for init, will retry
+I260625 21:30:25.004984 155 server/init.go:451 ⋮ [T1,Vsystem,n?] 50  ‹crdb-cluster-2.crdb-cluster.cockroachdb.svc.cluster.local:26257› is itself waiting for init, will retry
+I260625 21:30:26.008533 155 server/init.go:451 ⋮ [T1,Vsystem,n?] 51  ‹crdb-cluster-0.crdb-cluster.cockroachdb.svc.cluster.local:26257› is itself waiting for init, will retry
+I260625 21:30:27.005021 155 server/init.go:451 ⋮ [T1,Vsystem,n?] 52  ‹crdb-cluster-2.crdb-cluster.cockroachdb.svc.cluster.local:26257› is itself waiting for init, will retry
+I260625 21:30:28.007160 155 server/init.go:451 ⋮ [T1,Vsystem,n?] 53  ‹crdb-cluster-0.crdb-cluster.cockroachdb.svc.cluster.local:26257› is itself waiting for init, will retry
+I260625 21:30:29.001304 155 server/init.go:451 ⋮ [T1,Vsystem,n?] 54  ‹crdb-cluster-2.crdb-cluster.cockroachdb.svc.cluster.local:26257› is itself waiting for init, will retry
+I260625 21:30:30.003267 155 server/init.go:451 ⋮ [T1,Vsystem,n?] 55  ‹crdb-cluster-0.crdb-cluster.cockroachdb.svc.cluster.local:26257› is itself waiting for init, will retry
+I260625 21:30:31.011414 155 server/init.go:451 ⋮ [T1,Vsystem,n?] 56  ‹crdb-cluster-2.crdb-cluster.cockroachdb.svc.cluster.local:26257› is itself waiting for init, will retry
+I260625 21:30:32.003336 155 server/init.go:451 ⋮ [T1,Vsystem,n?] 57  ‹crdb-cluster-0.crdb-cluster.cockroachdb.svc.cluster.local:26257› is itself waiting for init, will retry
+I260625 21:30:33.004846 155 server/init.go:451 ⋮ [T1,Vsystem,n?] 58  ‹crdb-cluster-2.crdb-cluster.cockroachdb.svc.cluster.local:26257› is itself waiting for init, will retry
+I260625 21:30:34.007628 155 server/init.go:451 ⋮ [T1,Vsystem,n?] 59  ‹crdb-cluster-0.crdb-cluster.cockroachdb.svc.cluster.local:26257› is itself waiting for init, will retry
+I260625 21:30:35.003764 155 server/init.go:451 ⋮ [T1,Vsystem,n?] 60  ‹crdb-cluster-2.crdb-cluster.cockroachdb.svc.cluster.local:26257› is itself waiting for init, will retry
+I260625 21:30:36.007417 155 server/init.go:451 ⋮ [T1,Vsystem,n?] 61  ‹crdb-cluster-0.crdb-cluster.cockroachdb.svc.cluster.local:26257› is itself waiting for init, will retry
+I260625 21:30:37.003900 155 server/init.go:451 ⋮ [T1,Vsystem,n?] 62  ‹crdb-cluster-2.crdb-cluster.cockroachdb.svc.cluster.local:26257› is itself waiting for init, will retry
+I260625 21:30:38.010173 155 server/init.go:451 ⋮ [T1,Vsystem,n?] 63  ‹crdb-cluster-0.crdb-cluster.cockroachdb.svc.cluster.local:26257› is itself waiting for init, will retry
+I260625 21:30:39.004408 155 server/init.go:451 ⋮ [T1,Vsystem,n?] 64  ‹crdb-cluster-2.crdb-cluster.cockroachdb.svc.cluster.local:26257› is itself waiting for init, will retry
+I260625 21:30:40.002477 155 server/init.go:451 ⋮ [T1,Vsystem,n?] 65  ‹crdb-cluster-0.crdb-cluster.cockroachdb.svc.cluster.local:26257› is itself waiting for init, will retry
+W260625 21:30:40.996137 636 1@cli/start.go:642 ⋮ [T1,Vsystem,n?] 66  The server appears to be unable to contact the other nodes in the cluster. Please try:
+W260625 21:30:40.996137 636 1@cli/start.go:642 ⋮ [T1,Vsystem,n?] 66 +
+W260625 21:30:40.996137 636 1@cli/start.go:642 ⋮ [T1,Vsystem,n?] 66 +- starting the other nodes, if you haven't already;
+W260625 21:30:40.996137 636 1@cli/start.go:642 ⋮ [T1,Vsystem,n?] 66 +- double-checking that the '--join' and '--listen'/'--advertise' flags are set up correctly;
+W260625 21:30:40.996137 636 1@cli/start.go:642 ⋮ [T1,Vsystem,n?] 66 +- running the 'cockroach init' command if you are trying to initialize a new cluster.
+W260625 21:30:40.996137 636 1@cli/start.go:642 ⋮ [T1,Vsystem,n?] 66 +
+W260625 21:30:40.996137 636 1@cli/start.go:642 ⋮ [T1,Vsystem,n?] 66 +If problems persist, please see ‹https://www.cockroachlabs.com/docs/v24.1/cluster-setup-troubleshooting.html›.
+I260625 21:30:41.004099 155 server/init.go:451 ⋮ [T1,Vsystem,n?] 67  ‹crdb-cluster-2.crdb-cluster.cockroachdb.svc.cluster.local:26257› is itself waiting for init, will retry
+I260625 21:30:42.003469 155 server/init.go:451 ⋮ [T1,Vsystem,n?] 68  ‹crdb-cluster-0.crdb-cluster.cockroachdb.svc.cluster.local:26257› is itself waiting for init, will retry
+I260625 21:30:43.006295 155 server/init.go:451 ⋮ [T1,Vsystem,n?] 69  ‹crdb-cluster-2.crdb-cluster.cockroachdb.svc.cluster.local:26257› is itself waiting for init, will retry
+I260625 21:30:44.003685 155 server/init.go:451 ⋮ [T1,Vsystem,n?] 70  ‹crdb-cluster-0.crdb-cluster.cockroachdb.svc.cluster.local:26257› is itself waiting for init, will retry
+I260625 21:30:45.004724 155 server/init.go:451 ⋮ [T1,Vsystem,n?] 71  ‹crdb-cluster-2.crdb-cluster.cockroachdb.svc.cluster.local:26257› is itself waiting for init, will retry
+I260625 21:30:46.008375 155 server/init.go:451 ⋮ [T1,Vsystem,n?] 72  ‹crdb-cluster-0.crdb-cluster.cockroachdb.svc.cluster.local:26257› is itself waiting for init, will retry
+I260625 21:30:47.006156 155 server/init.go:451 ⋮ [T1,Vsystem,n?] 73  ‹crdb-cluster-2.crdb-cluster.cockroachdb.svc.cluster.local:26257› is itself waiting for init, will retry
+I260625 21:30:48.007304 155 server/init.go:451 ⋮ [T1,Vsystem,n?] 74  ‹crdb-cluster-0.crdb-cluster.cockroachdb.svc.cluster.local:26257› is itself waiting for init, will retry
+I260625 21:30:49.003686 155 server/init.go:451 ⋮ [T1,Vsystem,n?] 75  ‹crdb-cluster-2.crdb-cluster.cockroachdb.svc.cluster.local:26257› is itself waiting for init, will retry
+I260625 21:30:50.003263 155 server/init.go:451 ⋮ [T1,Vsystem,n?] 76  ‹crdb-cluster-0.crdb-cluster.cockroachdb.svc.cluster.local:26257› is itself waiting for init, will retry
+I260625 21:30:51.004386 155 server/init.go:451 ⋮ [T1,Vsystem,n?] 77  ‹crdb-cluster-2.crdb-cluster.cockroachdb.svc.cluster.local:26257› is itself waiting for init, will retry
+I260625 21:30:52.001529 155 server/init.go:451 ⋮ [T1,Vsystem,n?] 78  ‹crdb-cluster-0.crdb-cluster.cockroachdb.svc.cluster.local:26257› is itself waiting for init, will retry
+I260625 21:30:53.003200 155 server/init.go:451 ⋮ [T1,Vsystem,n?] 79  ‹crdb-cluster-2.crdb-cluster.cockroachdb.svc.cluster.local:26257› is itself waiting for init, will retry
+
+codex
+The headless service is actually already publishing not-ready pod addresses, so the scary join messages are the expected pre-init retry path now: each node can see peers and reports they are waiting for `cockroach init`. I’m going to initialize through a running pod and then verify from SQL.
+exec
+/bin/zsh -lc 'kubectl -n cockroachdb exec crdb-cluster-0 -- ./cockroach init --insecure --host=crdb-cluster-0.crdb-cluster.cockroachdb.svc.cluster.local:26257' in /Users/jinyige/Karma/runs/new-added-workflows/cockroachdb-zone-rebalance-upgrade-20260625_212639/stages/stage_02
+ succeeded in 539ms:
+Cluster successfully initialized
+
+codex
+Initialization succeeded. I’m waiting for Kubernetes readiness to catch up, then I’ll check SQL connectivity and Cockroach node health directly from inside the cluster.
+exec
+/bin/zsh -lc 'kubectl -n cockroachdb wait --for=condition=Ready pod -l app.kubernetes.io/instance=crdb-cluster,app.kubernetes.io/name=cockroachdb --timeout=120s' in /Users/jinyige/Karma/runs/new-added-workflows/cockroachdb-zone-rebalance-upgrade-20260625_212639/stages/stage_02
+exec
+/bin/zsh -lc "kubectl -n cockroachdb exec crdb-cluster-0 -- ./cockroach sql --insecure --host=crdb-cluster-public.cockroachdb.svc.cluster.local:26257 -e 'SELECT 1 AS sql_ready'" in /Users/jinyige/Karma/runs/new-added-workflows/cockroachdb-zone-rebalance-upgrade-20260625_212639/stages/stage_02
+exec
+/bin/zsh -lc 'kubectl -n cockroachdb exec crdb-cluster-0 -- ./cockroach node status --insecure --host=crdb-cluster-public.cockroachdb.svc.cluster.local:26257' in /Users/jinyige/Karma/runs/new-added-workflows/cockroachdb-zone-rebalance-upgrade-20260625_212639/stages/stage_02
+ succeeded in 383ms:
+pod/crdb-cluster-0 condition met
+pod/crdb-cluster-1 condition met
+pod/crdb-cluster-2 condition met
+
+ succeeded in 1123ms:
+sql_ready
+1
+
+ succeeded in 1134ms:
+id	address	sql_address	build	started_at	updated_at	locality	is_available	is_live
+1	crdb-cluster-0.crdb-cluster.cockroachdb.svc.cluster.local:26257	crdb-cluster-0.crdb-cluster.cockroachdb.svc.cluster.local:26257	v24.1.0	2026-06-25 21:31:04.346212 +0000 UTC	2026-06-25 21:31:16.37402 +0000 UTC		true	true
+2	crdb-cluster-2.crdb-cluster.cockroachdb.svc.cluster.local:26257	crdb-cluster-2.crdb-cluster.cockroachdb.svc.cluster.local:26257	v24.1.0	2026-06-25 21:31:05.026283 +0000 UTC	2026-06-25 21:31:17.057913 +0000 UTC		true	true
+3	crdb-cluster-1.crdb-cluster.cockroachdb.svc.cluster.local:26257	crdb-cluster-1.crdb-cluster.cockroachdb.svc.cluster.local:26257	v24.1.0	2026-06-25 21:31:06.013124 +0000 UTC	2026-06-25 21:31:18.07104 +0000 UTC		true	true
+
+codex
+All three pods have moved to Ready and SQL responds. I’m doing one final status pass so the final answer has concrete node and pod state rather than just “init worked.”
+exec
+/bin/zsh -lc 'kubectl -n cockroachdb get pods -o wide' in /Users/jinyige/Karma/runs/new-added-workflows/cockroachdb-zone-rebalance-upgrade-20260625_212639/stages/stage_02
+exec
+/bin/zsh -lc 'kubectl -n cockroachdb exec crdb-cluster-0 -- ./cockroach node status --insecure --host=crdb-cluster-public.cockroachdb.svc.cluster.local:26257 --format=tsv' in /Users/jinyige/Karma/runs/new-added-workflows/cockroachdb-zone-rebalance-upgrade-20260625_212639/stages/stage_02
+exec
+/bin/zsh -lc 'kubectl -n cockroachdb exec crdb-cluster-0 -- ./cockroach sql --insecure --host=crdb-cluster-public.cockroachdb.svc.cluster.local:26257 -e "SELECT count(*) AS live_nodes FROM crdb_internal.gossip_nodes"' in /Users/jinyige/Karma/runs/new-added-workflows/cockroachdb-zone-rebalance-upgrade-20260625_212639/stages/stage_02
+ succeeded in 147ms:
+NAME             READY   STATUS    RESTARTS   AGE   IP            NODE           NOMINATED NODE   READINESS GATES
+crdb-cluster-0   1/1     Running   0          84s   10.244.3.31   kind-worker3   <none>           <none>
+crdb-cluster-1   1/1     Running   0          84s   10.244.1.30   kind-worker    <none>           <none>
+crdb-cluster-2   1/1     Running   0          84s   10.244.2.27   kind-worker2   <none>           <none>
+
+ succeeded in 886ms:
+id	address	sql_address	build	started_at	updated_at	locality	is_available	is_live
+1	crdb-cluster-0.crdb-cluster.cockroachdb.svc.cluster.local:26257	crdb-cluster-0.crdb-cluster.cockroachdb.svc.cluster.local:26257	v24.1.0	2026-06-25 21:31:04.346212 +0000 UTC	2026-06-25 21:31:31.372956 +0000 UTC		true	true
+2	crdb-cluster-2.crdb-cluster.cockroachdb.svc.cluster.local:26257	crdb-cluster-2.crdb-cluster.cockroachdb.svc.cluster.local:26257	v24.1.0	2026-06-25 21:31:05.026283 +0000 UTC	2026-06-25 21:31:32.073367 +0000 UTC		true	true
+3	crdb-cluster-1.crdb-cluster.cockroachdb.svc.cluster.local:26257	crdb-cluster-1.crdb-cluster.cockroachdb.svc.cluster.local:26257	v24.1.0	2026-06-25 21:31:06.013124 +0000 UTC	2026-06-25 21:31:30.034966 +0000 UTC		true	true
+
+ succeeded in 887ms:
+live_nodes
+3
+
+codex
+Done. The cluster is initialized and SQL-ready.
+
+Diagnosis: the peer discovery config is valid in the live resources: the StatefulSet uses the `crdb-cluster` headless service, advertises each pod’s stable DNS name, and the headless service has `publishNotReadyAddresses: true`. The join/advertise log messages were the expected pre-init retry state, not a remaining config break.
+
+Actions taken:
+- Ran `cockroach init` from `crdb-cluster-0` using in-cluster DNS.
+- Verified SQL works with `SELECT 1`.
+- Verified all pods are Ready.
+- Verified Cockroach sees 3 live nodes.
+
+Current validation:
+```text
+crdb-cluster-0   1/1 Running
+crdb-cluster-1   1/1 Running
+crdb-cluster-2   1/1 Running
+
+live_nodes = 3
+node status: nodes 1, 2, 3 all is_available=true and is_live=true
+```
+tokens used
+24,627
+Done. The cluster is initialized and SQL-ready.
+
+Diagnosis: the peer discovery config is valid in the live resources: the StatefulSet uses the `crdb-cluster` headless service, advertises each pod’s stable DNS name, and the headless service has `publishNotReadyAddresses: true`. The join/advertise log messages were the expected pre-init retry state, not a remaining config break.
+
+Actions taken:
+- Ran `cockroach init` from `crdb-cluster-0` using in-cluster DNS.
+- Verified SQL works with `SELECT 1`.
+- Verified all pods are Ready.
+- Verified Cockroach sees 3 live nodes.
+
+Current validation:
+```text
+crdb-cluster-0   1/1 Running
+crdb-cluster-1   1/1 Running
+crdb-cluster-2   1/1 Running
+
+live_nodes = 3
+node status: nodes 1, 2, 3 all is_available=true and is_live=true
+```

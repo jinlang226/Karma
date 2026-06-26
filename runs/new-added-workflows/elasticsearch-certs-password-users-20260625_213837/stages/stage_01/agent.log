@@ -1,0 +1,2222 @@
+OpenAI Codex v0.142.2
+--------
+workdir: /Users/jinyige/Karma/runs/new-added-workflows/elasticsearch-certs-password-users-20260625_213837/stages/stage_01
+model: gpt-5.5
+provider: openai
+approval: never
+sandbox: danger-full-access
+reasoning effort: xhigh
+reasoning summaries: none
+session id: 019f00b8-9c54-7500-b6a1-555b3e585695
+--------
+user
+A new Elasticsearch cluster must be deployed in the elasticsearch namespace.
+
+OBSERVED STATE:
+- Namespace elasticsearch exists.
+- No Elasticsearch Services, StatefulSets, PDBs, or ConfigMaps exist.
+- TLS secret es-http-tls exists with tls.crt, tls.key, and ca.crt.
+- Password secret elastic-password exists with key "password".
+
+YOUR TASK:
+Deploy a 3-node cluster using only native Kubernetes resources.
+
+CONSTRAINTS:
+- Do not install CRDs or use operators.
+- Use image docker.elastic.co/elasticsearch/elasticsearch:8.11.1.
+
+GOAL:
+- All nodes are Ready.
+- Elasticsearch is reachable over HTTPS (port 9200) inside the cluster through a
+  Service named es-http.
+- Reads and writes succeed.
+codex
+I’ll inspect the current Kubernetes state and available repo files, then apply a native StatefulSet/Service setup that uses the existing TLS and password secrets. After that I’ll wait for readiness and verify HTTPS reads and writes through `es-http`.
+exec
+/bin/zsh -lc 'pwd && ls -la' in /Users/jinyige/Karma/runs/new-added-workflows/elasticsearch-certs-password-users-20260625_213837/stages/stage_01
+ succeeded in 0ms:
+/Users/jinyige/Karma/runs/new-added-workflows/elasticsearch-certs-password-users-20260625_213837/stages/stage_01
+total 56
+drwxr-xr-x  9 jinyige  staff   288 Jun 25 16:38 .
+drwxr-xr-x  3 jinyige  staff    96 Jun 25 16:38 ..
+-rw-r--r--  1 jinyige  staff  1291 Jun 25 16:38 .submit.partial
+-rw-r--r--  1 jinyige  staff  1291 Jun 25 16:38 agent.log
+-rw-r--r--  1 jinyige  staff  3020 Jun 25 16:38 precondition.log
+-rw-r--r--  1 jinyige  staff   687 Jun 25 16:38 prompt.txt
+-rw-r--r--  1 jinyige  staff  1155 Jun 25 16:38 proxy-client.crt
+-rw-------  1 jinyige  staff  1675 Jun 25 16:38 proxy-client.key
+-rw-r--r--  1 jinyige  staff     5 Jun 25 16:38 proxy.pid
+
+exec
+/bin/zsh -lc 'rg --files' in /Users/jinyige/Karma/runs/new-added-workflows/elasticsearch-certs-password-users-20260625_213837/stages/stage_01
+ succeeded in 0ms:
+proxy-client.crt
+agent.log
+precondition.log
+prompt.txt
+proxy-client.key
+
+exec
+/bin/zsh -lc 'kubectl get ns elasticsearch && kubectl -n elasticsearch get all,secret,configmap,pdb' in /Users/jinyige/Karma/runs/new-added-workflows/elasticsearch-certs-password-users-20260625_213837/stages/stage_01
+ succeeded in 351ms:
+NAME                  READY   STATUS    RESTARTS   AGE
+pod/curl-test         1/1     Running   0          17s
+pod/openssl-toolbox   1/1     Running   0          17s
+
+NAME                      TYPE     DATA   AGE
+secret/elastic-password   Opaque   1      12s
+secret/es-http-tls        Opaque   3      13s
+
+NAME                         DATA   AGE
+configmap/kube-root-ca.crt   1      18s
+
+codex
+The namespace is clean except for the two helper pods and the required secrets. I’m going to create a headless discovery Service, the `es-http` Service, a ConfigMap with `elasticsearch.yml`, a PDB, and a 3-replica StatefulSet that mounts the existing TLS/password secrets.
+codex
+Before applying, I’m checking the certificate SANs and node capacity so the manifest fits the generated test cluster instead of assuming production defaults.
+exec
+/bin/zsh -lc "kubectl -n elasticsearch get secret elastic-password -o jsonpath='{.data.password}' | wc -c" in /Users/jinyige/Karma/runs/new-added-workflows/elasticsearch-certs-password-users-20260625_213837/stages/stage_01
+exec
+/bin/zsh -lc 'kubectl get nodes -o wide' in /Users/jinyige/Karma/runs/new-added-workflows/elasticsearch-certs-password-users-20260625_213837/stages/stage_01
+ succeeded in 0ms:
+      16
+
+ succeeded in 0ms:
+NAME                 STATUS   ROLES           AGE   VERSION   INTERNAL-IP   EXTERNAL-IP   OS-IMAGE                         KERNEL-VERSION     CONTAINER-RUNTIME
+kind-control-plane   Ready    control-plane   13d   v1.32.1   172.22.0.5    <none>        Debian GNU/Linux 12 (bookworm)   6.10.14-linuxkit   containerd://2.0.2
+kind-worker          Ready    <none>          13d   v1.32.1   172.22.0.4    <none>        Debian GNU/Linux 12 (bookworm)   6.10.14-linuxkit   containerd://2.0.2
+kind-worker2         Ready    <none>          13d   v1.32.1   172.22.0.2    <none>        Debian GNU/Linux 12 (bookworm)   6.10.14-linuxkit   containerd://2.0.2
+kind-worker3         Ready    <none>          13d   v1.32.1   172.22.0.3    <none>        Debian GNU/Linux 12 (bookworm)   6.10.14-linuxkit   containerd://2.0.2
+
+exec
+/bin/zsh -lc "kubectl -n elasticsearch get secret es-http-tls -o jsonpath='{.data.tls\\.crt}' | base64 -d | openssl x509 -noout -subject -issuer -ext subjectAltName" in /Users/jinyige/Karma/runs/new-added-workflows/elasticsearch-certs-password-users-20260625_213837/stages/stage_01
+ succeeded in 0ms:
+subject=CN=es-http
+issuer=CN=es-ca
+X509v3 Subject Alternative Name: 
+    DNS:localhost, DNS:*.elasticsearch.svc, DNS:*.elasticsearch.svc.cluster.local
+
+codex
+The cert covers `localhost` and service names in `elasticsearch.svc`, so HTTPS through `es-http.elasticsearch.svc` should validate. For inter-node transport, I’ll reuse the same CA/cert but configure certificate-level verification so StatefulSet pod DNS names do not need to be in the SAN.
+exec
+/bin/zsh -lc "sed -n '1,160p' prompt.txt" in /Users/jinyige/Karma/runs/new-added-workflows/elasticsearch-certs-password-users-20260625_213837/stages/stage_01
+exec
+/bin/zsh -lc "sed -n '1,220p' precondition.log" in /Users/jinyige/Karma/runs/new-added-workflows/elasticsearch-certs-password-users-20260625_213837/stages/stage_01
+exec
+/bin/zsh -lc "sed -n '1,220p' .submit.partial" in /Users/jinyige/Karma/runs/new-added-workflows/elasticsearch-certs-password-users-20260625_213837/stages/stage_01
+ succeeded in 0ms:
+A new Elasticsearch cluster must be deployed in the elasticsearch namespace.
+
+OBSERVED STATE:
+- Namespace elasticsearch exists.
+- No Elasticsearch Services, StatefulSets, PDBs, or ConfigMaps exist.
+- TLS secret es-http-tls exists with tls.crt, tls.key, and ca.crt.
+- Password secret elastic-password exists with key "password".
+
+YOUR TASK:
+Deploy a 3-node cluster using only native Kubernetes resources.
+
+CONSTRAINTS:
+- Do not install CRDs or use operators.
+- Use image docker.elastic.co/elasticsearch/elasticsearch:8.11.1.
+
+GOAL:
+- All nodes are Ready.
+- Elasticsearch is reachable over HTTPS (port 9200) inside the cluster through a
+  Service named es-http.
+- Reads and writes succeed.
+ succeeded in 0ms:
+[precondition:es_env_ready:preconditionUnits[0] 'es_env_ready':probe] $ kubectl -n elasticsearch get pods 2>/dev/null | grep -c Running
+0
+
+[precondition:es_env_ready:preconditionUnits[0] 'es_env_ready':apply] $ /bin/sh -c 'kubectl delete namespace elasticsearch --ignore-not-found=true --wait=false; kubectl wait --for=delete namespace/elasticsearch --timeout=400s || true'
+
+[precondition:es_env_ready:preconditionUnits[0] 'es_env_ready':apply] $ kubectl create namespace elasticsearch
+namespace/elasticsearch created
+
+[precondition:es_env_ready:preconditionUnits[0] 'es_env_ready':apply] $ kubectl -n elasticsearch apply -f cases/elasticsearch/deploy-core-cluster/resource/
+pod/curl-test created
+pod/openssl-toolbox created
+
+[precondition:es_env_ready:preconditionUnits[0] 'es_env_ready':apply] $ kubectl -n elasticsearch wait --for=condition=ready pod/curl-test --timeout=300s
+pod/curl-test condition met
+
+[precondition:es_env_ready:preconditionUnits[0] 'es_env_ready':apply] $ kubectl -n elasticsearch wait --for=condition=ready pod/openssl-toolbox --timeout=300s
+pod/openssl-toolbox condition met
+
+[precondition:es_env_ready:preconditionUnits[0] 'es_env_ready':apply] $ /bin/sh -c 'TMP_DIR=$(mktemp -d); kubectl -n elasticsearch exec openssl-toolbox -- /bin/sh -c "set -e; mkdir -p /tmp/certs; cat > /tmp/certs/openssl.cnf <<EOF
+distinguished_name=req_distinguished_name
+req_extensions=v3_req
+prompt=no
+[req_distinguished_name]
+CN=es-http
+[v3_req]
+keyUsage=critical,digitalSignature,keyEncipherment
+extendedKeyUsage=serverAuth,clientAuth
+subjectAltName=@alt_names
+[alt_names]
+DNS.1=localhost
+DNS.2=*.elasticsearch.svc
+DNS.3=*.elasticsearch.svc.cluster.local
+EOF
+openssl genrsa -out /tmp/certs/ca.key 2048; openssl req -x509 -new -nodes -key /tmp/certs/ca.key -sha256 -days 365 -subj /CN=es-ca -out /tmp/certs/ca.crt; openssl genrsa -out /tmp/certs/server.key 2048; openssl req -new -key /tmp/certs/server.key -out /tmp/certs/server.csr -config /tmp/certs/openssl.cnf; openssl x509 -req -in /tmp/certs/server.csr -CA /tmp/certs/ca.crt -CAkey /tmp/certs/ca.key -CAcreateserial -out /tmp/certs/server.crt -days 365 -extensions v3_req -extfile /tmp/certs/openssl.cnf"; kubectl -n elasticsearch cp openssl-toolbox:/tmp/certs ${TMP_DIR}/certs; kubectl -n elasticsearch create secret generic es-http-tls --from-file=tls.crt=${TMP_DIR}/certs/server.crt --from-file=tls.key=${TMP_DIR}/certs/server.key --from-file=ca.crt=${TMP_DIR}/certs/ca.crt --dry-run=client -o yaml | kubectl apply -f -'
+tar: removing leading '/' from member names
+secret/es-http-tls created
+Certificate request self-signature ok
+subject=CN=es-http
+
+[precondition:es_env_ready:preconditionUnits[0] 'es_env_ready':apply] $ /bin/sh -c 'kubectl -n elasticsearch create secret generic elastic-password --from-literal=password=elasticpass --dry-run=client -o yaml | kubectl apply -f -'
+secret/elastic-password created
+
+[precondition:es_env_ready:preconditionUnits[0] 'es_env_ready':verify] $ kubectl -n elasticsearch get pods 2>/dev/null | grep -c Running
+2
+
+
+ succeeded in 0ms:
+OpenAI Codex v0.142.2
+--------
+workdir: /Users/jinyige/Karma/runs/new-added-workflows/elasticsearch-certs-password-users-20260625_213837/stages/stage_01
+model: gpt-5.5
+provider: openai
+approval: never
+sandbox: danger-full-access
+reasoning effort: xhigh
+reasoning summaries: none
+session id: 019f00b8-9c54-7500-b6a1-555b3e585695
+--------
+user
+A new Elasticsearch cluster must be deployed in the elasticsearch namespace.
+
+OBSERVED STATE:
+- Namespace elasticsearch exists.
+- No Elasticsearch Services, StatefulSets, PDBs, or ConfigMaps exist.
+- TLS secret es-http-tls exists with tls.crt, tls.key, and ca.crt.
+- Password secret elastic-password exists with key "password".
+
+YOUR TASK:
+Deploy a 3-node cluster using only native Kubernetes resources.
+
+CONSTRAINTS:
+- Do not install CRDs or use operators.
+- Use image docker.elastic.co/elasticsearch/elasticsearch:8.11.1.
+
+GOAL:
+- All nodes are Ready.
+- Elasticsearch is reachable over HTTPS (port 9200) inside the cluster through a
+  Service named es-http.
+- Reads and writes succeed.
+codex
+I’ll inspect the current Kubernetes state and available repo files, then apply a native StatefulSet/Service setup that uses the existing TLS and password secrets. After that I’ll wait for readiness and verify HTTPS reads and writes through `es-http`.
+exec
+/bin/zsh -lc 'pwd && ls -la' in /Users/jinyige/Karma/runs/new-added-workflows/elasticsearch-certs-password-users-20260625_213837/stages/stage_01
+ succeeded in 0ms:
+/Users/jinyige/Karma/runs/new-added-workflows/elasticsearch-certs-password-users-20260625_213837/stages/stage_01
+total 56
+drwxr-xr-x  9 jinyige  staff   288 Jun 25 16:38 .
+drwxr-xr-x  3 jinyige  staff    96 Jun 25 16:38 ..
+-rw-r--r--  1 jinyige  staff  1291 Jun 25 16:38 .submit.partial
+-rw-r--r--  1 jinyige  staff  1291 Jun 25 16:38 agent.log
+-rw-r--r--  1 jinyige  staff  3020 Jun 25 16:38 precondition.log
+-rw-r--r--  1 jinyige  staff   687 Jun 25 16:38 prompt.txt
+-rw-r--r--  1 jinyige  staff  1155 Jun 25 16:38 proxy-client.crt
+-rw-------  1 jinyige  staff  1675 Jun 25 16:38 proxy-client.key
+-rw-r--r--  1 jinyige  staff     5 Jun 25 16:38 proxy.pid
+
+exec
+/bin/zsh -lc 'rg --files' in /Users/jinyige/Karma/runs/new-added-workflows/elasticsearch-certs-password-users-20260625_213837/stages/stage_01
+ succeeded in 0ms:
+proxy-client.crt
+agent.log
+precondition.log
+prompt.txt
+proxy-client.key
+
+exec
+/bin/zsh -lc 'kubectl get ns elasticsearch && kubectl -n elasticsearch get all,secret,configmap,pdb' in /Users/jinyige/Karma/runs/new-added-workflows/elasticsearch-certs-password-users-20260625_213837/stages/stage_01
+ succeeded in 351ms:
+NAME                  READY   STATUS    RESTARTS   AGE
+pod/curl-test         1/1     Running   0          17s
+pod/openssl-toolbox   1/1     Running   0          17s
+
+NAME                      TYPE     DATA   AGE
+secret/elastic-password   Opaque   1      12s
+secret/es-http-tls        Opaque   3      13s
+
+NAME                         DATA   AGE
+configmap/kube-root-ca.crt   1      18s
+
+codex
+The namespace is clean except for the two helper pods and the required secrets. I’m going to create a headless discovery Service, the `es-http` Service, a ConfigMap with `elasticsearch.yml`, a PDB, and a 3-replica StatefulSet that mounts the existing TLS/password secrets.
+codex
+Before applying, I’m checking the certificate SANs and node capacity so the manifest fits the generated test cluster instead of assuming production defaults.
+exec
+/bin/zsh -lc "kubectl -n elasticsearch get secret elastic-password -o jsonpath='{.data.password}' | wc -c" in /Users/jinyige/Karma/runs/new-added-workflows/elasticsearch-certs-password-users-20260625_213837/stages/stage_01
+exec
+/bin/zsh -lc 'kubectl get nodes -o wide' in /Users/jinyige/Karma/runs/new-added-workflows/elasticsearch-certs-password-users-20260625_213837/stages/stage_01
+ succeeded in 0ms:
+      16
+
+ succeeded in 0ms:
+NAME                 STATUS   ROLES           AGE   VERSION   INTERNAL-IP   EXTERNAL-IP   OS-IMAGE                         KERNEL-VERSION     CONTAINER-RUNTIME
+kind-control-plane   Ready    control-plane   13d   v1.32.1   172.22.0.5    <none>        Debian GNU/Linux 12 (bookworm)   6.10.14-linuxkit   containerd://2.0.2
+kind-worker          Ready    <none>          13d   v1.32.1   172.22.0.4    <none>        Debian GNU/Linux 12 (bookworm)   6.10.14-linuxkit   containerd://2.0.2
+kind-worker2         Ready    <none>          13d   v1.32.1   172.22.0.2    <none>        Debian GNU/Linux 12 (bookworm)   6.10.14-linuxkit   containerd://2.0.2
+kind-worker3         Ready    <none>          13d   v1.32.1   172.22.0.3    <none>        Debian GNU/Linux 12 (bookworm)   6.10.14-linuxkit   containerd://2.0.2
+
+exec
+/bin/zsh -lc "kubectl -n elasticsearch get secret es-http-tls -o jsonpath='{.data.tls\\.crt}' | base64 -d | openssl x509 -noout -subject -issuer -ext subjectAltName" in /Users/jinyige/Karma/runs/new-added-workflows/elasticsearch-certs-password-users-20260625_213837/stages/stage_01
+ succeeded in 0ms:
+subject=CN=es-http
+issuer=CN=es-ca
+X509v3 Subject Alternative Name: 
+    DNS:localhost, DNS:*.elasticsearch.svc, DNS:*.elasticsearch.svc.cluster.local
+
+codex
+The cert covers `localhost` and service names in `elasticsearch.svc`, so HTTPS through `es-http.elasticsearch.svc` should validate. For inter-node transport, I’ll reuse the same CA/cert but configure certificate-level verification so StatefulSet pod DNS names do not need to be in the SAN.
+
+codex
+I’m using `podManagementPolicy: Parallel` and `publishNotReadyAddresses` on the discovery Service; otherwise a three-master bootstrap can stall while waiting for the first pod to become Ready before the other voting nodes exist.
+exec
+/bin/zsh -lc "kubectl -n elasticsearch get pod curl-test -o jsonpath='{.spec.containers[0].image}{\"\\n\"}{.spec.containers[0].command}{\"\\n\"}'" in /Users/jinyige/Karma/runs/new-added-workflows/elasticsearch-certs-password-users-20260625_213837/stages/stage_01
+exec
+/bin/zsh -lc 'kubectl get storageclass' in /Users/jinyige/Karma/runs/new-added-workflows/elasticsearch-certs-password-users-20260625_213837/stages/stage_01
+ succeeded in 0ms:
+NAME                 PROVISIONER             RECLAIMPOLICY   VOLUMEBINDINGMODE      ALLOWVOLUMEEXPANSION   AGE
+standard (default)   rancher.io/local-path   Delete          WaitForFirstConsumer   false                  13d
+
+ succeeded in 0ms:
+curlimages/curl:8.5.0
+["sleep","infinity"]
+
+exec
+/bin/zsh -lc 'kubectl -n elasticsearch get resourcequota,limitrange' in /Users/jinyige/Karma/runs/new-added-workflows/elasticsearch-certs-password-users-20260625_213837/stages/stage_01
+ succeeded in 0ms:
+No resources found in elasticsearch namespace.
+
+codex
+I’m writing the native manifest now. It will use the existing `es-http-tls` secret for both HTTP and transport TLS, and the existing `elastic-password` secret as the bootstrap password for the built-in `elastic` user.
+apply patch
+patch: completed
+/Users/jinyige/Karma/runs/new-added-workflows/elasticsearch-certs-password-users-20260625_213837/stages/stage_01/elasticsearch-native.yaml
+diff --git a/runs/new-added-workflows/elasticsearch-certs-password-users-20260625_213837/stages/stage_01/elasticsearch-native.yaml b/runs/new-added-workflows/elasticsearch-certs-password-users-20260625_213837/stages/stage_01/elasticsearch-native.yaml
+new file mode 100644
+index 0000000000000000000000000000000000000000..3916600bde6de7703d4a76afae3df3ae0daf890f
+--- /dev/null
++++ b/runs/new-added-workflows/elasticsearch-certs-password-users-20260625_213837/stages/stage_01/elasticsearch-native.yaml
+@@ -0,0 +1,177 @@
++apiVersion: v1
++kind: Service
++metadata:
++  name: es-internal
++  namespace: elasticsearch
++  labels:
++    app.kubernetes.io/name: elasticsearch
++    app.kubernetes.io/component: discovery
++spec:
++  clusterIP: None
++  publishNotReadyAddresses: true
++  selector:
++    app.kubernetes.io/name: elasticsearch
++  ports:
++    - name: transport
++      port: 9300
++      targetPort: transport
++---
++apiVersion: v1
++kind: Service
++metadata:
++  name: es-http
++  namespace: elasticsearch
++  labels:
++    app.kubernetes.io/name: elasticsearch
++    app.kubernetes.io/component: http
++spec:
++  type: ClusterIP
++  selector:
++    app.kubernetes.io/name: elasticsearch
++  ports:
++    - name: https
++      port: 9200
++      targetPort: http
++---
++apiVersion: v1
++kind: ConfigMap
++metadata:
++  name: elasticsearch-config
++  namespace: elasticsearch
++  labels:
++    app.kubernetes.io/name: elasticsearch
++data:
++  elasticsearch.yml: |
++    cluster.name: native-es
++    node.name: ${HOSTNAME}
++    network.host: 0.0.0.0
++
++    discovery.seed_hosts:
++      - es-internal.elasticsearch.svc
++    cluster.initial_master_nodes:
++      - elasticsearch-0
++      - elasticsearch-1
++      - elasticsearch-2
++
++    node.roles:
++      - master
++      - data
++      - ingest
++      - remote_cluster_client
++
++    node.store.allow_mmap: false
++    xpack.security.enabled: true
++    xpack.security.autoconfiguration.enabled: false
++    xpack.security.enrollment.enabled: false
++
++    xpack.security.http.ssl.enabled: true
++    xpack.security.http.ssl.key: certs/tls.key
++    xpack.security.http.ssl.certificate: certs/tls.crt
++    xpack.security.http.ssl.certificate_authorities: certs/ca.crt
++
++    xpack.security.transport.ssl.enabled: true
++    xpack.security.transport.ssl.key: certs/tls.key
++    xpack.security.transport.ssl.certificate: certs/tls.crt
++    xpack.security.transport.ssl.certificate_authorities: certs/ca.crt
++    xpack.security.transport.ssl.client_authentication: required
++    xpack.security.transport.ssl.verification_mode: certificate
++---
++apiVersion: policy/v1
++kind: PodDisruptionBudget
++metadata:
++  name: elasticsearch
++  namespace: elasticsearch
++  labels:
++    app.kubernetes.io/name: elasticsearch
++spec:
++  minAvailable: 2
++  selector:
++    matchLabels:
++      app.kubernetes.io/name: elasticsearch
++---
++apiVersion: apps/v1
++kind: StatefulSet
++metadata:
++  name: elasticsearch
++  namespace: elasticsearch
++  labels:
++    app.kubernetes.io/name: elasticsearch
++spec:
++  serviceName: es-internal
++  replicas: 3
++  podManagementPolicy: Parallel
++  selector:
++    matchLabels:
++      app.kubernetes.io/name: elasticsearch
++  template:
++    metadata:
++      labels:
++        app.kubernetes.io/name: elasticsearch
++    spec:
++      terminationGracePeriodSeconds: 120
++      securityContext:
++        fsGroup: 1000
++        fsGroupChangePolicy: OnRootMismatch
++      containers:
++        - name: elasticsearch
++          image: docker.elastic.co/elasticsearch/elasticsearch:8.11.1
++          imagePullPolicy: IfNotPresent
++          ports:
++            - name: http
++              containerPort: 9200
++            - name: transport
++              containerPort: 9300
++          env:
++            - name: ELASTIC_PASSWORD
++              valueFrom:
++                secretKeyRef:
++                  name: elastic-password
++                  key: password
++            - name: ES_JAVA_OPTS
++              value: -Xms512m -Xmx512m
++          readinessProbe:
++            exec:
++              command:
++                - bash
++                - -c
++                - |
++                  curl --silent --show-error --fail \
++                    --cacert /usr/share/elasticsearch/config/certs/ca.crt \
++                    --user "elastic:${ELASTIC_PASSWORD}" \
++                    https://localhost:9200/_cluster/health?local=true >/dev/null
++            initialDelaySeconds: 15
++            periodSeconds: 10
++            timeoutSeconds: 5
++            failureThreshold: 18
++          resources:
++            requests:
++              cpu: 250m
++              memory: 1Gi
++            limits:
++              memory: 1Gi
++          volumeMounts:
++            - name: config
++              mountPath: /usr/share/elasticsearch/config/elasticsearch.yml
++              subPath: elasticsearch.yml
++              readOnly: true
++            - name: tls
++              mountPath: /usr/share/elasticsearch/config/certs
++              readOnly: true
++            - name: data
++              mountPath: /usr/share/elasticsearch/data
++      volumes:
++        - name: config
++          configMap:
++            name: elasticsearch-config
++        - name: tls
++          secret:
++            secretName: es-http-tls
++  volumeClaimTemplates:
++    - metadata:
++        name: data
++      spec:
++        accessModes:
++          - ReadWriteOnce
++        resources:
++          requests:
++            storage: 2Gi
+
+diff --git a/runs/new-added-workflows/elasticsearch-certs-password-users-20260625_213837/stages/stage_01/elasticsearch-native.yaml b/runs/new-added-workflows/elasticsearch-certs-password-users-20260625_213837/stages/stage_01/elasticsearch-native.yaml
+new file mode 100644
+index 0000000000000000000000000000000000000000..3916600bde6de7703d4a76afae3df3ae0daf890f
+--- /dev/null
++++ b/runs/new-added-workflows/elasticsearch-certs-password-users-20260625_213837/stages/stage_01/elasticsearch-native.yaml
+@@ -0,0 +1,177 @@
++apiVersion: v1
++kind: Service
++metadata:
++  name: es-internal
++  namespace: elasticsearch
++  labels:
++    app.kubernetes.io/name: elasticsearch
++    app.kubernetes.io/component: discovery
++spec:
++  clusterIP: None
++  publishNotReadyAddresses: true
++  selector:
++    app.kubernetes.io/name: elasticsearch
++  ports:
++    - name: transport
++      port: 9300
++      targetPort: transport
++---
++apiVersion: v1
++kind: Service
++metadata:
++  name: es-http
++  namespace: elasticsearch
++  labels:
++    app.kubernetes.io/name: elasticsearch
++    app.kubernetes.io/component: http
++spec:
++  type: ClusterIP
++  selector:
++    app.kubernetes.io/name: elasticsearch
++  ports:
++    - name: https
++      port: 9200
++      targetPort: http
++---
++apiVersion: v1
++kind: ConfigMap
++metadata:
++  name: elasticsearch-config
++  namespace: elasticsearch
++  labels:
++    app.kubernetes.io/name: elasticsearch
++data:
++  elasticsearch.yml: |
++    cluster.name: native-es
++    node.name: ${HOSTNAME}
++    network.host: 0.0.0.0
++
++    discovery.seed_hosts:
++      - es-internal.elasticsearch.svc
++    cluster.initial_master_nodes:
++      - elasticsearch-0
++      - elasticsearch-1
++      - elasticsearch-2
++
++    node.roles:
++      - master
++      - data
++      - ingest
++      - remote_cluster_client
++
++    node.store.allow_mmap: false
++    xpack.security.enabled: true
++    xpack.security.autoconfiguration.enabled: false
++    xpack.security.enrollment.enabled: false
++
++    xpack.security.http.ssl.enabled: true
++    xpack.security.http.ssl.key: certs/tls.key
++    xpack.security.http.ssl.certificate: certs/tls.crt
++    xpack.security.http.ssl.certificate_authorities: certs/ca.crt
++
++    xpack.security.transport.ssl.enabled: true
++    xpack.security.transport.ssl.key: certs/tls.key
++    xpack.security.transport.ssl.certificate: certs/tls.crt
++    xpack.security.transport.ssl.certificate_authorities: certs/ca.crt
++    xpack.security.transport.ssl.client_authentication: required
++    xpack.security.transport.ssl.verification_mode: certificate
++---
++apiVersion: policy/v1
++kind: PodDisruptionBudget
++metadata:
++  name: elasticsearch
++  namespace: elasticsearch
++  labels:
++    app.kubernetes.io/name: elasticsearch
++spec:
++  minAvailable: 2
++  selector:
++    matchLabels:
++      app.kubernetes.io/name: elasticsearch
++---
++apiVersion: apps/v1
++kind: StatefulSet
++metadata:
++  name: elasticsearch
++  namespace: elasticsearch
++  labels:
++    app.kubernetes.io/name: elasticsearch
++spec:
++  serviceName: es-internal
++  replicas: 3
++  podManagementPolicy: Parallel
++  selector:
++    matchLabels:
++      app.kubernetes.io/name: elasticsearch
++  template:
++    metadata:
++      labels:
++        app.kubernetes.io/name: elasticsearch
++    spec:
++      terminationGracePeriodSeconds: 120
++      securityContext:
++        fsGroup: 1000
++        fsGroupChangePolicy: OnRootMismatch
++      containers:
++        - name: elasticsearch
++          image: docker.elastic.co/elasticsearch/elasticsearch:8.11.1
++          imagePullPolicy: IfNotPresent
++          ports:
++            - name: http
++              containerPort: 9200
++            - name: transport
++              containerPort: 9300
++          env:
++            - name: ELASTIC_PASSWORD
++              valueFrom:
++                secretKeyRef:
++                  name: elastic-password
++                  key: password
++            - name: ES_JAVA_OPTS
++              value: -Xms512m -Xmx512m
++          readinessProbe:
++            exec:
++              command:
++                - bash
++                - -c
++                - |
++                  curl --silent --show-error --fail \
++                    --cacert /usr/share/elasticsearch/config/certs/ca.crt \
++                    --user "elastic:${ELASTIC_PASSWORD}" \
++                    https://localhost:9200/_cluster/health?local=true >/dev/null
++            initialDelaySeconds: 15
++            periodSeconds: 10
++            timeoutSeconds: 5
++            failureThreshold: 18
++          resources:
++            requests:
++              cpu: 250m
++              memory: 1Gi
++            limits:
++              memory: 1Gi
++          volumeMounts:
++            - name: config
++              mountPath: /usr/share/elasticsearch/config/elasticsearch.yml
++              subPath: elasticsearch.yml
++              readOnly: true
++            - name: tls
++              mountPath: /usr/share/elasticsearch/config/certs
++              readOnly: true
++            - name: data
++              mountPath: /usr/share/elasticsearch/data
++      volumes:
++        - name: config
++          configMap:
++            name: elasticsearch-config
++        - name: tls
++          secret:
++            secretName: es-http-tls
++  volumeClaimTemplates:
++    - metadata:
++        name: data
++      spec:
++        accessModes:
++          - ReadWriteOnce
++        resources:
++          requests:
++            storage: 2Gi
+
+codex
+The manifest is in place. I’m applying it and then I’ll watch PVC binding, pod startup, and StatefulSet readiness so we can catch configuration failures quickly from events/logs if anything stalls.
+exec
+/bin/zsh -lc 'kubectl apply -f elasticsearch-native.yaml' in /Users/jinyige/Karma/runs/new-added-workflows/elasticsearch-certs-password-users-20260625_213837/stages/stage_01
+exec
+/bin/zsh -lc 'kubectl -n elasticsearch get sts,svc,cm,pdb,pvc,pods -o wide' in /Users/jinyige/Karma/runs/new-added-workflows/elasticsearch-certs-password-users-20260625_213837/stages/stage_01
+ succeeded in 115ms:
+NAME                         DATA   AGE
+configmap/kube-root-ca.crt   1      2m11s
+
+NAME                  READY   STATUS    RESTARTS   AGE     IP            NODE           NOMINATED NODE   READINESS GATES
+pod/curl-test         1/1     Running   0          2m10s   10.244.3.35   kind-worker3   <none>           <none>
+pod/openssl-toolbox   1/1     Running   0          2m10s   10.244.1.34   kind-worker    <none>           <none>
+
+diff --git a/runs/new-added-workflows/elasticsearch-certs-password-users-20260625_213837/stages/stage_01/elasticsearch-native.yaml b/runs/new-added-workflows/elasticsearch-certs-password-users-20260625_213837/stages/stage_01/elasticsearch-native.yaml
+new file mode 100644
+index 0000000000000000000000000000000000000000..3916600bde6de7703d4a76afae3df3ae0daf890f
+--- /dev/null
++++ b/runs/new-added-workflows/elasticsearch-certs-password-users-20260625_213837/stages/stage_01/elasticsearch-native.yaml
+@@ -0,0 +1,177 @@
++apiVersion: v1
++kind: Service
++metadata:
++  name: es-internal
++  namespace: elasticsearch
++  labels:
++    app.kubernetes.io/name: elasticsearch
++    app.kubernetes.io/component: discovery
++spec:
++  clusterIP: None
++  publishNotReadyAddresses: true
++  selector:
++    app.kubernetes.io/name: elasticsearch
++  ports:
++    - name: transport
++      port: 9300
++      targetPort: transport
++---
++apiVersion: v1
++kind: Service
++metadata:
++  name: es-http
++  namespace: elasticsearch
++  labels:
++    app.kubernetes.io/name: elasticsearch
++    app.kubernetes.io/component: http
++spec:
++  type: ClusterIP
++  selector:
++    app.kubernetes.io/name: elasticsearch
++  ports:
++    - name: https
++      port: 9200
++      targetPort: http
++---
++apiVersion: v1
++kind: ConfigMap
++metadata:
++  name: elasticsearch-config
++  namespace: elasticsearch
++  labels:
++    app.kubernetes.io/name: elasticsearch
++data:
++  elasticsearch.yml: |
++    cluster.name: native-es
++    node.name: ${HOSTNAME}
++    network.host: 0.0.0.0
++
++    discovery.seed_hosts:
++      - es-internal.elasticsearch.svc
++    cluster.initial_master_nodes:
++      - elasticsearch-0
++      - elasticsearch-1
++      - elasticsearch-2
++
++    node.roles:
++      - master
++      - data
++      - ingest
++      - remote_cluster_client
++
++    node.store.allow_mmap: false
++    xpack.security.enabled: true
++    xpack.security.autoconfiguration.enabled: false
++    xpack.security.enrollment.enabled: false
++
++    xpack.security.http.ssl.enabled: true
++    xpack.security.http.ssl.key: certs/tls.key
++    xpack.security.http.ssl.certificate: certs/tls.crt
++    xpack.security.http.ssl.certificate_authorities: certs/ca.crt
++
++    xpack.security.transport.ssl.enabled: true
++    xpack.security.transport.ssl.key: certs/tls.key
++    xpack.security.transport.ssl.certificate: certs/tls.crt
++    xpack.security.transport.ssl.certificate_authorities: certs/ca.crt
++    xpack.security.transport.ssl.client_authentication: required
++    xpack.security.transport.ssl.verification_mode: certificate
++---
++apiVersion: policy/v1
++kind: PodDisruptionBudget
++metadata:
++  name: elasticsearch
++  namespace: elasticsearch
++  labels:
++    app.kubernetes.io/name: elasticsearch
++spec:
++  minAvailable: 2
++  selector:
++    matchLabels:
++      app.kubernetes.io/name: elasticsearch
++---
++apiVersion: apps/v1
++kind: StatefulSet
++metadata:
++  name: elasticsearch
++  namespace: elasticsearch
++  labels:
++    app.kubernetes.io/name: elasticsearch
++spec:
++  serviceName: es-internal
++  replicas: 3
++  podManagementPolicy: Parallel
++  selector:
++    matchLabels:
++      app.kubernetes.io/name: elasticsearch
++  template:
++    metadata:
++      labels:
++        app.kubernetes.io/name: elasticsearch
++    spec:
++      terminationGracePeriodSeconds: 120
++      securityContext:
++        fsGroup: 1000
++        fsGroupChangePolicy: OnRootMismatch
++      containers:
++        - name: elasticsearch
++          image: docker.elastic.co/elasticsearch/elasticsearch:8.11.1
++          imagePullPolicy: IfNotPresent
++          ports:
++            - name: http
++              containerPort: 9200
++            - name: transport
++              containerPort: 9300
++          env:
++            - name: ELASTIC_PASSWORD
++              valueFrom:
++                secretKeyRef:
++                  name: elastic-password
++                  key: password
++            - name: ES_JAVA_OPTS
++              value: -Xms512m -Xmx512m
++          readinessProbe:
++            exec:
++              command:
++                - bash
++                - -c
++                - |
++                  curl --silent --show-error --fail \
++                    --cacert /usr/share/elasticsearch/config/certs/ca.crt \
++                    --user "elastic:${ELASTIC_PASSWORD}" \
++                    https://localhost:9200/_cluster/health?local=true >/dev/null
++            initialDelaySeconds: 15
++            periodSeconds: 10
++            timeoutSeconds: 5
++            failureThreshold: 18
++          resources:
++            requests:
++              cpu: 250m
++              memory: 1Gi
++            limits:
++              memory: 1Gi
++          volumeMounts:
++            - name: config
++              mountPath: /usr/share/elasticsearch/config/elasticsearch.yml
++              subPath: elasticsearch.yml
++              readOnly: true
++            - name: tls
++              mountPath: /usr/share/elasticsearch/config/certs
++              readOnly: true
++            - name: data
++              mountPath: /usr/share/elasticsearch/data
++      volumes:
++        - name: config
++          configMap:
++            name: elasticsearch-config
++        - name: tls
++          secret:
++            secretName: es-http-tls
++  volumeClaimTemplates:
++    - metadata:
++        name: data
++      spec:
++        accessModes:
++          - ReadWriteOnce
++        resources:
++          requests:
++            storage: 2Gi
+
+ succeeded in 375ms:
+service/es-internal created
+service/es-http created
+configmap/elasticsearch-config created
+poddisruptionbudget.policy/elasticsearch created
+statefulset.apps/elasticsearch created
+
+codex
+The API accepted all native resources. The parallel status snapshot raced before the new objects appeared, so I’m rechecking the namespace after the controller has had a moment to create pods and claims.
+exec
+/bin/zsh -lc 'kubectl -n elasticsearch get sts,svc,cm,pdb,pvc,pods -o wide' in /Users/jinyige/Karma/runs/new-added-workflows/elasticsearch-certs-password-users-20260625_213837/stages/stage_01
+exec
+/bin/zsh -lc 'kubectl -n elasticsearch get events --sort-by=.lastTimestamp | tail -n 40' in /Users/jinyige/Karma/runs/new-added-workflows/elasticsearch-certs-password-users-20260625_213837/stages/stage_01
+ succeeded in 0ms:
+1s          Normal   Scheduled               pod/elasticsearch-0                          Successfully assigned elasticsearch/elasticsearch-0 to kind-worker2
+2m15s       Normal   Scheduled               pod/openssl-toolbox                          Successfully assigned elasticsearch/openssl-toolbox to kind-worker
+1s          Normal   Scheduled               pod/elasticsearch-2                          Successfully assigned elasticsearch/elasticsearch-2 to kind-worker
+2m15s       Normal   Scheduled               pod/curl-test                                Successfully assigned elasticsearch/curl-test to kind-worker3
+2s          Normal   Scheduled               pod/elasticsearch-1                          Successfully assigned elasticsearch/elasticsearch-1 to kind-worker3
+2m15s       Normal   Pulled                  pod/curl-test                                Container image "curlimages/curl:8.5.0" already present on machine
+2m15s       Normal   Created                 pod/curl-test                                Created container: curl
+2m15s       Normal   Started                 pod/curl-test                                Started container curl
+2m15s       Normal   Started                 pod/openssl-toolbox                          Started container openssl
+2m15s       Normal   Created                 pod/openssl-toolbox                          Created container: openssl
+2m15s       Normal   Pulled                  pod/openssl-toolbox                          Successfully pulled image "alpine/openssl:latest" in 592ms (592ms including waiting). Image size: 4536367 bytes.
+2m15s       Normal   Pulling                 pod/openssl-toolbox                          Pulling image "alpine/openssl:latest"
+6s          Normal   Provisioning            persistentvolumeclaim/data-elasticsearch-1   External provisioner is provisioning volume for claim "elasticsearch/data-elasticsearch-1"
+6s          Normal   NoPods                  poddisruptionbudget/elasticsearch            No matching pods found
+6s          Normal   Provisioning            persistentvolumeclaim/data-elasticsearch-2   External provisioner is provisioning volume for claim "elasticsearch/data-elasticsearch-2"
+6s          Normal   SuccessfulCreate        statefulset/elasticsearch                    create Pod elasticsearch-2 in StatefulSet elasticsearch successful
+6s          Normal   WaitForFirstConsumer    persistentvolumeclaim/data-elasticsearch-2   waiting for first consumer to be created before binding
+6s          Normal   WaitForFirstConsumer    persistentvolumeclaim/data-elasticsearch-0   waiting for first consumer to be created before binding
+6s          Normal   ExternalProvisioning    persistentvolumeclaim/data-elasticsearch-0   Waiting for a volume to be created either by the external provisioner 'rancher.io/local-path' or manually by the system administrator. If volume creation is delayed, please verify that the provisioner is running and correctly registered.
+6s          Normal   ExternalProvisioning    persistentvolumeclaim/data-elasticsearch-2   Waiting for a volume to be created either by the external provisioner 'rancher.io/local-path' or manually by the system administrator. If volume creation is delayed, please verify that the provisioner is running and correctly registered.
+6s          Normal   SuccessfulCreate        statefulset/elasticsearch                    create Claim data-elasticsearch-1 Pod elasticsearch-1 in StatefulSet elasticsearch success
+6s          Normal   SuccessfulCreate        statefulset/elasticsearch                    create Claim data-elasticsearch-2 Pod elasticsearch-2 in StatefulSet elasticsearch success
+6s          Normal   SuccessfulCreate        statefulset/elasticsearch                    create Pod elasticsearch-0 in StatefulSet elasticsearch successful
+6s          Normal   SuccessfulCreate        statefulset/elasticsearch                    create Claim data-elasticsearch-0 Pod elasticsearch-0 in StatefulSet elasticsearch success
+6s          Normal   ExternalProvisioning    persistentvolumeclaim/data-elasticsearch-1   Waiting for a volume to be created either by the external provisioner 'rancher.io/local-path' or manually by the system administrator. If volume creation is delayed, please verify that the provisioner is running and correctly registered.
+6s          Normal   Provisioning            persistentvolumeclaim/data-elasticsearch-0   External provisioner is provisioning volume for claim "elasticsearch/data-elasticsearch-0"
+6s          Normal   SuccessfulCreate        statefulset/elasticsearch                    create Pod elasticsearch-1 in StatefulSet elasticsearch successful
+6s          Normal   WaitForFirstConsumer    persistentvolumeclaim/data-elasticsearch-1   waiting for first consumer to be created before binding
+4s          Normal   ProvisioningSucceeded   persistentvolumeclaim/data-elasticsearch-1   Successfully provisioned volume pvc-88fb22b3-f6f7-4661-8324-d67b10b0b8fa
+3s          Normal   ProvisioningSucceeded   persistentvolumeclaim/data-elasticsearch-0   Successfully provisioned volume pvc-d655822b-208f-442d-a7ca-1040cb802582
+3s          Normal   Started                 pod/elasticsearch-1                          Started container elasticsearch
+3s          Normal   Created                 pod/elasticsearch-1                          Created container: elasticsearch
+3s          Normal   Pulled                  pod/elasticsearch-1                          Container image "docker.elastic.co/elasticsearch/elasticsearch:8.11.1" already present on machine
+3s          Normal   ProvisioningSucceeded   persistentvolumeclaim/data-elasticsearch-2   Successfully provisioned volume pvc-7a5280f5-b857-4a2e-b505-7ed67cde6c72
+2s          Normal   Started                 pod/elasticsearch-0                          Started container elasticsearch
+2s          Normal   Started                 pod/elasticsearch-2                          Started container elasticsearch
+2s          Normal   Created                 pod/elasticsearch-2                          Created container: elasticsearch
+2s          Normal   Pulled                  pod/elasticsearch-2                          Container image "docker.elastic.co/elasticsearch/elasticsearch:8.11.1" already present on machine
+2s          Normal   Created                 pod/elasticsearch-0                          Created container: elasticsearch
+2s          Normal   Pulled                  pod/elasticsearch-0                          Container image "docker.elastic.co/elasticsearch/elasticsearch:8.11.1" already present on machine
+
+diff --git a/runs/new-added-workflows/elasticsearch-certs-password-users-20260625_213837/stages/stage_01/elasticsearch-native.yaml b/runs/new-added-workflows/elasticsearch-certs-password-users-20260625_213837/stages/stage_01/elasticsearch-native.yaml
+new file mode 100644
+index 0000000000000000000000000000000000000000..3916600bde6de7703d4a76afae3df3ae0daf890f
+--- /dev/null
++++ b/runs/new-added-workflows/elasticsearch-certs-password-users-20260625_213837/stages/stage_01/elasticsearch-native.yaml
+@@ -0,0 +1,177 @@
++apiVersion: v1
++kind: Service
++metadata:
++  name: es-internal
++  namespace: elasticsearch
++  labels:
++    app.kubernetes.io/name: elasticsearch
++    app.kubernetes.io/component: discovery
++spec:
++  clusterIP: None
++  publishNotReadyAddresses: true
++  selector:
++    app.kubernetes.io/name: elasticsearch
++  ports:
++    - name: transport
++      port: 9300
++      targetPort: transport
++---
++apiVersion: v1
++kind: Service
++metadata:
++  name: es-http
++  namespace: elasticsearch
++  labels:
++    app.kubernetes.io/name: elasticsearch
++    app.kubernetes.io/component: http
++spec:
++  type: ClusterIP
++  selector:
++    app.kubernetes.io/name: elasticsearch
++  ports:
++    - name: https
++      port: 9200
++      targetPort: http
++---
++apiVersion: v1
++kind: ConfigMap
++metadata:
++  name: elasticsearch-config
++  namespace: elasticsearch
++  labels:
++    app.kubernetes.io/name: elasticsearch
++data:
++  elasticsearch.yml: |
++    cluster.name: native-es
++    node.name: ${HOSTNAME}
++    network.host: 0.0.0.0
++
++    discovery.seed_hosts:
++      - es-internal.elasticsearch.svc
++    cluster.initial_master_nodes:
++      - elasticsearch-0
++      - elasticsearch-1
++      - elasticsearch-2
++
++    node.roles:
++      - master
++      - data
++      - ingest
++      - remote_cluster_client
++
++    node.store.allow_mmap: false
++    xpack.security.enabled: true
++    xpack.security.autoconfiguration.enabled: false
++    xpack.security.enrollment.enabled: false
++
++    xpack.security.http.ssl.enabled: true
++    xpack.security.http.ssl.key: certs/tls.key
++    xpack.security.http.ssl.certificate: certs/tls.crt
++    xpack.security.http.ssl.certificate_authorities: certs/ca.crt
++
++    xpack.security.transport.ssl.enabled: true
++    xpack.security.transport.ssl.key: certs/tls.key
++    xpack.security.transport.ssl.certificate: certs/tls.crt
++    xpack.security.transport.ssl.certificate_authorities: certs/ca.crt
++    xpack.security.transport.ssl.client_authentication: required
++    xpack.security.transport.ssl.verification_mode: certificate
++---
++apiVersion: policy/v1
++kind: PodDisruptionBudget
++metadata:
++  name: elasticsearch
++  namespace: elasticsearch
++  labels:
++    app.kubernetes.io/name: elasticsearch
++spec:
++  minAvailable: 2
++  selector:
++    matchLabels:
++      app.kubernetes.io/name: elasticsearch
++---
++apiVersion: apps/v1
++kind: StatefulSet
++metadata:
++  name: elasticsearch
++  namespace: elasticsearch
++  labels:
++    app.kubernetes.io/name: elasticsearch
++spec:
++  serviceName: es-internal
++  replicas: 3
++  podManagementPolicy: Parallel
++  selector:
++    matchLabels:
++      app.kubernetes.io/name: elasticsearch
++  template:
++    metadata:
++      labels:
++        app.kubernetes.io/name: elasticsearch
++    spec:
++      terminationGracePeriodSeconds: 120
++      securityContext:
++        fsGroup: 1000
++        fsGroupChangePolicy: OnRootMismatch
++      containers:
++        - name: elasticsearch
++          image: docker.elastic.co/elasticsearch/elasticsearch:8.11.1
++          imagePullPolicy: IfNotPresent
++          ports:
++            - name: http
++              containerPort: 9200
++            - name: transport
++              containerPort: 9300
++          env:
++            - name: ELASTIC_PASSWORD
++              valueFrom:
++                secretKeyRef:
++                  name: elastic-password
++                  key: password
++            - name: ES_JAVA_OPTS
++              value: -Xms512m -Xmx512m
++          readinessProbe:
++            exec:
++              command:
++                - bash
++                - -c
++                - |
++                  curl --silent --show-error --fail \
++                    --cacert /usr/share/elasticsearch/config/certs/ca.crt \
++                    --user "elastic:${ELASTIC_PASSWORD}" \
++                    https://localhost:9200/_cluster/health?local=true >/dev/null
++            initialDelaySeconds: 15
++            periodSeconds: 10
++            timeoutSeconds: 5
++            failureThreshold: 18
++          resources:
++            requests:
++              cpu: 250m
++              memory: 1Gi
++            limits:
++              memory: 1Gi
++          volumeMounts:
++            - name: config
++              mountPath: /usr/share/elasticsearch/config/elasticsearch.yml
++              subPath: elasticsearch.yml
++              readOnly: true
++            - name: tls
++              mountPath: /usr/share/elasticsearch/config/certs
++              readOnly: true
++            - name: data
++              mountPath: /usr/share/elasticsearch/data
++      volumes:
++        - name: config
++          configMap:
++            name: elasticsearch-config
++        - name: tls
++          secret:
++            secretName: es-http-tls
++  volumeClaimTemplates:
++    - metadata:
++        name: data
++      spec:
++        accessModes:
++          - ReadWriteOnce
++        resources:
++          requests:
++            storage: 2Gi
+
+ succeeded in 185ms:
+NAME                             READY   AGE   CONTAINERS      IMAGES
+statefulset.apps/elasticsearch   0/3     6s    elasticsearch   docker.elastic.co/elasticsearch/elasticsearch:8.11.1
+
+NAME                  TYPE        CLUSTER-IP      EXTERNAL-IP   PORT(S)    AGE   SELECTOR
+service/es-http       ClusterIP   10.96.114.251   <none>        9200/TCP   6s    app.kubernetes.io/name=elasticsearch
+service/es-internal   ClusterIP   None            <none>        9300/TCP   6s    app.kubernetes.io/name=elasticsearch
+
+NAME                             DATA   AGE
+configmap/elasticsearch-config   1      6s
+configmap/kube-root-ca.crt       1      2m17s
+
+NAME                                       MIN AVAILABLE   MAX UNAVAILABLE   ALLOWED DISRUPTIONS   AGE
+poddisruptionbudget.policy/elasticsearch   2               N/A               0                     6s
+
+NAME                                         STATUS   VOLUME                                     CAPACITY   ACCESS MODES   STORAGECLASS   VOLUMEATTRIBUTESCLASS   AGE   VOLUMEMODE
+persistentvolumeclaim/data-elasticsearch-0   Bound    pvc-d655822b-208f-442d-a7ca-1040cb802582   2Gi        RWO            standard       <unset>                 6s    Filesystem
+persistentvolumeclaim/data-elasticsearch-1   Bound    pvc-88fb22b3-f6f7-4661-8324-d67b10b0b8fa   2Gi        RWO            standard       <unset>                 6s    Filesystem
+persistentvolumeclaim/data-elasticsearch-2   Bound    pvc-7a5280f5-b857-4a2e-b505-7ed67cde6c72   2Gi        RWO            standard       <unset>                 6s    Filesystem
+
+NAME                  READY   STATUS    RESTARTS   AGE     IP            NODE           NOMINATED NODE   READINESS GATES
+pod/curl-test         1/1     Running   0          2m16s   10.244.3.35   kind-worker3   <none>           <none>
+pod/elasticsearch-0   0/1     Running   0          6s      10.244.2.32   kind-worker2   <none>           <none>
+pod/elasticsearch-1   0/1     Running   0          6s      10.244.3.37   kind-worker3   <none>           <none>
+pod/elasticsearch-2   0/1     Running   0          6s      10.244.1.36   kind-worker    <none>           <none>
+pod/openssl-toolbox   1/1     Running   0          2m16s   10.244.1.34   kind-worker    <none>           <none>
+
+codex
+The PVCs bound and all three Elasticsearch containers started. I’m waiting on the readiness probe now; if it doesn’t settle, I’ll inspect logs and events before changing anything.
+exec
+/bin/zsh -lc 'kubectl -n elasticsearch wait --for=condition=ready pod -l app.kubernetes.io/name=elasticsearch --timeout=600s' in /Users/jinyige/Karma/runs/new-added-workflows/elasticsearch-certs-password-users-20260625_213837/stages/stage_01
+diff --git a/runs/new-added-workflows/elasticsearch-certs-password-users-20260625_213837/stages/stage_01/elasticsearch-native.yaml b/runs/new-added-workflows/elasticsearch-certs-password-users-20260625_213837/stages/stage_01/elasticsearch-native.yaml
+new file mode 100644
+index 0000000000000000000000000000000000000000..3916600bde6de7703d4a76afae3df3ae0daf890f
+--- /dev/null
++++ b/runs/new-added-workflows/elasticsearch-certs-password-users-20260625_213837/stages/stage_01/elasticsearch-native.yaml
+@@ -0,0 +1,177 @@
++apiVersion: v1
++kind: Service
++metadata:
++  name: es-internal
++  namespace: elasticsearch
++  labels:
++    app.kubernetes.io/name: elasticsearch
++    app.kubernetes.io/component: discovery
++spec:
++  clusterIP: None
++  publishNotReadyAddresses: true
++  selector:
++    app.kubernetes.io/name: elasticsearch
++  ports:
++    - name: transport
++      port: 9300
++      targetPort: transport
++---
++apiVersion: v1
++kind: Service
++metadata:
++  name: es-http
++  namespace: elasticsearch
++  labels:
++    app.kubernetes.io/name: elasticsearch
++    app.kubernetes.io/component: http
++spec:
++  type: ClusterIP
++  selector:
++    app.kubernetes.io/name: elasticsearch
++  ports:
++    - name: https
++      port: 9200
++      targetPort: http
++---
++apiVersion: v1
++kind: ConfigMap
++metadata:
++  name: elasticsearch-config
++  namespace: elasticsearch
++  labels:
++    app.kubernetes.io/name: elasticsearch
++data:
++  elasticsearch.yml: |
++    cluster.name: native-es
++    node.name: ${HOSTNAME}
++    network.host: 0.0.0.0
++
++    discovery.seed_hosts:
++      - es-internal.elasticsearch.svc
++    cluster.initial_master_nodes:
++      - elasticsearch-0
++      - elasticsearch-1
++      - elasticsearch-2
++
++    node.roles:
++      - master
++      - data
++      - ingest
++      - remote_cluster_client
++
++    node.store.allow_mmap: false
++    xpack.security.enabled: true
++    xpack.security.autoconfiguration.enabled: false
++    xpack.security.enrollment.enabled: false
++
++    xpack.security.http.ssl.enabled: true
++    xpack.security.http.ssl.key: certs/tls.key
++    xpack.security.http.ssl.certificate: certs/tls.crt
++    xpack.security.http.ssl.certificate_authorities: certs/ca.crt
++
++    xpack.security.transport.ssl.enabled: true
++    xpack.security.transport.ssl.key: certs/tls.key
++    xpack.security.transport.ssl.certificate: certs/tls.crt
++    xpack.security.transport.ssl.certificate_authorities: certs/ca.crt
++    xpack.security.transport.ssl.client_authentication: required
++    xpack.security.transport.ssl.verification_mode: certificate
++---
++apiVersion: policy/v1
++kind: PodDisruptionBudget
++metadata:
++  name: elasticsearch
++  namespace: elasticsearch
++  labels:
++    app.kubernetes.io/name: elasticsearch
++spec:
++  minAvailable: 2
++  selector:
++    matchLabels:
++      app.kubernetes.io/name: elasticsearch
++---
++apiVersion: apps/v1
++kind: StatefulSet
++metadata:
++  name: elasticsearch
++  namespace: elasticsearch
++  labels:
++    app.kubernetes.io/name: elasticsearch
++spec:
++  serviceName: es-internal
++  replicas: 3
++  podManagementPolicy: Parallel
++  selector:
++    matchLabels:
++      app.kubernetes.io/name: elasticsearch
++  template:
++    metadata:
++      labels:
++        app.kubernetes.io/name: elasticsearch
++    spec:
++      terminationGracePeriodSeconds: 120
++      securityContext:
++        fsGroup: 1000
++        fsGroupChangePolicy: OnRootMismatch
++      containers:
++        - name: elasticsearch
++          image: docker.elastic.co/elasticsearch/elasticsearch:8.11.1
++          imagePullPolicy: IfNotPresent
++          ports:
++            - name: http
++              containerPort: 9200
++            - name: transport
++              containerPort: 9300
++          env:
++            - name: ELASTIC_PASSWORD
++              valueFrom:
++                secretKeyRef:
++                  name: elastic-password
++                  key: password
++            - name: ES_JAVA_OPTS
++              value: -Xms512m -Xmx512m
++          readinessProbe:
++            exec:
++              command:
++                - bash
++                - -c
++                - |
++                  curl --silent --show-error --fail \
++                    --cacert /usr/share/elasticsearch/config/certs/ca.crt \
++                    --user "elastic:${ELASTIC_PASSWORD}" \
++                    https://localhost:9200/_cluster/health?local=true >/dev/null
++            initialDelaySeconds: 15
++            periodSeconds: 10
++            timeoutSeconds: 5
++            failureThreshold: 18
++          resources:
++            requests:
++              cpu: 250m
++              memory: 1Gi
++            limits:
++              memory: 1Gi
++          volumeMounts:
++            - name: config
++              mountPath: /usr/share/elasticsearch/config/elasticsearch.yml
++              subPath: elasticsearch.yml
++              readOnly: true
++            - name: tls
++              mountPath: /usr/share/elasticsearch/config/certs
++              readOnly: true
++            - name: data
++              mountPath: /usr/share/elasticsearch/data
++      volumes:
++        - name: config
++          configMap:
++            name: elasticsearch-config
++        - name: tls
++          secret:
++            secretName: es-http-tls
++  volumeClaimTemplates:
++    - metadata:
++        name: data
++      spec:
++        accessModes:
++          - ReadWriteOnce
++        resources:
++          requests:
++            storage: 2Gi
+
+ succeeded in 15329ms:
+pod/elasticsearch-0 condition met
+pod/elasticsearch-1 condition met
+pod/elasticsearch-2 condition met
+
+codex
+All three Elasticsearch pods are Ready. I’m moving to functional checks now: cluster health through the `es-http` Service over HTTPS, then a write and read through the same service.
+exec
+/bin/zsh -lc 'kubectl -n elasticsearch get pods -l app.kubernetes.io/name=elasticsearch -o wide && kubectl -n elasticsearch get sts elasticsearch && kubectl -n elasticsearch get endpoints es-http es-internal' in /Users/jinyige/Karma/runs/new-added-workflows/elasticsearch-certs-password-users-20260625_213837/stages/stage_01
+exec
+/bin/zsh -lc "kubectl -n elasticsearch get secret es-http-tls -o jsonpath='{.data.ca\\.crt}' | base64 -d > /tmp/es-ca.crt && kubectl -n elasticsearch cp /tmp/es-ca.crt curl-test:/tmp/es-ca.crt && rm -f /tmp/es-ca.crt" in /Users/jinyige/Karma/runs/new-added-workflows/elasticsearch-certs-password-users-20260625_213837/stages/stage_01
+diff --git a/runs/new-added-workflows/elasticsearch-certs-password-users-20260625_213837/stages/stage_01/elasticsearch-native.yaml b/runs/new-added-workflows/elasticsearch-certs-password-users-20260625_213837/stages/stage_01/elasticsearch-native.yaml
+new file mode 100644
+index 0000000000000000000000000000000000000000..3916600bde6de7703d4a76afae3df3ae0daf890f
+--- /dev/null
++++ b/runs/new-added-workflows/elasticsearch-certs-password-users-20260625_213837/stages/stage_01/elasticsearch-native.yaml
+@@ -0,0 +1,177 @@
++apiVersion: v1
++kind: Service
++metadata:
++  name: es-internal
++  namespace: elasticsearch
++  labels:
++    app.kubernetes.io/name: elasticsearch
++    app.kubernetes.io/component: discovery
++spec:
++  clusterIP: None
++  publishNotReadyAddresses: true
++  selector:
++    app.kubernetes.io/name: elasticsearch
++  ports:
++    - name: transport
++      port: 9300
++      targetPort: transport
++---
++apiVersion: v1
++kind: Service
++metadata:
++  name: es-http
++  namespace: elasticsearch
++  labels:
++    app.kubernetes.io/name: elasticsearch
++    app.kubernetes.io/component: http
++spec:
++  type: ClusterIP
++  selector:
++    app.kubernetes.io/name: elasticsearch
++  ports:
++    - name: https
++      port: 9200
++      targetPort: http
++---
++apiVersion: v1
++kind: ConfigMap
++metadata:
++  name: elasticsearch-config
++  namespace: elasticsearch
++  labels:
++    app.kubernetes.io/name: elasticsearch
++data:
++  elasticsearch.yml: |
++    cluster.name: native-es
++    node.name: ${HOSTNAME}
++    network.host: 0.0.0.0
++
++    discovery.seed_hosts:
++      - es-internal.elasticsearch.svc
++    cluster.initial_master_nodes:
++      - elasticsearch-0
++      - elasticsearch-1
++      - elasticsearch-2
++
++    node.roles:
++      - master
++      - data
++      - ingest
++      - remote_cluster_client
++
++    node.store.allow_mmap: false
++    xpack.security.enabled: true
++    xpack.security.autoconfiguration.enabled: false
++    xpack.security.enrollment.enabled: false
++
++    xpack.security.http.ssl.enabled: true
++    xpack.security.http.ssl.key: certs/tls.key
++    xpack.security.http.ssl.certificate: certs/tls.crt
++    xpack.security.http.ssl.certificate_authorities: certs/ca.crt
++
++    xpack.security.transport.ssl.enabled: true
++    xpack.security.transport.ssl.key: certs/tls.key
++    xpack.security.transport.ssl.certificate: certs/tls.crt
++    xpack.security.transport.ssl.certificate_authorities: certs/ca.crt
++    xpack.security.transport.ssl.client_authentication: required
++    xpack.security.transport.ssl.verification_mode: certificate
++---
++apiVersion: policy/v1
++kind: PodDisruptionBudget
++metadata:
++  name: elasticsearch
++  namespace: elasticsearch
++  labels:
++    app.kubernetes.io/name: elasticsearch
++spec:
++  minAvailable: 2
++  selector:
++    matchLabels:
++      app.kubernetes.io/name: elasticsearch
++---
++apiVersion: apps/v1
++kind: StatefulSet
++metadata:
++  name: elasticsearch
++  namespace: elasticsearch
++  labels:
++    app.kubernetes.io/name: elasticsearch
++spec:
++  serviceName: es-internal
++  replicas: 3
++  podManagementPolicy: Parallel
++  selector:
++    matchLabels:
++      app.kubernetes.io/name: elasticsearch
++  template:
++    metadata:
++      labels:
++        app.kubernetes.io/name: elasticsearch
++    spec:
++      terminationGracePeriodSeconds: 120
++      securityContext:
++        fsGroup: 1000
++        fsGroupChangePolicy: OnRootMismatch
++      containers:
++        - name: elasticsearch
++          image: docker.elastic.co/elasticsearch/elasticsearch:8.11.1
++          imagePullPolicy: IfNotPresent
++          ports:
++            - name: http
++              containerPort: 9200
++            - name: transport
++              containerPort: 9300
++          env:
++            - name: ELASTIC_PASSWORD
++              valueFrom:
++                secretKeyRef:
++                  name: elastic-password
++                  key: password
++            - name: ES_JAVA_OPTS
++              value: -Xms512m -Xmx512m
++          readinessProbe:
++            exec:
++              command:
++                - bash
++                - -c
++                - |
++                  curl --silent --show-error --fail \
++                    --cacert /usr/share/elasticsearch/config/certs/ca.crt \
++                    --user "elastic:${ELASTIC_PASSWORD}" \
++                    https://localhost:9200/_cluster/health?local=true >/dev/null
++            initialDelaySeconds: 15
++            periodSeconds: 10
++            timeoutSeconds: 5
++            failureThreshold: 18
++          resources:
++            requests:
++              cpu: 250m
++              memory: 1Gi
++            limits:
++              memory: 1Gi
++          volumeMounts:
++            - name: config
++              mountPath: /usr/share/elasticsearch/config/elasticsearch.yml
++              subPath: elasticsearch.yml
++              readOnly: true
++            - name: tls
++              mountPath: /usr/share/elasticsearch/config/certs
++              readOnly: true
++            - name: data
++              mountPath: /usr/share/elasticsearch/data
++      volumes:
++        - name: config
++          configMap:
++            name: elasticsearch-config
++        - name: tls
++          secret:
++            secretName: es-http-tls
++  volumeClaimTemplates:
++    - metadata:
++        name: data
++      spec:
++        accessModes:
++          - ReadWriteOnce
++        resources:
++          requests:
++            storage: 2Gi
+
+ succeeded in 237ms:
+NAME              READY   STATUS    RESTARTS   AGE   IP            NODE           NOMINATED NODE   READINESS GATES
+elasticsearch-0   1/1     Running   0          43s   10.244.2.32   kind-worker2   <none>           <none>
+elasticsearch-1   1/1     Running   0          43s   10.244.3.37   kind-worker3   <none>           <none>
+elasticsearch-2   1/1     Running   0          43s   10.244.1.36   kind-worker    <none>           <none>
+NAME            READY   AGE
+elasticsearch   3/3     43s
+NAME          ENDPOINTS                                            AGE
+es-http       10.244.1.36:9200,10.244.2.32:9200,10.244.3.37:9200   43s
+es-internal   10.244.1.36:9300,10.244.2.32:9300,10.244.3.37:9300   43s
+
+ succeeded in 291ms:
+codex
+The service endpoints include all three pods. I’m using `es-http.elasticsearch.svc` for the HTTPS checks because that hostname matches the provided certificate SAN.
+exec
+/bin/zsh -lc 'PASS=$(kubectl -n elasticsearch get secret elastic-password -o jsonpath='"'{.data.password}' | base64 -d); kubectl -n elasticsearch exec curl-test -- env ES_PASS=\""'$PASS" sh -c '"'
+set -eu
+BASE=https://es-http.elasticsearch.svc:9200
+curl --silent --show-error --fail --cacert /tmp/es-ca.crt --user \"elastic:"'${ES_PASS}" "${BASE}/_cluster/health?pretty"
+printf "'"\\n--- write ---\\n\"
+curl --silent --show-error --fail --cacert /tmp/es-ca.crt --user \"elastic:"'${ES_PASS}" -H "Content-Type: application/json" -X PUT "${BASE}/codex-smoke/_doc/1?refresh=wait_for&pretty" -d "{'"\\\"message\\\":\\\"native kubernetes elasticsearch ok\\\",\\\"verified_at\\\":\\\"2026-06-25\\\"}\"
+printf \"\\n--- read ---\\n\"
+curl --silent --show-error --fail --cacert /tmp/es-ca.crt --user \"elastic:"'${ES_PASS}" "${BASE}/codex-smoke/_doc/1?pretty"
+'"'" in /Users/jinyige/Karma/runs/new-added-workflows/elasticsearch-certs-password-users-20260625_213837/stages/stage_01
+diff --git a/runs/new-added-workflows/elasticsearch-certs-password-users-20260625_213837/stages/stage_01/elasticsearch-native.yaml b/runs/new-added-workflows/elasticsearch-certs-password-users-20260625_213837/stages/stage_01/elasticsearch-native.yaml
+new file mode 100644
+index 0000000000000000000000000000000000000000..3916600bde6de7703d4a76afae3df3ae0daf890f
+--- /dev/null
++++ b/runs/new-added-workflows/elasticsearch-certs-password-users-20260625_213837/stages/stage_01/elasticsearch-native.yaml
+@@ -0,0 +1,177 @@
++apiVersion: v1
++kind: Service
++metadata:
++  name: es-internal
++  namespace: elasticsearch
++  labels:
++    app.kubernetes.io/name: elasticsearch
++    app.kubernetes.io/component: discovery
++spec:
++  clusterIP: None
++  publishNotReadyAddresses: true
++  selector:
++    app.kubernetes.io/name: elasticsearch
++  ports:
++    - name: transport
++      port: 9300
++      targetPort: transport
++---
++apiVersion: v1
++kind: Service
++metadata:
++  name: es-http
++  namespace: elasticsearch
++  labels:
++    app.kubernetes.io/name: elasticsearch
++    app.kubernetes.io/component: http
++spec:
++  type: ClusterIP
++  selector:
++    app.kubernetes.io/name: elasticsearch
++  ports:
++    - name: https
++      port: 9200
++      targetPort: http
++---
++apiVersion: v1
++kind: ConfigMap
++metadata:
++  name: elasticsearch-config
++  namespace: elasticsearch
++  labels:
++    app.kubernetes.io/name: elasticsearch
++data:
++  elasticsearch.yml: |
++    cluster.name: native-es
++    node.name: ${HOSTNAME}
++    network.host: 0.0.0.0
++
++    discovery.seed_hosts:
++      - es-internal.elasticsearch.svc
++    cluster.initial_master_nodes:
++      - elasticsearch-0
++      - elasticsearch-1
++      - elasticsearch-2
++
++    node.roles:
++      - master
++      - data
++      - ingest
++      - remote_cluster_client
++
++    node.store.allow_mmap: false
++    xpack.security.enabled: true
++    xpack.security.autoconfiguration.enabled: false
++    xpack.security.enrollment.enabled: false
++
++    xpack.security.http.ssl.enabled: true
++    xpack.security.http.ssl.key: certs/tls.key
++    xpack.security.http.ssl.certificate: certs/tls.crt
++    xpack.security.http.ssl.certificate_authorities: certs/ca.crt
++
++    xpack.security.transport.ssl.enabled: true
++    xpack.security.transport.ssl.key: certs/tls.key
++    xpack.security.transport.ssl.certificate: certs/tls.crt
++    xpack.security.transport.ssl.certificate_authorities: certs/ca.crt
++    xpack.security.transport.ssl.client_authentication: required
++    xpack.security.transport.ssl.verification_mode: certificate
++---
++apiVersion: policy/v1
++kind: PodDisruptionBudget
++metadata:
++  name: elasticsearch
++  namespace: elasticsearch
++  labels:
++    app.kubernetes.io/name: elasticsearch
++spec:
++  minAvailable: 2
++  selector:
++    matchLabels:
++      app.kubernetes.io/name: elasticsearch
++---
++apiVersion: apps/v1
++kind: StatefulSet
++metadata:
++  name: elasticsearch
++  namespace: elasticsearch
++  labels:
++    app.kubernetes.io/name: elasticsearch
++spec:
++  serviceName: es-internal
++  replicas: 3
++  podManagementPolicy: Parallel
++  selector:
++    matchLabels:
++      app.kubernetes.io/name: elasticsearch
++  template:
++    metadata:
++      labels:
++        app.kubernetes.io/name: elasticsearch
++    spec:
++      terminationGracePeriodSeconds: 120
++      securityContext:
++        fsGroup: 1000
++        fsGroupChangePolicy: OnRootMismatch
++      containers:
++        - name: elasticsearch
++          image: docker.elastic.co/elasticsearch/elasticsearch:8.11.1
++          imagePullPolicy: IfNotPresent
++          ports:
++            - name: http
++              containerPort: 9200
++            - name: transport
++              containerPort: 9300
++          env:
++            - name: ELASTIC_PASSWORD
++              valueFrom:
++                secretKeyRef:
++                  name: elastic-password
++                  key: password
++            - name: ES_JAVA_OPTS
++              value: -Xms512m -Xmx512m
++          readinessProbe:
++            exec:
++              command:
++                - bash
++                - -c
++                - |
++                  curl --silent --show-error --fail \
++                    --cacert /usr/share/elasticsearch/config/certs/ca.crt \
++                    --user "elastic:${ELASTIC_PASSWORD}" \
++                    https://localhost:9200/_cluster/health?local=true >/dev/null
++            initialDelaySeconds: 15
++            periodSeconds: 10
++            timeoutSeconds: 5
++            failureThreshold: 18
++          resources:
++            requests:
++              cpu: 250m
++              memory: 1Gi
++            limits:
++              memory: 1Gi
++          volumeMounts:
++            - name: config
++              mountPath: /usr/share/elasticsearch/config/elasticsearch.yml
++              subPath: elasticsearch.yml
++              readOnly: true
++            - name: tls
++              mountPath: /usr/share/elasticsearch/config/certs
++              readOnly: true
++            - name: data
++              mountPath: /usr/share/elasticsearch/data
++      volumes:
++        - name: config
++          configMap:
++            name: elasticsearch-config
++        - name: tls
++          secret:
++            secretName: es-http-tls
++  volumeClaimTemplates:
++    - metadata:
++        name: data
++      spec:
++        accessModes:
++          - ReadWriteOnce
++        resources:
++          requests:
++            storage: 2Gi
+
+ succeeded in 1504ms:
+{
+  "cluster_name" : "native-es",
+  "status" : "green",
+  "timed_out" : false,
+  "number_of_nodes" : 3,
+  "number_of_data_nodes" : 3,
+  "active_primary_shards" : 0,
+  "active_shards" : 0,
+  "relocating_shards" : 0,
+  "initializing_shards" : 0,
+  "unassigned_shards" : 0,
+  "delayed_unassigned_shards" : 0,
+  "number_of_pending_tasks" : 0,
+  "number_of_in_flight_fetch" : 0,
+  "task_max_waiting_in_queue_millis" : 0,
+  "active_shards_percent_as_number" : 100.0
+}
+
+--- write ---
+{
+  "_index" : "codex-smoke",
+  "_id" : "1",
+  "_version" : 1,
+  "result" : "created",
+  "_shards" : {
+    "total" : 2,
+    "successful" : 1,
+    "failed" : 0
+  },
+  "_seq_no" : 0,
+  "_primary_term" : 1
+}
+
+--- read ---
+{
+  "_index" : "codex-smoke",
+  "_id" : "1",
+  "_version" : 1,
+  "_seq_no" : 0,
+  "_primary_term" : 1,
+  "found" : true,
+  "_source" : {
+    "message" : "native kubernetes elasticsearch ok",
+    "verified_at" : "2026-06-25"
+  }
+}
+
+codex
+The write and read succeeded through `es-http` over HTTPS. I’m doing one final health pass after index creation, since creating the smoke-test index adds shards and can briefly move health while replicas are assigned.
+exec
+/bin/zsh -lc 'PASS=$(kubectl -n elasticsearch get secret elastic-password -o jsonpath='"'{.data.password}' | base64 -d); kubectl -n elasticsearch exec curl-test -- env ES_PASS=\""'$PASS" sh -c '"'
+set -eu
+BASE=https://es-http.elasticsearch.svc:9200
+curl --silent --show-error --fail --cacert /tmp/es-ca.crt --user \"elastic:"'${ES_PASS}" "${BASE}/_cluster/health?wait_for_status=green&timeout=60s&pretty"
+printf "'"\\n--- nodes ---\\n\"
+curl --silent --show-error --fail --cacert /tmp/es-ca.crt --user \"elastic:"'${ES_PASS}" "${BASE}/_cat/nodes?v"
+printf "'"\\n--- shards ---\\n\"
+curl --silent --show-error --fail --cacert /tmp/es-ca.crt --user \"elastic:"'${ES_PASS}" "${BASE}/_cat/shards/codex-smoke?v"
+'"'" in /Users/jinyige/Karma/runs/new-added-workflows/elasticsearch-certs-password-users-20260625_213837/stages/stage_01
+exec
+/bin/zsh -lc 'kubectl -n elasticsearch get pods -l app.kubernetes.io/name=elasticsearch -o wide && kubectl -n elasticsearch get sts,svc,pdb,pvc' in /Users/jinyige/Karma/runs/new-added-workflows/elasticsearch-certs-password-users-20260625_213837/stages/stage_01
+ succeeded in 167ms:
+NAME                             READY   AGE
+statefulset.apps/elasticsearch   3/3     74s
+
+NAME                  TYPE        CLUSTER-IP      EXTERNAL-IP   PORT(S)    AGE
+service/es-http       ClusterIP   10.96.114.251   <none>        9200/TCP   74s
+service/es-internal   ClusterIP   None            <none>        9300/TCP   74s
+
+NAME                                       MIN AVAILABLE   MAX UNAVAILABLE   ALLOWED DISRUPTIONS   AGE
+poddisruptionbudget.policy/elasticsearch   2               N/A               1                     74s
+
+NAME                                         STATUS   VOLUME                                     CAPACITY   ACCESS MODES   STORAGECLASS   VOLUMEATTRIBUTESCLASS   AGE
+persistentvolumeclaim/data-elasticsearch-0   Bound    pvc-d655822b-208f-442d-a7ca-1040cb802582   2Gi        RWO            standard       <unset>                 74s
+persistentvolumeclaim/data-elasticsearch-1   Bound    pvc-88fb22b3-f6f7-4661-8324-d67b10b0b8fa   2Gi        RWO            standard       <unset>                 74s
+persistentvolumeclaim/data-elasticsearch-2   Bound    pvc-7a5280f5-b857-4a2e-b505-7ed67cde6c72   2Gi        RWO            standard       <unset>                 74s
+
+diff --git a/runs/new-added-workflows/elasticsearch-certs-password-users-20260625_213837/stages/stage_01/elasticsearch-native.yaml b/runs/new-added-workflows/elasticsearch-certs-password-users-20260625_213837/stages/stage_01/elasticsearch-native.yaml
+new file mode 100644
+index 0000000000000000000000000000000000000000..3916600bde6de7703d4a76afae3df3ae0daf890f
+--- /dev/null
++++ b/runs/new-added-workflows/elasticsearch-certs-password-users-20260625_213837/stages/stage_01/elasticsearch-native.yaml
+@@ -0,0 +1,177 @@
++apiVersion: v1
++kind: Service
++metadata:
++  name: es-internal
++  namespace: elasticsearch
++  labels:
++    app.kubernetes.io/name: elasticsearch
++    app.kubernetes.io/component: discovery
++spec:
++  clusterIP: None
++  publishNotReadyAddresses: true
++  selector:
++    app.kubernetes.io/name: elasticsearch
++  ports:
++    - name: transport
++      port: 9300
++      targetPort: transport
++---
++apiVersion: v1
++kind: Service
++metadata:
++  name: es-http
++  namespace: elasticsearch
++  labels:
++    app.kubernetes.io/name: elasticsearch
++    app.kubernetes.io/component: http
++spec:
++  type: ClusterIP
++  selector:
++    app.kubernetes.io/name: elasticsearch
++  ports:
++    - name: https
++      port: 9200
++      targetPort: http
++---
++apiVersion: v1
++kind: ConfigMap
++metadata:
++  name: elasticsearch-config
++  namespace: elasticsearch
++  labels:
++    app.kubernetes.io/name: elasticsearch
++data:
++  elasticsearch.yml: |
++    cluster.name: native-es
++    node.name: ${HOSTNAME}
++    network.host: 0.0.0.0
++
++    discovery.seed_hosts:
++      - es-internal.elasticsearch.svc
++    cluster.initial_master_nodes:
++      - elasticsearch-0
++      - elasticsearch-1
++      - elasticsearch-2
++
++    node.roles:
++      - master
++      - data
++      - ingest
++      - remote_cluster_client
++
++    node.store.allow_mmap: false
++    xpack.security.enabled: true
++    xpack.security.autoconfiguration.enabled: false
++    xpack.security.enrollment.enabled: false
++
++    xpack.security.http.ssl.enabled: true
++    xpack.security.http.ssl.key: certs/tls.key
++    xpack.security.http.ssl.certificate: certs/tls.crt
++    xpack.security.http.ssl.certificate_authorities: certs/ca.crt
++
++    xpack.security.transport.ssl.enabled: true
++    xpack.security.transport.ssl.key: certs/tls.key
++    xpack.security.transport.ssl.certificate: certs/tls.crt
++    xpack.security.transport.ssl.certificate_authorities: certs/ca.crt
++    xpack.security.transport.ssl.client_authentication: required
++    xpack.security.transport.ssl.verification_mode: certificate
++---
++apiVersion: policy/v1
++kind: PodDisruptionBudget
++metadata:
++  name: elasticsearch
++  namespace: elasticsearch
++  labels:
++    app.kubernetes.io/name: elasticsearch
++spec:
++  minAvailable: 2
++  selector:
++    matchLabels:
++      app.kubernetes.io/name: elasticsearch
++---
++apiVersion: apps/v1
++kind: StatefulSet
++metadata:
++  name: elasticsearch
++  namespace: elasticsearch
++  labels:
++    app.kubernetes.io/name: elasticsearch
++spec:
++  serviceName: es-internal
++  replicas: 3
++  podManagementPolicy: Parallel
++  selector:
++    matchLabels:
++      app.kubernetes.io/name: elasticsearch
++  template:
++    metadata:
++      labels:
++        app.kubernetes.io/name: elasticsearch
++    spec:
++      terminationGracePeriodSeconds: 120
++      securityContext:
++        fsGroup: 1000
++        fsGroupChangePolicy: OnRootMismatch
++      containers:
++        - name: elasticsearch
++          image: docker.elastic.co/elasticsearch/elasticsearch:8.11.1
++          imagePullPolicy: IfNotPresent
++          ports:
++            - name: http
++              containerPort: 9200
++            - name: transport
++              containerPort: 9300
++          env:
++            - name: ELASTIC_PASSWORD
++              valueFrom:
++                secretKeyRef:
++                  name: elastic-password
++                  key: password
++            - name: ES_JAVA_OPTS
++              value: -Xms512m -Xmx512m
++          readinessProbe:
++            exec:
++              command:
++                - bash
++                - -c
++                - |
++                  curl --silent --show-error --fail \
++                    --cacert /usr/share/elasticsearch/config/certs/ca.crt \
++                    --user "elastic:${ELASTIC_PASSWORD}" \
++                    https://localhost:9200/_cluster/health?local=true >/dev/null
++            initialDelaySeconds: 15
++            periodSeconds: 10
++            timeoutSeconds: 5
++            failureThreshold: 18
++          resources:
++            requests:
++              cpu: 250m
++              memory: 1Gi
++            limits:
++              memory: 1Gi
++          volumeMounts:
++            - name: config
++              mountPath: /usr/share/elasticsearch/config/elasticsearch.yml
++              subPath: elasticsearch.yml
++              readOnly: true
++            - name: tls
++              mountPath: /usr/share/elasticsearch/config/certs
++              readOnly: true
++            - name: data
++              mountPath: /usr/share/elasticsearch/data
++      volumes:
++        - name: config
++          configMap:
++            name: elasticsearch-config
++        - name: tls
++          secret:
++            secretName: es-http-tls
++  volumeClaimTemplates:
++    - metadata:
++        name: data
++      spec:
++        accessModes:
++          - ReadWriteOnce
++        resources:
++          requests:
++            storage: 2Gi
+
+ succeeded in 283ms:
+{
+  "cluster_name" : "native-es",
+  "status" : "green",
+  "timed_out" : false,
+  "number_of_nodes" : 3,
+  "number_of_data_nodes" : 3,
+  "active_primary_shards" : 1,
+  "active_shards" : 2,
+  "relocating_shards" : 0,
+  "initializing_shards" : 0,
+  "unassigned_shards" : 0,
+  "delayed_unassigned_shards" : 0,
+  "number_of_pending_tasks" : 0,
+  "number_of_in_flight_fetch" : 0,
+  "task_max_waiting_in_queue_millis" : 0,
+  "active_shards_percent_as_number" : 100.0
+}
+
+--- nodes ---
+ip          heap.percent ram.percent cpu load_1m load_5m load_15m node.role master name
+10.244.3.37           28         100  17    4.09    4.84     8.45 dimr      -      elasticsearch-1
+10.244.1.36           36         100  16    4.09    4.84     8.45 dimr      -      elasticsearch-2
+10.244.2.32           52         100  16    4.09    4.84     8.45 dimr      *      elasticsearch-0
+
+--- shards ---
+index       shard prirep state   docs store dataset ip          node
+codex-smoke 0     p      STARTED    1   5kb     5kb 10.244.2.32 elasticsearch-0
+codex-smoke 0     r      STARTED    1 5.1kb   5.1kb 10.244.1.36 elasticsearch-2
+
+codex
+Deployed the 3-node Elasticsearch cluster using native Kubernetes resources only.
+
+Manifest: [elasticsearch-native.yaml](/Users/jinyige/Karma/runs/new-added-workflows/elasticsearch-certs-password-users-20260625_213837/stages/stage_01/elasticsearch-native.yaml)
+
+Current verified state:
+- `statefulset/elasticsearch`: `3/3` Ready
+- `service/es-http`: HTTPS on port `9200`
+- Cluster health through `https://es-http.elasticsearch.svc:9200`: `green`
+- Smoke write/read succeeded on index `codex-smoke`
+- All `codex-smoke` primary and replica shards are `STARTED`
+diff --git a/runs/new-added-workflows/elasticsearch-certs-password-users-20260625_213837/stages/stage_01/elasticsearch-native.yaml b/runs/new-added-workflows/elasticsearch-certs-password-users-20260625_213837/stages/stage_01/elasticsearch-native.yaml
+new file mode 100644
+index 0000000000000000000000000000000000000000..3916600bde6de7703d4a76afae3df3ae0daf890f
+--- /dev/null
++++ b/runs/new-added-workflows/elasticsearch-certs-password-users-20260625_213837/stages/stage_01/elasticsearch-native.yaml
+@@ -0,0 +1,177 @@
++apiVersion: v1
++kind: Service
++metadata:
++  name: es-internal
++  namespace: elasticsearch
++  labels:
++    app.kubernetes.io/name: elasticsearch
++    app.kubernetes.io/component: discovery
++spec:
++  clusterIP: None
++  publishNotReadyAddresses: true
++  selector:
++    app.kubernetes.io/name: elasticsearch
++  ports:
++    - name: transport
++      port: 9300
++      targetPort: transport
++---
++apiVersion: v1
++kind: Service
++metadata:
++  name: es-http
++  namespace: elasticsearch
++  labels:
++    app.kubernetes.io/name: elasticsearch
++    app.kubernetes.io/component: http
++spec:
++  type: ClusterIP
++  selector:
++    app.kubernetes.io/name: elasticsearch
++  ports:
++    - name: https
++      port: 9200
++      targetPort: http
++---
++apiVersion: v1
++kind: ConfigMap
++metadata:
++  name: elasticsearch-config
++  namespace: elasticsearch
++  labels:
++    app.kubernetes.io/name: elasticsearch
++data:
++  elasticsearch.yml: |
++    cluster.name: native-es
++    node.name: ${HOSTNAME}
++    network.host: 0.0.0.0
++
++    discovery.seed_hosts:
++      - es-internal.elasticsearch.svc
++    cluster.initial_master_nodes:
++      - elasticsearch-0
++      - elasticsearch-1
++      - elasticsearch-2
++
++    node.roles:
++      - master
++      - data
++      - ingest
++      - remote_cluster_client
++
++    node.store.allow_mmap: false
++    xpack.security.enabled: true
++    xpack.security.autoconfiguration.enabled: false
++    xpack.security.enrollment.enabled: false
++
++    xpack.security.http.ssl.enabled: true
++    xpack.security.http.ssl.key: certs/tls.key
++    xpack.security.http.ssl.certificate: certs/tls.crt
++    xpack.security.http.ssl.certificate_authorities: certs/ca.crt
++
++    xpack.security.transport.ssl.enabled: true
++    xpack.security.transport.ssl.key: certs/tls.key
++    xpack.security.transport.ssl.certificate: certs/tls.crt
++    xpack.security.transport.ssl.certificate_authorities: certs/ca.crt
++    xpack.security.transport.ssl.client_authentication: required
++    xpack.security.transport.ssl.verification_mode: certificate
++---
++apiVersion: policy/v1
++kind: PodDisruptionBudget
++metadata:
++  name: elasticsearch
++  namespace: elasticsearch
++  labels:
++    app.kubernetes.io/name: elasticsearch
++spec:
++  minAvailable: 2
++  selector:
++    matchLabels:
++      app.kubernetes.io/name: elasticsearch
++---
++apiVersion: apps/v1
++kind: StatefulSet
++metadata:
++  name: elasticsearch
++  namespace: elasticsearch
++  labels:
++    app.kubernetes.io/name: elasticsearch
++spec:
++  serviceName: es-internal
++  replicas: 3
++  podManagementPolicy: Parallel
++  selector:
++    matchLabels:
++      app.kubernetes.io/name: elasticsearch
++  template:
++    metadata:
++      labels:
++        app.kubernetes.io/name: elasticsearch
++    spec:
++      terminationGracePeriodSeconds: 120
++      securityContext:
++        fsGroup: 1000
++        fsGroupChangePolicy: OnRootMismatch
++      containers:
++        - name: elasticsearch
++          image: docker.elastic.co/elasticsearch/elasticsearch:8.11.1
++          imagePullPolicy: IfNotPresent
++          ports:
++            - name: http
++              containerPort: 9200
++            - name: transport
++              containerPort: 9300
++          env:
++            - name: ELASTIC_PASSWORD
++              valueFrom:
++                secretKeyRef:
++                  name: elastic-password
++                  key: password
++            - name: ES_JAVA_OPTS
++              value: -Xms512m -Xmx512m
++          readinessProbe:
++            exec:
++              command:
++                - bash
++                - -c
++                - |
++                  curl --silent --show-error --fail \
++                    --cacert /usr/share/elasticsearch/config/certs/ca.crt \
++                    --user "elastic:${ELASTIC_PASSWORD}" \
++                    https://localhost:9200/_cluster/health?local=true >/dev/null
++            initialDelaySeconds: 15
++            periodSeconds: 10
++            timeoutSeconds: 5
++            failureThreshold: 18
++          resources:
++            requests:
++              cpu: 250m
++              memory: 1Gi
++            limits:
++              memory: 1Gi
++          volumeMounts:
++            - name: config
++              mountPath: /usr/share/elasticsearch/config/elasticsearch.yml
++              subPath: elasticsearch.yml
++              readOnly: true
++            - name: tls
++              mountPath: /usr/share/elasticsearch/config/certs
++              readOnly: true
++            - name: data
++              mountPath: /usr/share/elasticsearch/data
++      volumes:
++        - name: config
++          configMap:
++            name: elasticsearch-config
++        - name: tls
++          secret:
++            secretName: es-http-tls
++  volumeClaimTemplates:
++    - metadata:
++        name: data
++      spec:
++        accessModes:
++          - ReadWriteOnce
++        resources:
++          requests:
++            storage: 2Gi
+
+tokens used
+59,123
+Deployed the 3-node Elasticsearch cluster using native Kubernetes resources only.
+
+Manifest: [elasticsearch-native.yaml](/Users/jinyige/Karma/runs/new-added-workflows/elasticsearch-certs-password-users-20260625_213837/stages/stage_01/elasticsearch-native.yaml)
+
+Current verified state:
+- `statefulset/elasticsearch`: `3/3` Ready
+- `service/es-http`: HTTPS on port `9200`
+- Cluster health through `https://es-http.elasticsearch.svc:9200`: `green`
+- Smoke write/read succeeded on index `codex-smoke`
+- All `codex-smoke` primary and replica shards are `STARTED`

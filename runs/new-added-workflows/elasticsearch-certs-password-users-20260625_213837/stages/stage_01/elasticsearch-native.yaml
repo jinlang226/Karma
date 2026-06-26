@@ -1,0 +1,177 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: es-internal
+  namespace: elasticsearch
+  labels:
+    app.kubernetes.io/name: elasticsearch
+    app.kubernetes.io/component: discovery
+spec:
+  clusterIP: None
+  publishNotReadyAddresses: true
+  selector:
+    app.kubernetes.io/name: elasticsearch
+  ports:
+    - name: transport
+      port: 9300
+      targetPort: transport
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: es-http
+  namespace: elasticsearch
+  labels:
+    app.kubernetes.io/name: elasticsearch
+    app.kubernetes.io/component: http
+spec:
+  type: ClusterIP
+  selector:
+    app.kubernetes.io/name: elasticsearch
+  ports:
+    - name: https
+      port: 9200
+      targetPort: http
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: elasticsearch-config
+  namespace: elasticsearch
+  labels:
+    app.kubernetes.io/name: elasticsearch
+data:
+  elasticsearch.yml: |
+    cluster.name: native-es
+    node.name: ${HOSTNAME}
+    network.host: 0.0.0.0
+
+    discovery.seed_hosts:
+      - es-internal.elasticsearch.svc
+    cluster.initial_master_nodes:
+      - elasticsearch-0
+      - elasticsearch-1
+      - elasticsearch-2
+
+    node.roles:
+      - master
+      - data
+      - ingest
+      - remote_cluster_client
+
+    node.store.allow_mmap: false
+    xpack.security.enabled: true
+    xpack.security.autoconfiguration.enabled: false
+    xpack.security.enrollment.enabled: false
+
+    xpack.security.http.ssl.enabled: true
+    xpack.security.http.ssl.key: certs/tls.key
+    xpack.security.http.ssl.certificate: certs/tls.crt
+    xpack.security.http.ssl.certificate_authorities: certs/ca.crt
+
+    xpack.security.transport.ssl.enabled: true
+    xpack.security.transport.ssl.key: certs/tls.key
+    xpack.security.transport.ssl.certificate: certs/tls.crt
+    xpack.security.transport.ssl.certificate_authorities: certs/ca.crt
+    xpack.security.transport.ssl.client_authentication: required
+    xpack.security.transport.ssl.verification_mode: certificate
+---
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: elasticsearch
+  namespace: elasticsearch
+  labels:
+    app.kubernetes.io/name: elasticsearch
+spec:
+  minAvailable: 2
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: elasticsearch
+---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: elasticsearch
+  namespace: elasticsearch
+  labels:
+    app.kubernetes.io/name: elasticsearch
+spec:
+  serviceName: es-internal
+  replicas: 3
+  podManagementPolicy: Parallel
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: elasticsearch
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: elasticsearch
+    spec:
+      terminationGracePeriodSeconds: 120
+      securityContext:
+        fsGroup: 1000
+        fsGroupChangePolicy: OnRootMismatch
+      containers:
+        - name: elasticsearch
+          image: docker.elastic.co/elasticsearch/elasticsearch:8.11.1
+          imagePullPolicy: IfNotPresent
+          ports:
+            - name: http
+              containerPort: 9200
+            - name: transport
+              containerPort: 9300
+          env:
+            - name: ELASTIC_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: elastic-password
+                  key: password
+            - name: ES_JAVA_OPTS
+              value: -Xms512m -Xmx512m
+          readinessProbe:
+            exec:
+              command:
+                - bash
+                - -c
+                - |
+                  curl --silent --show-error --fail \
+                    --cacert /usr/share/elasticsearch/config/certs/ca.crt \
+                    --user "elastic:${ELASTIC_PASSWORD}" \
+                    https://localhost:9200/_cluster/health?local=true >/dev/null
+            initialDelaySeconds: 15
+            periodSeconds: 10
+            timeoutSeconds: 5
+            failureThreshold: 18
+          resources:
+            requests:
+              cpu: 250m
+              memory: 1Gi
+            limits:
+              memory: 1Gi
+          volumeMounts:
+            - name: config
+              mountPath: /usr/share/elasticsearch/config/elasticsearch.yml
+              subPath: elasticsearch.yml
+              readOnly: true
+            - name: tls
+              mountPath: /usr/share/elasticsearch/config/certs
+              readOnly: true
+            - name: data
+              mountPath: /usr/share/elasticsearch/data
+      volumes:
+        - name: config
+          configMap:
+            name: elasticsearch-config
+        - name: tls
+          secret:
+            secretName: es-http-tls
+  volumeClaimTemplates:
+    - metadata:
+        name: data
+      spec:
+        accessModes:
+          - ReadWriteOnce
+        resources:
+          requests:
+            storage: 2Gi

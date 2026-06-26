@@ -61,8 +61,16 @@ That is the next direction for KARMA:
 Install dependencies and start the web UI:
 
 ```bash
-pip install -r requirements.txt
-python3 main.py
+python3 -m venv .venv
+source .venv/bin/activate
+python -m pip install -r requirements.txt
+python main.py
+```
+
+If the repo virtualenv already exists, you can start the UI directly with:
+
+```bash
+.venv/bin/python main.py
 ```
 
 Then open:

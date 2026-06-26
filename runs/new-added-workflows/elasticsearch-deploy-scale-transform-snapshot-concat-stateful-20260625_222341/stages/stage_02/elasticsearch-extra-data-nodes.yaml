@@ -1,0 +1,150 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: es-extra-config
+  namespace: elasticsearch
+data:
+  elasticsearch.yml: |
+    cluster.name: es-cluster
+    node.name: ${POD_NAME}
+    node.roles: [ data, ingest ]
+    network.host: 0.0.0.0
+    discovery.seed_hosts:
+      - es-cluster-0.es-cluster.elasticsearch.svc.cluster.local
+      - es-cluster-1.es-cluster.elasticsearch.svc.cluster.local
+      - es-cluster-2.es-cluster.elasticsearch.svc.cluster.local
+    node.attr.node_pool: expansion
+    node.store.allow_mmap: false
+    xpack.security.enabled: false
+    xpack.security.http.ssl.enabled: false
+    xpack.security.transport.ssl.enabled: false
+    s3.client.default.endpoint: minio.elasticsearch.svc.cluster.local:9000
+    s3.client.default.protocol: http
+    s3.client.default.path_style_access: true
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: es-extra
+  namespace: elasticsearch
+spec:
+  clusterIP: None
+  selector:
+    app: es-extra
+  ports:
+    - name: http
+      port: 9200
+      targetPort: http
+    - name: transport
+      port: 9300
+      targetPort: transport
+---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: es-extra
+  namespace: elasticsearch
+spec:
+  podManagementPolicy: Parallel
+  replicas: 2
+  selector:
+    matchLabels:
+      app: es-extra
+  serviceName: es-extra
+  template:
+    metadata:
+      labels:
+        app: es-extra
+        cluster: es-cluster
+    spec:
+      initContainers:
+        - name: install-s3-plugin
+          image: docker.elastic.co/elasticsearch/elasticsearch:8.11.1
+          command:
+            - /bin/sh
+            - -c
+            - |
+              set -e
+              if [ ! -d /usr/share/elasticsearch/plugins/repository-s3 ]; then
+                /usr/share/elasticsearch/bin/elasticsearch-plugin install --batch repository-s3
+              fi
+          volumeMounts:
+            - name: es-plugins
+              mountPath: /usr/share/elasticsearch/plugins
+      containers:
+        - name: elasticsearch
+          image: docker.elastic.co/elasticsearch/elasticsearch:8.11.1
+          command:
+            - /bin/bash
+            - -c
+            - |
+              set -euo pipefail
+              /usr/share/elasticsearch/bin/elasticsearch-keystore create >/dev/null 2>&1 || true
+              for setting in /mnt/secure-settings/*; do
+                [ -f "$setting" ] || continue
+                key="$(basename "$setting")"
+                if /usr/share/elasticsearch/bin/elasticsearch-keystore list | grep -Fxq "$key"; then
+                  continue
+                fi
+                /usr/share/elasticsearch/bin/elasticsearch-keystore add-file "$key" "$setting"
+              done
+              exec /usr/local/bin/docker-entrypoint.sh eswrapper
+          env:
+            - name: POD_NAME
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.name
+            - name: ES_JAVA_OPTS
+              value: -Xms512m -Xmx512m
+          ports:
+            - name: http
+              containerPort: 9200
+            - name: transport
+              containerPort: 9300
+          readinessProbe:
+            httpGet:
+              path: /_cluster/health?local=true
+              port: http
+            initialDelaySeconds: 10
+            periodSeconds: 5
+            timeoutSeconds: 2
+            failureThreshold: 6
+          resources:
+            requests:
+              cpu: 500m
+              memory: 1Gi
+            limits:
+              cpu: "1"
+              memory: 2Gi
+          volumeMounts:
+            - name: es-extra-config
+              mountPath: /usr/share/elasticsearch/config/elasticsearch.yml
+              subPath: elasticsearch.yml
+            - name: es-plugins
+              mountPath: /usr/share/elasticsearch/plugins
+            - name: secure-settings
+              mountPath: /mnt/secure-settings
+              readOnly: true
+            - name: data
+              mountPath: /usr/share/elasticsearch/data
+      volumes:
+        - name: es-extra-config
+          configMap:
+            name: es-extra-config
+            items:
+              - key: elasticsearch.yml
+                path: elasticsearch.yml
+        - name: es-plugins
+          emptyDir: {}
+        - name: secure-settings
+          secret:
+            secretName: es-secure-settings
+  volumeClaimTemplates:
+    - metadata:
+        name: data
+      spec:
+        accessModes:
+          - ReadWriteOnce
+        resources:
+          requests:
+            storage: 5Gi

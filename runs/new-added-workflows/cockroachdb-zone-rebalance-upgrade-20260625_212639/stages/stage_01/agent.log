@@ -1,0 +1,1239 @@
+OpenAI Codex v0.142.2
+--------
+workdir: /Users/jinyige/Karma/runs/new-added-workflows/cockroachdb-zone-rebalance-upgrade-20260625_212639/stages/stage_01
+model: gpt-5.5
+provider: openai
+approval: never
+sandbox: danger-full-access
+reasoning effort: xhigh
+reasoning summaries: none
+session id: 019f00ad-9a30-74c2-9b96-adcb3b86f6d7
+--------
+user
+A CockroachDB cluster needs to be deployed in the cockroachdb namespace.
+
+OBSERVED STATE:
+- RBAC resources ready (ServiceAccount, Role, RoleBinding)
+- No workload resources exist yet
+
+YOUR TASK:
+Deploy a 3-node CockroachDB cluster using only native Kubernetes resources.
+
+CONSTRAINTS:
+- Resources and names must be:
+  - Headless Service: crdb-cluster
+  - Public Service: crdb-cluster-public
+  - StatefulSet: crdb-cluster
+- Services must expose grpc (26257) and http (8080).
+- StatefulSet:
+  - 3 replicas
+  - Image: cockroachdb/cockroach:v24.1.0
+  - Advertise each pod by its DNS and join all 3 nodes
+  - VolumeClaimTemplate with 10Gi storage
+- Insecure mode (no TLS) for this case.
+- Use the existing RBAC; do not create new RBAC resources.
+- Do not install CRDs or use a CockroachDB operator.
+- Ensure voluntary disruptions preserve quorum (at least 2 of 3 nodes remain available).
+
+Check resources and pods:
+```bash
+kubectl -n cockroachdb get statefulset,service
+kubectl -n cockroachdb get pods
+kubectl -n cockroachdb get pvc
+```
+codex
+I’ll inspect the namespace first so the manifest matches the existing RBAC and any storage defaults, then I’ll apply only the missing native workload/service resources.
+exec
+/bin/zsh -lc 'kubectl -n cockroachdb get storageclass,pv,pvc' in /Users/jinyige/Karma/runs/new-added-workflows/cockroachdb-zone-rebalance-upgrade-20260625_212639/stages/stage_01
+exec
+/bin/zsh -lc 'kubectl -n cockroachdb get serviceaccount,role,rolebinding,statefulset,service,pod,pvc,pdb -o wide' in /Users/jinyige/Karma/runs/new-added-workflows/cockroachdb-zone-rebalance-upgrade-20260625_212639/stages/stage_01
+ succeeded in 251ms:
+NAME                                             PROVISIONER             RECLAIMPOLICY   VOLUMEBINDINGMODE      ALLOWVOLUMEEXPANSION   AGE
+storageclass.storage.k8s.io/standard (default)   rancher.io/local-path   Delete          WaitForFirstConsumer   false                  13d
+
+ succeeded in 322ms:
+NAME                             SECRETS   AGE
+serviceaccount/crdb-cluster-sa   0         19s
+serviceaccount/default           0         20s
+
+NAME                                               CREATED AT
+role.rbac.authorization.k8s.io/crdb-cluster-role   2026-06-25T21:26:42Z
+
+NAME                                                             ROLE                     AGE   USERS   GROUPS   SERVICEACCOUNTS
+rolebinding.rbac.authorization.k8s.io/crdb-cluster-rolebinding   Role/crdb-cluster-role   19s                    cockroachdb/crdb-cluster-sa
+
+codex
+The namespace currently only has the existing `crdb-cluster-sa` RBAC wiring and no StatefulSet/Service/PVC/PDB objects. I’m going to add a focused manifest with the two required Services, the 3-replica StatefulSet, and a PDB with `minAvailable: 2`.
+codex
+I’ll write the manifest to the workspace first, then apply it. The StatefulSet will use the existing `crdb-cluster-sa`, headless DNS for pod identity, and `publishNotReadyAddresses` so all three join targets resolve during bootstrap.
+apply patch
+patch: completed
+/Users/jinyige/Karma/runs/new-added-workflows/cockroachdb-zone-rebalance-upgrade-20260625_212639/stages/stage_01/cockroachdb-cluster.yaml
+diff --git a/runs/new-added-workflows/cockroachdb-zone-rebalance-upgrade-20260625_212639/stages/stage_01/cockroachdb-cluster.yaml b/runs/new-added-workflows/cockroachdb-zone-rebalance-upgrade-20260625_212639/stages/stage_01/cockroachdb-cluster.yaml
+new file mode 100644
+index 0000000000000000000000000000000000000000..46eb7f8f39ca8d751212a7316d4f35dfafbc205f
+--- /dev/null
++++ b/runs/new-added-workflows/cockroachdb-zone-rebalance-upgrade-20260625_212639/stages/stage_01/cockroachdb-cluster.yaml
+@@ -0,0 +1,124 @@
++apiVersion: v1
++kind: Service
++metadata:
++  name: crdb-cluster
++  namespace: cockroachdb
++  labels:
++    app: crdb-cluster
++spec:
++  clusterIP: None
++  publishNotReadyAddresses: true
++  selector:
++    app: crdb-cluster
++  ports:
++    - name: grpc
++      port: 26257
++      targetPort: grpc
++    - name: http
++      port: 8080
++      targetPort: http
++---
++apiVersion: v1
++kind: Service
++metadata:
++  name: crdb-cluster-public
++  namespace: cockroachdb
++  labels:
++    app: crdb-cluster
++spec:
++  selector:
++    app: crdb-cluster
++  ports:
++    - name: grpc
++      port: 26257
++      targetPort: grpc
++    - name: http
++      port: 8080
++      targetPort: http
++---
++apiVersion: apps/v1
++kind: StatefulSet
++metadata:
++  name: crdb-cluster
++  namespace: cockroachdb
++  labels:
++    app: crdb-cluster
++spec:
++  serviceName: crdb-cluster
++  replicas: 3
++  podManagementPolicy: Parallel
++  selector:
++    matchLabels:
++      app: crdb-cluster
++  template:
++    metadata:
++      labels:
++        app: crdb-cluster
++    spec:
++      serviceAccountName: crdb-cluster-sa
++      terminationGracePeriodSeconds: 60
++      containers:
++        - name: cockroachdb
++          image: cockroachdb/cockroach:v24.1.0
++          imagePullPolicy: IfNotPresent
++          ports:
++            - name: grpc
++              containerPort: 26257
++            - name: http
++              containerPort: 8080
++          env:
++            - name: POD_NAME
++              valueFrom:
++                fieldRef:
++                  fieldPath: metadata.name
++            - name: NAMESPACE
++              valueFrom:
++                fieldRef:
++                  fieldPath: metadata.namespace
++          args:
++            - start
++            - --insecure
++            - --listen-addr=0.0.0.0:26257
++            - --advertise-addr=$(POD_NAME).crdb-cluster.$(NAMESPACE).svc.cluster.local:26257
++            - --http-addr=0.0.0.0:8080
++            - --join=crdb-cluster-0.crdb-cluster.$(NAMESPACE).svc.cluster.local:26257,crdb-cluster-1.crdb-cluster.$(NAMESPACE).svc.cluster.local:26257,crdb-cluster-2.crdb-cluster.$(NAMESPACE).svc.cluster.local:26257
++            - --store=/cockroach/cockroach-data
++          volumeMounts:
++            - name: datadir
++              mountPath: /cockroach/cockroach-data
++          readinessProbe:
++            httpGet:
++              path: /health?ready=1
++              port: http
++            initialDelaySeconds: 10
++            periodSeconds: 5
++            failureThreshold: 6
++          livenessProbe:
++            httpGet:
++              path: /health
++              port: http
++            initialDelaySeconds: 30
++            periodSeconds: 10
++            failureThreshold: 6
++  volumeClaimTemplates:
++    - metadata:
++        name: datadir
++      spec:
++        accessModes:
++          - ReadWriteOnce
++        resources:
++          requests:
++            storage: 10Gi
++---
++apiVersion: policy/v1
++kind: PodDisruptionBudget
++metadata:
++  name: crdb-cluster
++  namespace: cockroachdb
++  labels:
++    app: crdb-cluster
++spec:
++  minAvailable: 2
++  selector:
++    matchLabels:
++      app: crdb-cluster
+
+diff --git a/runs/new-added-workflows/cockroachdb-zone-rebalance-upgrade-20260625_212639/stages/stage_01/cockroachdb-cluster.yaml b/runs/new-added-workflows/cockroachdb-zone-rebalance-upgrade-20260625_212639/stages/stage_01/cockroachdb-cluster.yaml
+new file mode 100644
+index 0000000000000000000000000000000000000000..46eb7f8f39ca8d751212a7316d4f35dfafbc205f
+--- /dev/null
++++ b/runs/new-added-workflows/cockroachdb-zone-rebalance-upgrade-20260625_212639/stages/stage_01/cockroachdb-cluster.yaml
+@@ -0,0 +1,124 @@
++apiVersion: v1
++kind: Service
++metadata:
++  name: crdb-cluster
++  namespace: cockroachdb
++  labels:
++    app: crdb-cluster
++spec:
++  clusterIP: None
++  publishNotReadyAddresses: true
++  selector:
++    app: crdb-cluster
++  ports:
++    - name: grpc
++      port: 26257
++      targetPort: grpc
++    - name: http
++      port: 8080
++      targetPort: http
++---
++apiVersion: v1
++kind: Service
++metadata:
++  name: crdb-cluster-public
++  namespace: cockroachdb
++  labels:
++    app: crdb-cluster
++spec:
++  selector:
++    app: crdb-cluster
++  ports:
++    - name: grpc
++      port: 26257
++      targetPort: grpc
++    - name: http
++      port: 8080
++      targetPort: http
++---
++apiVersion: apps/v1
++kind: StatefulSet
++metadata:
++  name: crdb-cluster
++  namespace: cockroachdb
++  labels:
++    app: crdb-cluster
++spec:
++  serviceName: crdb-cluster
++  replicas: 3
++  podManagementPolicy: Parallel
++  selector:
++    matchLabels:
++      app: crdb-cluster
++  template:
++    metadata:
++      labels:
++        app: crdb-cluster
++    spec:
++      serviceAccountName: crdb-cluster-sa
++      terminationGracePeriodSeconds: 60
++      containers:
++        - name: cockroachdb
++          image: cockroachdb/cockroach:v24.1.0
++          imagePullPolicy: IfNotPresent
++          ports:
++            - name: grpc
++              containerPort: 26257
++            - name: http
++              containerPort: 8080
++          env:
++            - name: POD_NAME
++              valueFrom:
++                fieldRef:
++                  fieldPath: metadata.name
++            - name: NAMESPACE
++              valueFrom:
++                fieldRef:
++                  fieldPath: metadata.namespace
++          args:
++            - start
++            - --insecure
++            - --listen-addr=0.0.0.0:26257
++            - --advertise-addr=$(POD_NAME).crdb-cluster.$(NAMESPACE).svc.cluster.local:26257
++            - --http-addr=0.0.0.0:8080
++            - --join=crdb-cluster-0.crdb-cluster.$(NAMESPACE).svc.cluster.local:26257,crdb-cluster-1.crdb-cluster.$(NAMESPACE).svc.cluster.local:26257,crdb-cluster-2.crdb-cluster.$(NAMESPACE).svc.cluster.local:26257
++            - --store=/cockroach/cockroach-data
++          volumeMounts:
++            - name: datadir
++              mountPath: /cockroach/cockroach-data
++          readinessProbe:
++            httpGet:
++              path: /health?ready=1
++              port: http
++            initialDelaySeconds: 10
++            periodSeconds: 5
++            failureThreshold: 6
++          livenessProbe:
++            httpGet:
++              path: /health
++              port: http
++            initialDelaySeconds: 30
++            periodSeconds: 10
++            failureThreshold: 6
++  volumeClaimTemplates:
++    - metadata:
++        name: datadir
++      spec:
++        accessModes:
++          - ReadWriteOnce
++        resources:
++          requests:
++            storage: 10Gi
++---
++apiVersion: policy/v1
++kind: PodDisruptionBudget
++metadata:
++  name: crdb-cluster
++  namespace: cockroachdb
++  labels:
++    app: crdb-cluster
++spec:
++  minAvailable: 2
++  selector:
++    matchLabels:
++      app: crdb-cluster
+
+codex
+The manifest is in place. I’m applying it now and then I’ll wait for the StatefulSet pods and PVCs so I can initialize CockroachDB if the nodes are up but waiting for cluster initialization.
+exec
+/bin/zsh -lc 'kubectl apply -f cockroachdb-cluster.yaml' in /Users/jinyige/Karma/runs/new-added-workflows/cockroachdb-zone-rebalance-upgrade-20260625_212639/stages/stage_01
+diff --git a/runs/new-added-workflows/cockroachdb-zone-rebalance-upgrade-20260625_212639/stages/stage_01/cockroachdb-cluster.yaml b/runs/new-added-workflows/cockroachdb-zone-rebalance-upgrade-20260625_212639/stages/stage_01/cockroachdb-cluster.yaml
+new file mode 100644
+index 0000000000000000000000000000000000000000..46eb7f8f39ca8d751212a7316d4f35dfafbc205f
+--- /dev/null
++++ b/runs/new-added-workflows/cockroachdb-zone-rebalance-upgrade-20260625_212639/stages/stage_01/cockroachdb-cluster.yaml
+@@ -0,0 +1,124 @@
++apiVersion: v1
++kind: Service
++metadata:
++  name: crdb-cluster
++  namespace: cockroachdb
++  labels:
++    app: crdb-cluster
++spec:
++  clusterIP: None
++  publishNotReadyAddresses: true
++  selector:
++    app: crdb-cluster
++  ports:
++    - name: grpc
++      port: 26257
++      targetPort: grpc
++    - name: http
++      port: 8080
++      targetPort: http
++---
++apiVersion: v1
++kind: Service
++metadata:
++  name: crdb-cluster-public
++  namespace: cockroachdb
++  labels:
++    app: crdb-cluster
++spec:
++  selector:
++    app: crdb-cluster
++  ports:
++    - name: grpc
++      port: 26257
++      targetPort: grpc
++    - name: http
++      port: 8080
++      targetPort: http
++---
++apiVersion: apps/v1
++kind: StatefulSet
++metadata:
++  name: crdb-cluster
++  namespace: cockroachdb
++  labels:
++    app: crdb-cluster
++spec:
++  serviceName: crdb-cluster
++  replicas: 3
++  podManagementPolicy: Parallel
++  selector:
++    matchLabels:
++      app: crdb-cluster
++  template:
++    metadata:
++      labels:
++        app: crdb-cluster
++    spec:
++      serviceAccountName: crdb-cluster-sa
++      terminationGracePeriodSeconds: 60
++      containers:
++        - name: cockroachdb
++          image: cockroachdb/cockroach:v24.1.0
++          imagePullPolicy: IfNotPresent
++          ports:
++            - name: grpc
++              containerPort: 26257
++            - name: http
++              containerPort: 8080
++          env:
++            - name: POD_NAME
++              valueFrom:
++                fieldRef:
++                  fieldPath: metadata.name
++            - name: NAMESPACE
++              valueFrom:
++                fieldRef:
++                  fieldPath: metadata.namespace
++          args:
++            - start
++            - --insecure
++            - --listen-addr=0.0.0.0:26257
++            - --advertise-addr=$(POD_NAME).crdb-cluster.$(NAMESPACE).svc.cluster.local:26257
++            - --http-addr=0.0.0.0:8080
++            - --join=crdb-cluster-0.crdb-cluster.$(NAMESPACE).svc.cluster.local:26257,crdb-cluster-1.crdb-cluster.$(NAMESPACE).svc.cluster.local:26257,crdb-cluster-2.crdb-cluster.$(NAMESPACE).svc.cluster.local:26257
++            - --store=/cockroach/cockroach-data
++          volumeMounts:
++            - name: datadir
++              mountPath: /cockroach/cockroach-data
++          readinessProbe:
++            httpGet:
++              path: /health?ready=1
++              port: http
++            initialDelaySeconds: 10
++            periodSeconds: 5
++            failureThreshold: 6
++          livenessProbe:
++            httpGet:
++              path: /health
++              port: http
++            initialDelaySeconds: 30
++            periodSeconds: 10
++            failureThreshold: 6
++  volumeClaimTemplates:
++    - metadata:
++        name: datadir
++      spec:
++        accessModes:
++          - ReadWriteOnce
++        resources:
++          requests:
++            storage: 10Gi
++---
++apiVersion: policy/v1
++kind: PodDisruptionBudget
++metadata:
++  name: crdb-cluster
++  namespace: cockroachdb
++  labels:
++    app: crdb-cluster
++spec:
++  minAvailable: 2
++  selector:
++    matchLabels:
++      app: crdb-cluster
+
+ succeeded in 397ms:
+service/crdb-cluster created
+service/crdb-cluster-public created
+statefulset.apps/crdb-cluster created
+poddisruptionbudget.policy/crdb-cluster created
+
+codex
+The Kubernetes objects were created successfully. I’m checking scheduling and startup now; if Cockroach reports “not initialized” after the processes are running, I’ll run the one-time `cockroach init` against the first pod.
+exec
+/bin/zsh -lc 'kubectl -n cockroachdb get pods -o wide' in /Users/jinyige/Karma/runs/new-added-workflows/cockroachdb-zone-rebalance-upgrade-20260625_212639/stages/stage_01
+ succeeded in 0ms:
+NAME             READY   STATUS    RESTARTS   AGE   IP            NODE           NOMINATED NODE   READINESS GATES
+crdb-cluster-0   0/1     Running   0          7s    10.244.1.27   kind-worker    <none>           <none>
+crdb-cluster-1   0/1     Running   0          7s    10.244.2.24   kind-worker2   <none>           <none>
+crdb-cluster-2   0/1     Running   0          7s    10.244.3.28   kind-worker3   <none>           <none>
+
+exec
+/bin/zsh -lc 'kubectl -n cockroachdb get pvc -o wide' in /Users/jinyige/Karma/runs/new-added-workflows/cockroachdb-zone-rebalance-upgrade-20260625_212639/stages/stage_01
+ succeeded in 0ms:
+NAME                     STATUS   VOLUME                                     CAPACITY   ACCESS MODES   STORAGECLASS   VOLUMEATTRIBUTESCLASS   AGE   VOLUMEMODE
+datadir-crdb-cluster-0   Bound    pvc-ef433da9-88d9-4051-928d-ced00f6316f0   10Gi       RWO            standard       <unset>                 7s    Filesystem
+datadir-crdb-cluster-1   Bound    pvc-6c109691-65d9-4848-9aad-9e59cc949725   10Gi       RWO            standard       <unset>                 7s    Filesystem
+datadir-crdb-cluster-2   Bound    pvc-74a4e3f9-8258-4685-b29f-84a4a3112b42   10Gi       RWO            standard       <unset>                 7s    Filesystem
+
+exec
+/bin/zsh -lc 'kubectl -n cockroachdb get statefulset,service,pdb -o wide' in /Users/jinyige/Karma/runs/new-added-workflows/cockroachdb-zone-rebalance-upgrade-20260625_212639/stages/stage_01
+ succeeded in 0ms:
+NAME                            READY   AGE   CONTAINERS    IMAGES
+statefulset.apps/crdb-cluster   0/3     7s    cockroachdb   cockroachdb/cockroach:v24.1.0
+
+NAME                          TYPE        CLUSTER-IP     EXTERNAL-IP   PORT(S)              AGE   SELECTOR
+service/crdb-cluster          ClusterIP   None           <none>        26257/TCP,8080/TCP   7s    app=crdb-cluster
+service/crdb-cluster-public   ClusterIP   10.96.244.99   <none>        26257/TCP,8080/TCP   7s    app=crdb-cluster
+
+NAME                                      MIN AVAILABLE   MAX UNAVAILABLE   ALLOWED DISRUPTIONS   AGE
+poddisruptionbudget.policy/crdb-cluster   2               N/A               0                     7s
+
+diff --git a/runs/new-added-workflows/cockroachdb-zone-rebalance-upgrade-20260625_212639/stages/stage_01/cockroachdb-cluster.yaml b/runs/new-added-workflows/cockroachdb-zone-rebalance-upgrade-20260625_212639/stages/stage_01/cockroachdb-cluster.yaml
+new file mode 100644
+index 0000000000000000000000000000000000000000..46eb7f8f39ca8d751212a7316d4f35dfafbc205f
+--- /dev/null
++++ b/runs/new-added-workflows/cockroachdb-zone-rebalance-upgrade-20260625_212639/stages/stage_01/cockroachdb-cluster.yaml
+@@ -0,0 +1,124 @@
++apiVersion: v1
++kind: Service
++metadata:
++  name: crdb-cluster
++  namespace: cockroachdb
++  labels:
++    app: crdb-cluster
++spec:
++  clusterIP: None
++  publishNotReadyAddresses: true
++  selector:
++    app: crdb-cluster
++  ports:
++    - name: grpc
++      port: 26257
++      targetPort: grpc
++    - name: http
++      port: 8080
++      targetPort: http
++---
++apiVersion: v1
++kind: Service
++metadata:
++  name: crdb-cluster-public
++  namespace: cockroachdb
++  labels:
++    app: crdb-cluster
++spec:
++  selector:
++    app: crdb-cluster
++  ports:
++    - name: grpc
++      port: 26257
++      targetPort: grpc
++    - name: http
++      port: 8080
++      targetPort: http
++---
++apiVersion: apps/v1
++kind: StatefulSet
++metadata:
++  name: crdb-cluster
++  namespace: cockroachdb
++  labels:
++    app: crdb-cluster
++spec:
++  serviceName: crdb-cluster
++  replicas: 3
++  podManagementPolicy: Parallel
++  selector:
++    matchLabels:
++      app: crdb-cluster
++  template:
++    metadata:
++      labels:
++        app: crdb-cluster
++    spec:
++      serviceAccountName: crdb-cluster-sa
++      terminationGracePeriodSeconds: 60
++      containers:
++        - name: cockroachdb
++          image: cockroachdb/cockroach:v24.1.0
++          imagePullPolicy: IfNotPresent
++          ports:
++            - name: grpc
++              containerPort: 26257
++            - name: http
++              containerPort: 8080
++          env:
++            - name: POD_NAME
++              valueFrom:
++                fieldRef:
++                  fieldPath: metadata.name
++            - name: NAMESPACE
++              valueFrom:
++                fieldRef:
++                  fieldPath: metadata.namespace
++          args:
++            - start
++            - --insecure
++            - --listen-addr=0.0.0.0:26257
++            - --advertise-addr=$(POD_NAME).crdb-cluster.$(NAMESPACE).svc.cluster.local:26257
++            - --http-addr=0.0.0.0:8080
++            - --join=crdb-cluster-0.crdb-cluster.$(NAMESPACE).svc.cluster.local:26257,crdb-cluster-1.crdb-cluster.$(NAMESPACE).svc.cluster.local:26257,crdb-cluster-2.crdb-cluster.$(NAMESPACE).svc.cluster.local:26257
++            - --store=/cockroach/cockroach-data
++          volumeMounts:
++            - name: datadir
++              mountPath: /cockroach/cockroach-data
++          readinessProbe:
++            httpGet:
++              path: /health?ready=1
++              port: http
++            initialDelaySeconds: 10
++            periodSeconds: 5
++            failureThreshold: 6
++          livenessProbe:
++            httpGet:
++              path: /health
++              port: http
++            initialDelaySeconds: 30
++            periodSeconds: 10
++            failureThreshold: 6
++  volumeClaimTemplates:
++    - metadata:
++        name: datadir
++      spec:
++        accessModes:
++          - ReadWriteOnce
++        resources:
++          requests:
++            storage: 10Gi
++---
++apiVersion: policy/v1
++kind: PodDisruptionBudget
++metadata:
++  name: crdb-cluster
++  namespace: cockroachdb
++  labels:
++    app: crdb-cluster
++spec:
++  minAvailable: 2
++  selector:
++    matchLabels:
++      app: crdb-cluster
+
+codex
+All three pods are running and the PVCs are bound. Readiness is still false, which is expected before the cluster is initialized, so I’m running the one-time CockroachDB initialization from `crdb-cluster-0`.
+exec
+/bin/zsh -lc 'kubectl -n cockroachdb exec crdb-cluster-0 -- /cockroach/cockroach init --insecure --host=localhost:26257' in /Users/jinyige/Karma/runs/new-added-workflows/cockroachdb-zone-rebalance-upgrade-20260625_212639/stages/stage_01
+diff --git a/runs/new-added-workflows/cockroachdb-zone-rebalance-upgrade-20260625_212639/stages/stage_01/cockroachdb-cluster.yaml b/runs/new-added-workflows/cockroachdb-zone-rebalance-upgrade-20260625_212639/stages/stage_01/cockroachdb-cluster.yaml
+new file mode 100644
+index 0000000000000000000000000000000000000000..46eb7f8f39ca8d751212a7316d4f35dfafbc205f
+--- /dev/null
++++ b/runs/new-added-workflows/cockroachdb-zone-rebalance-upgrade-20260625_212639/stages/stage_01/cockroachdb-cluster.yaml
+@@ -0,0 +1,124 @@
++apiVersion: v1
++kind: Service
++metadata:
++  name: crdb-cluster
++  namespace: cockroachdb
++  labels:
++    app: crdb-cluster
++spec:
++  clusterIP: None
++  publishNotReadyAddresses: true
++  selector:
++    app: crdb-cluster
++  ports:
++    - name: grpc
++      port: 26257
++      targetPort: grpc
++    - name: http
++      port: 8080
++      targetPort: http
++---
++apiVersion: v1
++kind: Service
++metadata:
++  name: crdb-cluster-public
++  namespace: cockroachdb
++  labels:
++    app: crdb-cluster
++spec:
++  selector:
++    app: crdb-cluster
++  ports:
++    - name: grpc
++      port: 26257
++      targetPort: grpc
++    - name: http
++      port: 8080
++      targetPort: http
++---
++apiVersion: apps/v1
++kind: StatefulSet
++metadata:
++  name: crdb-cluster
++  namespace: cockroachdb
++  labels:
++    app: crdb-cluster
++spec:
++  serviceName: crdb-cluster
++  replicas: 3
++  podManagementPolicy: Parallel
++  selector:
++    matchLabels:
++      app: crdb-cluster
++  template:
++    metadata:
++      labels:
++        app: crdb-cluster
++    spec:
++      serviceAccountName: crdb-cluster-sa
++      terminationGracePeriodSeconds: 60
++      containers:
++        - name: cockroachdb
++          image: cockroachdb/cockroach:v24.1.0
++          imagePullPolicy: IfNotPresent
++          ports:
++            - name: grpc
++              containerPort: 26257
++            - name: http
++              containerPort: 8080
++          env:
++            - name: POD_NAME
++              valueFrom:
++                fieldRef:
++                  fieldPath: metadata.name
++            - name: NAMESPACE
++              valueFrom:
++                fieldRef:
++                  fieldPath: metadata.namespace
++          args:
++            - start
++            - --insecure
++            - --listen-addr=0.0.0.0:26257
++            - --advertise-addr=$(POD_NAME).crdb-cluster.$(NAMESPACE).svc.cluster.local:26257
++            - --http-addr=0.0.0.0:8080
++            - --join=crdb-cluster-0.crdb-cluster.$(NAMESPACE).svc.cluster.local:26257,crdb-cluster-1.crdb-cluster.$(NAMESPACE).svc.cluster.local:26257,crdb-cluster-2.crdb-cluster.$(NAMESPACE).svc.cluster.local:26257
++            - --store=/cockroach/cockroach-data
++          volumeMounts:
++            - name: datadir
++              mountPath: /cockroach/cockroach-data
++          readinessProbe:
++            httpGet:
++              path: /health?ready=1
++              port: http
++            initialDelaySeconds: 10
++            periodSeconds: 5
++            failureThreshold: 6
++          livenessProbe:
++            httpGet:
++              path: /health
++              port: http
++            initialDelaySeconds: 30
++            periodSeconds: 10
++            failureThreshold: 6
++  volumeClaimTemplates:
++    - metadata:
++        name: datadir
++      spec:
++        accessModes:
++          - ReadWriteOnce
++        resources:
++          requests:
++            storage: 10Gi
++---
++apiVersion: policy/v1
++kind: PodDisruptionBudget
++metadata:
++  name: crdb-cluster
++  namespace: cockroachdb
++  labels:
++    app: crdb-cluster
++spec:
++  minAvailable: 2
++  selector:
++    matchLabels:
++      app: crdb-cluster
+
+ succeeded in 495ms:
+Cluster successfully initialized
+
+codex
+Initialization succeeded. I’m waiting for the StatefulSet readiness to converge and then I’ll run the exact resource checks from the request.
+exec
+/bin/zsh -lc 'kubectl -n cockroachdb rollout status statefulset/crdb-cluster --timeout=180s' in /Users/jinyige/Karma/runs/new-added-workflows/cockroachdb-zone-rebalance-upgrade-20260625_212639/stages/stage_01
+ succeeded in 0ms:
+partitioned roll out complete: 3 new pods have been updated...
+
+diff --git a/runs/new-added-workflows/cockroachdb-zone-rebalance-upgrade-20260625_212639/stages/stage_01/cockroachdb-cluster.yaml b/runs/new-added-workflows/cockroachdb-zone-rebalance-upgrade-20260625_212639/stages/stage_01/cockroachdb-cluster.yaml
+new file mode 100644
+index 0000000000000000000000000000000000000000..46eb7f8f39ca8d751212a7316d4f35dfafbc205f
+--- /dev/null
++++ b/runs/new-added-workflows/cockroachdb-zone-rebalance-upgrade-20260625_212639/stages/stage_01/cockroachdb-cluster.yaml
+@@ -0,0 +1,124 @@
++apiVersion: v1
++kind: Service
++metadata:
++  name: crdb-cluster
++  namespace: cockroachdb
++  labels:
++    app: crdb-cluster
++spec:
++  clusterIP: None
++  publishNotReadyAddresses: true
++  selector:
++    app: crdb-cluster
++  ports:
++    - name: grpc
++      port: 26257
++      targetPort: grpc
++    - name: http
++      port: 8080
++      targetPort: http
++---
++apiVersion: v1
++kind: Service
++metadata:
++  name: crdb-cluster-public
++  namespace: cockroachdb
++  labels:
++    app: crdb-cluster
++spec:
++  selector:
++    app: crdb-cluster
++  ports:
++    - name: grpc
++      port: 26257
++      targetPort: grpc
++    - name: http
++      port: 8080
++      targetPort: http
++---
++apiVersion: apps/v1
++kind: StatefulSet
++metadata:
++  name: crdb-cluster
++  namespace: cockroachdb
++  labels:
++    app: crdb-cluster
++spec:
++  serviceName: crdb-cluster
++  replicas: 3
++  podManagementPolicy: Parallel
++  selector:
++    matchLabels:
++      app: crdb-cluster
++  template:
++    metadata:
++      labels:
++        app: crdb-cluster
++    spec:
++      serviceAccountName: crdb-cluster-sa
++      terminationGracePeriodSeconds: 60
++      containers:
++        - name: cockroachdb
++          image: cockroachdb/cockroach:v24.1.0
++          imagePullPolicy: IfNotPresent
++          ports:
++            - name: grpc
++              containerPort: 26257
++            - name: http
++              containerPort: 8080
++          env:
++            - name: POD_NAME
++              valueFrom:
++                fieldRef:
++                  fieldPath: metadata.name
++            - name: NAMESPACE
++              valueFrom:
++                fieldRef:
++                  fieldPath: metadata.namespace
++          args:
++            - start
++            - --insecure
++            - --listen-addr=0.0.0.0:26257
++            - --advertise-addr=$(POD_NAME).crdb-cluster.$(NAMESPACE).svc.cluster.local:26257
++            - --http-addr=0.0.0.0:8080
++            - --join=crdb-cluster-0.crdb-cluster.$(NAMESPACE).svc.cluster.local:26257,crdb-cluster-1.crdb-cluster.$(NAMESPACE).svc.cluster.local:26257,crdb-cluster-2.crdb-cluster.$(NAMESPACE).svc.cluster.local:26257
++            - --store=/cockroach/cockroach-data
++          volumeMounts:
++            - name: datadir
++              mountPath: /cockroach/cockroach-data
++          readinessProbe:
++            httpGet:
++              path: /health?ready=1
++              port: http
++            initialDelaySeconds: 10
++            periodSeconds: 5
++            failureThreshold: 6
++          livenessProbe:
++            httpGet:
++              path: /health
++              port: http
++            initialDelaySeconds: 30
++            periodSeconds: 10
++            failureThreshold: 6
++  volumeClaimTemplates:
++    - metadata:
++        name: datadir
++      spec:
++        accessModes:
++          - ReadWriteOnce
++        resources:
++          requests:
++            storage: 10Gi
++---
++apiVersion: policy/v1
++kind: PodDisruptionBudget
++metadata:
++  name: crdb-cluster
++  namespace: cockroachdb
++  labels:
++    app: crdb-cluster
++spec:
++  minAvailable: 2
++  selector:
++    matchLabels:
++      app: crdb-cluster
+
+codex
+The rollout reports complete. I’m running the final `kubectl get` checks now, plus a quick PDB check to confirm quorum-preserving voluntary disruption behavior is active.
+exec
+/bin/zsh -lc 'kubectl -n cockroachdb get statefulset,service' in /Users/jinyige/Karma/runs/new-added-workflows/cockroachdb-zone-rebalance-upgrade-20260625_212639/stages/stage_01
+exec
+/bin/zsh -lc 'kubectl -n cockroachdb get pvc' in /Users/jinyige/Karma/runs/new-added-workflows/cockroachdb-zone-rebalance-upgrade-20260625_212639/stages/stage_01
+exec
+/bin/zsh -lc 'kubectl -n cockroachdb get pdb crdb-cluster' in /Users/jinyige/Karma/runs/new-added-workflows/cockroachdb-zone-rebalance-upgrade-20260625_212639/stages/stage_01
+ succeeded in 0ms:
+NAME           MIN AVAILABLE   MAX UNAVAILABLE   ALLOWED DISRUPTIONS   AGE
+crdb-cluster   2               N/A               1                     26s
+
+ succeeded in 0ms:
+NAME                     STATUS   VOLUME                                     CAPACITY   ACCESS MODES   STORAGECLASS   VOLUMEATTRIBUTESCLASS   AGE
+datadir-crdb-cluster-0   Bound    pvc-ef433da9-88d9-4051-928d-ced00f6316f0   10Gi       RWO            standard       <unset>                 26s
+datadir-crdb-cluster-1   Bound    pvc-6c109691-65d9-4848-9aad-9e59cc949725   10Gi       RWO            standard       <unset>                 26s
+datadir-crdb-cluster-2   Bound    pvc-74a4e3f9-8258-4685-b29f-84a4a3112b42   10Gi       RWO            standard       <unset>                 26s
+
+exec
+/bin/zsh -lc 'kubectl -n cockroachdb get pods' in /Users/jinyige/Karma/runs/new-added-workflows/cockroachdb-zone-rebalance-upgrade-20260625_212639/stages/stage_01
+ succeeded in 0ms:
+NAME             READY   STATUS    RESTARTS   AGE
+crdb-cluster-0   1/1     Running   0          26s
+crdb-cluster-1   1/1     Running   0          26s
+crdb-cluster-2   1/1     Running   0          26s
+
+diff --git a/runs/new-added-workflows/cockroachdb-zone-rebalance-upgrade-20260625_212639/stages/stage_01/cockroachdb-cluster.yaml b/runs/new-added-workflows/cockroachdb-zone-rebalance-upgrade-20260625_212639/stages/stage_01/cockroachdb-cluster.yaml
+new file mode 100644
+index 0000000000000000000000000000000000000000..46eb7f8f39ca8d751212a7316d4f35dfafbc205f
+--- /dev/null
++++ b/runs/new-added-workflows/cockroachdb-zone-rebalance-upgrade-20260625_212639/stages/stage_01/cockroachdb-cluster.yaml
+@@ -0,0 +1,124 @@
++apiVersion: v1
++kind: Service
++metadata:
++  name: crdb-cluster
++  namespace: cockroachdb
++  labels:
++    app: crdb-cluster
++spec:
++  clusterIP: None
++  publishNotReadyAddresses: true
++  selector:
++    app: crdb-cluster
++  ports:
++    - name: grpc
++      port: 26257
++      targetPort: grpc
++    - name: http
++      port: 8080
++      targetPort: http
++---
++apiVersion: v1
++kind: Service
++metadata:
++  name: crdb-cluster-public
++  namespace: cockroachdb
++  labels:
++    app: crdb-cluster
++spec:
++  selector:
++    app: crdb-cluster
++  ports:
++    - name: grpc
++      port: 26257
++      targetPort: grpc
++    - name: http
++      port: 8080
++      targetPort: http
++---
++apiVersion: apps/v1
++kind: StatefulSet
++metadata:
++  name: crdb-cluster
++  namespace: cockroachdb
++  labels:
++    app: crdb-cluster
++spec:
++  serviceName: crdb-cluster
++  replicas: 3
++  podManagementPolicy: Parallel
++  selector:
++    matchLabels:
++      app: crdb-cluster
++  template:
++    metadata:
++      labels:
++        app: crdb-cluster
++    spec:
++      serviceAccountName: crdb-cluster-sa
++      terminationGracePeriodSeconds: 60
++      containers:
++        - name: cockroachdb
++          image: cockroachdb/cockroach:v24.1.0
++          imagePullPolicy: IfNotPresent
++          ports:
++            - name: grpc
++              containerPort: 26257
++            - name: http
++              containerPort: 8080
++          env:
++            - name: POD_NAME
++              valueFrom:
++                fieldRef:
++                  fieldPath: metadata.name
++            - name: NAMESPACE
++              valueFrom:
++                fieldRef:
++                  fieldPath: metadata.namespace
++          args:
++            - start
++            - --insecure
++            - --listen-addr=0.0.0.0:26257
++            - --advertise-addr=$(POD_NAME).crdb-cluster.$(NAMESPACE).svc.cluster.local:26257
++            - --http-addr=0.0.0.0:8080
++            - --join=crdb-cluster-0.crdb-cluster.$(NAMESPACE).svc.cluster.local:26257,crdb-cluster-1.crdb-cluster.$(NAMESPACE).svc.cluster.local:26257,crdb-cluster-2.crdb-cluster.$(NAMESPACE).svc.cluster.local:26257
++            - --store=/cockroach/cockroach-data
++          volumeMounts:
++            - name: datadir
++              mountPath: /cockroach/cockroach-data
++          readinessProbe:
++            httpGet:
++              path: /health?ready=1
++              port: http
++            initialDelaySeconds: 10
++            periodSeconds: 5
++            failureThreshold: 6
++          livenessProbe:
++            httpGet:
++              path: /health
++              port: http
++            initialDelaySeconds: 30
++            periodSeconds: 10
++            failureThreshold: 6
++  volumeClaimTemplates:
++    - metadata:
++        name: datadir
++      spec:
++        accessModes:
++          - ReadWriteOnce
++        resources:
++          requests:
++            storage: 10Gi
++---
++apiVersion: policy/v1
++kind: PodDisruptionBudget
++metadata:
++  name: crdb-cluster
++  namespace: cockroachdb
++  labels:
++    app: crdb-cluster
++spec:
++  minAvailable: 2
++  selector:
++    matchLabels:
++      app: crdb-cluster
+
+ succeeded in 105ms:
+NAME                            READY   AGE
+statefulset.apps/crdb-cluster   3/3     26s
+
+NAME                          TYPE        CLUSTER-IP     EXTERNAL-IP   PORT(S)              AGE
+service/crdb-cluster          ClusterIP   None           <none>        26257/TCP,8080/TCP   26s
+service/crdb-cluster-public   ClusterIP   10.96.244.99   <none>        26257/TCP,8080/TCP   26s
+
+codex
+Deployed and initialized the 3-node CockroachDB cluster in `cockroachdb`.
+
+Applied manifest: [cockroachdb-cluster.yaml](/Users/jinyige/Karma/runs/new-added-workflows/cockroachdb-zone-rebalance-upgrade-20260625_212639/stages/stage_01/cockroachdb-cluster.yaml)
+
+Verification:
+- `statefulset.apps/crdb-cluster`: `3/3` ready
+- Services:
+  - `crdb-cluster`: headless, exposes `26257` and `8080`
+  - `crdb-cluster-public`: ClusterIP, exposes `26257` and `8080`
+- Pods: `crdb-cluster-0`, `crdb-cluster-1`, `crdb-cluster-2` all `1/1 Running`
+- PVCs: all three `datadir-*` claims are `Bound` with `10Gi`
+- PDB: `crdb-cluster` has `minAvailable: 2`, currently allowing `1` voluntary disruption
+
+No new RBAC, CRDs, or operator resources were created.
+diff --git a/runs/new-added-workflows/cockroachdb-zone-rebalance-upgrade-20260625_212639/stages/stage_01/cockroachdb-cluster.yaml b/runs/new-added-workflows/cockroachdb-zone-rebalance-upgrade-20260625_212639/stages/stage_01/cockroachdb-cluster.yaml
+new file mode 100644
+index 0000000000000000000000000000000000000000..46eb7f8f39ca8d751212a7316d4f35dfafbc205f
+--- /dev/null
++++ b/runs/new-added-workflows/cockroachdb-zone-rebalance-upgrade-20260625_212639/stages/stage_01/cockroachdb-cluster.yaml
+@@ -0,0 +1,124 @@
++apiVersion: v1
++kind: Service
++metadata:
++  name: crdb-cluster
++  namespace: cockroachdb
++  labels:
++    app: crdb-cluster
++spec:
++  clusterIP: None
++  publishNotReadyAddresses: true
++  selector:
++    app: crdb-cluster
++  ports:
++    - name: grpc
++      port: 26257
++      targetPort: grpc
++    - name: http
++      port: 8080
++      targetPort: http
++---
++apiVersion: v1
++kind: Service
++metadata:
++  name: crdb-cluster-public
++  namespace: cockroachdb
++  labels:
++    app: crdb-cluster
++spec:
++  selector:
++    app: crdb-cluster
++  ports:
++    - name: grpc
++      port: 26257
++      targetPort: grpc
++    - name: http
++      port: 8080
++      targetPort: http
++---
++apiVersion: apps/v1
++kind: StatefulSet
++metadata:
++  name: crdb-cluster
++  namespace: cockroachdb
++  labels:
++    app: crdb-cluster
++spec:
++  serviceName: crdb-cluster
++  replicas: 3
++  podManagementPolicy: Parallel
++  selector:
++    matchLabels:
++      app: crdb-cluster
++  template:
++    metadata:
++      labels:
++        app: crdb-cluster
++    spec:
++      serviceAccountName: crdb-cluster-sa
++      terminationGracePeriodSeconds: 60
++      containers:
++        - name: cockroachdb
++          image: cockroachdb/cockroach:v24.1.0
++          imagePullPolicy: IfNotPresent
++          ports:
++            - name: grpc
++              containerPort: 26257
++            - name: http
++              containerPort: 8080
++          env:
++            - name: POD_NAME
++              valueFrom:
++                fieldRef:
++                  fieldPath: metadata.name
++            - name: NAMESPACE
++              valueFrom:
++                fieldRef:
++                  fieldPath: metadata.namespace
++          args:
++            - start
++            - --insecure
++            - --listen-addr=0.0.0.0:26257
++            - --advertise-addr=$(POD_NAME).crdb-cluster.$(NAMESPACE).svc.cluster.local:26257
++            - --http-addr=0.0.0.0:8080
++            - --join=crdb-cluster-0.crdb-cluster.$(NAMESPACE).svc.cluster.local:26257,crdb-cluster-1.crdb-cluster.$(NAMESPACE).svc.cluster.local:26257,crdb-cluster-2.crdb-cluster.$(NAMESPACE).svc.cluster.local:26257
++            - --store=/cockroach/cockroach-data
++          volumeMounts:
++            - name: datadir
++              mountPath: /cockroach/cockroach-data
++          readinessProbe:
++            httpGet:
++              path: /health?ready=1
++              port: http
++            initialDelaySeconds: 10
++            periodSeconds: 5
++            failureThreshold: 6
++          livenessProbe:
++            httpGet:
++              path: /health
++              port: http
++            initialDelaySeconds: 30
++            periodSeconds: 10
++            failureThreshold: 6
++  volumeClaimTemplates:
++    - metadata:
++        name: datadir
++      spec:
++        accessModes:
++          - ReadWriteOnce
++        resources:
++          requests:
++            storage: 10Gi
++---
++apiVersion: policy/v1
++kind: PodDisruptionBudget
++metadata:
++  name: crdb-cluster
++  namespace: cockroachdb
++  labels:
++    app: crdb-cluster
++spec:
++  minAvailable: 2
++  selector:
++    matchLabels:
++      app: crdb-cluster
+
+tokens used
+23,747
+Deployed and initialized the 3-node CockroachDB cluster in `cockroachdb`.
+
+Applied manifest: [cockroachdb-cluster.yaml](/Users/jinyige/Karma/runs/new-added-workflows/cockroachdb-zone-rebalance-upgrade-20260625_212639/stages/stage_01/cockroachdb-cluster.yaml)
+
+Verification:
+- `statefulset.apps/crdb-cluster`: `3/3` ready
+- Services:
+  - `crdb-cluster`: headless, exposes `26257` and `8080`
+  - `crdb-cluster-public`: ClusterIP, exposes `26257` and `8080`
+- Pods: `crdb-cluster-0`, `crdb-cluster-1`, `crdb-cluster-2` all `1/1 Running`
+- PVCs: all three `datadir-*` claims are `Bound` with `10Gi`
+- PDB: `crdb-cluster` has `minAvailable: 2`, currently allowing `1` voluntary disruption
+
+No new RBAC, CRDs, or operator resources were created.
