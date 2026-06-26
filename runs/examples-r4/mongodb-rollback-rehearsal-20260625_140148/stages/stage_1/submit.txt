@@ -1,0 +1,19 @@
+The `rollback-rehearsal` ConfigMap is created and all three pods are unchanged.
+
+---
+
+**What was found and what the script does:**
+
+| Setting | Live value | Default | How reverted |
+|---|---|---|---|
+| `systemLog.verbosity` | `1` | `0` | `setParameter logLevel:0` (runtime, step 1) |
+| `operationProfiling.mode` | `slowOp` | `off` | `setProfilingLevel(0, …)` (runtime, step 2) |
+| `operationProfiling.slowOpThresholdMs` | `200` | `100` | same call, step 2 |
+| `wiredTiger journalCompressor` | `zlib` | `snappy` | ConfigMap patch + rolling restart (steps 3-4) |
+| `admin-user` account | provisioned | none | `dropUser` (step 5) |
+
+**Key design decisions in the script:**
+
+- **Steps 1–2 before the restart**: verbosity and profiling take effect at runtime immediately, so they don't need a pod bounce — but the ConfigMap is also cleaned of those keys so the defaults hold after any future restart.
+- **journalCompressor requires a restart**: WiredTiger reads this only at startup. The script does a `kubectl rollout restart` + waits for `rollout status` to confirm all pods are healthy before continuing.
+- **dropUser runs last**: authentication must remain valid through steps 1–4. After step 5 the cluster has auth enforced but no admin users; the liveness/readiness probes will fail (they reference `ADMIN_PASSWORD`). The script header documents both remediation paths.

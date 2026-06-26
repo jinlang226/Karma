@@ -1,0 +1,19 @@
+Everything is working. Here's a summary of what was done and the current state:
+
+**Root cause:** Two problems blocked the monitoring data flow:
+
+1. **Metricbeat** — failed initially because the monitoring ES pod started ~90 seconds after the beats sidecars, so connection attempts failed with `connection refused`. Once the monitoring cluster was ready, metricbeat auto-reconnected successfully.
+
+2. **Filebeat** — the Elasticsearch Docker image's `log4j2.properties` uses `Console`-only appenders (stdout), so `/var/log/es/` was always empty and filebeat had nothing to harvest.
+
+**Fix applied:**
+- Created ConfigMap `log4j2-config` with a modified `log4j2.properties` that adds a `RollingFile` appender writing to `/var/log/es/es-cluster.log` (matching filebeat's `*.log` glob), while keeping the Console appender for `kubectl logs` to work.
+- Patched the StatefulSet to mount this ConfigMap at `/usr/share/elasticsearch/config/log4j2.properties` in the elasticsearch container.
+- Rolling restart completed with all 3 pods returning to 3/3 Ready.
+
+**Current verified state:**
+- All 3 ES pods: `elasticsearch=true filebeat=true metricbeat=true` ✅
+- Each filebeat has an open harvester on `/var/log/es/es-cluster.log` ✅
+- `.monitoring-es-7-mb-2026.06.25`: growing (225→778→789+ docs) — xpack metrics from all nodes ✅
+- `filebeat-7.17.9-2026.06.25-000001`: 1400 docs — ES log lines ✅
+- Elasticsearch cluster health: **green**, 3/3 nodes ✅

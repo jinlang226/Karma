@@ -1,0 +1,13 @@
+Everything is confirmed. Here's a summary of what was done:
+
+**Root causes fixed:**
+1. **Missing MinIO Service** — `minio-init` job failed because there was no `minio` Service; created a ClusterIP service exposing port 9000 at `minio.elasticsearch.svc.cluster.local`.
+2. **Missing `es-backups` bucket** — since the init job failed, the bucket didn't exist; created it via `mc mb` inside the MinIO pod.
+3. **Wrong/missing keystore credentials** — the keystore had the s3 keys but with incorrect values; created the `es-secure-settings` Secret (`s3.client.default.access_key` / `s3.client.default.secret_key` = `minioadmin`) and pushed those values into each node's keystore using `elasticsearch-keystore add --force --stdin`.
+
+**What was done:**
+- Created `secret/es-secure-settings` with the MinIO credentials (no credentials in `elasticsearch.yml` or env vars)
+- Updated the keystore on all 5 nodes (`es-cluster-{0,1,2}` + `es-data-{0,1}`) with `elasticsearch-keystore add --force --stdin`
+- Reloaded secure settings cluster-wide via `POST /_nodes/reload_secure_settings` — **no pod restart needed**
+- Registered `minio-repo` (type `s3`) with `endpoint`, `protocol: http`, and `path_style_access: true` set at the repository level (Elasticsearch 8.11.1 supports per-repository override)
+- Created `snapshot-1` — **state: SUCCESS**, 3 shards, 3 indices (`app-data`, `test-index`, `.security-7`), artifacts confirmed in the `es-backups` MinIO bucket

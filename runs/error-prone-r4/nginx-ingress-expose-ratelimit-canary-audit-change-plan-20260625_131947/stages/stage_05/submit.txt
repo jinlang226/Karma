@@ -1,0 +1,25 @@
+The cluster is unchanged — the controller Deployment's resourceVersion is still `247854` (same as the initial inspection), all 7 Ingress resources are intact, and the only new resource is the `change-plan` ConfigMap.
+
+---
+
+**What was done:** The `demo/change-plan` ConfigMap was created with a `plan.md` key containing a full upgrade change plan (14,615 bytes). No existing resources were modified.
+
+**What the plan covers (7 sections):**
+
+1. **Inventory** — exact image digest, all controller args (including the live vs last-applied divergence), empty ConfigMap, and a table of all 7 Ingress resources with their annotations
+
+2. **Issues found (4 bugs, pre-existing):**
+   - **ISSUE-1 [HIGH]** `rate-api`: `limit-burst-multiplier=1` + `limit-rps=1` → `burst = floor(1×1)−1 = 0`, invalid; causes repeated nginx reload failures and rate-limited requests returning 503 instead of the configured 429. Fix: set `limit-burst-multiplier=2`.
+   - **ISSUE-2 [MEDIUM]** `canary-alt`: canary Ingress for `canary-alt.example.com` with no base Ingress for that host — generates a "cannot merge alternative backend" error in a loop every ~3s. The `benchmark.decoy=true` label suggests deletion (Fix A) is the right call.
+   - **ISSUE-3 [LOW]** Duplicate `--watch-ingress-without-class` flags (`true` then `false`) from a post-deploy patch; effective value is `false` but the redundant flag needs cleanup.
+   - **ISSUE-4 [MEDIUM]** `terminationGracePeriodSeconds=0` — the `/wait-shutdown` preStop hook has no time to drain connections during a rolling update.
+
+3. **Pre-upgrade remediation** — fix ISSUE-1 and ISSUE-2 before touching the image, with backup steps
+
+4. **Upgrade procedure** — single JSON-patch that atomically updates image, cleans args, and sets grace period=300; exact clean args list included
+
+5. **Post-upgrade validation** — per-Ingress curl commands verifying rewrite, 429 rate limiting, canary header routing
+
+6. **Rollback** — `rollout undo` path with history check
+
+7. **Non-blocking observations** — no resource limits, no PDB, `publish-status-address=localhost` note, decoy Ingress audit note

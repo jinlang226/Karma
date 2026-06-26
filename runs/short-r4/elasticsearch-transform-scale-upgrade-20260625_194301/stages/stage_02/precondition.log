@@ -1,0 +1,126 @@
+[precondition:es_env_ready:preconditionUnits[0] 'es_env_ready':probe] $ kubectl -n elasticsearch get pods 2>/dev/null | grep -c Running
+5
+
+[precondition:transform_scenario_fixture:preconditionUnits[1] 'transform_scenario_fixture':probe] $ kubectl -n elasticsearch get configmap transform-checkpoint >/dev/null 2>&1
+
+[precondition:transform_scenario_fixture:preconditionUnits[1] 'transform_scenario_fixture':apply] $ /bin/sh -c 'kubectl -n elasticsearch get sts es-transform >/dev/null 2>&1 || kubectl -n elasticsearch apply -f cases/elasticsearch/transform-job-recovery/resource/statefulset.yaml || true'
+statefulset.apps/es-cluster created
+statefulset.apps/es-transform created
+
+[precondition:transform_scenario_fixture:preconditionUnits[1] 'transform_scenario_fixture':apply] $ /bin/sh -c 'kubectl -n elasticsearch scale sts/es-transform --replicas=1 || true'
+statefulset.apps/es-transform scaled
+
+[precondition:transform_scenario_fixture:preconditionUnits[1] 'transform_scenario_fixture':apply] $ /bin/sh -c 'kubectl -n elasticsearch wait --for=condition=ready pod -l app=es-transform --timeout=180s || true'
+error: timed out waiting for the condition on pods/es-transform-0
+
+[precondition:transform_scenario_fixture:preconditionUnits[1] 'transform_scenario_fixture':apply] $ /bin/sh -c 'kubectl -n elasticsearch wait --for=condition=ready pod/curl-test --timeout=180s || true'
+pod/curl-test condition met
+
+[precondition:transform_scenario_fixture:preconditionUnits[1] 'transform_scenario_fixture':apply] $ /bin/sh -c '
+pw=$(kubectl -n elasticsearch get secret elastic-password -o jsonpath="{.data.password}" 2>/dev/null | base64 -d 2>/dev/null); A=""; [ -n "$pw" ] && A="-u elastic:$pw"
+for i in $(seq 1 30); do
+  kubectl -n elasticsearch exec curl-test -- curl -sk $A --max-time 5 "http://es-http.elasticsearch.svc:9200/_cluster/health?wait_for_status=yellow&timeout=5s" | grep -q status && exit 0
+  sleep 2
+done
+exit 0
+'
+
+command terminated with exit code 52
+command terminated with exit code 52
+command terminated with exit code 52
+command terminated with exit code 52
+command terminated with exit code 52
+command terminated with exit code 52
+command terminated with exit code 52
+command terminated with exit code 52
+command terminated with exit code 52
+command terminated with exit code 52
+command terminated with exit code 52
+command terminated with exit code 52
+command terminated with exit code 52
+command terminated with exit code 52
+command terminated with exit code 52
+command terminated with exit code 52
+command terminated with exit code 52
+command terminated with exit code 52
+command terminated with exit code 52
+command terminated with exit code 52
+command terminated with exit code 52
+command terminated with exit code 52
+command terminated with exit code 52
+command terminated with exit code 52
+command terminated with exit code 52
+command terminated with exit code 52
+command terminated with exit code 52
+command terminated with exit code 52
+command terminated with exit code 52
+command terminated with exit code 52
+
+[precondition:transform_scenario_fixture:preconditionUnits[1] 'transform_scenario_fixture':apply] $ /bin/sh -c '
+pw=$(kubectl -n elasticsearch get secret elastic-password -o jsonpath="{.data.password}" 2>/dev/null | base64 -d 2>/dev/null); A=""; [ -n "$pw" ] && A="-u elastic:$pw"
+kubectl -n elasticsearch exec curl-test -- /bin/sh -c '\''
+cat <<EOF | curl -s -k $1 -XPOST http://es-http.elasticsearch.svc:9200/_bulk?refresh=true -H "Content-Type: application/x-ndjson" --data-binary @-
+{"index":{"_index":"app-events","_id":"seed-1"}}
+{"service":"api","@timestamp":"2026-01-01T00:00:00Z"}
+{"index":{"_index":"app-events","_id":"seed-2"}}
+{"service":"web","@timestamp":"2026-01-01T00:00:01Z"}
+{"index":{"_index":"app-events","_id":"seed-3"}}
+{"service":"api","@timestamp":"2026-01-01T00:00:02Z"}
+EOF
+'\'' sh "$A" || true
+'
+
+command terminated with exit code 52
+
+[precondition:transform_scenario_fixture:preconditionUnits[1] 'transform_scenario_fixture':apply] $ /bin/sh -c '
+pw=$(kubectl -n elasticsearch get secret elastic-password -o jsonpath="{.data.password}" 2>/dev/null | base64 -d 2>/dev/null); A=""; [ -n "$pw" ] && A="-u elastic:$pw"
+kubectl -n elasticsearch exec curl-test -- curl -sk $A -XPUT http://es-http.elasticsearch.svc:9200/_transform/events-by-service -H "Content-Type: application/json" -d "{\"source\":{\"index\":\"app-events\"},\"dest\":{\"index\":\"app-events-rollup\"},\"pivot\":{\"group_by\":{\"service\":{\"terms\":{\"field\":\"service.keyword\"}}},\"aggregations\":{\"event_count\":{\"value_count\":{\"field\":\"service.keyword\"}}}},\"sync\":{\"time\":{\"field\":\"@timestamp\",\"delay\":\"1s\"}}}" || true
+'
+
+command terminated with exit code 52
+
+[precondition:transform_scenario_fixture:preconditionUnits[1] 'transform_scenario_fixture':apply] $ /bin/sh -c '
+pw=$(kubectl -n elasticsearch get secret elastic-password -o jsonpath="{.data.password}" 2>/dev/null | base64 -d 2>/dev/null); A=""; [ -n "$pw" ] && A="-u elastic:$pw"
+kubectl -n elasticsearch exec curl-test -- curl -sk $A -XPOST http://es-http.elasticsearch.svc:9200/_transform/events-by-service/_start || true
+'
+
+command terminated with exit code 52
+
+[precondition:transform_scenario_fixture:preconditionUnits[1] 'transform_scenario_fixture':apply] $ /bin/sh -c '
+pw=$(kubectl -n elasticsearch get secret elastic-password -o jsonpath="{.data.password}" 2>/dev/null | base64 -d 2>/dev/null); A=""; [ -n "$pw" ] && A="-u elastic:$pw"
+for i in $(seq 1 30); do
+  checkpoint=$(kubectl -n elasticsearch exec curl-test -- curl -sk $A --max-time 5 http://es-http.elasticsearch.svc:9200/_transform/events-by-service/_stats 2>/dev/null | python3 -c "import json,sys; data=json.load(sys.stdin); t=data.get(\"transforms\",[]); print(t[0].get(\"checkpointing\",{}).get(\"last\",{}).get(\"checkpoint\",0) if t else 0)" 2>/dev/null || echo 0)
+  if [ "${checkpoint}" -ge 1 ]; then
+    kubectl -n elasticsearch create configmap transform-checkpoint --from-literal=checkpoint_before="${checkpoint}" --dry-run=client -o yaml | kubectl apply -f -
+    exit 0
+  fi
+  sleep 2
+done
+kubectl -n elasticsearch create configmap transform-checkpoint --from-literal=checkpoint_before="0" --dry-run=client -o yaml | kubectl apply -f -
+exit 0
+'
+
+configmap/transform-checkpoint created
+
+[precondition:transform_scenario_fixture:preconditionUnits[1] 'transform_scenario_fixture':apply] $ /bin/sh -c 'kubectl -n elasticsearch scale sts/es-transform --replicas=0 || true'
+statefulset.apps/es-transform scaled
+
+[precondition:transform_scenario_fixture:preconditionUnits[1] 'transform_scenario_fixture':apply] $ /bin/sh -c 'kubectl -n elasticsearch wait --for=delete pod -l app=es-transform --timeout=300s || true'
+pod/es-transform-0 condition met
+
+[precondition:transform_scenario_fixture:preconditionUnits[1] 'transform_scenario_fixture':apply] $ /bin/sh -c '
+pw=$(kubectl -n elasticsearch get secret elastic-password -o jsonpath="{.data.password}" 2>/dev/null | base64 -d 2>/dev/null); A=""; [ -n "$pw" ] && A="-u elastic:$pw"
+kubectl -n elasticsearch exec curl-test -- /bin/sh -c '\''
+cat <<EOF | curl -s -k $1 -XPOST http://es-http.elasticsearch.svc:9200/_bulk?refresh=true -H "Content-Type: application/x-ndjson" --data-binary @-
+{"index":{"_index":"app-events","_id":"seed-new-1"}}
+{"service":"api","@timestamp":"2026-01-02T00:00:00Z"}
+{"index":{"_index":"app-events","_id":"seed-new-2"}}
+{"service":"web","@timestamp":"2026-01-02T00:00:01Z"}
+EOF
+'\'' sh "$A" || true
+'
+
+command terminated with exit code 52
+
+[precondition:transform_scenario_fixture:preconditionUnits[1] 'transform_scenario_fixture':verify] $ /bin/sh -c true
+

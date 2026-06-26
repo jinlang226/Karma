@@ -1,0 +1,17 @@
+All goals achieved. Here's a summary of what was done and why each step matters:
+
+---
+
+**Root cause:** The ConfigMap `es-config` was missing `cluster.initial_master_nodes`. In Elasticsearch 7.x, a fresh cluster cannot elect its first master without this setting — every node sees the others via `discovery.seed_hosts` but none knows which are eligible to bootstrap the cluster, producing "master not discovered yet".
+
+**Fix applied (3 stages):**
+
+1. **Added `cluster.initial_master_nodes: [es-cluster-0, es-cluster-1, es-cluster-2]`** to the ConfigMap, then restarted all pods. The cluster bootstrapped and elected es-cluster-0 as master (status: green, 3 nodes).
+
+2. **Removed `cluster.initial_master_nodes` from the ConfigMap.** This setting is bootstrap-only — keeping it after cluster formation is dangerous because it can trigger accidental re-bootstrapping if quorum is temporarily lost. After first formation, the cluster persists master knowledge in its on-disk state, so the setting is no longer needed.
+
+3. **Rolling restart (one pod at a time).** Each pod reloaded the trimmed config. The cluster stayed green throughout — confirming `discovery.seed_hosts` alone is sufficient for all future restarts.
+
+**Final state:**
+- Status: **green**, 3 nodes, 3 data nodes, master = es-cluster-0
+- ConfigMap has no `cluster.initial_master_nodes` — safe for all future restarts

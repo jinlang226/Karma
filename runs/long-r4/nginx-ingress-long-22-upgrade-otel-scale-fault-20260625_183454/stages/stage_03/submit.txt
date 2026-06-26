@@ -1,0 +1,19 @@
+Everything is working end-to-end. The OTel collector received the trace with ID `53890a9e99473ab230af0180e0d4822a` (matching the access log) and the target `/otel-check`.
+
+Here's a summary of what was done:
+
+**Problem:** The `otel-echo` ingress used class `nginx` but the active controller in `ingress-nginx` namespace serves class `ingress-1` — so the controller ignored the ingress and OTel was not configured.
+
+**Changes made:**
+
+1. **Fixed ingress routing** — patched `demo/otel-echo` ingress to use `ingressClassName: ingress-1` so the active controller picks it up.
+
+2. **Enabled OpenTelemetry** — patched the `ingress-nginx-controller` ConfigMap with:
+   - `enable-opentelemetry: "true"` — loads `otel_ngx_module.so` and generates the TOML config
+   - `otlp-collector-host: "otel-collector.otel.svc"` + `otlp-collector-port: "4317"` — points to the existing collector
+   - `otel-sampler: "AlwaysOn"` + `otel-sampler-ratio: "1.0"` — 100% sampling
+   - `otel-service-name: "nginx-ingress"` — service name in traces
+
+3. **Updated log format** — set `log-format-upstream` to include `otel_trace_id=$opentelemetry_trace_id otel_span_id=$opentelemetry_span_id`
+
+The controller auto-reloaded nginx, and the `/otel-check` request now produces a log entry with non-empty trace and span IDs, with traces exported to the OTel collector.

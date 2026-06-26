@@ -1,0 +1,35 @@
+The ETL pipeline OOM in Stage 3 has been diagnosed and fixed.
+
+**Root Cause: Data Skew on user_id 999**
+
+- Total records: 100,000 across 1,000 distinct user_ids
+- Hot key: user_id 999 holds 50,000 records (~50% of all data)
+- Skew ratio: 500x (well above the 10x threshold)
+- With only 256MB executor memory, Stage 3 (GROUP BY user_id) forced all
+  50,000 records for user_id 999 onto a single executor, triggering OutOfMemoryError
+
+**Evidence collected:**
+
+1. `kubectl get job etl-job -n spark-etl` → job status reviewed
+2. `kubectl logs -n spark-etl -l app=etl-job` → stage progression confirmed
+3. `/data/skew_info.txt` → hot_user_id=999, hot_user_records=50000, skew_ratio=500x
+4. Diagnostic server → "Stage 3 GROUP BY user_id triggers OutOfMemoryError"
+
+**Fix Applied (Options B + C combined):**
+
+Updated `cases/spark/spark_etl_skew_oom/resource/etl-job.yaml` to:
+- Raise executor memory from 256m to 1g (`spark.executor.memory=1g`)
+- Enable Adaptive Query Execution (`spark.sql.adaptive.enabled=true`)
+- Enable AQE skew join handling (`spark.sql.adaptive.skewJoin.enabled=true`)
+
+**Verification:**
+
+- ETL job status: `Complete` (1/1 completions)
+- Final log line: `spark_etl_pipeline_verified`
+- Exit code: 0
+
+All success criteria met:
+- Identified OOM error in Stage 3 (data skew, not memory misconfiguration alone)
+- Diagnosed skew: user_id 999 with 500x ratio (>> 10x threshold)
+- Applied fix: increased executor memory to 1g + AQE skewJoin enabled
+- ETL job completed successfully

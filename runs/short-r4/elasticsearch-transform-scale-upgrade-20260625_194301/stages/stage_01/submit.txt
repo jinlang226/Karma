@@ -1,0 +1,18 @@
+The 3-node Elasticsearch cluster is fully operational. Here's what was deployed:
+
+**Resources created:**
+- `ConfigMap/es-config` — `elasticsearch.yml` with cluster discovery, TLS (HTTP + transport) using the existing `es-http-tls` secret, and `xpack.security.enabled`
+- `Service/es-headless` (ClusterIP: None) — headless service for StatefulSet pod DNS (`elasticsearch-{0,1,2}.es-headless.elasticsearch`)
+- `Service/es-http` — ClusterIP service on port 9200 for HTTPS access inside the cluster
+- `PodDisruptionBudget/es-pdb` — `minAvailable: 2`
+- `StatefulSet/elasticsearch` — 3 replicas, `podManagementPolicy: Parallel` (critical for initial quorum formation), 1Gi PVCs per node
+
+**Key fixes during deployment:**
+1. The `sysctl vm.max_map_count=262144` initContainer failed because the cluster already has the correct value set on the nodes — removed it.
+2. The default `OrderedReady` pod management policy deadlocked: ES-0 couldn't form quorum without ES-1/2, but the StatefulSet wouldn't start ES-1/2 until ES-0 was Ready. Fixed with `podManagementPolicy: Parallel`.
+
+**Verified:**
+- Cluster status: **green**, 3/3 nodes, master elected (`elasticsearch-1`)
+- Write: `POST /test-index/_doc/1` → `"result":"created"`
+- Read: `GET /test-index/_doc/1` → document returned correctly
+- HTTPS access through `es-http.elasticsearch.svc.cluster.local:9200` works with the CA cert from `es-http-tls`

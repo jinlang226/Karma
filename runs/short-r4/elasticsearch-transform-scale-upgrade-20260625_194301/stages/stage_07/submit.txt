@@ -1,0 +1,20 @@
+Everything is working. Here's a summary of what was done:
+
+**What was configured:**
+
+1. **MinIO Service** (`minio`) created so `minio.elasticsearch.svc.cluster.local:9000` resolves — this was missing and caused the init job to fail.
+
+2. **`es-backups` bucket** created in MinIO (the init job had failed without the service).
+
+3. **`es-secure-settings` Secret** created with `s3.client.default.access_key` and `s3.client.default.secret_key` (values: `minioadmin`). Credentials are stored only in this Secret — not in `elasticsearch.yml` or env vars.
+
+4. **Keystore configured on all 8 cluster nodes:**
+   - `elasticsearch` StatefulSet: patched with a `keystore-init` init container that reads from `es-secure-settings` Secret, copies config files, and runs `elasticsearch-keystore add` — avoids running the JVM keystore tool in memory-constrained running pods.
+   - `es-cluster` StatefulSet: credentials added directly via exec (2Gi memory pods tolerate the JVM).
+   - `es-data-new` StatefulSet: same init container pattern applied.
+
+5. **`POST /_nodes/reload_secure_settings`** called — all 8 nodes confirmed updated (`total:8, successful:8`).
+
+6. **`minio-repo`** snapshot repository registered as type `s3`, pointing to `minio.elasticsearch.svc.cluster.local:9000`, bucket `es-backups`, HTTP protocol with path-style access.
+
+7. **`snapshot-1`** created — `state: SUCCESS`, 10/10 shards, snapshot files confirmed in MinIO bucket.

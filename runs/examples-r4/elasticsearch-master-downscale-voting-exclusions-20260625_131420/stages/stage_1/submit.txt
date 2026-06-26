@@ -1,0 +1,15 @@
+All four verification checks pass:
+
+1. **Cluster health: green** — 1 node, 3 primary shards active, no unassigned shards.
+2. **Exactly one master-eligible node** — `es-cluster-0` is elected master (`*`).
+3. **Voting exclusions: empty** — `voting_config_exclusions: []`.
+4. **`auto_shrink_voting_configuration: true`** — set explicitly in persistent settings.
+
+**What was done:**
+- Identified the root cause: the cluster's voting configuration still required quorum of 3 nodes, but only `es-cluster-0` was running after the downscale. The two removed nodes were never excluded from the voting config before removal.
+- Scaled the StatefulSet to 0 to release the PVC lock.
+- Ran `elasticsearch-node unsafe-bootstrap` via a Kubernetes Job on the `data-es-cluster-0` PVC — this forced the single node to bootstrap as a new single-member quorum.
+- Scaled back to 1 replica; the node elected itself master immediately.
+- Cleared voting exclusions (`DELETE /_cluster/voting_config_exclusions`).
+- Set `cluster.auto_shrink_voting_configuration: true` in persistent cluster settings.
+- Updated the ConfigMap to reflect the single-node topology (`discovery.seed_hosts` and `cluster.initial_master_nodes` trimmed to just `es-cluster-0`).

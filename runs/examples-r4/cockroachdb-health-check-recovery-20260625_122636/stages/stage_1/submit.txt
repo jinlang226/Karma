@@ -1,0 +1,9 @@
+All verification checks pass:
+
+1. **Pods**: All 3 pods are `1/1 Running` with 0 restarts on the fixed pod
+2. **Node status**: All 3 nodes show `is_available=true` and `is_live=true`
+3. **SQL**: `SELECT 1` succeeds
+
+**Root cause**: The StatefulSet command had a deliberate bug — a conditional that bound crdb-cluster-1's HTTP server to `127.0.0.1:8080` (loopback only) instead of `0.0.0.0:8080`. Since Kubernetes health probes connect from the node's host network, they could never reach the loopback interface inside the container, causing constant "connection refused" failures on both liveness and readiness probes, triggering repeated pod restarts.
+
+**Fix**: Patched the StatefulSet to replace the conditional `if/else` block with a single `exec cockroach start ... --http-addr=0.0.0.0:8080 ...` command, so all pods bind the HTTP endpoint to all interfaces. Kubernetes then rolled out the fix to the affected pod.

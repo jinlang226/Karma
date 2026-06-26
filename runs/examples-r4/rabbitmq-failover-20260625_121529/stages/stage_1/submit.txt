@@ -1,0 +1,11 @@
+The cluster is fully restored. All 3 nodes are listed under both **Disk Nodes** and **Running Nodes**, no alarms, no network partitions.
+
+**What was wrong and what was done:**
+
+The `rabbitmq-cookie-perpod` Secret had a different Erlang cookie for `rabbitmq-2` (`driftedcookie`) versus the cluster cookie used by nodes 0 and 1 (`supersecretcookie`). RabbitMQ requires all nodes to share the same Erlang cookie for inter-node communication — with a mismatched cookie, `rabbitmq-2` was running but rejected by the cluster.
+
+**Steps taken (all native Kubernetes resources, no operators):**
+
+1. **Patched the Secret** — updated `rabbitmq-cookie-perpod` so the `rabbitmq-2` key holds `supersecretcookie` (same as nodes 0 and 1)
+2. **Deleted the pod** — the StatefulSet recreated `rabbitmq-2`; its init container (`copy-cookie`) copied the now-correct cookie from the Secret into the emptyDir volume mounted at `/var/lib/rabbitmq/.erlang.cookie`
+3. **Reset and rejoined** — since `rabbitmq-2`'s Mnesia database still had a stale/incompatible cluster view, ran `rabbitmqctl stop_app → reset → join_cluster rabbitmq-0 → start_app` inside the pod to clear it and register with the live cluster (no data loss: all data was held by nodes 0 and 1)

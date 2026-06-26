@@ -1,0 +1,20 @@
+The CockroachDB cluster is fully operational. Here's what I found and did:
+
+**Diagnosis:**
+
+The pod logs showed transient "no incoming or outgoing connections" gossip warnings during the first ~35 seconds of startup. This is a race condition inherent to `podManagementPolicy: Parallel` — all 3 pods launch simultaneously before DNS entries for peer pods are fully resolvable. The configuration itself (`--advertise-host=$(hostname -f)` and `--join` listing all 3 FQDN peers) was correct.
+
+The cluster had already initialized from persistent PVC data (the PVCs retained state from a prior deployment). Node 0 bootstrapped as `nodeID=1` with `status: initialized new cluster`; nodes 1 and 2 then joined (`status: initialized new node, joined pre-existing cluster`), all sharing the same `clusterID: 4188827e-506c-4047-b2cb-6eeb8d69eff5`.
+
+**Current state — all goals met:**
+
+```
+id  address                                          is_available  is_live
+1   crdb-cluster-0.crdb-cluster…:26257              true          true
+2   crdb-cluster-1.crdb-cluster…:26257              true          true
+3   crdb-cluster-2.crdb-cluster…:26257              true          true
+```
+
+SQL is accepting connections — I ran a full smoke test (`CREATE DATABASE`, `CREATE TABLE`, `INSERT`, `SELECT`) successfully against node 0.
+
+**No intervention was needed** beyond verification: the join errors were transient startup noise, not a configuration bug. If this had been a truly fresh deployment (empty PVCs) with no prior `cockroach init`, the fix would be to run `kubectl -n cockroachdb exec crdb-cluster-0 -- ./cockroach init --insecure` once after all pods reach Running state — but the existing PVC data made that unnecessary here.

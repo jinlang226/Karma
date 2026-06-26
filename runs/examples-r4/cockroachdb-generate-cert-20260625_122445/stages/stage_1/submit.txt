@@ -1,0 +1,20 @@
+Both goals are met:
+
+1. **Insecure access rejected** — `--insecure` returns `server error: node is running secure mode, SSL connection required (exit code 1)`
+2. **Secure access succeeds** — `--certs-dir=/cockroach/cockroach-certs` returns `1` (exit code 0)
+
+**What was done:**
+
+1. **Generated certificates** in the `openssl-toolbox` pod:
+   - CA key + self-signed certificate
+   - Node certificate with SANs for all 3 pod FQDNs, service names, and `localhost`/`127.0.0.1`
+   - Client certificate for the `root` user (required for `cockroach sql`)
+
+2. **Created secret** `cockroachdb-certs` containing `ca.crt`, `node.crt`, `node.key`, `client.root.crt`, `client.root.key` with `defaultMode: 0600`
+
+3. **Patched the StatefulSet** to:
+   - Replace `--insecure` with `--certs-dir=/cockroach/cockroach-certs`
+   - Mount the `cockroachdb-certs` secret at `/cockroach/cockroach-certs`
+   - Update liveness/readiness probes from `scheme: HTTP` to `scheme: HTTPS`
+
+4. **Force-restarted all three pods simultaneously** to avoid the mixed insecure/secure state that stalls rolling updates (CockroachDB can't maintain quorum when nodes are in different TLS modes).

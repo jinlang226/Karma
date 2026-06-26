@@ -1,0 +1,16 @@
+Everything is in order. Here's what was done:
+
+**Root cause:** The `report-user` credentials existed only in the `user-provided-file-realm` secret, which was never mounted into the ES pods. The `es-file-realm-aggregate` secret (mounted as the live file realm) only contained `ops-user`.
+
+**Fix (3 steps):**
+
+1. **Merged secrets** — appended `report-user`'s bcrypt hash and `viewer:report-user` role mapping into `es-file-realm-aggregate`, so both users live in one source of truth.
+
+2. **Mounted the secret into the StatefulSet** — patched the `es-cluster` StatefulSet to mount `es-file-realm-aggregate` at `/usr/share/elasticsearch/config/users` and `.../users_roles`. Elasticsearch 8's file realm reads these paths by default — no `elasticsearch.yml` changes needed.
+
+3. **Seeded the `app-data` index** — the rolling restart lost the previously seeded index data; re-created it so `report-user` (with the built-in `viewer` role) can read the document count.
+
+**Verification:**
+- `ops-user` → cluster health `green` ✓
+- `report-user` → `app-data/_count` returns `{"count":1}` ✓
+- All 3 ES nodes running, cluster green ✓

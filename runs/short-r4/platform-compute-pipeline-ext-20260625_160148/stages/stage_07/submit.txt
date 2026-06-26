@@ -1,0 +1,26 @@
+All three jobs completed successfully. Here's the full summary:
+
+---
+
+## Results Summary
+
+### Step 1: Configuration Diagnosis
+The deployment started cleanly — the Spark master registered a worker successfully and the baseline job launched without errors. The `skew-job.yaml` runs in `--master local[2]` mode (self-contained in the container), so it doesn't depend on the external Spark cluster for correctness. No blocking bugs were present; the deployment was functional as-is.
+
+### Step 2–4: All Three Jobs Completed
+
+| Strategy | Elapsed | Optimization | Benefit |
+|----------|---------|-------------|---------|
+| **baseline** | **30.6s** | none | skewed shuffle join (stragglers) |
+| **broadcast** | **15.4s** | broadcast_join | no shuffle, no skew |
+| **aqe** | **17.7s** | aqe_skew_join | auto-splits hot partitions |
+
+All three jobs status: `Complete 1/1`.
+
+### Step 5: Performance Comparison
+
+**Broadcast join** is the winner at **2.0x speedup** (30.6s → 15.4s). It avoids the shuffle entirely by broadcasting the small `products` table to every executor — hot product IDs 1–5 no longer cause partition straggling.
+
+**AQE** is also effective at **1.7x speedup** (30.6s → 17.7s). It keeps the shuffle join but auto-detects and splits skewed partitions at runtime. More overhead than broadcast, but works even when the small table isn't small enough to broadcast.
+
+**Key insight:** For this workload (small `products` table, ~100 rows), broadcast join is optimal. AQE is the safer default when the "small" side is unknown or too large to broadcast reliably.

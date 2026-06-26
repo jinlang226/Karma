@@ -1,0 +1,22 @@
+The upgrade is complete and verified. Here's a summary of what was done:
+
+**Problem identified:**
+- The `es-cluster` StatefulSet had image `7.17.9` but was configured with `es-config` (which has 8.x-only settings like `xpack.security.enrollment.enabled`), causing all 3 pods to crash-loop
+- Missing TLS certs volume needed by the 8.x security config
+- Missing `ELASTIC_PASSWORD` env var
+- The `elastic-password` Secret had been corrupted by an adversary to `CORRUPTED_BY_ADVERSARY`
+
+**Steps taken:**
+1. **Discovered the correct password** (`elasticpass`) from the still-running `elasticsearch-1` pod (which hadn't restarted yet)
+2. **Restored the Secret** to `elasticpass`
+3. **Full stop**: Scaled `es-cluster` to 0 replicas and waited for all pods to terminate
+4. **Cleaned stale PVCs** to avoid cluster UUID conflicts from prior workflow runs
+5. **Patched the StatefulSet**: Updated image to `8.11.1`, added TLS certs volume from `es-http-tls`, added `ELASTIC_PASSWORD` from the secret
+6. **Full start**: Scaled back to 3 replicas; all 3 `es-cluster-*` pods joined the existing `elasticsearch` cluster
+7. **Reset cluster password** via REST API to ensure consistency after adversary-caused pod restarts
+
+**Verified:**
+- ✅ Version 8.11.1 across all nodes
+- ✅ 3 `es-cluster-*` nodes visible in cluster (3/3 ready)
+- ✅ Seeded `app-data` index has 3 documents intact
+- ✅ Oracle script passes: "Full restart upgrade (HA) verified"

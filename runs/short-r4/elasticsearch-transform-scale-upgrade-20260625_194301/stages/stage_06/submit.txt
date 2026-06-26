@@ -1,0 +1,17 @@
+Everything is in order. Here's a summary of what was done and why:
+
+**Root causes found:**
+
+1. **Capacity change**: `es-transform-config` had `node.roles: [ ingest ]` — the `transform` role had been removed, reducing the cluster's transform capacity. Fixed by patching the configmap back to `[ ingest, transform ]` and rolling the StatefulSet.
+
+2. **Stale checkpoint**: The transform was stuck at checkpoint 1 with 2 unprocessed documents (`seed-new-1`, `seed-new-2`) that had `@timestamp` values in January 2026 — well before the sync's `time_upper_bound` of June 2026. In continuous transform mode, time-based sync only searches for documents with timestamps *after* the last upper bound, so those past-dated docs could never be picked up without a reset.
+
+**Actions taken (all via transform APIs):**
+1. `POST /_transform/events-by-service/_stop?force=true` — stopped the stuck transform
+2. `POST /_transform/events-by-service/_reset` — cleared internal checkpoint state (does not touch destination index)
+3. `POST /_transform/events-by-service/_start` — started fresh; initial batch processed all 5 source docs
+
+**Final state:**
+- Transform: `started`, checkpoint 1, health `green`
+- Destination `app-events-rollup`: `api: 3`, `web: 2` (all 5 source docs now aggregated correctly)
+- Elastic password `elasticpass` confirmed working against HTTPS

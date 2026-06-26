@@ -1,0 +1,41 @@
+[precondition:mongo_env_ready:preconditionUnits[0] 'mongo_env_ready':probe] $ kubectl -n mongodb get pod mongodb-replica-0 2>/dev/null | grep -c Running
+1
+
+[precondition:admin_user_fixture:preconditionUnits[1] 'admin_user_fixture':probe] $ /bin/sh -c '
+t=""; for cca in /etc/tls/ca.crt /etc/mongo-ca/ca.crt; do kubectl -n mongodb exec mongodb-replica-0 -- ls $cca >/dev/null 2>&1 && { t="--tls --tlsAllowInvalidHostnames --tlsAllowInvalidCertificates --tlsCAFile $cca"; break; }; done
+pw=$(kubectl -n mongodb get secret admin-user-password -o jsonpath="{.data.password}" 2>/dev/null | base64 -d 2>/dev/null)
+[ -n "$pw" ] || exit 1
+kubectl -n mongodb exec mongodb-replica-0 -- mongosh --quiet $t "mongodb://admin-user:$pw@localhost:27017/admin" --eval "db.runCommand({ping:1}).ok" 2>/dev/null | grep -q 1
+'
+
+
+[precondition:mongo_seed_fixture:preconditionUnits[2] 'mongo_seed_fixture':probe] $ /bin/sh -c 't=""; for cca in /etc/tls/ca.crt /etc/mongo-ca/ca.crt; do kubectl -n mongodb exec mongodb-replica-0 -- ls $cca >/dev/null 2>&1 && { t="--tls --tlsAllowInvalidHostnames --tlsAllowInvalidCertificates --tlsCAFile $cca"; break; }; done; pw=$(kubectl -n mongodb get secret admin-user-password -o jsonpath="{.data.password}" 2>/dev/null | base64 -d 2>/dev/null); pw=${pw:-admin123password}; n=$(P=""; for _pi in $(seq 1 30); do P=$(kubectl -n mongodb exec mongodb-replica-0 -- mongosh --quiet $t "mongodb://admin-user:$pw@localhost:27017/admin?directConnection=true" --eval '\''rs.hello().primary'\'' 2>/dev/null | cut -d. -f1); [ -n "$P" ] && break; sleep 2; done; P=${P:-mongodb-replica-0}; kubectl -n mongodb exec "$P" -- mongosh --quiet $t "mongodb://admin-user:$pw@localhost:27017/admin" --eval '\''db.getSiblingDB("appdb").reports.countDocuments({})'\'' 2>/dev/null | tr -dc 0-9); [ "${n:-0}" -ge 3 ] && echo ok | grep -c ok'
+
+1
+
+[precondition:readonly_user_fixture:preconditionUnits[3] 'readonly_user_fixture':probe] $ /bin/sh -c 't=""; for cca in /etc/tls/ca.crt /etc/mongo-ca/ca.crt; do kubectl -n mongodb exec mongodb-replica-0 -- ls $cca >/dev/null 2>&1 && { t="--tls --tlsAllowInvalidHostnames --tlsAllowInvalidCertificates --tlsCAFile $cca"; break; }; done; kubectl -n mongodb get secret readonly-user-password >/dev/null 2>&1 || exit 1; pw=$(kubectl -n mongodb get secret admin-user-password -o jsonpath="{.data.password}" 2>/dev/null | base64 -d 2>/dev/null); pw=${pw:-admin123password}; P=""; for _pi in $(seq 1 30); do P=$(kubectl -n mongodb exec mongodb-replica-0 -- mongosh --quiet $t "mongodb://admin-user:$pw@localhost:27017/admin?directConnection=true" --eval '\''rs.hello().primary'\'' 2>/dev/null | cut -d. -f1); [ -n "$P" ] && break; sleep 2; done; P=${P:-mongodb-replica-0}; kubectl -n mongodb exec "$P" -- mongosh --quiet $t "mongodb://admin-user:$pw@localhost:27017/admin" --eval '\''db.getSiblingDB("admin").getUser("readonly-user")?quit(0):quit(1)'\'' >/dev/null 2>&1'
+
+
+[precondition:readonly_user_fixture:preconditionUnits[3] 'readonly_user_fixture':apply] $ kubectl -n mongodb apply -f cases/mongodb/user-management/resource/secrets.yaml
+secret/admin-user-password configured
+secret/app-user-password created
+secret/readonly-user-password created
+secret/mongo-keyfile configured
+
+[precondition:readonly_user_fixture:preconditionUnits[3] 'readonly_user_fixture':apply] $ /bin/sh -c 'pw=$(kubectl -n mongodb get secret admin-user-password -o jsonpath="{.data.password}" 2>/dev/null | base64 -d 2>/dev/null); pw=${pw:-admin123password}; P=""; for _pi in $(seq 1 30); do P=$(kubectl -n mongodb exec mongodb-replica-0 -- mongosh --quiet "mongodb://admin-user:$pw@localhost:27017/admin?directConnection=true" --eval '\''rs.hello().primary'\'' 2>/dev/null | cut -d. -f1); [ -n "$P" ] && break; sleep 2; done; P=${P:-mongodb-replica-0}; kubectl -n mongodb exec "$P" -- mongosh --quiet "mongodb://admin-user:$pw@localhost:27017/admin" --eval '\''if(!db.getSiblingDB("admin").getUser("readonly-user")){db.getSiblingDB("admin").createUser({user:"readonly-user",pwd:"readonly123password",roles:[{role:"read",db:"appdb"}]});}'\'' 2>&1 || true'
+
+{
+  ok: 1,
+  '$clusterTime': {
+    clusterTime: Timestamp({ t: 1782403669, i: 1 }),
+    signature: {
+      hash: Binary(Buffer.from("e5006815e6fe04685cce3195cb3f8b636a055a14", "hex"), 0),
+      keyId: Long("7655364732186001414")
+    }
+  },
+  operationTime: Timestamp({ t: 1782403669, i: 1 })
+}
+
+[precondition:readonly_user_fixture:preconditionUnits[3] 'readonly_user_fixture':verify] $ /bin/sh -c 'kubectl -n mongodb get secret readonly-user-password >/dev/null 2>&1; true'
+
+
