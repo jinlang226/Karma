@@ -45,6 +45,134 @@ static_solver_export_nginx_defaults() {
   fi
 }
 
+static_solver_export_cockroachdb_defaults() {
+  export BENCH_PARAM_CLUSTER_PREFIX="${BENCH_PARAM_CLUSTER_PREFIX:-crdb-cluster}"
+  export BENCH_PARAM_REPLICA_COUNT="${BENCH_PARAM_REPLICA_COUNT:-3}"
+}
+
+static_solver_wait_for_ray_nodes() {
+  local expected_nodes="${1:?expected node count is required}"
+  local cluster_prefix="${2:-${BENCH_PARAM_CLUSTER_PREFIX:-ray}}"
+  local timeout_sec="${3:-180}"
+  local attempt_timeout_sec="${4:-12}"
+  local probe_output=""
+
+  if ! probe_output="$(
+    BENCH_EXPECTED_NODES="${expected_nodes}" \
+    BENCH_CLUSTER_PREFIX="${cluster_prefix}" \
+    BENCH_RAY_WAIT_TIMEOUT_SEC="${timeout_sec}" \
+    BENCH_RAY_ATTEMPT_TIMEOUT_SEC="${attempt_timeout_sec}" \
+    python3 - <<'PY' 2>&1
+import os
+import subprocess
+import sys
+import time
+
+namespace = os.environ["BENCH_NAMESPACE"]
+cluster_prefix = os.environ["BENCH_CLUSTER_PREFIX"]
+expected_nodes = int(os.environ["BENCH_EXPECTED_NODES"])
+total_timeout_sec = float(os.environ.get("BENCH_RAY_WAIT_TIMEOUT_SEC", "180") or "180")
+attempt_timeout_sec = float(os.environ.get("BENCH_RAY_ATTEMPT_TIMEOUT_SEC", "12") or "12")
+head_target = f"deployment/{cluster_prefix}-head"
+probe = (
+    "import os, ray; "
+    "ray.init(address='auto', ignore_reinit_error=True, "
+    "_node_ip_address=os.environ.get('MY_POD_IP') or None); "
+    "print(sum(1 for node in ray.nodes() if node.get('Alive')))"
+)
+deadline = time.time() + total_timeout_sec
+last_error = ""
+while time.time() < deadline:
+    try:
+        proc = subprocess.run(
+            [
+                "kubectl",
+                "-n",
+                namespace,
+                "exec",
+                head_target,
+                "--",
+                "python",
+                "-c",
+                probe,
+            ],
+            text=True,
+            capture_output=True,
+            timeout=attempt_timeout_sec,
+        )
+    except subprocess.TimeoutExpired:
+        last_error = f"probe timed out after {attempt_timeout_sec:.0f}s"
+    else:
+        output = "\n".join(
+            part for part in (proc.stdout.strip(), proc.stderr.strip()) if part
+        ).strip()
+        if proc.returncode == 0:
+            live_nodes = None
+            for raw_line in output.splitlines():
+                stripped = raw_line.strip()
+                if stripped.isdigit():
+                    live_nodes = int(stripped)
+            if live_nodes is not None and live_nodes >= expected_nodes:
+                print(live_nodes)
+                raise SystemExit(0)
+            last_error = (
+                f"ray cluster {cluster_prefix} reports "
+                f"{0 if live_nodes is None else live_nodes} alive nodes, "
+                f"expected at least {expected_nodes}"
+            )
+        else:
+            last_error = output or "ray probe command failed"
+    time.sleep(3)
+print(last_error or "ray node readiness timed out")
+raise SystemExit(1)
+PY
+  )"; then
+    static_solver_log "ray node readiness failed for ${cluster_prefix}: ${probe_output}"
+    return 1
+  fi
+
+  static_solver_log "ray cluster ${cluster_prefix} reports ${probe_output} alive nodes"
+}
+
+static_solver_wait_for_deployment_ready_replicas() {
+  local deployment_name="${1:?deployment name is required}"
+  local expected_replicas="${2:?expected replica count is required}"
+  local timeout_sec="${3:-180}"
+  local deadline=$((SECONDS + timeout_sec))
+  local ready_replicas="0"
+  local available_replicas="0"
+  local updated_replicas="0"
+  local spec_replicas="0"
+  local status_text=""
+
+  while (( SECONDS < deadline )); do
+    status_text="$(
+      kubectl -n "${BENCH_NAMESPACE}" get deployment "${deployment_name}" \
+        -o jsonpath='{.status.readyReplicas} {.status.availableReplicas} {.status.updatedReplicas} {.spec.replicas}' \
+        2>/dev/null || true
+    )"
+    read -r ready_replicas available_replicas updated_replicas spec_replicas <<< "${status_text}"
+    ready_replicas="${ready_replicas:-0}"
+    available_replicas="${available_replicas:-0}"
+    updated_replicas="${updated_replicas:-0}"
+    spec_replicas="${spec_replicas:-0}"
+
+    if (( spec_replicas == expected_replicas )) &&
+      (( ready_replicas >= expected_replicas )) &&
+      (( available_replicas >= expected_replicas )) &&
+      (( updated_replicas >= expected_replicas )); then
+      static_solver_log \
+        "deployment/${deployment_name} ready=${ready_replicas} available=${available_replicas} updated=${updated_replicas} spec=${spec_replicas}"
+      return 0
+    fi
+
+    sleep 3
+  done
+
+  static_solver_fail \
+    "deployment/${deployment_name} did not reach ${expected_replicas} ready replicas (last: ready=${ready_replicas} available=${available_replicas} updated=${updated_replicas} spec=${spec_replicas})"
+}
+
 static_solver_ensure_vendor_resources_link() {
   local link_path="${STATIC_SOLVER_STAGE_DIR}/resources"
   local target_path="${STATIC_SOLVER_VENDOR_ROOT}/resources"

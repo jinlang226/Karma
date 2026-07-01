@@ -10,5 +10,6 @@ source "${SCRIPT_DIR}/../../lib/common.sh"
 # Imported reference: cockroachdb/expose-ingress
 # Vendored solver: vendor/import-improve-resources/scripts/resource-solvers/solvers/solve_crdb_ingress.sh
 
-static_solver_export_namespace_if_unset "cockroachdb"
+static_solver_export_nginx_defaults "cockroachdb" "ingress-nginx"
+static_solver_export_cockroachdb_defaults
 static_solver_run_vendored_shell "vendor/import-improve-resources/scripts/resource-solvers/solvers/solve_crdb_ingress.sh"

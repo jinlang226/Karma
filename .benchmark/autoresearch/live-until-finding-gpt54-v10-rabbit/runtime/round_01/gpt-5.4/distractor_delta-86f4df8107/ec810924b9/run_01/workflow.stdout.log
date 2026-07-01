@@ -1,0 +1,724 @@
+[orchestrator] setup timeout auto=32297s effective=32297s
+[orchestrator] stage=agent_start
+[orchestrator] stage=waiting_submit
+[orchestrator] submit_wait stage_id=stage_01_rabbitmq-experiments_blue_green_migration
+[agent] OpenAI Codex v0.116.0 (research preview)
+[agent] --------
+[agent] workdir: /workspace
+[agent] model: gpt-5.4
+[agent] provider: openai
+[agent] approval: never
+[agent] sandbox: danger-full-access
+[agent] reasoning effort: none
+[agent] reasoning summaries: none
+[agent] session id: 019dd320-f1f5-7293-946a-5a8c64702490
+[agent] --------
+[agent] user
+[agent] You are in a sandbox container. Read /workspace/PROMPT.md first.
+[agent] If /workspace/runbooks exists, skim anything relevant.
+[agent] Use kubectl to inspect and fix or operate on the issue.
+[agent] When you believe the task is complete, submit by creating /workspace/submit.signal.
+[agent] Wait for /workspace/submit_result.json.
+[agent] If submit_result.json says "can_retry": true, continue fixing and resubmit.
+[agent] If submit_result.json has "workflow.continue": true, re-read /workspace/PROMPT.md (and /workspace/WORKFLOW_STATE.json if present), continue on the next stage, and resubmit when done.
+[agent] If submit_result.json has "workflow.final": true, stop.
+[agent] Otherwise stop.
+[agent] Workflow lifecycle contract:
+[agent] - Keep the top-level agent process alive until submit_result.json reports "workflow.final": true, or until a terminal non-retryable result is reached.
+[agent] - Do not start detached/background helpers, nested agent sessions, or separate executors and then exit the main process.
+[agent] - If you create helper scripts or subprocesses, run them in the foreground or wait for them explicitly before the main process exits.
+[agent] - Exiting the main agent process before the next submit is treated as a fatal workflow failure, even if the exit code is 0.
+[agent] # workflow/distractor_delta-86f4df8107-control-concat_blind
+[agent] Execution Protocol
+[agent] - This is a multi-stage workflow; work one stage at a time.
+[agent] - When the current stage is ready, create `submit.signal` to submit.
+[agent] - After submitting, wait until `submit.signal` is removed and `submit.ack` appears.
+[agent] - Before `submit.ack`, `submit_result.json` may be stale from a previous attempt or stage.
+[agent] - Only read `submit_result.json` after `submit.ack` for the current submit.
+[agent] - If feedback files are not ready yet, keep waiting; do not re-submit or start a new stage action.
+[agent] - Use `submit_result.json` (`workflow.continue`, `can_retry`, `workflow.final`) to branch next actions.
+[agent] - Submit feedback may retry this stage, advance to the next stage, or end the workflow.
+[agent] - Non-retryable stage failures may advance to the next stage (`stage_failure_mode=continue`).
+[agent] - On retry, re-read the updated prompt/state and fix only the current stage.
+[agent] Feedback Files
+[agent] - `submit.ack`: submit receipt marker for the current submit.
+[agent] - `submit_result.json`: canonical response for the latest submit attempt.
+[agent] - Branch on `workflow.continue`, `can_retry`, and `workflow.final` from `submit_result.json`.
+[agent] - `concat_blind` hides active-stage markers; rely on submit/state files for progress.
+[agent] Post-Run Validation
+[agent] - After final submission, the system runs a full verification sweep across all workflow stages against the final cluster state.
+[agent] - Some drift can be acceptable, but less drift is better.
+[agent] Workflow Summary
+[agent] Total Stages: 1
+[agent] Prompt Mode
+[agent] - `concat_blind`: all stages are shown without active-stage markers.
+[agent] - Track stage progress from submit outcomes and workflow state updates.
+[agent] All Stages
+[agent] ## Stage 1/1: stage_01_rabbitmq-experiments_blue_green_migration
+[agent] # rabbitmq-experiments/blue_green_migration
+[agent] Two RabbitMQ clusters are running in the assigned namespaces:
+[agent] - source namespace: wf-2026-04-28t08-05-06z-workflow-r-e658eaff-control-cluster-a (blue/source cluster)
+[agent] - target namespace: wf-2026-04-28t08-05-06z-workflow-r-e658eaff-control-cluster-b (green/target cluster)
+[agent] The blue cluster has continuous traffic on /app/app-queue with monotonic message IDs.
+[agent] The green cluster starts empty.
+[agent] Migrate messages from blue to green without gaps in the ID sequence (duplicates are acceptable), and cut application traffic to green.
+[agent] Use only native Kubernetes resources and RabbitMQ tools (CLI/API). Do not install CRDs or operators.
+[agent] Requirements:
+[agent] - The green /app/app-queue contains the initial seed range (IDs 1..N) with no gaps.
+[agent] - At least N messages are available on green.
+[agent] - At least one post-seed live message (ID > N) must be observed on green before submission.
+[agent] - Blue-to-green migration is complete enough for consumers to proceed (no gaps observed).
+[agent] Context
+[agent] kubectl -n wf-2026-04-28t08-05-06z-workflow-r-e658eaff-control-cluster-a get pods
+[agent] kubectl -n wf-2026-04-28t08-05-06z-workflow-r-e658eaff-control-cluster-b get pods
+[agent] kubectl -n wf-2026-04-28t08-05-06z-workflow-r-e658eaff-control-cluster-a get svc
+[agent] kubectl -n wf-2026-04-28t08-05-06z-workflow-r-e658eaff-control-cluster-b get svc
+[agent] kubectl -n wf-2026-04-28t08-05-06z-workflow-r-e658eaff-control-cluster-a exec rabbitmq-0 -- rabbitmqctl list_queues -p /app name messages
+[agent] kubectl -n wf-2026-04-28t08-05-06z-workflow-r-e658eaff-control-cluster-b exec rabbitmq-0 -- rabbitmqctl list_queues -p /app name messages
+[agent] kubectl -n wf-2026-04-28t08-05-06z-workflow-r-e658eaff-control-cluster-b exec curl-test -- curl -s -u admin:adminpass http://rabbitmq:15672/api/queues/%2Fapp/app-queue
+[agent] Namespace Scope
+[agent] - default (target): wf-2026-04-28t08-05-06z-workflow-r-e658eaff-control-cluster-b
+[agent] - source: wf-2026-04-28t08-05-06z-workflow-r-e658eaff-control-cluster-a
+[agent] - operate only on the assigned namespace(s) above.
+[agent] Resolved Params
+[agent] - blue_cluster_prefix: "rabbitmq"
+[agent] - green_cluster_prefix: "rabbitmq"
+[agent] - producer_deployment_name: ""
+[agent] Submission
+[agent] Create the file `submit.signal` in this directory to submit.
+[agent] - Leave `submit.signal` empty for a normal submit.
+[agent] - Write `{"action":"cleanup"}` in `submit.signal` to request cleanup/stop.
+[agent] Tools
+[agent] - kubectl is available in PATH (via wrapper).
+[agent] - KUBECONFIG is preconfigured for the benchmark proxy.
+[agent] AUTORESEARCH_FEEDBACK_OVERRIDE
+[agent] - submit.ack is a transient receipt in autoresearch; submit_result.json is canonical.
+[agent] - After creating submit.signal, wait until submit.signal is gone and submit_result.json exists and is non-empty; read it even when submit.ack is absent.
+[agent] - Before each new submit, remove old submit.ack and submit_result.json if they exist, then create submit.signal.
+[agent] - Never wait forever only for submit.ack.
+[agent] warning: Codex could not find system bubblewrap at /usr/bin/bwrap. Please install bubblewrap with your package manager. Codex will use the vendored bubblewrap in the meantime.
+[agent] mcp startup: no servers
+[agent] codex
+[agent] Reading the run instructions and local prompt first, then I’ll inspect the two RabbitMQ namespaces and determine the safest migration/cutover path.
+[agent] exec
+[agent] /bin/sh -lc 'if [ -d /workspace/runbooks ]; then find /workspace/runbooks -maxdepth 2 -type f | sort; fi' in /workspaceexec
+[agent] /bin/sh -lc "sed -n '1,240p' /workspace/PROMPT.md" in /workspace succeeded in 0ms:
+[agent] # workflow/distractor_delta-86f4df8107-control-concat_blind
+[agent] Execution Protocol
+[agent] - This is a multi-stage workflow; work one stage at a time.
+[agent] - When the current stage is ready, create `submit.signal` to submit.
+[agent] - After submitting, wait until `submit.signal` is removed and `submit.ack` appears.
+[agent] - Before `submit.ack`, `submit_result.json` may be stale from a previous attempt or stage.
+[agent] - Only read `submit_result.json` after `submit.ack` for the current submit.
+[agent] - If feedback files are not ready yet, keep waiting; do not re-submit or start a new stage action.
+[agent] - Use `submit_result.json` (`workflow.continue`, `can_retry`, `workflow.final`) to branch next actions.
+[agent] - Submit feedback may retry this stage, advance to the next stage, or end the workflow.
+[agent] - Non-retryable stage failures may advance to the next stage (`stage_failure_mode=continue`).
+[agent] - On retry, re-read the updated prompt/state and fix only the current stage.
+[agent] Feedback Files
+[agent] - `submit.ack`: submit receipt marker for the current submit.
+[agent] - `submit_result.json`: canonical response for the latest submit attempt.
+[agent] - Branch on `workflow.continue`, `can_retry`, and `workflow.final` from `submit_result.json`.
+[agent] - `concat_blind` hides active-stage markers; rely on submit/state files for progress.
+[agent]  succeeded in 0ms:
+[agent] codex
+[agent] No relevant runbook files are present. Next I’m checking the RabbitMQ pods, services, queue state, and how traffic currently reaches blue versus green.
+[agent] exec
+[agent] /bin/sh -lc 'kubectl -n wf-2026-04-28t08-05-06z-workflow-r-e658eaff-control-cluster-a get svc -o wide' in /workspaceexec
+[agent] /bin/sh -lc 'kubectl -n wf-2026-04-28t08-05-06z-workflow-r-e658eaff-control-cluster-a get pods -o wide' in /workspaceexec
+[agent] /bin/sh -lc 'kubectl -n wf-2026-04-28t08-05-06z-workflow-r-e658eaff-control-cluster-b get pods -o wide' in /workspaceexec
+[agent] /bin/sh -lc 'kubectl -n wf-2026-04-28t08-05-06z-workflow-r-e658eaff-control-cluster-a exec rabbitmq-0 -- rabbitmqctl list_queues -p /app name messages' in /workspaceexec
+[agent] /bin/sh -lc 'kubectl -n wf-2026-04-28t08-05-06z-workflow-r-e658eaff-control-cluster-b exec rabbitmq-0 -- rabbitmqctl list_queues -p /app name messages' in /workspaceexec
+[agent] /bin/sh -lc 'kubectl -n wf-2026-04-28t08-05-06z-workflow-r-e658eaff-control-cluster-b exec curl-test -- curl -s -u admin:adminpass http://rabbitmq:15672/api/queues/%2Fapp/app-queue' in /workspaceexec
+[agent] /bin/sh -lc 'kubectl -n wf-2026-04-28t08-05-06z-workflow-r-e658eaff-control-cluster-b get svc -o wide' in /workspace succeeded in 68ms:
+[agent] NAME                                      READY   STATUS      RESTARTS   AGE     IP             NODE           NOMINATED NODE   READINESS GATES
+[agent] blue-producer-e4838d53-7674b565fb-gcvjl   1/1     Running     0          30s     10.244.3.125   kind-worker3   <none>           <none>
+[agent] rabbitmq-0                                1/1     Running     0          2m18s   10.244.3.123   kind-worker3   <none>           <none>
+[agent] rabbitmq-1                                1/1     Running     0          2m7s    10.244.2.125   kind-worker    <none>           <none>
+[agent] rabbitmq-2                                1/1     Running     0          117s    10.244.1.122   kind-worker2   <none>           <none>
+[agent] rabbitmq-seed-qgg2m                       0/1     Completed   0          37s     10.244.2.128   kind-worker    <none>           <none>
+[agent] rabbitmq-setup-nlh42                      0/1     Completed   0          60s     10.244.1.124   kind-worker2   <none>           <none>
+[agent]  succeeded in 69ms:
+[agent] NAME                   READY   STATUS      RESTARTS   AGE    IP             NODE           NOMINATED NODE   READINESS GATES
+[agent] curl-test              1/1     Running     0          27s    10.244.1.125   kind-worker2   <none>           <none>
+[agent] rabbitmq-0             1/1     Running     0          101s   10.244.2.126   kind-worker    <none>           <none>
+[agent] rabbitmq-1             1/1     Running     0          89s    10.244.3.124   kind-worker3   <none>           <none>
+[agent] rabbitmq-2             1/1     Running     0          78s    10.244.1.123   kind-worker2   <none>           <none>
+[agent] rabbitmq-setup-gmb8c   0/1     Completed   0          53s    10.244.2.127   kind-worker    <none>           <none>
+[agent]  succeeded in 73ms:
+[agent] NAME                TYPE        CLUSTER-IP     EXTERNAL-IP   PORT(S)              AGE     SELECTOR
+[agent] rabbitmq            ClusterIP   10.96.238.15   <none>        5672/TCP,15672/TCP   2m21s   app=rabbitmq
+[agent] rabbitmq-headless   ClusterIP   None           <none>        5672/TCP,15672/TCP   2m21s   app=rabbitmq
+[agent]  succeeded in 65ms:
+[agent] NAME                TYPE        CLUSTER-IP      EXTERNAL-IP   PORT(S)              AGE     SELECTOR
+[agent] rabbitmq            ClusterIP   10.96.239.214   <none>        5672/TCP,15672/TCP   2m19s   app=rabbitmq
+[agent] rabbitmq-headless   ClusterIP   None            <none>        5672/TCP,15672/TCP   2m19s   app=rabbitmq
+[agent]  succeeded in 106ms:
+[agent] {"consumer_details":[],"arguments":{"x-queue-type":"classic"},"auto_delete":false,"consumer_capacity":0,"consumer_utilisation":0,"consumers":0,"deliveries":[],"durable":true,"effective_policy_definition":{},"exclusive":false,"exclusive_consumer_tag":null,"garbage_collection":{"fullsweep_after":65535,"max_heap_size":0,"min_bin_vheap_size":46422,"min_heap_size":233,"minor_gcs":16},"head_message_timestamp":null,"idle_since":"2026-04-28T08:07:24.078+00:00","incoming":[],"memory":4552,"message_bytes":0,"message_bytes_paged_out":0,"message_bytes_persistent":0,"message_bytes_ram":0,"message_bytes_ready":0,"message_bytes_unacknowledged":0,"messages":0,"messages_details":{"rate":0.0},"messages_paged_out":0,"messages_persistent":0,"messages_ram":0,"messages_ready":0,"messages_ready_details":{"rate":0.0},"messages_ready_ram":0,"messages_unacknowledged":0,"messages_unacknowledged_details":{"rate":0.0},"messages_unacknowledged_ram":0,"name":"app-queue","node":"rabbit@rabbitmq-2.rabbitmq-headless.wf-2026-04-28t08-05-06z-workflow-r-e658eaff-control-cluster-b.svc.cluster.local","operator_policy":null,"policy":null,"reductions":23270,"reductions_details":{"rate":0.0},"single_active_consumer_tag":null,"state":"running","storage_version":2,"type":"classic","vhost":"/app"}
+[agent]  succeeded in 330ms:
+[agent] [1m[31mRABBITMQ_ERLANG_COOKIE env variable support is deprecated and will be REMOVED in a future version. [0m[33mUse the $HOME/.erlang.cookie file or the --erlang-cookie switch instead.[0m
+[agent] Timeout: 60.0 seconds ...
+[agent] Listing queues for vhost /app ...
+[agent] name	messages
+[agent] app-queue	80
+[agent]  succeeded in 372ms:
+[agent] Timeout: 60.0 seconds ...
+[agent] Listing queues for vhost /app ...
+[agent] name	messages
+[agent] app-queue	0
+[kubectl] 2026-04-28T08:07:50Z kubectl -n wf-2026-04-28t08-05-06z-workflow-r-e658eaff-control-cluster-a get deploy blue-producer-e4838d53 -o yaml
+[kubectl] 2026-04-28T08:07:50Z kubectl -n wf-2026-04-28t08-05-06z-workflow-r-e658eaff-control-cluster-a logs deploy/blue-producer-e4838d53 --tail=80
+[kubectl] 2026-04-28T08:07:50Z kubectl -n wf-2026-04-28t08-05-06z-workflow-r-e658eaff-control-cluster-a get all
+[kubectl] 2026-04-28T08:07:50Z kubectl -n wf-2026-04-28t08-05-06z-workflow-r-e658eaff-control-cluster-a exec rabbitmq-0 -- rabbitmq-diagnostics listeners
+[agent] codex
+[agent] The source queue already has live backlog and the target is empty. I’m tracing how the producer resolves `rabbitmq` so I can switch traffic cleanly after backfilling the seed range.
+[agent] exec
+[agent] /bin/sh -lc 'kubectl -n wf-2026-04-28t08-05-06z-workflow-r-e658eaff-control-cluster-a get deploy blue-producer-e4838d53 -o yaml' in /workspaceexec
+[agent] /bin/sh -lc 'kubectl -n wf-2026-04-28t08-05-06z-workflow-r-e658eaff-control-cluster-a exec rabbitmq-0 -- rabbitmq-diagnostics listeners' in /workspaceexec
+[agent] /bin/sh -lc 'kubectl -n wf-2026-04-28t08-05-06z-workflow-r-e658eaff-control-cluster-a logs deploy/blue-producer-e4838d53 --tail=80' in /workspaceexec
+[agent] /bin/sh -lc 'kubectl -n wf-2026-04-28t08-05-06z-workflow-r-e658eaff-control-cluster-a get all' in /workspace succeeded in 68ms:
+[agent] apiVersion: apps/v1
+[agent] kind: Deployment
+[agent] metadata:
+[agent]   annotations:
+[agent]     deployment.kubernetes.io/revision: "1"
+[agent]     kubectl.kubernetes.io/last-applied-configuration: |
+[agent]       {"apiVersion":"apps/v1","kind":"Deployment","metadata":{"annotations":{},"labels":{"app":"blue-producer"},"name":"blue-producer-e4838d53","namespace":"wf-2026-04-28t08-05-06z-workflow-r-e658eaff-control-cluster-a"},"spec":{"replicas":1,"selector":{"matchLabels":{"app":"blue-producer"}},"template":{"metadata":{"labels":{"app":"blue-producer"}},"spec":{"containers":[{"command":["/bin/sh","-c","set -e\nbase=\"http://rabbitmq:15672/api\"\nauth=\"${RABBITMQ_APP_USER}:${RABBITMQ_APP_PASS}\"\ni=$((SEED_COUNT + 1))\nwhile true; do\n  body=$(printf '{\"properties\":{\"delivery_mode\":2},\"routing_key\":\"app-queue\",\"payload\":\"{\\\\\"id\\\\\":%s}\",\"payload_encoding\":\"string\"}' \"$i\")\n  curl -s -u \"$auth\" -H \"content-type: application/json\" \\\n    -XPOST \"$base/exchanges/%2Fapp/amq.default/publish\" \\\n    -d \"$body\" \\\n    | grep -q '\"routed\":true' \\\n    \u0026\u0026 echo \"blue-producer: published $i\" \\\n    || echo \"blue-producer: publish failed\" \u003e\u00262\n  i=$((i+1))\n  sleep 1\ndone\n"],"env":[{"name":"RABBITMQ_APP_USER","valueFrom":{"secretKeyRef":{"key":"username","name":"rabbitmq-admin"}}},{"name":"RABBITMQ_APP_PASS","valueFrom":{"secretKeyRef":{"key":"password","name":"rabbitmq-admin"}}},{"name":"SEED_COUNT","valueFrom":{"configMapKeyRef":{"key":"seed_count","name":"migration-seed"}}}],"image":"curlimages/curl:8.6.0","name":"producer"}]}}}}
+[agent]   creationTimestamp: "2026-04-28T08:07:12Z"
+[agent]   generation: 1
+[agent]   labels:
+[agent]     app: blue-producer
+[agent]   name: blue-producer-e4838d53
+[agent]   namespace: wf-2026-04-28t08-05-06z-workflow-r-e658eaff-control-cluster-a
+[agent]   resourceVersion: "441605"
+[agent]   uid: 29116c20-2bdb-4f53-9cc0-b758d869e09e
+[agent] spec:
+[agent]   progressDeadlineSeconds: 600
+[agent]   replicas: 1
+[agent]   revisionHistoryLimit: 10
+[agent]   selector:
+[agent]  succeeded in 66ms:
+[agent] blue-producer: published 51
+[agent] blue-producer: published 52
+[agent] blue-producer: published 53
+[agent] blue-producer: published 54
+[agent] blue-producer: published 55
+[agent] blue-producer: published 56
+[agent] blue-producer: published 57
+[agent] blue-producer: published 58
+[agent] blue-producer: published 59
+[agent] blue-producer: published 60
+[agent] blue-producer: published 61
+[agent] blue-producer: published 62
+[agent] blue-producer: published 63
+[agent] blue-producer: published 64
+[agent] blue-producer: published 65
+[agent] blue-producer: published 66
+[agent] blue-producer: published 67
+[agent] blue-producer: published 68
+[agent] blue-producer: published 69
+[agent] blue-producer: published 70
+[agent]  succeeded in 94ms:
+[agent] NAME                                          READY   STATUS      RESTARTS   AGE
+[agent] pod/blue-producer-e4838d53-7674b565fb-gcvjl   1/1     Running     0          38s
+[agent] pod/rabbitmq-0                                1/1     Running     0          2m26s
+[agent] pod/rabbitmq-1                                1/1     Running     0          2m15s
+[agent] pod/rabbitmq-2                                1/1     Running     0          2m5s
+[agent] pod/rabbitmq-seed-qgg2m                       0/1     Completed   0          45s
+[agent] pod/rabbitmq-setup-nlh42                      0/1     Completed   0          68s
+[agent] NAME                        TYPE        CLUSTER-IP     EXTERNAL-IP   PORT(S)              AGE
+[agent] service/rabbitmq            ClusterIP   10.96.238.15   <none>        5672/TCP,15672/TCP   2m29s
+[agent] service/rabbitmq-headless   ClusterIP   None           <none>        5672/TCP,15672/TCP   2m29s
+[agent] NAME                                     READY   UP-TO-DATE   AVAILABLE   AGE
+[agent] deployment.apps/blue-producer-e4838d53   1/1     1            1           38s
+[agent] NAME                                                DESIRED   CURRENT   READY   AGE
+[agent] replicaset.apps/blue-producer-e4838d53-7674b565fb   1         1         1       38s
+[agent] NAME                        READY   AGE
+[agent] statefulset.apps/rabbitmq   3/3     2m26s
+[agent]  succeeded in 339ms:
+[agent] [1m[31mRABBITMQ_ERLANG_COOKIE env variable support is deprecated and will be REMOVED in a future version. [0m[33mUse the $HOME/.erlang.cookie file or the --erlang-cookie switch instead.[0m
+[agent] Asking node rabbit@rabbitmq-0.rabbitmq-headless.wf-2026-04-28t08-05-06z-workflow-r-e658eaff-control-cluster-a.svc.cluster.local to report its protocol listeners ...
+[agent] Interface: [::], port: 15672, protocol: http, purpose: HTTP API
+[agent] Interface: [::], port: 25672, protocol: clustering, purpose: inter-node and CLI tool communication
+[agent] Interface: [::], port: 5672, protocol: amqp, purpose: AMQP 0-9-1 and AMQP 1.0
+[kubectl] 2026-04-28T08:08:14Z kubectl -n wf-2026-04-28t08-05-06z-workflow-r-e658eaff-control-cluster-a get configmap migration-seed -o yaml
+[kubectl] 2026-04-28T08:08:14Z kubectl -n wf-2026-04-28t08-05-06z-workflow-r-e658eaff-control-cluster-b exec curl-test -- sh -lc 'command -v curl; command -v jq || true; command -v python3 || true'
+[kubectl] 2026-04-28T08:08:14Z kubectl -n wf-2026-04-28t08-05-06z-workflow-r-e658eaff-control-cluster-a get secret rabbitmq-admin -o 'jsonpath={.data.username}'
+[kubectl] 2026-04-28T08:08:14Z kubectl -n wf-2026-04-28t08-05-06z-workflow-r-e658eaff-control-cluster-a get secret rabbitmq-admin -o 'jsonpath={.data.password}'
+[agent] codex
+[agent] I found the producer: it starts at `SEED_COUNT + 1` and is still publishing to the blue service. I’m checking the seed count and available tooling, then I’ll freeze writes, copy the ordered queue contents, and repoint the producer to green.
+[agent] exec
+[agent] /bin/sh -lc 'command -v jq || true' in /workspace succeeded in 0ms:
+[agent] exec
+[agent] /bin/sh -lc 'kubectl -n wf-2026-04-28t08-05-06z-workflow-r-e658eaff-control-cluster-a get configmap migration-seed -o yaml' in /workspaceexec
+[agent] /bin/sh -lc "kubectl -n wf-2026-04-28t08-05-06z-workflow-r-e658eaff-control-cluster-a get secret rabbitmq-admin -o jsonpath='{.data.username}' | base64 -d; echo; kubectl -n wf-2026-04-28t08-05-06z-workflow-r-e658eaff-control-cluster-a get secret rabbitmq-admin -o jsonpath='{.data.password}' | base64 -d; echo" in /workspaceexec
+[agent] /bin/sh -lc "kubectl -n wf-2026-04-28t08-05-06z-workflow-r-e658eaff-control-cluster-b exec curl-test -- sh -lc 'command -v curl; command -v jq || true; command -v python3 || true'" in /workspace succeeded in 63ms:
+[agent] apiVersion: v1
+[agent] data:
+[agent]   seed_count: "50"
+[agent] kind: ConfigMap
+[agent] metadata:
+[agent]   annotations:
+[agent]     kubectl.kubernetes.io/last-applied-configuration: |
+[agent]       {"apiVersion":"v1","data":{"seed_count":"50"},"kind":"ConfigMap","metadata":{"annotations":{},"name":"migration-seed","namespace":"wf-2026-04-28t08-05-06z-workflow-r-e658eaff-control-cluster-a"}}
+[agent]   creationTimestamp: "2026-04-28T08:06:53Z"
+[agent]   name: migration-seed
+[agent]   namespace: wf-2026-04-28t08-05-06z-workflow-r-e658eaff-control-cluster-a
+[agent]   resourceVersion: "441537"
+[agent]   uid: 8c708f53-f7cf-4802-bbd1-6074e57cde01
+[agent]  succeeded in 94ms:
+[agent] /usr/bin/curl
+[agent]  succeeded in 261ms:
+[agent] admin
+[agent] adminpass
+[agent] codex
+[agent] The seed boundary is `N=50`. I’m going to stop the producer, export the full blue queue through the management API, verify the ID sequence, then republish the ordered set into green before restoring live traffic there.
+[agent] Plan update
+[agent]   → Freeze blue writes and snapshot the blue queue contents
+[agent]   • Republish the ordered message stream into green and verify no seed gaps
+[agent]   • Cut producer traffic to green, confirm live IDs > 50 arrive there, then submit
+[kubectl] 2026-04-28T08:08:24Z kubectl -n wf-2026-04-28t08-05-06z-workflow-r-e658eaff-control-cluster-a scale deploy/blue-producer-e4838d53 --replicas=0
+[agent] codex
+[agent] I’m about to change cluster state: first scale the blue producer down so the queue stops moving while I take a consistent copy. After that I’ll validate the IDs before republishing anything.
+[agent] exec
+[agent] /bin/sh -lc 'command -v python3 || command -v python || true' in /workspace succeeded in 0ms:
+[agent] /usr/local/bin/python3
+[kubectl] 2026-04-28T08:08:24Z kubectl -n wf-2026-04-28t08-05-06z-workflow-r-e658eaff-control-cluster-a rollout status deploy/blue-producer-e4838d53 --timeout=120s
+[agent] exec
+[agent] /bin/sh -lc 'kubectl -n wf-2026-04-28t08-05-06z-workflow-r-e658eaff-control-cluster-a scale deploy/blue-producer-e4838d53 --replicas=0 && kubectl -n wf-2026-04-28t08-05-06z-workflow-r-e658eaff-control-cluster-a rollout status deploy/blue-producer-e4838d53 --timeout=120s' in /workspace succeeded in 296ms:
+[agent] deployment.apps/blue-producer-e4838d53 scaled
+[agent] deployment "blue-producer-e4838d53" successfully rolled out
+[kubectl] 2026-04-28T08:08:35Z kubectl -n wf-2026-04-28t08-05-06z-workflow-r-e658eaff-control-cluster-b exec curl-test -- sh -lc 'curl -s -u admin:adminpass -H "content-type: application/json" -XPOST http://rabbitmq.wf-2026-04-28t08-05-06z-workflow-r-e658eaff-control-cluster-a.svc.cluster.local:15672/api/queues/%2Fapp/app-queue/get -d {count:10000,ackmode:ack_requeue_false,encoding:auto,truncate:50000} > /tmp/blue_queue.json && cat /tmp/blue_queue.json'
+[agent] exec
+[agent] /bin/sh -lc "kubectl -n wf-2026-04-28t08-05-06z-workflow-r-e658eaff-control-cluster-b exec curl-test -- sh -lc 'curl -s -u admin:adminpass -H \"content-type: application/json\" -XPOST http://rabbitmq.wf-2026-04-28t08-05-06z-workflow-r-e658eaff-control-cluster-a.svc.cluster.local:15672/api/queues/%2Fapp/app-queue/get -d '{\"count\":10000,\"ackmode\":\"ack_requeue_false\",\"encoding\":\"auto\",\"truncate\":50000}' > /tmp/blue_queue.json && cat /tmp/blue_queue.json' > /workspace/blue_queue.json && python3 - <<'PY'
+[agent] import json
+[agent] from pathlib import Path
+[agent] p=Path('/workspace/blue_queue.json')
+[agent] items=json.loads(p.read_text())
+[agent] ids=[]
+[agent] for m in items:
+[agent]     payload=m.get('payload','')
+[agent]     try:
+[agent]         ids.append(json.loads(payload)['id'])
+[agent]     except Exception as e:
+[agent]         print('PARSE_ERROR', payload)
+[agent]         raise
+[agent] print('count', len(ids))
+[agent] print('first10', ids[:10])
+[agent] print('last10', ids[-10:])
+[agent] missing=[]
+[agent] if ids:
+[agent]     expected=list(range(ids[0], ids[-1]+1))
+[agent]     missing=[x for x,y in zip(expected, ids) if x"'!=y]
+[agent] print('"'contiguous', ids==list(range(ids[0], ids[-1]+1)) if ids else True)
+[agent] print('min', min(ids) if ids else None)
+[agent] print('max', max(ids) if ids else None)
+[agent] PY" in /workspace exited 1 in 166ms:
+[agent] Traceback (most recent call last):
+[agent]   File "<stdin>", line 7, in <module>
+[agent] AttributeError: 'str' object has no attribute 'get'
+[agent] codex
+[agent] The queue freeze succeeded. The first export call returned unexpected JSON, so I’m inspecting the raw API response before republishing to avoid corrupting the migration.
+[kubectl] 2026-04-28T08:08:40Z kubectl -n wf-2026-04-28t08-05-06z-workflow-r-e658eaff-control-cluster-a exec rabbitmq-0 -- rabbitmqctl list_queues -p /app name messages
+[agent] exec
+[agent] /bin/sh -lc "sed -n '1,80p' /workspace/blue_queue.json" in /workspace succeeded in 0ms:
+[agent] {"error":"bad_request","reason":"not_json"}
+[agent] exec
+[agent] /bin/sh -lc 'kubectl -n wf-2026-04-28t08-05-06z-workflow-r-e658eaff-control-cluster-a exec rabbitmq-0 -- rabbitmqctl list_queues -p /app name messages' in /workspace succeeded in 319ms:
+[agent] [1m[31mRABBITMQ_ERLANG_COOKIE env variable support is deprecated and will be REMOVED in a future version. [0m[33mUse the $HOME/.erlang.cookie file or the --erlang-cookie switch instead.[0m
+[agent] Timeout: 60.0 seconds ...
+[agent] Listing queues for vhost /app ...
+[agent] name	messages
+[agent] app-queue	138
+[kubectl] 2026-04-28T08:08:49Z kubectl -n wf-2026-04-28t08-05-06z-workflow-r-e658eaff-control-cluster-b exec curl-test -- sh -lc 'printf %s {"count":10000,"ackmode":"ack_requeue_false","encoding":"auto","truncate":50000} | curl -s -u admin:adminpass -H content-type:application/json -XPOST http://rabbitmq.wf-2026-04-28t08-05-06z-workflow-r-e658eaff-control-cluster-a.svc.cluster.local:15672/api/queues/%2Fapp/app-queue/get --data-binary @-'
+[agent] exec
+[agent] /bin/sh -lc "kubectl -n wf-2026-04-28t08-05-06z-workflow-r-e658eaff-control-cluster-b exec curl-test -- sh -lc 'printf %s '{\\\"count\\\":10000,\\\"ackmode\\\":\\\"ack_requeue_false\\\",\\\"encoding\\\":\\\"auto\\\",\\\"truncate\\\":50000}' | curl -s -u admin:adminpass -H content-type:application/json -XPOST http://rabbitmq.wf-2026-04-28t08-05-06z-workflow-r-e658eaff-control-cluster-a.svc.cluster.local:15672/api/queues/%2Fapp/app-queue/get --data-binary @-' > /workspace/blue_queue.json && python3 - <<'PY'
+[agent] import json
+[agent] from pathlib import Path
+[agent] text=Path('/workspace/blue_queue.json').read_text()
+[agent] print(text[:200])
+[agent] obj=json.loads(text)
+[agent] print(type(obj).__name__, len(obj) if isinstance(obj,list) else '')
+[agent] if isinstance(obj,list) and obj:
+[agent]     print(obj[0].keys())
+[agent] PY" in /workspace succeeded in 146ms:
+[agent] {"error":"bad_request","reason":"not_json"}
+[agent] dict 
+[kubectl] 2026-04-28T08:08:56Z kubectl -n wf-2026-04-28t08-05-06z-workflow-r-e658eaff-control-cluster-b exec -i curl-test -- curl -s -u admin:adminpass -H content-type:application/json -XPOST http://rabbitmq.wf-2026-04-28t08-05-06z-workflow-r-e658eaff-control-cluster-a.svc.cluster.local:15672/api/queues/%2Fapp/app-queue/get --data-binary @-
+[agent] exec
+[agent] /bin/sh -lc "cat <<'EOF' | kubectl -n wf-2026-04-28t08-05-06z-workflow-r-e658eaff-control-cluster-b exec -i curl-test -- curl -s -u admin:adminpass -H content-type:application/json -XPOST http://rabbitmq.wf-2026-04-28t08-05-06z-workflow-r-e658eaff-control-cluster-a.svc.cluster.local:15672/api/queues/%2Fapp/app-queue/get --data-binary @- > /workspace/blue_queue.json
+[agent] {\"count\":10000,\"ackmode\":\"ack_requeue_false\",\"encoding\":\"auto\",\"truncate\":50000}
+[agent] EOF
+[agent] python3 - <<'PY'
+[agent] import json
+[agent] from pathlib import Path
+[agent] text=Path('/workspace/blue_queue.json').read_text()
+[agent] print(text[:200])
+[agent] obj=json.loads(text)
+[agent] print(type(obj).__name__, len(obj) if isinstance(obj,list) else '')
+[agent] if isinstance(obj,list) and obj:
+[agent]     print(sorted(obj[0].keys()))
+[agent] PY" in /workspace succeeded in 165ms:
+[agent] [{"payload_bytes":9,"redelivered":true,"exchange":"","routing_key":"app-queue","message_count":150,"properties":{"delivery_mode":2},"payload":"{\"id\": 1}","payload_encoding":"string"},{"payload_bytes
+[agent] list 151
+[agent] ['exchange', 'message_count', 'payload', 'payload_bytes', 'payload_encoding', 'properties', 'redelivered', 'routing_key']
+[kubectl] 2026-04-28T08:09:06Z kubectl -n wf-2026-04-28t08-05-06z-workflow-r-e658eaff-control-cluster-b exec rabbitmq-0 -- rabbitmqctl list_queues -p /app name messages
+[kubectl] 2026-04-28T08:09:06Z kubectl -n wf-2026-04-28t08-05-06z-workflow-r-e658eaff-control-cluster-a exec rabbitmq-0 -- rabbitmqctl list_queues -p /app name messages
+[agent] exec
+[agent] /bin/sh -lc "python3 - <<'PY'
+[agent] import json
+[agent] from pathlib import Path
+[agent] items=json.loads(Path('/workspace/blue_queue.json').read_text())
+[agent] ids=[json.loads(m['payload'])['id'] for m in items]
+[agent] print('count', len(ids))
+[agent] print('first', ids[:10])
+[agent] print('last', ids[-10:])
+[agent] expected=list(range(1, len(ids)+1))
+[agent] print('seed_ok', ids[:50]==list(range(1,51)))
+[agent] print('contiguous_all', ids==expected)
+[agent] if ids"'!=expected:
+[agent]     for i,(a,b) in enumerate(zip(expected,ids), start=1):
+[agent]         if a!=b:
+[agent]             print('"'first_mismatch_at', i, 'expected', a, 'got', b)
+[agent]             break
+[agent] PY" in /workspace succeeded in 0ms:
+[agent] count 151
+[agent] first [1, 2, 3, 4, 5, 6, 7, 8, 9, 10]
+[agent] last [142, 143, 144, 145, 146, 147, 148, 149, 150, 151]
+[agent] seed_ok True
+[agent] contiguous_all True
+[agent] exec
+[agent] /bin/sh -lc 'kubectl -n wf-2026-04-28t08-05-06z-workflow-r-e658eaff-control-cluster-b exec rabbitmq-0 -- rabbitmqctl list_queues -p /app name messages' in /workspaceexec
+[agent] /bin/sh -lc 'kubectl -n wf-2026-04-28t08-05-06z-workflow-r-e658eaff-control-cluster-a exec rabbitmq-0 -- rabbitmqctl list_queues -p /app name messages' in /workspace
+[agent]  succeeded in 359ms:
+[agent] [1m[31mRABBITMQ_ERLANG_COOKIE env variable support is deprecated and will be REMOVED in a future version. [0m[33mUse the $HOME/.erlang.cookie file or the --erlang-cookie switch instead.[0m
+[agent] Timeout: 60.0 seconds ...
+[agent] Listing queues for vhost /app ...
+[agent] name	messages
+[agent] app-queue	0
+[agent]  succeeded in 407ms:
+[agent] Timeout: 60.0 seconds ...
+[agent] Listing queues for vhost /app ...
+[agent] name	messages
+[agent] app-queue	0
+[agent] codex
+[agent] I have a clean frozen snapshot: blue contained exactly IDs `1..151` with no gaps, and it’s now drained. I’m publishing that ordered stream into green next, then I’ll restart the producer against green at the correct next ID instead of resetting it to 51.
+[kubectl] 2026-04-28T08:09:46Z kubectl -n wf-2026-04-28t08-05-06z-workflow-r-e658eaff-control-cluster-b exec -i curl-test -- sh -lc '
+set -e
+ok=0
+while IFS= read -r body; do
+  resp=$(curl -s -u admin:adminpass -H content-type:application/json \
+    -XPOST http://rabbitmq:15672/api/exchanges/%2Fapp/amq.default/publish \
+    -d "$body")
+  echo "$resp" | grep -q routed:true
+  ok=$((ok+1))
+done
+printf "published=%s\n" "$ok"
+'
+[agent] exec
+[agent] /bin/sh -lc "python3 - <<'PY' | kubectl -n wf-2026-04-28t08-05-06z-workflow-r-e658eaff-control-cluster-b exec -i curl-test -- sh -lc '
+[agent] set -e
+[agent] ok=0
+[agent] while IFS= read -r body; do
+[agent]   resp="'$(curl -s -u admin:adminpass -H content-type:application/json '"\\
+[agent]     -XPOST http://rabbitmq:15672/api/exchanges/%2Fapp/amq.default/publish \\
+[agent]     -d \""'$body")
+[agent]   echo "$resp" | grep -q '"'\"routed\":true'
+[agent]   ok="'$((ok+1))
+[agent] done
+[agent] printf "published=%s'"\\n\" \""'$ok"
+[agent] '"'
+[agent] import json
+[agent] from pathlib import Path
+[agent] items=json.loads(Path('/workspace/blue_queue.json').read_text())
+[agent] for m in items:
+[agent]     payload=m['payload']
+[agent]     body={
+[agent]         'properties': {'delivery_mode': 2},
+[agent]         'routing_key': 'app-queue',
+[agent]         'payload': payload,
+[agent]         'payload_encoding': 'string',
+[agent]     }
+[agent]     print(json.dumps(body,separators=(',',':')))
+[agent] PY" in /workspace
+[agent]  exited 1 in 118ms:
+[agent] command terminated with exit code 1
+[agent] codex
+[agent] The first publish loop tripped on shell quoting, not on RabbitMQ itself. I’m switching to a simpler stdin-driven publish pass so the replay stays deterministic.
+[kubectl] 2026-04-28T08:09:59Z kubectl -n wf-2026-04-28t08-05-06z-workflow-r-e658eaff-control-cluster-b exec -i curl-test -- sh -lc '
+set -e
+ok=0
+while IFS= read -r body; do
+  resp=$(curl -s -u admin:adminpass -H content-type:application/json -XPOST http://rabbitmq:15672/api/exchanges/%2Fapp/amq.default/publish -d "$body")
+  echo "$resp" | grep -q routed:true
+  ok=$((ok+1))
+done
+printf "published=%s\n" "$ok"
+'
+[agent] exec
+[agent] /bin/sh -lc "python3 - <<'PY' > /workspace/publish_bodies.jsonl
+[agent] import json
+[agent] from pathlib import Path
+[agent] items=json.loads(Path('/workspace/blue_queue.json').read_text())
+[agent] for m in items:
+[agent]     payload=m['payload']
+[agent]     body={
+[agent]         'properties': {'delivery_mode': 2},
+[agent]         'routing_key': 'app-queue',
+[agent]         'payload': payload,
+[agent]         'payload_encoding': 'string',
+[agent]     }
+[agent]     print(json.dumps(body,separators=(',',':')))
+[agent] PY
+[agent] kubectl -n wf-2026-04-28t08-05-06z-workflow-r-e658eaff-control-cluster-b exec -i curl-test -- sh -lc '
+[agent] set -e
+[agent] ok=0
+[agent] while IFS= read -r body; do
+[agent]   resp="'$(curl -s -u admin:adminpass -H content-type:application/json -XPOST http://rabbitmq:15672/api/exchanges/%2Fapp/amq.default/publish -d "$body")
+[agent]   echo "$resp" | grep -q '"'\"routed\":true'
+[agent]   ok="'$((ok+1))
+[agent] done
+[agent] printf "published=%s'"\\n\" \""'$ok"
+[agent] '"' < /workspace/publish_bodies.jsonl" in /workspace exited 1 in 186ms:
+[agent] command terminated with exit code 1
+[agent] codex
+[agent] I’m avoiding further shell quoting drift by driving the replay from local Python. It’s slower than a single in-pod loop, but 151 messages is small and correctness matters more here.
+[kubectl] 2026-04-28T08:10:10Z kubectl -n wf-2026-04-28t08-05-06z-workflow-r-e658eaff-control-cluster-b exec curl-test -- curl -s -u admin:adminpass -H content-type:application/json -XPOST http://rabbitmq:15672/api/exchanges/%2Fapp/amq.default/publish -d '{"properties":{"delivery_mode":2},"routing_key":"app-queue","payload":"{\"id\": 1}","payload_encoding":"string"}'
+[kubectl] 2026-04-28T08:10:11Z kubectl -n wf-2026-04-28t08-05-06z-workflow-r-e658eaff-control-cluster-b exec curl-test -- curl -s -u admin:adminpass -H content-type:application/json -XPOST http://rabbitmq:15672/api/exchanges/%2Fapp/amq.default/publish -d '{"properties":{"delivery_mode":2},"routing_key":"app-queue","payload":"{\"id\": 2}","payload_encoding":"string"}'
+[kubectl] 2026-04-28T08:10:11Z kubectl -n wf-2026-04-28t08-05-06z-workflow-r-e658eaff-control-cluster-b exec curl-test -- curl -s -u admin:adminpass -H content-type:application/json -XPOST http://rabbitmq:15672/api/exchanges/%2Fapp/amq.default/publish -d '{"properties":{"delivery_mode":2},"routing_key":"app-queue","payload":"{\"id\": 3}","payload_encoding":"string"}'
+[agent] exec
+[agent] /bin/sh -lc "python3 - <<'PY'
+[agent] import json, subprocess, sys
+[agent] from pathlib import Path
+[agent] ns='wf-2026-04-28t08-05-06z-workflow-r-e658eaff-control-cluster-b'
+[agent] items=json.loads(Path('/workspace/blue_queue.json').read_text())
+[agent] for idx,m in enumerate(items, start=1):
+[agent]     body=json.dumps({
+[agent]         'properties': {'delivery_mode': 2},
+[agent]         'routing_key': 'app-queue',
+[agent]         'payload': m['payload'],
+[agent]         'payload_encoding': 'string',
+[agent]     }, separators=(',',':'))
+[agent]     cp=subprocess.run([
+[agent]         'kubectl','-n',ns,'exec','curl-test','--','curl','-s','-u','admin:adminpass',
+[agent]         '-H','content-type:application/json','-XPOST',
+[agent]         'http://rabbitmq:15672/api/exchanges/%2Fapp/amq.default/publish',
+[agent]         '-d', body
+[agent]     ], capture_output=True, text=True)
+[agent]     if cp.returncode "'!= 0 or '"'\"routed\":true' not in cp.stdout:
+[agent]         print('publish_failed', idx, cp.returncode, cp.stdout, cp.stderr)
+[agent]         sys.exit(1)
+[agent] print('published', len(items))
+[agent] PY" in /workspace
+[kubectl] 2026-04-28T08:10:11Z kubectl -n wf-2026-04-28t08-05-06z-workflow-r-e658eaff-control-cluster-b exec curl-test -- curl -s -u admin:adminpass -H content-type:application/json -XPOST http://rabbitmq:15672/api/exchanges/%2Fapp/amq.default/publish -d '{"properties":{"delivery_mode":2},"routing_key":"app-queue","payload":"{\"id\": 4}","payload_encoding":"string"}'
+[kubectl] 2026-04-28T08:10:11Z kubectl -n wf-2026-04-28t08-05-06z-workflow-r-e658eaff-control-cluster-b exec curl-test -- curl -s -u admin:adminpass -H content-type:application/json -XPOST http://rabbitmq:15672/api/exchanges/%2Fapp/amq.default/publish -d '{"properties":{"delivery_mode":2},"routing_key":"app-queue","payload":"{\"id\": 5}","payload_encoding":"string"}'
+[kubectl] 2026-04-28T08:10:12Z kubectl -n wf-2026-04-28t08-05-06z-workflow-r-e658eaff-control-cluster-b exec curl-test -- curl -s -u admin:adminpass -H content-type:application/json -XPOST http://rabbitmq:15672/api/exchanges/%2Fapp/amq.default/publish -d '{"properties":{"delivery_mode":2},"routing_key":"app-queue","payload":"{\"id\": 6}","payload_encoding":"string"}'
+[kubectl] 2026-04-28T08:10:12Z kubectl -n wf-2026-04-28t08-05-06z-workflow-r-e658eaff-control-cluster-b exec curl-test -- curl -s -u admin:adminpass -H content-type:application/json -XPOST http://rabbitmq:15672/api/exchanges/%2Fapp/amq.default/publish -d '{"properties":{"delivery_mode":2},"routing_key":"app-queue","payload":"{\"id\": 7}","payload_encoding":"string"}'
+[kubectl] 2026-04-28T08:10:12Z kubectl -n wf-2026-04-28t08-05-06z-workflow-r-e658eaff-control-cluster-b exec curl-test -- curl -s -u admin:adminpass -H content-type:application/json -XPOST http://rabbitmq:15672/api/exchanges/%2Fapp/amq.default/publish -d '{"properties":{"delivery_mode":2},"routing_key":"app-queue","payload":"{\"id\": 8}","payload_encoding":"string"}'
+[kubectl] 2026-04-28T08:10:12Z kubectl -n wf-2026-04-28t08-05-06z-workflow-r-e658eaff-control-cluster-b exec curl-test -- curl -s -u admin:adminpass -H content-type:application/json -XPOST http://rabbitmq:15672/api/exchanges/%2Fapp/amq.default/publish -d '{"properties":{"delivery_mode":2},"routing_key":"app-queue","payload":"{\"id\": 9}","payload_encoding":"string"}'
+[kubectl] 2026-04-28T08:10:13Z kubectl -n wf-2026-04-28t08-05-06z-workflow-r-e658eaff-control-cluster-b exec curl-test -- curl -s -u admin:adminpass -H content-type:application/json -XPOST http://rabbitmq:15672/api/exchanges/%2Fapp/amq.default/publish -d '{"properties":{"delivery_mode":2},"routing_key":"app-queue","payload":"{\"id\": 10}","payload_encoding":"string"}'
+[kubectl] 2026-04-28T08:10:13Z kubectl -n wf-2026-04-28t08-05-06z-workflow-r-e658eaff-control-cluster-b exec curl-test -- curl -s -u admin:adminpass -H content-type:application/json -XPOST http://rabbitmq:15672/api/exchanges/%2Fapp/amq.default/publish -d '{"properties":{"delivery_mode":2},"routing_key":"app-queue","payload":"{\"id\": 11}","payload_encoding":"string"}'
+[kubectl] 2026-04-28T08:10:13Z kubectl -n wf-2026-04-28t08-05-06z-workflow-r-e658eaff-control-cluster-b exec curl-test -- curl -s -u admin:adminpass -H content-type:application/json -XPOST http://rabbitmq:15672/api/exchanges/%2Fapp/amq.default/publish -d '{"properties":{"delivery_mode":2},"routing_key":"app-queue","payload":"{\"id\": 12}","payload_encoding":"string"}'
+[kubectl] 2026-04-28T08:10:13Z kubectl -n wf-2026-04-28t08-05-06z-workflow-r-e658eaff-control-cluster-b exec curl-test -- curl -s -u admin:adminpass -H content-type:application/json -XPOST http://rabbitmq:15672/api/exchanges/%2Fapp/amq.default/publish -d '{"properties":{"delivery_mode":2},"routing_key":"app-queue","payload":"{\"id\": 13}","payload_encoding":"string"}'
+[kubectl] 2026-04-28T08:10:14Z kubectl -n wf-2026-04-28t08-05-06z-workflow-r-e658eaff-control-cluster-b exec curl-test -- curl -s -u admin:adminpass -H content-type:application/json -XPOST http://rabbitmq:15672/api/exchanges/%2Fapp/amq.default/publish -d '{"properties":{"delivery_mode":2},"routing_key":"app-queue","payload":"{\"id\": 14}","payload_encoding":"string"}'
+[kubectl] 2026-04-28T08:10:14Z kubectl -n wf-2026-04-28t08-05-06z-workflow-r-e658eaff-control-cluster-b exec curl-test -- curl -s -u admin:adminpass -H content-type:application/json -XPOST http://rabbitmq:15672/api/exchanges/%2Fapp/amq.default/publish -d '{"properties":{"delivery_mode":2},"routing_key":"app-queue","payload":"{\"id\": 15}","payload_encoding":"string"}'
+[kubectl] 2026-04-28T08:10:14Z kubectl -n wf-2026-04-28t08-05-06z-workflow-r-e658eaff-control-cluster-b exec curl-test -- curl -s -u admin:adminpass -H content-type:application/json -XPOST http://rabbitmq:15672/api/exchanges/%2Fapp/amq.default/publish -d '{"properties":{"delivery_mode":2},"routing_key":"app-queue","payload":"{\"id\": 16}","payload_encoding":"string"}'
+[kubectl] 2026-04-28T08:10:14Z kubectl -n wf-2026-04-28t08-05-06z-workflow-r-e658eaff-control-cluster-b exec curl-test -- curl -s -u admin:adminpass -H content-type:application/json -XPOST http://rabbitmq:15672/api/exchanges/%2Fapp/amq.default/publish -d '{"properties":{"delivery_mode":2},"routing_key":"app-queue","payload":"{\"id\": 17}","payload_encoding":"string"}'
+[agent] codex
+[agent] The replay is running now. Once it completes, I’ll verify the green count and then patch the producer’s destination and restart point together so live traffic resumes on green without rewinding IDs.
+[kubectl] 2026-04-28T08:10:15Z kubectl -n wf-2026-04-28t08-05-06z-workflow-r-e658eaff-control-cluster-b exec curl-test -- curl -s -u admin:adminpass -H content-type:application/json -XPOST http://rabbitmq:15672/api/exchanges/%2Fapp/amq.default/publish -d '{"properties":{"delivery_mode":2},"routing_key":"app-queue","payload":"{\"id\": 18}","payload_encoding":"string"}'
+[kubectl] 2026-04-28T08:10:15Z kubectl -n wf-2026-04-28t08-05-06z-workflow-r-e658eaff-control-cluster-b exec curl-test -- curl -s -u admin:adminpass -H content-type:application/json -XPOST http://rabbitmq:15672/api/exchanges/%2Fapp/amq.default/publish -d '{"properties":{"delivery_mode":2},"routing_key":"app-queue","payload":"{\"id\": 19}","payload_encoding":"string"}'
+[kubectl] 2026-04-28T08:10:15Z kubectl -n wf-2026-04-28t08-05-06z-workflow-r-e658eaff-control-cluster-b exec curl-test -- curl -s -u admin:adminpass -H content-type:application/json -XPOST http://rabbitmq:15672/api/exchanges/%2Fapp/amq.default/publish -d '{"properties":{"delivery_mode":2},"routing_key":"app-queue","payload":"{\"id\": 20}","payload_encoding":"string"}'
+[kubectl] 2026-04-28T08:10:15Z kubectl -n wf-2026-04-28t08-05-06z-workflow-r-e658eaff-control-cluster-b exec curl-test -- curl -s -u admin:adminpass -H content-type:application/json -XPOST http://rabbitmq:15672/api/exchanges/%2Fapp/amq.default/publish -d '{"properties":{"delivery_mode":2},"routing_key":"app-queue","payload":"{\"id\": 21}","payload_encoding":"string"}'
+[kubectl] 2026-04-28T08:10:16Z kubectl -n wf-2026-04-28t08-05-06z-workflow-r-e658eaff-control-cluster-b exec curl-test -- curl -s -u admin:adminpass -H content-type:application/json -XPOST http://rabbitmq:15672/api/exchanges/%2Fapp/amq.default/publish -d '{"properties":{"delivery_mode":2},"routing_key":"app-queue","payload":"{\"id\": 22}","payload_encoding":"string"}'
+[kubectl] 2026-04-28T08:10:16Z kubectl -n wf-2026-04-28t08-05-06z-workflow-r-e658eaff-control-cluster-b exec curl-test -- curl -s -u admin:adminpass -H content-type:application/json -XPOST http://rabbitmq:15672/api/exchanges/%2Fapp/amq.default/publish -d '{"properties":{"delivery_mode":2},"routing_key":"app-queue","payload":"{\"id\": 23}","payload_encoding":"string"}'
+[kubectl] 2026-04-28T08:10:16Z kubectl -n wf-2026-04-28t08-05-06z-workflow-r-e658eaff-control-cluster-b exec curl-test -- curl -s -u admin:adminpass -H content-type:application/json -XPOST http://rabbitmq:15672/api/exchanges/%2Fapp/amq.default/publish -d '{"properties":{"delivery_mode":2},"routing_key":"app-queue","payload":"{\"id\": 24}","payload_encoding":"string"}'
+[kubectl] 2026-04-28T08:10:16Z kubectl -n wf-2026-04-28t08-05-06z-workflow-r-e658eaff-control-cluster-b exec curl-test -- curl -s -u admin:adminpass -H content-type:application/json -XPOST http://rabbitmq:15672/api/exchanges/%2Fapp/amq.default/publish -d '{"properties":{"delivery_mode":2},"routing_key":"app-queue","payload":"{\"id\": 25}","payload_encoding":"string"}'
+[kubectl] 2026-04-28T08:10:17Z kubectl -n wf-2026-04-28t08-05-06z-workflow-r-e658eaff-control-cluster-b exec curl-test -- curl -s -u admin:adminpass -H content-type:application/json -XPOST http://rabbitmq:15672/api/exchanges/%2Fapp/amq.default/publish -d '{"properties":{"delivery_mode":2},"routing_key":"app-queue","payload":"{\"id\": 26}","payload_encoding":"string"}'
+[kubectl] 2026-04-28T08:10:17Z kubectl -n wf-2026-04-28t08-05-06z-workflow-r-e658eaff-control-cluster-b exec curl-test -- curl -s -u admin:adminpass -H content-type:application/json -XPOST http://rabbitmq:15672/api/exchanges/%2Fapp/amq.default/publish -d '{"properties":{"delivery_mode":2},"routing_key":"app-queue","payload":"{\"id\": 27}","payload_encoding":"string"}'
+[kubectl] 2026-04-28T08:10:17Z kubectl -n wf-2026-04-28t08-05-06z-workflow-r-e658eaff-control-cluster-b exec curl-test -- curl -s -u admin:adminpass -H content-type:application/json -XPOST http://rabbitmq:15672/api/exchanges/%2Fapp/amq.default/publish -d '{"properties":{"delivery_mode":2},"routing_key":"app-queue","payload":"{\"id\": 28}","payload_encoding":"string"}'
+[kubectl] 2026-04-28T08:10:17Z kubectl -n wf-2026-04-28t08-05-06z-workflow-r-e658eaff-control-cluster-b exec curl-test -- curl -s -u admin:adminpass -H content-type:application/json -XPOST http://rabbitmq:15672/api/exchanges/%2Fapp/amq.default/publish -d '{"properties":{"delivery_mode":2},"routing_key":"app-queue","payload":"{\"id\": 29}","payload_encoding":"string"}'
+[kubectl] 2026-04-28T08:10:18Z kubectl -n wf-2026-04-28t08-05-06z-workflow-r-e658eaff-control-cluster-b exec curl-test -- curl -s -u admin:adminpass -H content-type:application/json -XPOST http://rabbitmq:15672/api/exchanges/%2Fapp/amq.default/publish -d '{"properties":{"delivery_mode":2},"routing_key":"app-queue","payload":"{\"id\": 30}","payload_encoding":"string"}'
+[kubectl] 2026-04-28T08:10:18Z kubectl -n wf-2026-04-28t08-05-06z-workflow-r-e658eaff-control-cluster-b exec curl-test -- curl -s -u admin:adminpass -H content-type:application/json -XPOST http://rabbitmq:15672/api/exchanges/%2Fapp/amq.default/publish -d '{"properties":{"delivery_mode":2},"routing_key":"app-queue","payload":"{\"id\": 31}","payload_encoding":"string"}'
+[kubectl] 2026-04-28T08:10:18Z kubectl -n wf-2026-04-28t08-05-06z-workflow-r-e658eaff-control-cluster-b exec curl-test -- curl -s -u admin:adminpass -H content-type:application/json -XPOST http://rabbitmq:15672/api/exchanges/%2Fapp/amq.default/publish -d '{"properties":{"delivery_mode":2},"routing_key":"app-queue","payload":"{\"id\": 32}","payload_encoding":"string"}'
+[kubectl] 2026-04-28T08:10:18Z kubectl -n wf-2026-04-28t08-05-06z-workflow-r-e658eaff-control-cluster-b exec curl-test -- curl -s -u admin:adminpass -H content-type:application/json -XPOST http://rabbitmq:15672/api/exchanges/%2Fapp/amq.default/publish -d '{"properties":{"delivery_mode":2},"routing_key":"app-queue","payload":"{\"id\": 33}","payload_encoding":"string"}'
+[kubectl] 2026-04-28T08:10:19Z kubectl -n wf-2026-04-28t08-05-06z-workflow-r-e658eaff-control-cluster-b exec curl-test -- curl -s -u admin:adminpass -H content-type:application/json -XPOST http://rabbitmq:15672/api/exchanges/%2Fapp/amq.default/publish -d '{"properties":{"delivery_mode":2},"routing_key":"app-queue","payload":"{\"id\": 34}","payload_encoding":"string"}'
+[kubectl] 2026-04-28T08:10:19Z kubectl -n wf-2026-04-28t08-05-06z-workflow-r-e658eaff-control-cluster-b exec curl-test -- curl -s -u admin:adminpass -H content-type:application/json -XPOST http://rabbitmq:15672/api/exchanges/%2Fapp/amq.default/publish -d '{"properties":{"delivery_mode":2},"routing_key":"app-queue","payload":"{\"id\": 35}","payload_encoding":"string"}'
+[kubectl] 2026-04-28T08:10:19Z kubectl -n wf-2026-04-28t08-05-06z-workflow-r-e658eaff-control-cluster-b exec curl-test -- curl -s -u admin:adminpass -H content-type:application/json -XPOST http://rabbitmq:15672/api/exchanges/%2Fapp/amq.default/publish -d '{"properties":{"delivery_mode":2},"routing_key":"app-queue","payload":"{\"id\": 36}","payload_encoding":"string"}'
+[kubectl] 2026-04-28T08:10:19Z kubectl -n wf-2026-04-28t08-05-06z-workflow-r-e658eaff-control-cluster-b exec curl-test -- curl -s -u admin:adminpass -H content-type:application/json -XPOST http://rabbitmq:15672/api/exchanges/%2Fapp/amq.default/publish -d '{"properties":{"delivery_mode":2},"routing_key":"app-queue","payload":"{\"id\": 37}","payload_encoding":"string"}'
+[kubectl] 2026-04-28T08:10:20Z kubectl -n wf-2026-04-28t08-05-06z-workflow-r-e658eaff-control-cluster-b exec curl-test -- curl -s -u admin:adminpass -H content-type:application/json -XPOST http://rabbitmq:15672/api/exchanges/%2Fapp/amq.default/publish -d '{"properties":{"delivery_mode":2},"routing_key":"app-queue","payload":"{\"id\": 38}","payload_encoding":"string"}'
+[kubectl] 2026-04-28T08:10:20Z kubectl -n wf-2026-04-28t08-05-06z-workflow-r-e658eaff-control-cluster-b exec curl-test -- curl -s -u admin:adminpass -H content-type:application/json -XPOST http://rabbitmq:15672/api/exchanges/%2Fapp/amq.default/publish -d '{"properties":{"delivery_mode":2},"routing_key":"app-queue","payload":"{\"id\": 39}","payload_encoding":"string"}'
+[kubectl] 2026-04-28T08:10:20Z kubectl -n wf-2026-04-28t08-05-06z-workflow-r-e658eaff-control-cluster-b exec curl-test -- curl -s -u admin:adminpass -H content-type:application/json -XPOST http://rabbitmq:15672/api/exchanges/%2Fapp/amq.default/publish -d '{"properties":{"delivery_mode":2},"routing_key":"app-queue","payload":"{\"id\": 40}","payload_encoding":"string"}'
+[kubectl] 2026-04-28T08:10:20Z kubectl -n wf-2026-04-28t08-05-06z-workflow-r-e658eaff-control-cluster-b exec curl-test -- curl -s -u admin:adminpass -H content-type:application/json -XPOST http://rabbitmq:15672/api/exchanges/%2Fapp/amq.default/publish -d '{"properties":{"delivery_mode":2},"routing_key":"app-queue","payload":"{\"id\": 41}","payload_encoding":"string"}'
+[kubectl] 2026-04-28T08:10:21Z kubectl -n wf-2026-04-28t08-05-06z-workflow-r-e658eaff-control-cluster-b exec curl-test -- curl -s -u admin:adminpass -H content-type:application/json -XPOST http://rabbitmq:15672/api/exchanges/%2Fapp/amq.default/publish -d '{"properties":{"delivery_mode":2},"routing_key":"app-queue","payload":"{\"id\": 42}","payload_encoding":"string"}'
+[kubectl] 2026-04-28T08:10:21Z kubectl -n wf-2026-04-28t08-05-06z-workflow-r-e658eaff-control-cluster-b exec curl-test -- curl -s -u admin:adminpass -H content-type:application/json -XPOST http://rabbitmq:15672/api/exchanges/%2Fapp/amq.default/publish -d '{"properties":{"delivery_mode":2},"routing_key":"app-queue","payload":"{\"id\": 43}","payload_encoding":"string"}'
+[kubectl] 2026-04-28T08:10:21Z kubectl -n wf-2026-04-28t08-05-06z-workflow-r-e658eaff-control-cluster-b exec curl-test -- curl -s -u admin:adminpass -H content-type:application/json -XPOST http://rabbitmq:15672/api/exchanges/%2Fapp/amq.default/publish -d '{"properties":{"delivery_mode":2},"routing_key":"app-queue","payload":"{\"id\": 44}","payload_encoding":"string"}'
+[kubectl] 2026-04-28T08:10:21Z kubectl -n wf-2026-04-28t08-05-06z-workflow-r-e658eaff-control-cluster-b exec curl-test -- curl -s -u admin:adminpass -H content-type:application/json -XPOST http://rabbitmq:15672/api/exchanges/%2Fapp/amq.default/publish -d '{"properties":{"delivery_mode":2},"routing_key":"app-queue","payload":"{\"id\": 45}","payload_encoding":"string"}'
+[kubectl] 2026-04-28T08:10:21Z kubectl -n wf-2026-04-28t08-05-06z-workflow-r-e658eaff-control-cluster-b exec curl-test -- curl -s -u admin:adminpass -H content-type:application/json -XPOST http://rabbitmq:15672/api/exchanges/%2Fapp/amq.default/publish -d '{"properties":{"delivery_mode":2},"routing_key":"app-queue","payload":"{\"id\": 46}","payload_encoding":"string"}'
+[kubectl] 2026-04-28T08:10:22Z kubectl -n wf-2026-04-28t08-05-06z-workflow-r-e658eaff-control-cluster-b exec curl-test -- curl -s -u admin:adminpass -H content-type:application/json -XPOST http://rabbitmq:15672/api/exchanges/%2Fapp/amq.default/publish -d '{"properties":{"delivery_mode":2},"routing_key":"app-queue","payload":"{\"id\": 47}","payload_encoding":"string"}'
+[kubectl] 2026-04-28T08:10:22Z kubectl -n wf-2026-04-28t08-05-06z-workflow-r-e658eaff-control-cluster-b exec curl-test -- curl -s -u admin:adminpass -H content-type:application/json -XPOST http://rabbitmq:15672/api/exchanges/%2Fapp/amq.default/publish -d '{"properties":{"delivery_mode":2},"routing_key":"app-queue","payload":"{\"id\": 48}","payload_encoding":"string"}'
+[kubectl] 2026-04-28T08:10:22Z kubectl -n wf-2026-04-28t08-05-06z-workflow-r-e658eaff-control-cluster-b exec curl-test -- curl -s -u admin:adminpass -H content-type:application/json -XPOST http://rabbitmq:15672/api/exchanges/%2Fapp/amq.default/publish -d '{"properties":{"delivery_mode":2},"routing_key":"app-queue","payload":"{\"id\": 49}","payload_encoding":"string"}'
+[kubectl] 2026-04-28T08:10:22Z kubectl -n wf-2026-04-28t08-05-06z-workflow-r-e658eaff-control-cluster-b exec curl-test -- curl -s -u admin:adminpass -H content-type:application/json -XPOST http://rabbitmq:15672/api/exchanges/%2Fapp/amq.default/publish -d '{"properties":{"delivery_mode":2},"routing_key":"app-queue","payload":"{\"id\": 50}","payload_encoding":"string"}'
+[kubectl] 2026-04-28T08:10:23Z kubectl -n wf-2026-04-28t08-05-06z-workflow-r-e658eaff-control-cluster-b exec curl-test -- curl -s -u admin:adminpass -H content-type:application/json -XPOST http://rabbitmq:15672/api/exchanges/%2Fapp/amq.default/publish -d '{"properties":{"delivery_mode":2},"routing_key":"app-queue","payload":"{\"id\":51}","payload_encoding":"string"}'
+[kubectl] 2026-04-28T08:10:23Z kubectl -n wf-2026-04-28t08-05-06z-workflow-r-e658eaff-control-cluster-b exec curl-test -- curl -s -u admin:adminpass -H content-type:application/json -XPOST http://rabbitmq:15672/api/exchanges/%2Fapp/amq.default/publish -d '{"properties":{"delivery_mode":2},"routing_key":"app-queue","payload":"{\"id\":52}","payload_encoding":"string"}'
+[kubectl] 2026-04-28T08:10:23Z kubectl -n wf-2026-04-28t08-05-06z-workflow-r-e658eaff-control-cluster-b exec curl-test -- curl -s -u admin:adminpass -H content-type:application/json -XPOST http://rabbitmq:15672/api/exchanges/%2Fapp/amq.default/publish -d '{"properties":{"delivery_mode":2},"routing_key":"app-queue","payload":"{\"id\":53}","payload_encoding":"string"}'
+[kubectl] 2026-04-28T08:10:23Z kubectl -n wf-2026-04-28t08-05-06z-workflow-r-e658eaff-control-cluster-b exec curl-test -- curl -s -u admin:adminpass -H content-type:application/json -XPOST http://rabbitmq:15672/api/exchanges/%2Fapp/amq.default/publish -d '{"properties":{"delivery_mode":2},"routing_key":"app-queue","payload":"{\"id\":54}","payload_encoding":"string"}'
+[kubectl] 2026-04-28T08:10:24Z kubectl -n wf-2026-04-28t08-05-06z-workflow-r-e658eaff-control-cluster-b exec curl-test -- curl -s -u admin:adminpass -H content-type:application/json -XPOST http://rabbitmq:15672/api/exchanges/%2Fapp/amq.default/publish -d '{"properties":{"delivery_mode":2},"routing_key":"app-queue","payload":"{\"id\":55}","payload_encoding":"string"}'
+[kubectl] 2026-04-28T08:10:24Z kubectl -n wf-2026-04-28t08-05-06z-workflow-r-e658eaff-control-cluster-b exec curl-test -- curl -s -u admin:adminpass -H content-type:application/json -XPOST http://rabbitmq:15672/api/exchanges/%2Fapp/amq.default/publish -d '{"properties":{"delivery_mode":2},"routing_key":"app-queue","payload":"{\"id\":56}","payload_encoding":"string"}'
+[kubectl] 2026-04-28T08:10:24Z kubectl -n wf-2026-04-28t08-05-06z-workflow-r-e658eaff-control-cluster-b exec curl-test -- curl -s -u admin:adminpass -H content-type:application/json -XPOST http://rabbitmq:15672/api/exchanges/%2Fapp/amq.default/publish -d '{"properties":{"delivery_mode":2},"routing_key":"app-queue","payload":"{\"id\":57}","payload_encoding":"string"}'
+[kubectl] 2026-04-28T08:10:24Z kubectl -n wf-2026-04-28t08-05-06z-workflow-r-e658eaff-control-cluster-b exec curl-test -- curl -s -u admin:adminpass -H content-type:application/json -XPOST http://rabbitmq:15672/api/exchanges/%2Fapp/amq.default/publish -d '{"properties":{"delivery_mode":2},"routing_key":"app-queue","payload":"{\"id\":58}","payload_encoding":"string"}'
+[kubectl] 2026-04-28T08:10:25Z kubectl -n wf-2026-04-28t08-05-06z-workflow-r-e658eaff-control-cluster-b exec curl-test -- curl -s -u admin:adminpass -H content-type:application/json -XPOST http://rabbitmq:15672/api/exchanges/%2Fapp/amq.default/publish -d '{"properties":{"delivery_mode":2},"routing_key":"app-queue","payload":"{\"id\":59}","payload_encoding":"string"}'
+[kubectl] 2026-04-28T08:10:25Z kubectl -n wf-2026-04-28t08-05-06z-workflow-r-e658eaff-control-cluster-b exec curl-test -- curl -s -u admin:adminpass -H content-type:application/json -XPOST http://rabbitmq:15672/api/exchanges/%2Fapp/amq.default/publish -d '{"properties":{"delivery_mode":2},"routing_key":"app-queue","payload":"{\"id\":60}","payload_encoding":"string"}'
+[kubectl] 2026-04-28T08:10:25Z kubectl -n wf-2026-04-28t08-05-06z-workflow-r-e658eaff-control-cluster-b exec curl-test -- curl -s -u admin:adminpass -H content-type:application/json -XPOST http://rabbitmq:15672/api/exchanges/%2Fapp/amq.default/publish -d '{"properties":{"delivery_mode":2},"routing_key":"app-queue","payload":"{\"id\":61}","payload_encoding":"string"}'
+[kubectl] 2026-04-28T08:10:25Z kubectl -n wf-2026-04-28t08-05-06z-workflow-r-e658eaff-control-cluster-b exec curl-test -- curl -s -u admin:adminpass -H content-type:application/json -XPOST http://rabbitmq:15672/api/exchanges/%2Fapp/amq.default/publish -d '{"properties":{"delivery_mode":2},"routing_key":"app-queue","payload":"{\"id\":62}","payload_encoding":"string"}'
+[kubectl] 2026-04-28T08:10:26Z kubectl -n wf-2026-04-28t08-05-06z-workflow-r-e658eaff-control-cluster-b exec curl-test -- curl -s -u admin:adminpass -H content-type:application/json -XPOST http://rabbitmq:15672/api/exchanges/%2Fapp/amq.default/publish -d '{"properties":{"delivery_mode":2},"routing_key":"app-queue","payload":"{\"id\":63}","payload_encoding":"string"}'
+[kubectl] 2026-04-28T08:10:26Z kubectl -n wf-2026-04-28t08-05-06z-workflow-r-e658eaff-control-cluster-b exec curl-test -- curl -s -u admin:adminpass -H content-type:application/json -XPOST http://rabbitmq:15672/api/exchanges/%2Fapp/amq.default/publish -d '{"properties":{"delivery_mode":2},"routing_key":"app-queue","payload":"{\"id\":64}","payload_encoding":"string"}'
+[kubectl] 2026-04-28T08:10:26Z kubectl -n wf-2026-04-28t08-05-06z-workflow-r-e658eaff-control-cluster-b exec curl-test -- curl -s -u admin:adminpass -H content-type:application/json -XPOST http://rabbitmq:15672/api/exchanges/%2Fapp/amq.default/publish -d '{"properties":{"delivery_mode":2},"routing_key":"app-queue","payload":"{\"id\":65}","payload_encoding":"string"}'
+[kubectl] 2026-04-28T08:10:26Z kubectl -n wf-2026-04-28t08-05-06z-workflow-r-e658eaff-control-cluster-b exec curl-test -- curl -s -u admin:adminpass -H content-type:application/json -XPOST http://rabbitmq:15672/api/exchanges/%2Fapp/amq.default/publish -d '{"properties":{"delivery_mode":2},"routing_key":"app-queue","payload":"{\"id\":66}","payload_encoding":"string"}'
+[kubectl] 2026-04-28T08:10:27Z kubectl -n wf-2026-04-28t08-05-06z-workflow-r-e658eaff-control-cluster-b exec curl-test -- curl -s -u admin:adminpass -H content-type:application/json -XPOST http://rabbitmq:15672/api/exchanges/%2Fapp/amq.default/publish -d '{"properties":{"delivery_mode":2},"routing_key":"app-queue","payload":"{\"id\":67}","payload_encoding":"string"}'
+[kubectl] 2026-04-28T08:10:27Z kubectl -n wf-2026-04-28t08-05-06z-workflow-r-e658eaff-control-cluster-b exec curl-test -- curl -s -u admin:adminpass -H content-type:application/json -XPOST http://rabbitmq:15672/api/exchanges/%2Fapp/amq.default/publish -d '{"properties":{"delivery_mode":2},"routing_key":"app-queue","payload":"{\"id\":68}","payload_encoding":"string"}'
+[kubectl] 2026-04-28T08:10:27Z kubectl -n wf-2026-04-28t08-05-06z-workflow-r-e658eaff-control-cluster-b exec curl-test -- curl -s -u admin:adminpass -H content-type:application/json -XPOST http://rabbitmq:15672/api/exchanges/%2Fapp/amq.default/publish -d '{"properties":{"delivery_mode":2},"routing_key":"app-queue","payload":"{\"id\":69}","payload_encoding":"string"}'
+[kubectl] 2026-04-28T08:10:27Z kubectl -n wf-2026-04-28t08-05-06z-workflow-r-e658eaff-control-cluster-b exec curl-test -- curl -s -u admin:adminpass -H content-type:application/json -XPOST http://rabbitmq:15672/api/exchanges/%2Fapp/amq.default/publish -d '{"properties":{"delivery_mode":2},"routing_key":"app-queue","payload":"{\"id\":70}","payload_encoding":"string"}'
+[kubectl] 2026-04-28T08:10:28Z kubectl -n wf-2026-04-28t08-05-06z-workflow-r-e658eaff-control-cluster-b exec curl-test -- curl -s -u admin:adminpass -H content-type:application/json -XPOST http://rabbitmq:15672/api/exchanges/%2Fapp/amq.default/publish -d '{"properties":{"delivery_mode":2},"routing_key":"app-queue","payload":"{\"id\":71}","payload_encoding":"string"}'
+[kubectl] 2026-04-28T08:10:28Z kubectl -n wf-2026-04-28t08-05-06z-workflow-r-e658eaff-control-cluster-b exec curl-test -- curl -s -u admin:adminpass -H content-type:application/json -XPOST http://rabbitmq:15672/api/exchanges/%2Fapp/amq.default/publish -d '{"properties":{"delivery_mode":2},"routing_key":"app-queue","payload":"{\"id\":72}","payload_encoding":"string"}'
+[kubectl] 2026-04-28T08:10:28Z kubectl -n wf-2026-04-28t08-05-06z-workflow-r-e658eaff-control-cluster-b exec curl-test -- curl -s -u admin:adminpass -H content-type:application/json -XPOST http://rabbitmq:15672/api/exchanges/%2Fapp/amq.default/publish -d '{"properties":{"delivery_mode":2},"routing_key":"app-queue","payload":"{\"id\":73}","payload_encoding":"string"}'
+[kubectl] 2026-04-28T08:10:28Z kubectl -n wf-2026-04-28t08-05-06z-workflow-r-e658eaff-control-cluster-b exec curl-test -- curl -s -u admin:adminpass -H content-type:application/json -XPOST http://rabbitmq:15672/api/exchanges/%2Fapp/amq.default/publish -d '{"properties":{"delivery_mode":2},"routing_key":"app-queue","payload":"{\"id\":74}","payload_encoding":"string"}'
+[kubectl] 2026-04-28T08:10:29Z kubectl -n wf-2026-04-28t08-05-06z-workflow-r-e658eaff-control-cluster-b exec curl-test -- curl -s -u admin:adminpass -H content-type:application/json -XPOST http://rabbitmq:15672/api/exchanges/%2Fapp/amq.default/publish -d '{"properties":{"delivery_mode":2},"routing_key":"app-queue","payload":"{\"id\":75}","payload_encoding":"string"}'
+[kubectl] 2026-04-28T08:10:29Z kubectl -n wf-2026-04-28t08-05-06z-workflow-r-e658eaff-control-cluster-b exec curl-test -- curl -s -u admin:adminpass -H content-type:application/json -XPOST http://rabbitmq:15672/api/exchanges/%2Fapp/amq.default/publish -d '{"properties":{"delivery_mode":2},"routing_key":"app-queue","payload":"{\"id\":76}","payload_encoding":"string"}'
+[kubectl] 2026-04-28T08:10:29Z kubectl -n wf-2026-04-28t08-05-06z-workflow-r-e658eaff-control-cluster-b exec curl-test -- curl -s -u admin:adminpass -H content-type:application/json -XPOST http://rabbitmq:15672/api/exchanges/%2Fapp/amq.default/publish -d '{"properties":{"delivery_mode":2},"routing_key":"app-queue","payload":"{\"id\":77}","payload_encoding":"string"}'
+[kubectl] 2026-04-28T08:10:29Z kubectl -n wf-2026-04-28t08-05-06z-workflow-r-e658eaff-control-cluster-b exec curl-test -- curl -s -u admin:adminpass -H content-type:application/json -XPOST http://rabbitmq:15672/api/exchanges/%2Fapp/amq.default/publish -d '{"properties":{"delivery_mode":2},"routing_key":"app-queue","payload":"{\"id\":78}","payload_encoding":"string"}'
+[kubectl] 2026-04-28T08:10:30Z kubectl -n wf-2026-04-28t08-05-06z-workflow-r-e658eaff-control-cluster-b exec curl-test -- curl -s -u admin:adminpass -H content-type:application/json -XPOST http://rabbitmq:15672/api/exchanges/%2Fapp/amq.default/publish -d '{"properties":{"delivery_mode":2},"routing_key":"app-queue","payload":"{\"id\":79}","payload_encoding":"string"}'
+[kubectl] 2026-04-28T08:10:30Z kubectl -n wf-2026-04-28t08-05-06z-workflow-r-e658eaff-control-cluster-b exec curl-test -- curl -s -u admin:adminpass -H content-type:application/json -XPOST http://rabbitmq:15672/api/exchanges/%2Fapp/amq.default/publish -d '{"properties":{"delivery_mode":2},"routing_key":"app-queue","payload":"{\"id\":80}","payload_encoding":"string"}'
+[kubectl] 2026-04-28T08:10:30Z kubectl -n wf-2026-04-28t08-05-06z-workflow-r-e658eaff-control-cluster-b exec curl-test -- curl -s -u admin:adminpass -H content-type:application/json -XPOST http://rabbitmq:15672/api/exchanges/%2Fapp/amq.default/publish -d '{"properties":{"delivery_mode":2},"routing_key":"app-queue","payload":"{\"id\":81}","payload_encoding":"string"}'
+[kubectl] 2026-04-28T08:10:30Z kubectl -n wf-2026-04-28t08-05-06z-workflow-r-e658eaff-control-cluster-b exec curl-test -- curl -s -u admin:adminpass -H content-type:application/json -XPOST http://rabbitmq:15672/api/exchanges/%2Fapp/amq.default/publish -d '{"properties":{"delivery_mode":2},"routing_key":"app-queue","payload":"{\"id\":82}","payload_encoding":"string"}'
+[kubectl] 2026-04-28T08:10:31Z kubectl -n wf-2026-04-28t08-05-06z-workflow-r-e658eaff-control-cluster-b exec curl-test -- curl -s -u admin:adminpass -H content-type:application/json -XPOST http://rabbitmq:15672/api/exchanges/%2Fapp/amq.default/publish -d '{"properties":{"delivery_mode":2},"routing_key":"app-queue","payload":"{\"id\":83}","payload_encoding":"string"}'
+[kubectl] 2026-04-28T08:10:31Z kubectl -n wf-2026-04-28t08-05-06z-workflow-r-e658eaff-control-cluster-b exec curl-test -- curl -s -u admin:adminpass -H content-type:application/json -XPOST http://rabbitmq:15672/api/exchanges/%2Fapp/amq.default/publish -d '{"properties":{"delivery_mode":2},"routing_key":"app-queue","payload":"{\"id\":84}","payload_encoding":"string"}'
+[kubectl] 2026-04-28T08:10:31Z kubectl -n wf-2026-04-28t08-05-06z-workflow-r-e658eaff-control-cluster-b exec curl-test -- curl -s -u admin:adminpass -H content-type:application/json -XPOST http://rabbitmq:15672/api/exchanges/%2Fapp/amq.default/publish -d '{"properties":{"delivery_mode":2},"routing_key":"app-queue","payload":"{\"id\":85}","payload_encoding":"string"}'
+[kubectl] 2026-04-28T08:10:31Z kubectl -n wf-2026-04-28t08-05-06z-workflow-r-e658eaff-control-cluster-b exec curl-test -- curl -s -u admin:adminpass -H content-type:application/json -XPOST http://rabbitmq:15672/api/exchanges/%2Fapp/amq.default/publish -d '{"properties":{"delivery_mode":2},"routing_key":"app-queue","payload":"{\"id\":86}","payload_encoding":"string"}'
+[kubectl] 2026-04-28T08:10:32Z kubectl -n wf-2026-04-28t08-05-06z-workflow-r-e658eaff-control-cluster-b exec curl-test -- curl -s -u admin:adminpass -H content-type:application/json -XPOST http://rabbitmq:15672/api/exchanges/%2Fapp/amq.default/publish -d '{"properties":{"delivery_mode":2},"routing_key":"app-queue","payload":"{\"id\":87}","payload_encoding":"string"}'
+[kubectl] 2026-04-28T08:10:32Z kubectl -n wf-2026-04-28t08-05-06z-workflow-r-e658eaff-control-cluster-b exec curl-test -- curl -s -u admin:adminpass -H content-type:application/json -XPOST http://rabbitmq:15672/api/exchanges/%2Fapp/amq.default/publish -d '{"properties":{"delivery_mode":2},"routing_key":"app-queue","payload":"{\"id\":88}","payload_encoding":"string"}'
+[kubectl] 2026-04-28T08:10:32Z kubectl -n wf-2026-04-28t08-05-06z-workflow-r-e658eaff-control-cluster-b exec curl-test -- curl -s -u admin:adminpass -H content-type:application/json -XPOST http://rabbitmq:15672/api/exchanges/%2Fapp/amq.default/publish -d '{"properties":{"delivery_mode":2},"routing_key":"app-queue","payload":"{\"id\":89}","payload_encoding":"string"}'
+[kubectl] 2026-04-28T08:10:32Z kubectl -n wf-2026-04-28t08-05-06z-workflow-r-e658eaff-control-cluster-b exec curl-test -- curl -s -u admin:adminpass -H content-type:application/json -XPOST http://rabbitmq:15672/api/exchanges/%2Fapp/amq.default/publish -d '{"properties":{"delivery_mode":2},"routing_key":"app-queue","payload":"{\"id\":90}","payload_encoding":"string"}'
+[kubectl] 2026-04-28T08:10:33Z kubectl -n wf-2026-04-28t08-05-06z-workflow-r-e658eaff-control-cluster-b exec curl-test -- curl -s -u admin:adminpass -H content-type:application/json -XPOST http://rabbitmq:15672/api/exchanges/%2Fapp/amq.default/publish -d '{"properties":{"delivery_mode":2},"routing_key":"app-queue","payload":"{\"id\":91}","payload_encoding":"string"}'
+[kubectl] 2026-04-28T08:10:33Z kubectl -n wf-2026-04-28t08-05-06z-workflow-r-e658eaff-control-cluster-b exec curl-test -- curl -s -u admin:adminpass -H content-type:application/json -XPOST http://rabbitmq:15672/api/exchanges/%2Fapp/amq.default/publish -d '{"properties":{"delivery_mode":2},"routing_key":"app-queue","payload":"{\"id\":92}","payload_encoding":"string"}'
+[kubectl] 2026-04-28T08:10:33Z kubectl -n wf-2026-04-28t08-05-06z-workflow-r-e658eaff-control-cluster-b exec curl-test -- curl -s -u admin:adminpass -H content-type:application/json -XPOST http://rabbitmq:15672/api/exchanges/%2Fapp/amq.default/publish -d '{"properties":{"delivery_mode":2},"routing_key":"app-queue","payload":"{\"id\":93}","payload_encoding":"string"}'
+[kubectl] 2026-04-28T08:10:33Z kubectl -n wf-2026-04-28t08-05-06z-workflow-r-e658eaff-control-cluster-b exec curl-test -- curl -s -u admin:adminpass -H content-type:application/json -XPOST http://rabbitmq:15672/api/exchanges/%2Fapp/amq.default/publish -d '{"properties":{"delivery_mode":2},"routing_key":"app-queue","payload":"{\"id\":94}","payload_encoding":"string"}'
+[kubectl] 2026-04-28T08:10:34Z kubectl -n wf-2026-04-28t08-05-06z-workflow-r-e658eaff-control-cluster-b exec curl-test -- curl -s -u admin:adminpass -H content-type:application/json -XPOST http://rabbitmq:15672/api/exchanges/%2Fapp/amq.default/publish -d '{"properties":{"delivery_mode":2},"routing_key":"app-queue","payload":"{\"id\":95}","payload_encoding":"string"}'
+[kubectl] 2026-04-28T08:10:34Z kubectl -n wf-2026-04-28t08-05-06z-workflow-r-e658eaff-control-cluster-b exec curl-test -- curl -s -u admin:adminpass -H content-type:application/json -XPOST http://rabbitmq:15672/api/exchanges/%2Fapp/amq.default/publish -d '{"properties":{"delivery_mode":2},"routing_key":"app-queue","payload":"{\"id\":96}","payload_encoding":"string"}'
+[kubectl] 2026-04-28T08:10:34Z kubectl -n wf-2026-04-28t08-05-06z-workflow-r-e658eaff-control-cluster-b exec curl-test -- curl -s -u admin:adminpass -H content-type:application/json -XPOST http://rabbitmq:15672/api/exchanges/%2Fapp/amq.default/publish -d '{"properties":{"delivery_mode":2},"routing_key":"app-queue","payload":"{\"id\":97}","payload_encoding":"string"}'
+[kubectl] 2026-04-28T08:10:34Z kubectl -n wf-2026-04-28t08-05-06z-workflow-r-e658eaff-control-cluster-b exec curl-test -- curl -s -u admin:adminpass -H content-type:application/json -XPOST http://rabbitmq:15672/api/exchanges/%2Fapp/amq.default/publish -d '{"properties":{"delivery_mode":2},"routing_key":"app-queue","payload":"{\"id\":98}","payload_encoding":"string"}'
+[kubectl] 2026-04-28T08:10:34Z kubectl -n wf-2026-04-28t08-05-06z-workflow-r-e658eaff-control-cluster-b exec curl-test -- curl -s -u admin:adminpass -H content-type:application/json -XPOST http://rabbitmq:15672/api/exchanges/%2Fapp/amq.default/publish -d '{"properties":{"delivery_mode":2},"routing_key":"app-queue","payload":"{\"id\":99}","payload_encoding":"string"}'
+[agent]  exited 1 in 54.19s:
+[agent] publish_failed 99 1  Unable to connect to the server: dial tcp 192.168.65.254:8081: i/o timeout
+[kubectl] 2026-04-28T08:11:19Z kubectl -n wf-2026-04-28t08-05-06z-workflow-r-e658eaff-control-cluster-b exec rabbitmq-0 -- rabbitmqctl list_queues -p /app name messages
+[kubectl] 2026-04-28T08:11:19Z kubectl -n wf-2026-04-28t08-05-06z-workflow-r-e658eaff-control-cluster-b exec curl-test -- curl -s -u admin:adminpass http://rabbitmq:15672/api/queues/%2Fapp/app-queue
+[agent] codex
+[agent] A transient Kubernetes API timeout interrupted the replay after 98 publishes. I’m checking the exact green count, then I’ll finish the remaining tail with a single in-pod script to avoid one-exec-per-message overhead.
+[agent] exec
+[agent] /bin/sh -lc 'kubectl -n wf-2026-04-28t08-05-06z-workflow-r-e658eaff-control-cluster-b exec rabbitmq-0 -- rabbitmqctl list_queues -p /app name messages' in /workspaceexec
+[agent] /bin/sh -lc 'kubectl -n wf-2026-04-28t08-05-06z-workflow-r-e658eaff-control-cluster-b exec curl-test -- curl -s -u admin:adminpass http://rabbitmq:15672/api/queues/%2Fapp/app-queue' in /workspace succeeded in 115ms:
+[agent] {"consumer_details":[],"arguments":{"x-queue-type":"classic"},"auto_delete":false,"consumer_capacity":0,"consumer_utilisation":0,"consumers":0,"deliveries":[],"durable":true,"effective_policy_definition":{},"exclusive":false,"exclusive_consumer_tag":null,"garbage_collection":{"fullsweep_after":65535,"max_heap_size":0,"min_bin_vheap_size":46422,"min_heap_size":233,"minor_gcs":54},"head_message_timestamp":null,"idle_since":"2026-04-28T08:10:38.713+00:00","incoming":[],"memory":6024,"message_bytes":941,"message_bytes_paged_out":0,"message_bytes_persistent":941,"message_bytes_ram":9,"message_bytes_ready":941,"message_bytes_unacknowledged":0,"message_stats":{"publish":87,"publish_details":{"rate":0.0}},"messages":100,"messages_details":{"rate":0.0},"messages_paged_out":0,"messages_persistent":100,"messages_ram":1,"messages_ready":100,"messages_ready_details":{"rate":0.0},"messages_ready_ram":1,"messages_unacknowledged":0,"messages_unacknowledged_details":{"rate":0.0},"messages_unacknowledged_ram":0,"name":"app-queue","node":"rabbit@rabbitmq-2.rabbitmq-headless.wf-2026-04-28t08-05-06z-workflow-r-e658eaff-control-cluster-b.svc.cluster.local","operator_policy":null,"policy":null,"reductions":108111,"reductions_details":{"rate":0.0},"single_active_consumer_tag":null,"state":"running","storage_version":2,"type":"classic","vhost":"/app"}
+[agent]  succeeded in 376ms:
+[agent] Timeout: 60.0 seconds ...
+[agent] Listing queues for vhost /app ...
+[agent] name	messages
+[agent] app-queue	100
+[agent] codex
+[agent] Green has exactly 100 messages now, so I’m finishing the remaining `101..151` in one in-pod batch rather than retrying individual `kubectl exec` calls.
+[kubectl] 2026-04-28T08:11:31Z kubectl -n wf-2026-04-28t08-05-06z-workflow-r-e658eaff-control-cluster-b exec -i curl-test -- sh -s
+[agent] exec
+[agent] /bin/sh -lc "python3 - <<'PY' > /workspace/replay_tail.sh
+[agent] import json
+[agent] from pathlib import Path
+[agent] items=json.loads(Path('/workspace/blue_queue.json').read_text())
+[agent] print('set -e')
+[agent] print('ok=0')
+[agent] for m in items[100:]:
+[agent]     body=json.dumps({
+[agent]         'properties': {'delivery_mode': 2},
+[agent]         'routing_key': 'app-queue',
+[agent]         'payload': m['payload'],
+[agent]         'payload_encoding': 'string',
+[agent]     }, separators=(',',':'))
+[agent]     print(\"resp="'$(curl -s -u admin:adminpass -H content-type:application/json -XPOST http://rabbitmq:15672/api/exchanges/%2Fapp/amq.default/publish -d '"'%s')\" % body.replace(\"'\", \"'\\\\''\"))
+[agent]     print(\"echo \\\""'$resp'"\\\" | grep -q '\\\"routed\\\":true'\")
+[agent]     print('ok="'$((ok+1))'"')
+[agent] print('printf \"published_tail=%s\\\\n\" \""'$ok"'"')
+[agent] PY
+[agent] kubectl -n wf-2026-04-28t08-05-06z-workflow-r-e658eaff-control-cluster-b exec -i curl-test -- sh -s < /workspace/replay_tail.sh" in /workspace
+[agent]  succeeded in 136ms:
+[kubectl] 2026-04-28T08:11:40Z kubectl -n wf-2026-04-28t08-05-06z-workflow-r-e658eaff-control-cluster-b exec -i curl-test -- sh -s
+[agent] exec
+[agent] /bin/sh -lc "python3 - <<'PY' > /workspace/replay_tail.sh
+[agent] import json
+[agent] from pathlib import Path
+[agent] items=json.loads(Path('/workspace/blue_queue.json').read_text())
+[agent] print('set -e')
+[agent] print('ok=0')
+[agent] url='http://rabbitmq:15672/api/exchanges/%%2Fapp/amq.default/publish'
+[agent] for m in items[100:]:
+[agent]     body=json.dumps({
+[agent]         'properties': {'delivery_mode': 2},
+[agent]         'routing_key': 'app-queue',
+[agent]         'payload': m['payload'],
+[agent]         'payload_encoding': 'string',
+[agent]     }, separators=(',',':'))
+[agent]     body_quoted=body.replace(\"'\", \"'\\\\''\")
+[agent]     print(\"resp="'$(curl -s -u admin:adminpass -H content-type:application/json -XPOST %s -d '"'%s')\" % (url, body_quoted))
+[agent]     print(\"echo \\\""'$resp'"\\\" | grep -q '\\\"routed\\\":true'\")
+[agent]     print('ok="'$((ok+1))'"')
+[agent] print('printf \"published_tail=%s\\\\n\" \""'$ok"'"')
+[agent] PY
+[agent] sed -n '1,20p' /workspace/replay_tail.sh
+[agent] kubectl -n wf-2026-04-28t08-05-06z-workflow-r-e658eaff-control-cluster-b exec -i curl-test -- sh -s < /workspace/replay_tail.sh" in /workspace exited 1 in 172ms:
+[agent] command terminated with exit code 1
+[agent] codex
+[agent] The batch script was generated correctly except for the escaped queue URL. I’m regenerating that script with a literal `%2Fapp` path and re-running the remaining tail.
+[kubectl] 2026-04-28T08:11:49Z kubectl -n wf-2026-04-28t08-05-06z-workflow-r-e658eaff-control-cluster-b exec -i curl-test -- sh -s
+[agent] exec
+[agent] /bin/sh -lc "python3 - <<'PY' > /workspace/replay_tail.sh
+[agent] import json
+[agent] from pathlib import Path
+[agent] items=json.loads(Path('/workspace/blue_queue.json').read_text())
+[agent] print('set -e')
+[agent] print('ok=0')
+[agent] url='http://rabbitmq:15672/api/exchanges/%2Fapp/amq.default/publish'
+[agent] for m in items[100:]:
+[agent]     body=json.dumps({
+[agent]         'properties': {'delivery_mode': 2},
+[agent]         'routing_key': 'app-queue',
+[agent]         'payload': m['payload'],
+[agent]         'payload_encoding': 'string',
+[agent]     }, separators=(',',':'))
+[agent]     body_quoted=body.replace(\"'\", \"'\\\\''\")
+[agent]     print(f\"resp="'$(curl -s -u admin:adminpass -H content-type:application/json -XPOST {url} -d '"'{body_quoted}')\")
+[agent]     print(\"echo \\\""'$resp'"\\\" | grep -q '\\\"routed\\\":true'\")
+[agent]     print('ok="'$((ok+1))'"')
+[agent] print('printf \"published_tail=%s\\\\n\" \""'$ok"'"')
+[agent] PY
+[agent] kubectl -n wf-2026-04-28t08-05-06z-workflow-r-e658eaff-control-cluster-b exec -i curl-test -- sh -s < /workspace/replay_tail.sh" in /workspace
+[agent]  succeeded in 399ms:
+[agent] published_tail=51
+[agent] codex
+[agent] The backlog replay is complete. I’m now applying the cutover: update the producer’s start point to `152`, point it at the green service FQDN, and bring it back up.
+[kubectl] 2026-04-28T08:12:03Z kubectl -n wf-2026-04-28t08-05-06z-workflow-r-e658eaff-control-cluster-a patch configmap migration-seed --type merge -p '{"data":{"seed_count":"151"}}'
+[agent] exec
+[agent] /bin/sh -lc "kubectl -n wf-2026-04-28t08-05-06z-workflow-r-e658eaff-control-cluster-a patch configmap migration-seed --type merge -p '{\"data\":{\"seed_count\":\"151\"}}'
+[agent] kubectl -n wf-2026-04-28t08-05-06z-workflow-r-e658eaff-control-cluster-a patch deployment blue-producer-e4838d53 --type merge -p '{\"spec\":{\"template\":{\"spec\":{\"containers\":[{\"name\":\"producer\",\"command\":[\"/bin/sh\",\"-c\",\"set -e\\nbase=\\\"http://rabbitmq.wf-2026-04-28t08-05-06z-workflow-r-e658eaff-control-cluster-b.svc.cluster.local:15672/api\\\"\\nauth=\\\""'${RABBITMQ_APP_USER}:${RABBITMQ_APP_PASS}'"\\\"\\ni="'$((SEED_COUNT + 1))'"\\nwhile true; do\\n  body="'$(printf '"'\\''{\\\"properties\\\":{\\\"delivery_mode\\\":2},\\\"routing_key\\\":\\\"app-queue\\\",\\\"payload\\\":\\\"{\\\\\\\\\\\"id\\\\\\\\\\\":%s}\\\",\\\"payload_encoding\\\":\\\"string\\\"}'\\'' \\\""'$i'"\\\")\\n  curl -s -u \\\""'$auth'"\\\" -H \\\"content-type: application/json\\\"     -XPOST \\\""'$base/exchanges/%2Fapp/amq.default/publish'"\\\"     -d \\\""'$body'"\\\"     | grep -q '\\''\\\"routed\\\":true'\\''     && echo \\\"blue-producer: published "'$i'"\\\"     || echo \\\"blue-producer: publish failed\\\" >&2\\n  i="'$((i+1))'"\\n  sleep 1\\ndone\\n\"]}]}}}}'
+[agent] kubectl -n wf-2026-04-28t08-05-06z-workflow-r-e658eaff-control-cluster-a scale deploy/blue-producer-e4838d53 --replicas=1
+[agent] kubectl -n wf-2026-04-28t08-05-06z-workflow-r-e658eaff-control-cluster-a rollout status deploy/blue-producer-e4838d53 --timeout=120s" in /workspace
+[kubectl] 2026-04-28T08:12:04Z kubectl -n wf-2026-04-28t08-05-06z-workflow-r-e658eaff-control-cluster-a patch deployment blue-producer-e4838d53 --type merge -p '{"spec":{"template":{"spec":{"containers":[{"name":"producer","command":["/bin/sh","-c","set -e\nbase=\"http://rabbitmq.wf-2026-04-28t08-05-06z-workflow-r-e658eaff-control-cluster-b.svc.cluster.local:15672/api\"\nauth=\"${RABBITMQ_APP_USER}:${RABBITMQ_APP_PASS}\"\ni=$((SEED_COUNT + 1))\nwhile true; do\n  body=$(printf '"'"'{\"properties\":{\"delivery_mode\":2},\"routing_key\":\"app-queue\",\"payload\":\"{\\\\\"id\\\\\":%s}\",\"payload_encoding\":\"string\"}'"'"' \"$i\")\n  curl -s -u \"$auth\" -H \"content-type: application/json\"     -XPOST \"$base/exchanges/%2Fapp/amq.default/publish\"     -d \"$body\"     | grep -q '"'"'\"routed\":true'"'"'     && echo \"blue-producer: published $i\"     || echo \"blue-producer: publish failed\" >&2\n  i=$((i+1))\n  sleep 1\ndone\n"]}]}}}}'
+[kubectl] 2026-04-28T08:12:04Z kubectl -n wf-2026-04-28t08-05-06z-workflow-r-e658eaff-control-cluster-a scale deploy/blue-producer-e4838d53 --replicas=1
+[kubectl] 2026-04-28T08:12:04Z kubectl -n wf-2026-04-28t08-05-06z-workflow-r-e658eaff-control-cluster-a rollout status deploy/blue-producer-e4838d53 --timeout=120s
+[agent]  succeeded in 1.07s:
+[agent] configmap/migration-seed patched
+[agent] The Deployment "blue-producer-e4838d53" is invalid: spec.template.spec.containers[0].image: Required value
+[agent] deployment.apps/blue-producer-e4838d53 scaled
+[agent] Waiting for deployment "blue-producer-e4838d53" rollout to finish: 0 of 1 updated replicas are available...
+[agent] deployment "blue-producer-e4838d53" successfully rolled out
+[orchestrator] interrupt_received stage_id=stage_01_rabbitmq-experiments_blue_green_migration signal=15
+[orchestrator] submit_result_written stage_id=stage_01_rabbitmq-experiments_blue_green_migration stage_status=fatal_error continue=False can_retry=False final=True reason=interrupted write_ok=True log_ok=True
+[orchestrator] stage=final_sweep
+[orchestrator] final sweep skipped stages=1 mode=off
+[orchestrator] stage=workflow_cleanup
+[orchestrator] cleanup_start stages=1 namespaces=2

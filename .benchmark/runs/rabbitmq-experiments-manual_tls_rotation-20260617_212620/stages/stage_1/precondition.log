@@ -1,0 +1,177 @@
+[precondition:rabbitmq_secrets_ready:preconditionUnits[0] 'rabbitmq_secrets_ready':probe] $ /bin/sh -c 'set -e; kubectl -n ${BENCH_NAMESPACE} get secret rabbitmq-erlang-cookie >/dev/null; kubectl -n ${BENCH_NAMESPACE} get secret rabbitmq-admin >/dev/null'
+Error from server (NotFound): secrets "rabbitmq-erlang-cookie" not found
+
+[precondition:rabbitmq_secrets_ready:preconditionUnits[0] 'rabbitmq_secrets_ready':apply] $ /bin/sh -c 'kubectl -n ${BENCH_NAMESPACE} create secret generic rabbitmq-erlang-cookie \
+  --from-literal=cookie=supersecretcookie \
+  --dry-run=client -o yaml | kubectl apply -f -
+'
+secret/rabbitmq-erlang-cookie created
+
+[precondition:rabbitmq_secrets_ready:preconditionUnits[0] 'rabbitmq_secrets_ready':apply] $ /bin/sh -c 'kubectl -n ${BENCH_NAMESPACE} create secret generic rabbitmq-admin \
+  --from-literal=username=admin \
+  --from-literal=password=adminpass \
+  --dry-run=client -o yaml | kubectl apply -f -
+'
+secret/rabbitmq-admin created
+
+[precondition:rabbitmq_secrets_ready:preconditionUnits[0] 'rabbitmq_secrets_ready':verify] $ /bin/sh -c 'set -e; kubectl -n ${BENCH_NAMESPACE} get secret rabbitmq-erlang-cookie >/dev/null; kubectl -n ${BENCH_NAMESPACE} get secret rabbitmq-admin >/dev/null'
+
+[precondition:rbac_ready:preconditionUnits[1] 'rbac_ready':probe] $ kubectl -n "${BENCH_NAMESPACE}" get sa 'rabbitmq'
+Error from server (NotFound): serviceaccounts "rabbitmq" not found
+
+[precondition:rbac_ready:preconditionUnits[1] 'rbac_ready':apply] $ /bin/sh -c 'envsubst '"'"'${BENCH_PARAM_CLUSTER_PREFIX}'"'"' < resources/rabbitmq-experiments/manual_tls_rotation/resource/rbac.yaml | kubectl -n ${BENCH_NAMESPACE} apply -f -'
+serviceaccount/rabbitmq created
+role.rbac.authorization.k8s.io/rabbitmq-peer-discovery created
+rolebinding.rbac.authorization.k8s.io/rabbitmq-peer-discovery created
+
+[precondition:rbac_ready:preconditionUnits[1] 'rbac_ready':verify] $ kubectl -n "${BENCH_NAMESPACE}" get sa 'rabbitmq'
+NAME       SECRETS   AGE
+rabbitmq   0         1s
+
+[precondition:config_ready:preconditionUnits[2] 'config_ready':probe] $ /bin/sh -c 'set -e
+CFG=$(kubectl -n ${BENCH_NAMESPACE} get configmap rabbitmq-config -o jsonpath='"'"'{.data.rabbitmq\.conf}'"'"')
+printf '"'"'%s\n'"'"' "$CFG" | grep -q '"'"'listeners\.ssl\.default = 5671'"'"'
+printf '"'"'%s\n'"'"' "$CFG" | grep -q '"'"'ssl_options\.certfile = /etc/rabbitmq/tls/tls.crt'"'"'
+'
+Error from server (NotFound): configmaps "rabbitmq-config" not found
+
+[precondition:config_ready:preconditionUnits[2] 'config_ready':apply] $ /bin/sh -c 'envsubst '"'"'${BENCH_NAMESPACE} ${BENCH_PARAM_CLUSTER_PREFIX}'"'"' < resources/rabbitmq-experiments/manual_tls_rotation/resource/configmap.yaml | kubectl -n ${BENCH_NAMESPACE} apply -f -'
+configmap/rabbitmq-config created
+
+[precondition:config_ready:preconditionUnits[2] 'config_ready':verify] $ /bin/sh -c 'set -e
+CFG=$(kubectl -n ${BENCH_NAMESPACE} get configmap rabbitmq-config -o jsonpath='"'"'{.data.rabbitmq\.conf}'"'"')
+printf '"'"'%s\n'"'"' "$CFG" | grep -q '"'"'listeners\.ssl\.default = 5671'"'"'
+printf '"'"'%s\n'"'"' "$CFG" | grep -q '"'"'ssl_options\.certfile = /etc/rabbitmq/tls/tls.crt'"'"'
+'
+
+[precondition:services_ready:preconditionUnits[3] 'services_ready':probe] $ /bin/sh -c 'set -e
+for SVC in rabbitmq rabbitmq-headless; do
+  PORTS=$(kubectl -n ${BENCH_NAMESPACE} get svc "$SVC" -o jsonpath='"'"'{range .spec.ports[*]}{.port}{" "}{end}'"'"')
+  printf '"'"'%s\n'"'"' "$PORTS" | grep -Eq '"'"'(^| )5671( |$)'"'"'
+done
+'
+Error from server (NotFound): services "rabbitmq" not found
+
+[precondition:services_ready:preconditionUnits[3] 'services_ready':apply] $ /bin/sh -c 'envsubst '"'"'${BENCH_PARAM_CLUSTER_PREFIX}'"'"' < resources/rabbitmq-experiments/manual_tls_rotation/resource/service.yaml | kubectl -n ${BENCH_NAMESPACE} apply -f -'
+service/rabbitmq created
+service/rabbitmq-headless created
+
+[precondition:services_ready:preconditionUnits[3] 'services_ready':verify] $ /bin/sh -c 'set -e
+for SVC in rabbitmq rabbitmq-headless; do
+  PORTS=$(kubectl -n ${BENCH_NAMESPACE} get svc "$SVC" -o jsonpath='"'"'{range .spec.ports[*]}{.port}{" "}{end}'"'"')
+  printf '"'"'%s\n'"'"' "$PORTS" | grep -Eq '"'"'(^| )5671( |$)'"'"'
+done
+'
+
+[precondition:openssl_toolbox_ready:preconditionUnits[4] 'openssl_toolbox_ready':probe] $ kubectl -n "${BENCH_NAMESPACE}" wait --for=condition=ready pod -l app=openssl-toolbox --timeout=3s
+error: no matching resources found
+
+[precondition:openssl_toolbox_ready:preconditionUnits[4] 'openssl_toolbox_ready':apply] $ kubectl -n "${BENCH_NAMESPACE}" apply -f resources/rabbitmq-experiments/manual_tls_rotation/resource/openssl-toolbox.yaml
+pod/openssl-toolbox created
+
+[precondition:openssl_toolbox_ready:preconditionUnits[4] 'openssl_toolbox_ready':apply] $ kubectl -n "${BENCH_NAMESPACE}" wait --for=condition=ready pod -l app=openssl-toolbox --timeout=300s
+pod/openssl-toolbox condition met
+
+[precondition:openssl_toolbox_ready:preconditionUnits[4] 'openssl_toolbox_ready':verify] $ kubectl -n "${BENCH_NAMESPACE}" wait --for=condition=ready pod -l app=openssl-toolbox --timeout=3s
+pod/openssl-toolbox condition met
+
+[precondition:tls_material_ready:preconditionUnits[5] 'tls_material_ready':probe] $ python3 resources/rabbitmq-experiments/manual_tls_rotation/setup_precondition_check.py --namespace "${BENCH_NAMESPACE}" --baseline-max-leaf-validity-days '10' --tls-material-only
+setup-precondition-check: failed
+ - failed to read rabbitmq-tls secret: Command '['kubectl', '-n', 'karma-rabbitmq-experiments-manual-tls-beca85d7', 'get', 'secret', 'rabbitmq-tls', '-o', 'json']' returned non-zero exit status 1.
+ - failed to read rabbitmq-tls-old configmap: Command '['kubectl', '-n', 'karma-rabbitmq-experiments-manual-tls-beca85d7', 'get', 'configmap', 'rabbitmq-tls-old', '-o', 'json']' returned non-zero exit status 1.
+
+[precondition:tls_material_ready:preconditionUnits[5] 'tls_material_ready':apply] $ /bin/sh -c 'set -e
+TMP_DIR=$(mktemp -d)
+kubectl -n ${BENCH_NAMESPACE} exec openssl-toolbox -- /bin/sh -c '"'"'
+set -e
+mkdir -p /tmp/certs
+cat > /tmp/certs/openssl.cnf <<EOF
+distinguished_name=req_distinguished_name
+req_extensions=v3_req
+prompt=no
+[req_distinguished_name]
+CN=rabbitmq
+[v3_req]
+keyUsage=critical,digitalSignature,keyEncipherment
+extendedKeyUsage=serverAuth,clientAuth
+subjectAltName=@alt_names
+[alt_names]
+DNS.1=rabbitmq
+DNS.2=rabbitmq.rabbitmq
+DNS.3=rabbitmq.rabbitmq.svc
+DNS.4=rabbitmq.${BENCH_NAMESPACE}.svc.cluster.local
+DNS.5=rabbitmq-headless
+DNS.6=rabbitmq-headless.rabbitmq
+DNS.7=rabbitmq-headless.rabbitmq.svc
+DNS.8=rabbitmq-headless.${BENCH_NAMESPACE}.svc.cluster.local
+DNS.9=rabbitmq-0.rabbitmq-headless.${BENCH_NAMESPACE}.svc.cluster.local
+DNS.10=rabbitmq-1.rabbitmq-headless.${BENCH_NAMESPACE}.svc.cluster.local
+DNS.11=rabbitmq-2.rabbitmq-headless.${BENCH_NAMESPACE}.svc.cluster.local
+EOF
+openssl genrsa -out /tmp/certs/ca.key 2048
+openssl req -x509 -new -nodes -key /tmp/certs/ca.key -sha256 -days 730 \
+  -subj "/CN=rabbitmq-ca" -out /tmp/certs/ca.crt
+openssl genrsa -out /tmp/certs/tls.key 2048
+openssl req -new -key /tmp/certs/tls.key -out /tmp/certs/tls.csr \
+  -config /tmp/certs/openssl.cnf
+openssl x509 -req -in /tmp/certs/tls.csr -CA /tmp/certs/ca.crt \
+  -CAkey /tmp/certs/ca.key -CAcreateserial -out /tmp/certs/tls.crt \
+  -days 1 -extensions v3_req -extfile /tmp/certs/openssl.cnf
+'"'"'
+kubectl -n ${BENCH_NAMESPACE} cp openssl-toolbox:/tmp/certs "${TMP_DIR}/certs"
+kubectl -n ${BENCH_NAMESPACE} create secret generic rabbitmq-tls \
+  --from-file=ca.crt="${TMP_DIR}/certs/ca.crt" \
+  --from-file=tls.crt="${TMP_DIR}/certs/tls.crt" \
+  --from-file=tls.key="${TMP_DIR}/certs/tls.key" \
+  --dry-run=client -o yaml | kubectl apply -f -
+CA_FP=$(openssl x509 -noout -fingerprint -sha256 -in "${TMP_DIR}/certs/ca.crt" | cut -d= -f2)
+LEAF_FP=$(openssl x509 -noout -fingerprint -sha256 -in "${TMP_DIR}/certs/tls.crt" | cut -d= -f2)
+kubectl -n ${BENCH_NAMESPACE} create configmap rabbitmq-tls-old \
+  --from-literal=ca_fingerprint_sha256="${CA_FP}" \
+  --from-literal=leaf_fingerprint_sha256="${LEAF_FP}" \
+  --dry-run=client -o yaml | kubectl apply -f -
+'
+tar: removing leading '/' from member names
+secret/rabbitmq-tls created
+configmap/rabbitmq-tls-old created
+Certificate request self-signature ok
+subject=CN = rabbitmq
+
+[precondition:tls_material_ready:preconditionUnits[5] 'tls_material_ready':verify] $ python3 resources/rabbitmq-experiments/manual_tls_rotation/setup_precondition_check.py --namespace "${BENCH_NAMESPACE}" --baseline-max-leaf-validity-days '10' --tls-material-only
+setup-precondition-check: ok
+
+[precondition:rabbitmq_statefulset_present:preconditionUnits[6] 'rabbitmq_statefulset_present':probe] $ kubectl -n "${BENCH_NAMESPACE}" get sts 'rabbitmq'
+Error from server (NotFound): statefulsets.apps "rabbitmq" not found
+
+[precondition:rabbitmq_statefulset_present:preconditionUnits[6] 'rabbitmq_statefulset_present':apply] $ /bin/sh -c 'envsubst '"'"'${BENCH_PARAM_CLUSTER_PREFIX}'"'"' < resources/rabbitmq-experiments/manual_tls_rotation/resource/statefulset.yaml | kubectl -n ${BENCH_NAMESPACE} apply -f -'
+statefulset.apps/rabbitmq created
+
+[precondition:rabbitmq_statefulset_present:preconditionUnits[6] 'rabbitmq_statefulset_present':verify] $ kubectl -n "${BENCH_NAMESPACE}" get sts 'rabbitmq'
+NAME       READY   AGE
+rabbitmq   0/3     1s
+
+[precondition:rabbitmq_tls_statefulset_ready:preconditionUnits[7] 'rabbitmq_tls_statefulset_ready':probe] $ python3 resources/rabbitmq-experiments/manual_tls_rotation/setup_precondition_check.py --namespace "${BENCH_NAMESPACE}" --tls-statefulset-only
+setup-precondition-check: ok
+
+[precondition:rabbitmq_cluster_ready:preconditionUnits[8] 'rabbitmq_cluster_ready':probe] $ /bin/sh -c 'set -e; [ "$(kubectl -n ${BENCH_NAMESPACE} get sts rabbitmq -o jsonpath="{.status.readyReplicas}")" = "3" ]'
+
+[precondition:rabbitmq_cluster_ready:preconditionUnits[8] 'rabbitmq_cluster_ready':apply] $ kubectl -n "${BENCH_NAMESPACE}" wait --for=condition=ready pod -l 'app=rabbitmq' --timeout=600s
+pod/rabbitmq-0 condition met
+
+[precondition:rabbitmq_cluster_ready:preconditionUnits[8] 'rabbitmq_cluster_ready':verify] $ /bin/sh -c 'set -e; [ "$(kubectl -n ${BENCH_NAMESPACE} get sts rabbitmq -o jsonpath="{.status.readyReplicas}")" = "3" ]'
+
+[precondition:rabbitmq_cluster_ready:preconditionUnits[8] 'rabbitmq_cluster_ready':verify] $ /bin/sh -c 'set -e; [ "$(kubectl -n ${BENCH_NAMESPACE} get sts rabbitmq -o jsonpath="{.status.readyReplicas}")" = "3" ]'
+
+[precondition:rabbitmq_cluster_ready:preconditionUnits[8] 'rabbitmq_cluster_ready':verify] $ /bin/sh -c 'set -e; [ "$(kubectl -n ${BENCH_NAMESPACE} get sts rabbitmq -o jsonpath="{.status.readyReplicas}")" = "3" ]'
+
+[precondition:rabbitmq_cluster_ready:preconditionUnits[8] 'rabbitmq_cluster_ready':verify] $ /bin/sh -c 'set -e; [ "$(kubectl -n ${BENCH_NAMESPACE} get sts rabbitmq -o jsonpath="{.status.readyReplicas}")" = "3" ]'
+
+[precondition:rabbitmq_cluster_ready:preconditionUnits[8] 'rabbitmq_cluster_ready':verify] $ /bin/sh -c 'set -e; [ "$(kubectl -n ${BENCH_NAMESPACE} get sts rabbitmq -o jsonpath="{.status.readyReplicas}")" = "3" ]'
+
+[precondition:rabbitmq_cluster_ready:preconditionUnits[8] 'rabbitmq_cluster_ready':verify] $ /bin/sh -c 'set -e; [ "$(kubectl -n ${BENCH_NAMESPACE} get sts rabbitmq -o jsonpath="{.status.readyReplicas}")" = "3" ]'
+
+[precondition:rabbitmq_cluster_ready:preconditionUnits[8] 'rabbitmq_cluster_ready':verify] $ /bin/sh -c 'set -e; [ "$(kubectl -n ${BENCH_NAMESPACE} get sts rabbitmq -o jsonpath="{.status.readyReplicas}")" = "3" ]'
+
+[precondition:tls_rotation_baseline_ready:preconditionUnits[9] 'tls_rotation_baseline_ready':probe] $ python3 resources/rabbitmq-experiments/manual_tls_rotation/setup_precondition_check.py --namespace "${BENCH_NAMESPACE}" --min-ready 3 --baseline-max-leaf-validity-days '10'
+setup-precondition-check: ok
+

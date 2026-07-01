@@ -16,6 +16,7 @@ source "${SCRIPT_DIR}/../../lib/common.sh"
 static_solver_export_namespace_if_unset "elasticsearch"
 
 ns="${BENCH_NAMESPACE}"
+cluster="${BENCH_PARAM_CLUSTER_PREFIX:-es-cluster}"
 service="${BENCH_PARAM_HTTP_SERVICE_NAME:-es-http}"
 ingress_namespace="${BENCH_PARAM_INGRESS_NAMESPACE:-ingress-nginx}"
 ingress_host="${BENCH_PARAM_INGRESS_HOST:-es.example.com}"
@@ -48,6 +49,31 @@ curl_json() {
   local -a args=("$@")
   kubectl -n "${ns}" exec "${curl_pod}" -- \
     curl -sS --connect-timeout 5 --max-time 20 "${args[@]}"
+}
+
+curl_json_with_optional_auth() {
+  if [[ -n "${ELASTIC_PASSWORD}" ]]; then
+    curl_json -u "elastic:${ELASTIC_PASSWORD}" "$@"
+  else
+    curl_json "$@"
+  fi
+}
+
+ensure_backend_service_selector() {
+  kubectl -n "${ns}" apply -f - <<YAML >/dev/null
+apiVersion: v1
+kind: Service
+metadata:
+  name: ${service}
+  namespace: ${ns}
+spec:
+  selector:
+    app: ${cluster}
+  ports:
+    - name: http
+      port: 9200
+      targetPort: 9200
+YAML
 }
 
 detect_backend_scheme() {
@@ -91,17 +117,12 @@ EOF
 
 wait_for_ingress_ready() {
   local ingress_target="${ingress_service}.${ingress_namespace}.svc"
-  local -a auth_args=()
   local https_output=""
   local http_code=""
   local deadline=$((SECONDS + 300))
 
-  if [[ -n "${ELASTIC_PASSWORD}" ]]; then
-    auth_args=(-u "elastic:${ELASTIC_PASSWORD}")
-  fi
-
   while (( SECONDS < deadline )); do
-    if ! curl_json "${auth_args[@]}" -k \
+    if ! curl_json_with_optional_auth -k \
       "${BACKEND_SCHEME}://${service}.${ns}.svc:9200/_cluster/health?wait_for_status=yellow&timeout=5s" \
       >/dev/null 2>&1; then
       sleep 5
@@ -109,7 +130,7 @@ wait_for_ingress_ready() {
     fi
 
     https_output="$(
-      curl_json "${auth_args[@]}" -k -H "Host: ${ingress_host}" \
+      curl_json_with_optional_auth -k -H "Host: ${ingress_host}" \
         "https://${ingress_target}/_cluster/health" 2>/dev/null || true
     )"
     if [[ "${https_output}" != *'"status"'* ]]; then
@@ -138,6 +159,7 @@ kubectl -n "${ns}" create secret tls "${ingress_tls_secret}" \
   --key="${tmp_dir}/tls.key" \
   --dry-run=client -o yaml | kubectl -n "${ns}" apply -f -
 
+ensure_backend_service_selector
 BACKEND_SCHEME="$(detect_backend_scheme)"
 BACKEND_PROTOCOL="$(printf '%s' "${BACKEND_SCHEME}" | tr '[:lower:]' '[:upper:]')"
 ELASTIC_PASSWORD="$(read_secret_value "${elastic_secret}" "${elastic_secret_key}")"

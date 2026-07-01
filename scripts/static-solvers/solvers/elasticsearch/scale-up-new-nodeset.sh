@@ -16,6 +16,7 @@ static_solver_export_namespace_if_unset "elasticsearch"
 ns="${BENCH_NAMESPACE}"
 prefix="${BENCH_PARAM_CLUSTER_PREFIX:-es-cluster}"
 service="${BENCH_PARAM_HTTP_SERVICE_NAME:-es-http}"
+curl_pod="${BENCH_PARAM_CURL_POD_NAME:-curl-test}"
 index="${BENCH_PARAM_INDEX_NAME:-app-data}"
 expected="${BENCH_PARAM_EXPECTED_NODES:-5}"
 original="${BENCH_PARAM_ORIGINAL_REPLICAS:-3}"
@@ -56,24 +57,67 @@ if [[ -n "${elastic_password}" ]]; then
   auth_args=(-u "elastic:${elastic_password}")
 fi
 
+elastic_curl() {
+  local max_time="${1:?max_time is required}"
+  shift
+  local cmd=(
+    kubectl
+    --request-timeout=40s
+    -n
+    "${ns}"
+    exec
+    "${curl_pod}"
+    --
+    curl
+    -s
+    -S
+    -k
+    --max-time
+    "${max_time}"
+  )
+  if [[ ${#auth_args[@]} -gt 0 ]]; then
+    cmd+=("${auth_args[@]}")
+  fi
+  cmd+=("$@")
+  "${cmd[@]}"
+}
+
+current_original="$(kubectl --request-timeout=15s -n "${ns}" get "statefulset/${prefix}" -o jsonpath='{.spec.replicas}')"
+[[ -n "${current_original}" ]] || static_solver_fail "failed to detect current replicas for statefulset/${prefix}"
+if [[ "${current_original}" != "${original}" ]]; then
+  static_solver_log "restoring statefulset/${prefix} replicas from ${current_original} to ${original}"
+  kubectl -n "${ns}" scale "statefulset/${prefix}" --replicas="${original}" >/dev/null
+  for ordinal in $(seq 0 $((original - 1))); do
+    kubectl -n "${ns}" wait --for=condition=ready "pod/${prefix}-${ordinal}" --timeout=900s >/dev/null
+  done
+fi
+
 probe_scheme() {
   local scheme="${1}"
   local code=""
-  if ! code="$(
-    kubectl -n "${ns}" exec curl-test -- \
-      curl -s -S -k -o /dev/null -w '%{http_code}' --max-time 5 \
-      "${auth_args[@]}" "${scheme}://${service}:9200/" 2>/dev/null
-  )"; then
+  if ! code="$(elastic_curl 5 -o /dev/null -w '%{http_code}' "${scheme}://${service}:9200/" 2>/dev/null)"; then
     return 1
   fi
   [[ "${code}" =~ ^[0-9]+$ ]] && [[ "${code}" != "000" ]]
 }
 
-scheme="https"
-if ! probe_scheme "${scheme}"; then
-  scheme="http"
-  probe_scheme "${scheme}" || static_solver_fail "failed to detect a live Elasticsearch HTTP scheme for ${service}"
-fi
+detect_scheme() {
+  local deadline=$((SECONDS + 300))
+  while (( SECONDS < deadline )); do
+    if probe_scheme "https"; then
+      printf 'https\n'
+      return 0
+    fi
+    if probe_scheme "http"; then
+      printf 'http\n'
+      return 0
+    fi
+    sleep 5
+  done
+  return 1
+}
+
+scheme="$(detect_scheme)" || static_solver_fail "failed to detect a live Elasticsearch HTTP scheme for ${service}"
 
 cat <<YAML | kubectl -n "${ns}" apply -f -
 apiVersion: v1
@@ -193,6 +237,7 @@ while time.monotonic() < deadline:
     result = subprocess.run(
         [
             "kubectl",
+            "--request-timeout=15s",
             "-n",
             ns,
             "get",
@@ -238,30 +283,24 @@ PY
 
 index_ready=false
 for _ in $(seq 1 20); do
-  if kubectl -n "${ns}" exec curl-test -- \
-    curl -s -S -k --max-time 20 "${auth_args[@]}" \
-    "${scheme}://${service}:9200/${index}/_count" >/dev/null 2>&1; then
+  if elastic_curl 20 "${scheme}://${service}:9200/${index}/_count" >/dev/null 2>&1; then
     index_ready=true
     break
   fi
 
-  kubectl -n "${ns}" exec curl-test -- \
-    curl -s -S -k --max-time 20 "${auth_args[@]}" \
+  elastic_curl 20 \
     -XPUT "${scheme}://${service}:9200/${index}" \
     -H 'Content-Type: application/json' \
     -d '{"settings":{"number_of_shards":3,"number_of_replicas":1}}' >/dev/null 2>&1 || true
-  kubectl -n "${ns}" exec curl-test -- \
-    curl -s -S -k --max-time 20 "${auth_args[@]}" \
+  elastic_curl 20 \
     -XPOST "${scheme}://${service}:9200/${index}/_doc/1?refresh=true" \
     -H 'Content-Type: application/json' \
     -d '{"msg":"alpha"}' >/dev/null 2>&1 || true
-  kubectl -n "${ns}" exec curl-test -- \
-    curl -s -S -k --max-time 20 "${auth_args[@]}" \
+  elastic_curl 20 \
     -XPOST "${scheme}://${service}:9200/${index}/_doc/2?refresh=true" \
     -H 'Content-Type: application/json' \
     -d '{"msg":"beta"}' >/dev/null 2>&1 || true
-  kubectl -n "${ns}" exec curl-test -- \
-    curl -s -S -k --max-time 20 "${auth_args[@]}" \
+  elastic_curl 20 \
     -XPOST "${scheme}://${service}:9200/${index}/_doc/3?refresh=true" \
     -H 'Content-Type: application/json' \
     -d '{"msg":"gamma"}' >/dev/null 2>&1 || true
@@ -270,17 +309,23 @@ done
 
 [[ "${index_ready}" == "true" ]] || static_solver_fail "failed to create or verify index ${index}"
 
-kubectl -n "${ns}" exec curl-test -- \
-  curl -s -S -k --max-time 20 "${auth_args[@]}" \
-  -XPUT "${scheme}://${service}:9200/${index}/_settings" \
-  -H 'Content-Type: application/json' \
-  -d '{"index.routing.allocation.require.tier":"warm"}' >/dev/null
+allocation_updated=false
+for _ in $(seq 1 20); do
+  if elastic_curl 20 \
+    -XPUT "${scheme}://${service}:9200/${index}/_settings" \
+    -H 'Content-Type: application/json' \
+    -d '{"index.routing.allocation.require.tier":"warm"}' >/dev/null 2>&1; then
+    allocation_updated=true
+    break
+  fi
+  sleep 3
+done
+
+[[ "${allocation_updated}" == "true" ]] || static_solver_fail "failed to set warm-tier allocation on ${index}"
 
 relocated=false
 for _ in $(seq 1 120); do
-  if kubectl -n "${ns}" exec curl-test -- \
-    curl -s -S -k --max-time 20 "${auth_args[@]}" \
-    "${scheme}://${service}:9200/_cat/shards/${index}?format=json" |
+  if elastic_curl 20 "${scheme}://${service}:9200/_cat/shards/${index}?format=json" |
     python3 -c '
 import json, sys
 shards = json.load(sys.stdin)
@@ -293,11 +338,9 @@ raise SystemExit(0 if any("-warm-" in str(s.get("node") or "") for s in shards) 
 done
 
 [[ "${relocated}" == "true" ]] || static_solver_fail "timed out waiting for ${index} shards to relocate onto ${nodeset}"
-
 cluster_ready=false
 for _ in $(seq 1 60); do
-  if kubectl -n "${ns}" exec curl-test -- \
-    curl -s -S -k --max-time 20 "${auth_args[@]}" \
+  if elastic_curl 20 \
     "${scheme}://${service}:9200/_cluster/health?wait_for_status=yellow&wait_for_nodes=${expected}&timeout=10s" \
     >/dev/null; then
     cluster_ready=true

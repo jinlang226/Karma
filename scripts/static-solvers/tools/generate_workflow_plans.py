@@ -78,6 +78,10 @@ def _solver_script_body(record: dict) -> str:
         )
     elif strategy in {"direct_shell", "shell_wrapper_variant"}:
         lines.append(f'static_solver_run_vendored_shell "{solver_path}"')
+    elif strategy in {"native_shell", "new_manual"}:
+        raise RuntimeError(
+            f"missing checked-in active solver for manual strategy: {service}/{case_name}"
+        )
     else:
         raise RuntimeError(f"unsupported strategy for active solver generation: {strategy}")
 
@@ -91,6 +95,9 @@ def _write_solver_scripts(case_map: dict[tuple[str, str], dict]) -> list[str]:
         if record["status"] not in {"candidate", "review_required"}:
             continue
         solver_path = SOLVERS_ROOT / record["service"] / f"{record['case_name']}.sh"
+        if solver_path.exists():
+            written.append(solver_path.relative_to(STATIC_ROOT).as_posix())
+            continue
         ensure_parent(solver_path)
         solver_path.write_text(_solver_script_body(record))
         solver_path.chmod(0o755)

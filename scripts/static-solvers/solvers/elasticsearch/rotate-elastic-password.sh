@@ -21,6 +21,7 @@ current_secret="${BENCH_PARAM_CURRENT_PASSWORD_SECRET_NAME:-elastic-password}"
 next_secret="${BENCH_PARAM_NEXT_PASSWORD_SECRET_NAME:-elastic-password-next}"
 checker="${BENCH_PARAM_AUTH_CHECKER_DEPLOYMENT_NAME:-auth-checker}"
 curl_pod="${BENCH_PARAM_CURL_POD_NAME:-curl-test}"
+prev_configmap="elastic-password-prev"
 checker_image="$(
   kubectl -n "${ns}" get deployment "${checker}" -o jsonpath='{.spec.template.spec.containers[0].image}' 2>/dev/null || true
 )"
@@ -31,6 +32,11 @@ service_host="${service}.${ns}.svc"
 read_secret_password() {
   local secret_name="$1"
   kubectl -n "${ns}" get secret "${secret_name}" -o jsonpath='{.data.password}' | base64 -d
+}
+
+read_config_password() {
+  local config_name="$1"
+  kubectl -n "${ns}" get configmap "${config_name}" -o jsonpath='{.data.password}' 2>/dev/null || true
 }
 
 probe_scheme() {
@@ -73,6 +79,47 @@ curl_with_scheme() {
   fi
   cmd+=("$@")
   "${cmd[@]}"
+}
+
+auth_code_for_password() {
+  local scheme="$1"
+  local password="$2"
+  local output=""
+
+  if ! output="$(
+    curl_with_scheme "${scheme}" \
+      -u "elastic:${password}" \
+      -o /dev/null \
+      -w '%{http_code}' \
+      "${scheme}://${service_host}:9200/_security/_authenticate"
+  )"; then
+    printf 'error\n'
+    return 0
+  fi
+
+  printf '%s\n' "${output}"
+}
+
+resolve_working_password() {
+  local scheme="$1"
+  local current_password="$2"
+  local previous_password="$3"
+  local candidate=""
+  local code=""
+  local tried=""
+
+  for candidate in "${current_password}" "${previous_password}"; do
+    [[ -n "${candidate}" ]] || continue
+    code="$(auth_code_for_password "${scheme}" "${candidate}")"
+    if [[ "${code}" == "200" ]]; then
+      printf '%s\n' "${candidate}"
+      return 0
+    fi
+    [[ -z "${tried}" ]] || tried="${tried}; "
+    tried="${tried}${code}"
+  done
+
+  static_solver_fail "unable to authenticate to ${service_host} with current/previous elastic passwords (codes: ${tried:-none})"
 }
 
 verify_auth_code() {
@@ -156,7 +203,9 @@ EOF
 }
 
 scheme="$(detect_scheme)"
-old_password="$(read_secret_password "${current_secret}")"
+current_password="$(read_secret_password "${current_secret}")"
+previous_password="$(read_config_password "${prev_configmap}")"
+old_password="$(resolve_working_password "${scheme}" "${current_password}" "${previous_password}")"
 new_password="$(read_secret_password "${next_secret}")"
 payload="$(python3 - "${new_password}" <<'PY'
 import json
@@ -182,6 +231,10 @@ fi
 
 kubectl -n "${ns}" create secret generic "${current_secret}" \
   --from-literal=password="${new_password}" \
+  --dry-run=client -o yaml | kubectl -n "${ns}" apply -f -
+
+kubectl -n "${ns}" create configmap "${prev_configmap}" \
+  --from-literal=password="${old_password}" \
   --dry-run=client -o yaml | kubectl -n "${ns}" apply -f -
 
 apply_auth_checker_manifest "${scheme}"

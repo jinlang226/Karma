@@ -19,9 +19,12 @@ ca_crt="/tmp/test-ca.crt"
 ca_key="/tmp/test-ca.key"
 min_seconds="${BENCH_PARAM_MIN_VALIDITY_SECONDS:-86400}"
 days=$(( (min_seconds + 86399) / 86400 + 1 ))
+desired_host="${BENCH_PARAM_HOST:-demo.example.com}"
 
 tmp_dir="$(mktemp -d)"
 trap 'rm -rf "${tmp_dir}"' EXIT
+ingress_json="${tmp_dir}/ingress.json"
+patched_ingress_json="${tmp_dir}/ingress-patched.json"
 
 [[ -f "${ca_crt}" ]] || static_solver_fail "missing CA cert at ${ca_crt}"
 [[ -f "${ca_key}" ]] || static_solver_fail "missing CA key at ${ca_key}"
@@ -34,8 +37,8 @@ else
 fi
 [[ -n "${ingress_name}" ]] || static_solver_fail "could not determine ingress name in namespace ${app_ns}"
 
-host="$(kubectl -n "${app_ns}" get ingress "${ingress_name}" -o jsonpath='{.spec.rules[0].host}' 2>/dev/null || true)"
-[[ -n "${host}" ]] || host="${BENCH_PARAM_HOST:-demo.example.com}"
+kubectl -n "${app_ns}" get ingress "${ingress_name}" -o json > "${ingress_json}"
+host="${desired_host}"
 
 secret_name="$(kubectl -n "${app_ns}" get ingress "${ingress_name}" -o jsonpath='{.spec.tls[0].secretName}' 2>/dev/null || true)"
 [[ -n "${secret_name}" ]] || secret_name="${BENCH_PARAM_TLS_SECRET_NAME:-expired-tls-secret}"
@@ -76,6 +79,41 @@ kubectl -n "${app_ns}" create secret tls "${secret_name}" \
   --cert="${tmp_dir}/tls.crt" \
   --key="${tmp_dir}/tls.key" \
   --dry-run=client -o yaml | kubectl -n "${app_ns}" apply -f -
+
+python3 - "${ingress_json}" "${patched_ingress_json}" "${host}" "${secret_name}" <<'PY'
+from __future__ import annotations
+
+import json
+import sys
+from pathlib import Path
+
+source_path = Path(sys.argv[1])
+output_path = Path(sys.argv[2])
+host = sys.argv[3]
+secret_name = sys.argv[4]
+
+payload = json.loads(source_path.read_text())
+payload.pop("status", None)
+metadata = payload.get("metadata", {})
+for key in ("creationTimestamp", "generation", "managedFields", "resourceVersion", "uid"):
+    metadata.pop(key, None)
+
+spec = payload.get("spec") or {}
+rules = spec.get("rules") or []
+if rules:
+    rules[0]["host"] = host
+
+tls_entries = spec.get("tls") or []
+if tls_entries:
+    tls_entries[0]["secretName"] = secret_name
+    tls_entries[0]["hosts"] = [host]
+else:
+    spec["tls"] = [{"hosts": [host], "secretName": secret_name}]
+
+output_path.write_text(json.dumps(payload))
+PY
+
+kubectl -n "${app_ns}" apply -f "${patched_ingress_json}"
 
 kubectl -n "${ingress_ns}" rollout restart deploy/ingress-nginx-controller
 kubectl -n "${ingress_ns}" rollout status deploy/ingress-nginx-controller --timeout=180s

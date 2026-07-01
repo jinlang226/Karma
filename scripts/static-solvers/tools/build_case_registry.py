@@ -165,9 +165,31 @@ SUBMIT_ONLY_CASES = {
 }
 
 
+MANUAL_ACTIVE_CASES: dict[tuple[str, str], dict[str, str]] = {
+    ("cockroachdb", "monitoring-integration"): {
+        "status": "candidate",
+        "strategy": "native_shell",
+        "notes": "Hand-authored active solver creates the mode-aware ServiceMonitor and waits for Prometheus to scrape CockroachDB metrics.",
+    },
+    ("elasticsearch", "rotate-http-certs"): {
+        "status": "candidate",
+        "strategy": "native_shell",
+        "notes": "Hand-authored active solver rotates the live HTTP certificate Secret and waits for the secured cluster to recover.",
+    },
+    ("ray", "worker_recovery"): {
+        "status": "candidate",
+        "strategy": "native_shell",
+        "notes": "Hand-authored active solver repairs the live worker command and preserves inherited worker topology.",
+    },
+    ("spark", "spark_data_skew"): {
+        "status": "candidate",
+        "strategy": "native_shell",
+        "notes": "Hand-authored active solver reruns the baseline skew job plus a workflow-configurable optimization strategy.",
+    },
+}
+
+
 UNSUPPORTED_CASES = {
-    ("ray", "worker_recovery"),
-    ("spark", "spark_data_skew"),
 }
 
 
@@ -222,6 +244,19 @@ def _build_current_record(
             "imported_case": "",
             "solver_path": "",
             "notes": "Static no-op submit candidate; requires runtime validation.",
+        }
+
+    if key in MANUAL_ACTIVE_CASES:
+        manual = MANUAL_ACTIVE_CASES[key]
+        return {
+            "service": service,
+            "case_name": case_name,
+            "status": manual["status"],
+            "strategy": manual["strategy"],
+            "function_name": slugify_function_name(service, case_name),
+            "imported_case": "",
+            "solver_path": "",
+            "notes": manual["notes"],
         }
 
     if key in UNSUPPORTED_CASES:

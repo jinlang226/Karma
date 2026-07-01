@@ -9,6 +9,8 @@ source "${SCRIPT_DIR}/../../lib/common.sh"
 # Strategy: direct_shell
 # Imported reference: mongodb/arbiters
 # Vendored solver: vendor/import-improve-resources/scripts/resource-solvers/solvers/solve_mongo_arbiters.sh
+
+static_solver_export_namespace_if_unset "mongodb"
 # Notes: Corrected validation solver: sets default read/write concern before adding arbiter.
 
 static_solver_run_vendored_shell "vendor/import-improve-resources/scripts/resource-solvers/solvers/solve_mongo_arbiters.sh"
