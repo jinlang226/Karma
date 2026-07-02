@@ -141,7 +141,7 @@
     // "Judge all" sits at the far right of the same row -- scores every finished
     // run in the current folder scope (objective stage-pass + LLM adjudication of
     // regression-sweep failures).
-    const judgeAll = el("button", { class: "btn secondary", onClick: () => startJudgeAll(judgeAll) }, judgeAllLabel());
+    const judgeAll = el("button", { id: "judge-all-btn", class: "btn secondary", onClick: () => startJudgeAll(judgeAll) }, judgeAllLabel());
     return el("div", { class: "subtabs-row" }, tabs, judgeAll);
   }
 
@@ -294,6 +294,11 @@
   function openRunsFolder(folder) {
     runsFolder = folder;
     setFolderCrumb();
+    // This partial-render path (folder-row click) does not rebuild subtabs(), so
+    // refresh the "Judge all" scope label here -- unless a judge is mid-run
+    // (button disabled), where its progress text must not be clobbered.
+    const jb = document.getElementById("judge-all-btn");
+    if (jb && !jb.disabled) jb.textContent = judgeAllLabel();
     const body = document.getElementById("runs-body");
     if (body) {
       renderRunRows(body);
