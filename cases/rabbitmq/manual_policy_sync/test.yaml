@@ -154,11 +154,19 @@ preconditionUnits:
       - command: "/bin/sh -c '! kubectl -n ${BENCH_NAMESPACE} exec {{params.cluster_prefix}}-0 -- rabbitmqctl -q list_policies -p /app 2>/dev/null | grep -qw ha-all'"
         timeout_sec: 30
     apply:
-      - command: "kubectl -n ${BENCH_NAMESPACE} exec {{params.cluster_prefix}}-0 -- rabbitmqctl clear_policy -p /app ha-all || true"
-        sleep: 2
+      # P-converge: clearing a policy is async -- it propagates across the cluster,
+      # so a single clear_policy + immediate verify races the propagation. This
+      # reconcile also runs on the SECOND scheduling of the case (workflows schedule
+      # manual_policy_sync twice) against an inherited ha-all, where the race is most
+      # likely. Poll instead of single-shot: re-issue clear_policy until list_policies
+      # no longer reports ha-all (bounded), so the "unsynced" baseline is reliably set.
+      - command: "/bin/sh -c 'for i in $(seq 1 8); do kubectl -n ${BENCH_NAMESPACE} exec {{params.cluster_prefix}}-0 -- rabbitmqctl clear_policy -p /app ha-all >/dev/null 2>&1 || true; sleep 2; kubectl -n ${BENCH_NAMESPACE} exec {{params.cluster_prefix}}-0 -- rabbitmqctl -q list_policies -p /app 2>/dev/null | grep -qw ha-all || exit 0; done; exit 0'"
+        timeout_sec: 60
     verify:
       - command: "/bin/sh -c '! kubectl -n ${BENCH_NAMESPACE} exec {{params.cluster_prefix}}-0 -- rabbitmqctl -q list_policies -p /app 2>/dev/null | grep -qw ha-all'"
         timeout_sec: 30
+        retries: 5
+        interval_sec: 3
 
 oracle:
   verify:
