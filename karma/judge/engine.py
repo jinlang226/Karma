@@ -79,7 +79,22 @@ def run_judge(
     if dry_run:
         return {"stage_id": stage_id, "dry_run": True, "input": judge_input}
 
+    # When no judge model was named, mirror the agent that ran the tasks
+    # (recorded in config.json) instead of the fixed gpt-4o default.
+    judge_backend: str | None = None
+    if judge_model is None:
+        from .agent_defaults import resolve_agent_judge_defaults
+        derived = resolve_agent_judge_defaults(run_dir)
+        judge_model = derived.get("model")
+        judge_backend = derived.get("backend")
+        if judge_base_url is None:
+            judge_base_url = derived.get("base_url")
+        if judge_api_key is None:
+            judge_api_key = derived.get("api_key")
+
     llm_kwargs: dict[str, Any] = {"model": judge_model}
+    if judge_backend is not None:
+        llm_kwargs["backend"] = judge_backend
     if judge_base_url is not None:
         llm_kwargs["base_url"] = judge_base_url
     if judge_api_key is not None:

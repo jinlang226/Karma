@@ -213,6 +213,23 @@ def score_run(
         f"[judge] all {total} stages passed; regression sweep has {len(failures)} "
         f"failure(s) -> adjudicating each (real regression vs false positive)"
     )
+
+    # When the caller did not name a judge model, mirror the agent that ran the
+    # tasks (recorded in config.json) instead of the fixed gpt-4o default. An
+    # explicit base_url/api_key still wins over the mirrored one.
+    judge_backend: str | None = None
+    if judge_model is None:
+        from .agent_defaults import resolve_agent_judge_defaults
+        derived = resolve_agent_judge_defaults(run_dir)
+        judge_model = derived.get("model")
+        judge_backend = derived.get("backend")
+        if judge_base_url is None:
+            judge_base_url = derived.get("base_url")
+        if judge_api_key is None:
+            judge_api_key = derived.get("api_key")
+        if judge_model:
+            log.append(f"[judge] no model specified -> mirroring run agent ({judge_model})")
+
     legit = 0
     regressions: list[dict[str, Any]] = []
     model_used: str | None = None
@@ -226,6 +243,7 @@ def score_run(
                 model=judge_model,
                 base_url=judge_base_url,
                 api_key=judge_api_key,
+                backend=judge_backend,
                 timeout_sec=judge_timeout_sec or 120,
                 max_retries=judge_max_retries if judge_max_retries is not None else 3,
             )
