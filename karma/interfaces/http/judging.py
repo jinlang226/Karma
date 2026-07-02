@@ -209,8 +209,19 @@ def start_judge_job(
     if target_type not in ("run", "batch", "all"):
         raise ValueError("target_type must be 'run', 'batch', or 'all'")
     if target_type == "all":
-        # Score every run under runs_dir (the "Judge all" button).
-        path = Path(runs_dir) if runs_dir is not None else Path(target_path or "runs")
+        # Score every run in the browsed folder scope (the "Judge all" button).
+        # A non-empty target_path narrows "all" to that subfolder (judged
+        # recursively); empty target_path judges the whole runs/ tree. The scan
+        # root flows straight into _judge_all_streaming's recursive discovery.
+        base = Path(runs_dir) if runs_dir is not None else Path("runs")
+        path = base
+        sub = str(target_path or "").strip().strip("/")
+        if sub:
+            candidate = (base / sub).resolve()
+            # Confine to runs_dir -- reject "../" escapes and non-directories.
+            if not candidate.is_relative_to(base.resolve()) or not candidate.is_dir():
+                raise ValueError(f"invalid folder scope: {target_path}")
+            path = candidate
     else:
         path = Path(target_path)
         # The UI passes a bare run_id (e.g. "demo-configmap-update-..."); resolve it
