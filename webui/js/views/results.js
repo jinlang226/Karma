@@ -129,13 +129,19 @@
 
   function stopTimers() { if (refreshTimer) { clearTimeout(refreshTimer); refreshTimer = null; } }
 
+  // "Judge all" is scoped to the folder currently being browsed: at the top
+  // level it judges every run under runs/, inside a folder only the runs under
+  // that folder (recursively). The label reflects that scope.
+  function judgeAllLabel() { return runsFolder ? `Judge all in ${runsFolder}` : "Judge all"; }
+
   function subtabs() {
     const tabs = el("div", { class: "subtabs" },
       el("button", { class: "tab" + (sub === "runs" ? " active" : ""), onClick: () => { sub = "runs"; render(); } }, "Runs"),
       el("button", { class: "tab" + (sub === "batches" ? " active" : ""), onClick: () => { sub = "batches"; render(); } }, "Batches"));
     // "Judge all" sits at the far right of the same row -- scores every finished
-    // run (objective stage-pass + LLM adjudication of regression-sweep failures).
-    const judgeAll = el("button", { class: "btn secondary", onClick: () => startJudgeAll(judgeAll) }, "Judge all");
+    // run in the current folder scope (objective stage-pass + LLM adjudication of
+    // regression-sweep failures).
+    const judgeAll = el("button", { class: "btn secondary", onClick: () => startJudgeAll(judgeAll) }, judgeAllLabel());
     return el("div", { class: "subtabs-row" }, tabs, judgeAll);
   }
 
@@ -143,7 +149,7 @@
     btn.disabled = "disabled";
     btn.textContent = "Judging…";
     try {
-      const { job_id } = await api.post("/api/judge/start", { target_type: "all" });
+      const { job_id } = await api.post("/api/judge/start", { target_type: "all", target_path: runsFolder });
       api.stream(`/api/judge/jobs/${job_id}/stream`, {
         statusPath: `/api/judge/jobs/${job_id}`,
         onEvent: (ev) => {
@@ -168,12 +174,12 @@
             if (sub === "runs") render();   // refresh the list with new scores
           }
         },
-        onDone: () => { btn.disabled = null; btn.textContent = "Judge all"; },
+        onDone: () => { btn.disabled = null; btn.textContent = judgeAllLabel(); },
       });
     } catch (e) {
       KARMA.toastError(e);
       btn.disabled = null;
-      btn.textContent = "Judge all";
+      btn.textContent = judgeAllLabel();
     }
   }
 
