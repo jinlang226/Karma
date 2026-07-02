@@ -305,6 +305,24 @@ version mismatch).
   probe / image) instead of re-applying the whole manifest. *Example: a MongoDB
   case that re-applies the full manifest after an earlier stage
   customized the STS → immutable-field Forbidden.* [COMPOSITION]
+- **P-rebuild-gate — Gate a destructive fresh-build (namespace/StatefulSet delete) on
+  the workload's EXISTENCE, never on the case's fault signature.** With
+  `on_probe_fail: skip`, a probe-fail *runs* the apply. If the skip-probe tests the
+  fault shape (`spec.replicas==1`) instead of workload presence, an inherited *healthy*
+  cluster fails the probe → the apply `delete namespace`s it, destroying every prior
+  stage's state; the regression sweep then fails work the agent did correctly. Gate on
+  "workload present in any state → skip", and re-plant the fault in a separate additive
+  unit. *Example: elasticsearch/master-downscale-voting-exclusions probes
+  `spec.replicas==1` and its apply `delete namespace`s a healthy 3-replica inherited
+  cluster.* [PRECONDITION]
+- **P-fixture-scaffold — An additive fixture may re-establish only scenario
+  scaffolding/INPUT the oracle reads, never the agent's graded DELIVERABLE.** When a
+  fixture's skip-probe is the case's own missing-artifact signature and its apply
+  *produces the graded artifact*, it pre-solves the task on every run whose probe fires
+  — even standalone. Bring the scaffolding (deploy the object store, seed the index,
+  re-plant the *broken* baseline); leave the deliverable (keystore creds, the fix) to
+  the agent. *Example: elasticsearch/snapshot-repo-setup's `s3_keystore_fixture` adds
+  the `s3.client.default.*` keystore creds that ARE task #1.* [PRECONDITION]
 - **P26 — Make shared cluster-scoped applies tolerant; never let them abort a
   precondition.** Cluster-scoped objects (`IngressClass`, `CRD`, `ClusterRole(Binding)`,
   `PersistentVolume`, `StorageClass`, `PriorityClass`) are **not namespaced**, so a
@@ -675,6 +693,48 @@ version mismatch).
   equally-valid spelling the prompt never forbade; a genuinely wrong magnitude still
   differs after normalization. *Example: a CockroachDB setting graded where the agent
   wrote `64MiB` and the cluster echoes `67108864`.* [ORACLE]
+- **O-served — Grade a rotation / config application from the live *served* artifact, not
+  the stored bytes.** A cert-rotation oracle must read the certificate the server
+  presents in the handshake (`s_client -showcerts`, the mongosh TLS session cert), not
+  the Secret/ConfigMap bytes; a runtime-setting oracle must read the effective running
+  value. Otherwise "updated the artifact but never reloaded the server" scores as
+  success. Sharpens O-e2e (reachability + response identity) along the served-vs-stored
+  axis. *Example: mongodb/certificate-rotation grades Secret fingerprint bytes plus a
+  handshake against the unchanged CA, never the served leaf cert.* [ORACLE]
+- **O-dualsource — Grade sibling settings that are settable at runtime *or* via start-up
+  config with the same dual-source read.** If one setting falls back to live-runtime
+  introspection (`db.getProfilingStatus().slowms`) but a sibling is read only from
+  start-up options (`getCmdLineOpts`), an all-runtime (or all-persisted) valid solution
+  is judged inconsistently. Read runtime-first, then start-up config, for every such
+  setting. *Example: mongodb/mongod-config-update reads `slowms` dual-source but
+  `verbosity` only from `getCmdLineOpts`, false-failing a runtime `setParameter` fix.*
+  [ORACLE]
+- **O-fault-scoped — Grade the exact durable signal the injected fault disables (the
+  oracle-side mirror of P27).** For a break-then-fix case, assert the signal that stays
+  broken until remediation — not a co-resident signal on a different listener/path the
+  fault never touched, nor one that self-heals between restart cycles. When the fault
+  breaks the readiness/HTTP-health path itself, O-funcready's "grade `SELECT 1`/`is_live`
+  instead of pod-Ready" does NOT apply — grade the faulted path directly (curl `/health`
+  in-cluster, assert the pod is in the Service endpoints, assert pod-Ready after a
+  converge window). *Example: cockroachdb/health-check-recovery breaks only one pod's
+  HTTP `--http-addr` (loopback) while the oracle grades gRPC `is_live` + `SELECT 1`, so
+  an idle agent passes.* [ORACLE]
+- **O-transient-gateway — Re-poll transient gateway *status codes*, not just exec errors,
+  when asserting an exact HTTP-status set through a warming / multi-replica / reloading
+  proxy.** A burst through a proxy being scaled or reloaded can return 502/503/504 from a
+  not-yet-ready replica; a completed request carrying a transient 502/504 is a
+  returncode-0 "success" that a retry-on-exec-error loop will NOT re-poll. Retry the
+  status code within the bounded deadline and fail only on a *stable* wrong status.
+  *Example: nginx/rate_limit_replica_hard (3 controller replicas) hard-fails on the first
+  502/504 during warm-up although its exec-retry loop looks robust.* [ORACLE]
+- **O-membership-scope — Scope a membership tally to the graded role; exclude
+  helper/client members; pair it with a spec/ready-replica assertion.** An oracle grading
+  a worker/replica count via a cluster-membership list (`ray.nodes()`, `_cat/nodes`,
+  `rs.status().members`) must not let an auxiliary client/helper pod inflate the count,
+  and must also assert the graded workload's own spec + ready replicas — else
+  `head(1)+client(1)+worker(1)=3` passes a "2 workers / 3 nodes" contract one worker
+  short. *Example: ray/worker_recovery and scale_workers register a throwaway
+  `ray-client` raylet counted in `ray.nodes()`.* [ORACLE]
 - **O-mgmt-order — Probe an admin/management API in the order the app serves by
   default, not always TLS-first.** O-scheme's https-first fits a console that redirects
   plain→TLS, but a management API defaulting to a *plain* port should be probed
@@ -807,6 +867,26 @@ version mismatch).
   on a cluster inherited from a stage that omits it. Re-enable at **runtime**
   (`rabbitmqctl eval 'application:ensure_all_started(...)'`) probed on the running
   app set — never restart an `emptyDir` pod or rewrite a read-only file. [COMPOSITION]
+- **C-sharedcontrolplane — A case whose premise mutates a cluster-shared control-plane
+  component is not additively composable.** Flipping a shared ingress/gateway
+  controller's class or watch-scope, a shared admission webhook, or a cluster-wide proxy
+  config changes how the component treats the *default* traffic class for every
+  co-resident case; the premise *is* the shared mutation, so it can't be made additive,
+  and a probe keyed on a generic shared artifact (a `curl-test` pod, an Active namespace)
+  is not authoritative for it. Curate to a `stage_01`-only dedicated workflow, or give it
+  a private controller instance. *Example: nginx/class_only_upgrade sets
+  `--watch-ingress-without-class=false` on the shared ingress-nginx-controller, breaking
+  classless-Ingress siblings both before and after it.* [COMPOSITION]
+- **C-migration-empty — A migration/promotion case whose premise requires an
+  empty/absent target only chains where each instance's target is genuinely re-emptied or
+  re-provisioned first.** Because env (PVC data) persists and the oracle typically grades
+  only the target end-state, alternating source↔target reuse leaves a target populated by
+  the prior stage's source → the "empty target" premise is unsatisfiable additively and
+  the oracle passes with zero migration work (fault never re-planted). Re-empty the target
+  in an additive precondition, assert the pre-migration empty baseline in the oracle, or
+  curate the case out of alternating/marathon chains. *Example: rabbitmq/blue_green_migration
+  in a 30-stage alternating workflow inherits a PVC-populated green and passes trivially.*
+  [COMPOSITION]
 - **C8 — Replant the exact drift a break-then-fix case checks.** A bootstrap-
   existence probe ("queue exists") passes on a cluster a prior identical stage
   already healed, so the fault is never re-planted and the oracle passes with zero
@@ -933,6 +1013,24 @@ version mismatch).
   to clobber). *Example: a "block the SQL port" adversary whose policy allows only the
   admin/HTTP port — denying SQL by omission — while the admin endpoint the agent
   diagnoses through stays reachable.*
+- **ADV-configpatch — A config-drift adversary mutating one field inside a shared
+  multi-field config blob must patch only that field and snapshot/restore the rest —
+  never rewrite the whole blob from a hardcoded template.** When the config is one opaque
+  key (`elasticsearch.yml`), a merge/replace patch replaces the entire file and clobbers
+  co-located config an earlier stage set (e.g. forcing `xpack.security.enabled: false`
+  back on), so the next restart comes up wrong and that stage's regression sweep fails
+  through no agent fault. Extends ADV8's snapshot discipline to the shared-blob case.
+  *Example: elasticsearch/es-config-seed-hosts-drift merge-patches the whole
+  `elasticsearch.yml` key from a template.*
+- **ADV-netverify — A NetworkPolicy adversary must template its selector from the probe's
+  identity param and positively assert the block took effect.** (a) Derive `podSelector`
+  from the same `{{params.cluster_prefix}}` the probe keys on — a hardcoded `app: rabbitmq`
+  selects zero pods when the workload is named `rabbitmq-cluster-a`, a vacuous fault; (b)
+  `verify` must assert the policy selects ≥1 running target pod *or* the target port is
+  actually unreachable — never merely that the NetworkPolicy object exists (doubly vacuous
+  on kind's non-enforcing CNI). Sharpens ADV6 for network faults. *Example:
+  rabbitmq/block_amqp_network_policy hardcodes `app: rabbitmq` + existence-only verify;
+  elasticsearch/transport-networkpolicy-block is the templated model.*
 
 ---
 
@@ -1183,7 +1281,11 @@ Must plant **durable, live-checked non-default state** so an agent that wrongly
 reverts/applies is caught by the regression sweep (a default cluster or
 sleep-infinity pods are toothless); the oracle reads only the produced artifact
 (escaped jsonpath key) and makes no destructive change; the prompt references
-resources the deploy actually creates. — And if a case relies on the
+resources the deploy actually creates. **Trap-teeth:** the case's OWN oracle must
+re-verify that non-default state is unmutated (teeth *standalone*), never relying
+solely on the workflow regression sweep — and the prompt must not assert state the
+precondition never planted (a stock default baseline described as "non-default
+configuration applied" is toothless standalone, as in the six ray/spark trap cases). — And if a case relies on the
 `decoy_integrity` metric to catch a careless mutation, the decoy must live in its
 **own namespace**: the metric keys on the decoy's `namespace`, so a decoy planted
 into the graded/role-bound namespace scores nothing.
