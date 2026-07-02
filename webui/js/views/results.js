@@ -131,8 +131,18 @@
 
   // "Judge all" is scoped to the folder currently being browsed: at the top
   // level it judges every run under runs/, inside a folder only the runs under
-  // that folder (recursively). The label reflects that scope.
-  function judgeAllLabel() { return runsFolder ? `Judge all in "${runsFolder}"` : "Judge all"; }
+  // that folder (recursively). Render the scope as a highlighted chip (not a
+  // plain string) so the folder name stands out; falls back to plain "Judge all"
+  // at the top level.
+  function setJudgeAllLabel(btn) {
+    clear(btn);
+    if (runsFolder) {
+      btn.appendChild(document.createTextNode("Judge all in "));
+      btn.appendChild(el("span", { class: "judge-scope" }, runsFolder));
+    } else {
+      btn.appendChild(document.createTextNode("Judge all"));
+    }
+  }
 
   function subtabs() {
     const tabs = el("div", { class: "subtabs" },
@@ -141,7 +151,8 @@
     // "Judge all" sits at the far right of the same row -- scores every finished
     // run in the current folder scope (objective stage-pass + LLM adjudication of
     // regression-sweep failures).
-    const judgeAll = el("button", { id: "judge-all-btn", class: "btn secondary", onClick: () => startJudgeAll(judgeAll) }, judgeAllLabel());
+    const judgeAll = el("button", { id: "judge-all-btn", class: "btn secondary", onClick: () => startJudgeAll(judgeAll) });
+    setJudgeAllLabel(judgeAll);
     return el("div", { class: "subtabs-row" }, tabs, judgeAll);
   }
 
@@ -174,12 +185,12 @@
             if (sub === "runs") render();   // refresh the list with new scores
           }
         },
-        onDone: () => { btn.disabled = null; btn.textContent = judgeAllLabel(); },
+        onDone: () => { btn.disabled = null; setJudgeAllLabel(btn); },
       });
     } catch (e) {
       KARMA.toastError(e);
       btn.disabled = null;
-      btn.textContent = judgeAllLabel();
+      setJudgeAllLabel(btn);
     }
   }
 
@@ -298,7 +309,7 @@
     // refresh the "Judge all" scope label here -- unless a judge is mid-run
     // (button disabled), where its progress text must not be clobbered.
     const jb = document.getElementById("judge-all-btn");
-    if (jb && !jb.disabled) jb.textContent = judgeAllLabel();
+    if (jb && !jb.disabled) setJudgeAllLabel(jb);
     const body = document.getElementById("runs-body");
     if (body) {
       renderRunRows(body);
