@@ -1,0 +1,18 @@
+The upgrade is complete and successful. Here's a summary of what was accomplished:
+
+**Upgrade complete: RabbitMQ 3.12.14 → 4.1.8**
+
+- **All 3 nodes running RabbitMQ 4.1.8** on Erlang 27.3.4.13 — verified via `rabbitmqctl cluster_status`
+- **Cluster healthy**: 3 running nodes, no alarms, no network partitions
+- **`/app` vhost exists** with `app-queue` containing **2382 messages** (2373 pre-upgrade messages restored + new ones from the producer)
+- **Producer reconnected** and is publishing to the queue again
+
+**What happened under the hood:**
+
+Rolling upgrade was blocked because RabbitMQ 4.x introduces feature flags incompatible with 3.12 (mixed-version clusters are not supported across that gap). The solution was:
+
+1. **Exported** all definitions (vhosts, users, queues, policies) and **captured 2373 messages** from `app-queue` via the management API with `reject_requeue_true` (non-destructive peek)
+2. **Scaled the StatefulSet to 0** — clearing the emptyDir volumes (no persistent data to worry about)
+3. **Updated the image** to `rabbitmq:4.1-management` and scaled back to 3 replicas — the fresh nodes formed a clean 4.1 cluster
+4. **Imported definitions** via `rabbitmqctl import_definitions` and recreated `app-queue` as a classic queue (matching the producer's expectations)
+5. **Republished** all 2373 captured messages via the in-cluster `curl-test` pod

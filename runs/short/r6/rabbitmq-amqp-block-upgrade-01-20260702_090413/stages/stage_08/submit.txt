@@ -1,0 +1,14 @@
+Everything is working. Here's what was done:
+
+**Root cause:** The `prometheus-config` ConfigMap's `prometheus.yml` only had a `prometheus` self-scrape job. There was no `rabbitmq` job configured.
+
+**Fix:** Patched the ConfigMap to add:
+1. A `rabbitmq` scrape job targeting all 3 pods via their individual headless-service DNS names (`rabbitmq-{0,1,2}.rabbitmq-headless.<namespace>.svc.cluster.local:15692`), which gives 3 distinct targets instead of load-balancing through the ClusterIP service.
+2. A `rule_files` entry pointing to `/etc/prometheus/rules.yml` (the recording rule `rabbitmq_up = up{job="rabbitmq"}` was already in the ConfigMap but not being loaded).
+
+Then triggered a `POST /-/reload` twice (the first reload raced the ConfigMap file propagation; the second picked up the complete file).
+
+**Final state:**
+- 4 Prometheus targets UP (prometheus self + 3 RabbitMQ pods)
+- `rabbitmq_up` returns **3 samples**, all = 1
+- All 3 RabbitMQ pods Running, no restarts

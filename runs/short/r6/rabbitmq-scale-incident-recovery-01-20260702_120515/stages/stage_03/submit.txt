@@ -1,0 +1,21 @@
+All required end state is achieved. Here's a summary of what was done and why:
+
+**Root causes found:**
+
+| Problem | Detail |
+|---|---|
+| `app-user` on `/app` | `configure` permission was `""` (empty) — should be `.*`. This caused the "Access refused" error when declaring a queue. |
+| `ops-user` on `/app` | Had full `.*`/`.*`/`.*` permissions on a vhost it should never touch. |
+| `ops-user` on `/ops` | Had **no** permissions at all — user wasn't authorized to access the vhost. |
+| Stale `app-queue` | Was pre-created with `x-queue-mode: lazy`, but app-client declares it with only `x-queue-type: classic`. Arguments conflicted, causing a `bad_request` error after the permission fix. Queue was deleted so app-client could recreate it correctly. |
+
+**Fixes applied (all via `rabbitmqctl`, no CRDs/operators):**
+1. `set_permissions -p /app app-user '.*' '.*' '.*'` — restored configure permission
+2. `clear_permissions -p /app ops-user` — removed cross-vhost leak
+3. `set_permissions -p /ops ops-user '.*' '.*' '.*'` — granted ops-user its proper access
+4. `delete_queue app-queue -p /app` — cleared the argument-mismatched queue
+
+**End state verified:**
+- `/app`: only `admin` and `app-user` (full `.*`/`.*`/`.*`), `ops-user` absent
+- `/ops`: only `admin` and `ops-user` (full `.*`/`.*`/`.*`), `app-user` absent
+- All 3 RabbitMQ nodes running; `app-client` and `ops-client` both `1/1 Running`

@@ -1,0 +1,13 @@
+All requirements met. Here's what was done and why it works:
+
+**Root cause:** The `prometheus-config` ConfigMap had a `prometheus.yml` that only scraped `localhost:9090` (Prometheus self-scrape). No RabbitMQ scrape job existed, and the `rabbitmq_rules.yml` key in the ConfigMap wasn't referenced in the config either.
+
+**Fix — single ConfigMap patch:**
+- Added a `rabbitmq` scrape job targeting all 3 pods individually via the headless service DNS (`rabbitmq-{0,1,2}.rabbitmq-headless:15692`). The headless service gives per-pod DNS without any load balancing, so each pod shows as a distinct Prometheus target.
+- Added `rule_files: [/etc/prometheus/rabbitmq_rules.yml]` so the pre-existing recording rule (`rabbitmq_up = up{job="rabbitmq"}`) is actually evaluated.
+- Called `POST /-/reload` twice: once immediately (which reloaded the stale file before kubelet synced it), and again after the ConfigMap propagated to the pod volume.
+
+**Result:**
+- 3 RabbitMQ targets all `UP`
+- `rabbitmq_up` query returns 3 samples with value `1`
+- All 3 RabbitMQ pods `1/1 Running`, no restarts
