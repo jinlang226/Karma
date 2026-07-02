@@ -770,6 +770,23 @@ version mismatch).
   don't chain the mismatched pair. *Example: a RabbitMQ workflow leads with
   `classic_queue` (emptyDir) then runs `manual_backup_restore` (PVC-backed STS) → the
   re-apply adopts the emptyDir pods and the rollout never converges.* [COMPOSITION]
+- **C-typereconcile — A setup that requires a specific resource *sub-type* must
+  declare it explicitly AND reconcile an inherited wrong sub-type, not assume the
+  default.** Some resources have an immutable sub-type chosen at creation — a RabbitMQ
+  queue's `x-queue-type` (classic vs quorum), an index's shard settings, a volume's
+  storage class. A setup that creates the resource with the *implicit* default
+  (`"arguments":{}`) inherits whatever the broker/cluster default is — and that default
+  can change under composition: an earlier stage that upgrades the engine (RabbitMQ
+  4.x removes classic mirroring and may default new queues to quorum) leaves the shared
+  resource as the wrong sub-type. Because the sub-type is immutable, a plain idempotent
+  create (`PUT`) cannot fix it, and the case's own `verify` then hard-fails on the
+  inherited type. Declare the required sub-type explicitly on create, and if a
+  wrong-typed resource already exists, delete-then-recreate to reconcile. Standalone the
+  default happened to be right, so the bug only appears when composed after the
+  type-changing stage. *Example: `manual_policy_sync` (needs a CLASSIC app-queue for its
+  ha-all baseline) scheduled after `manual_skip_upgrade` to 4.1 found app-queue left as
+  quorum; the fix deletes a non-classic app-queue and recreates it with an explicit
+  `x-queue-type: classic`.* [COMPOSITION]
 - **C7 — Restore a runtime feature additively when its baked-in config is skipped.**
   A scenario property baked into the case's own StatefulSet/ConfigMap (the
   `rabbitmq_prometheus` plugin on :15692) silently drops when the apply is skipped

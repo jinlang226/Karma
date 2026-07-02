@@ -45,6 +45,16 @@ spec:
               curl -s -u "$auth" -H "content-type: application/json" \
                 -XPUT "$base/permissions/%2Fapp/${RABBITMQ_APP_USER}" \
                 -d '{"configure":".*","write":".*","read":".*"}' >/dev/null
+              # C-typereconcile: app-queue must be a CLASSIC queue for this case's
+              # ha-all policy baseline. A prior workflow stage (e.g. an upgrade to
+              # RabbitMQ 4.x, where classic mirroring is removed and the default
+              # queue type may be quorum) can leave app-queue as quorum. Queue type
+              # is IMMUTABLE, so a plain PUT cannot reconcile it -- delete a
+              # wrong-typed queue first, then recreate with an EXPLICIT classic type.
+              qtype=$(curl -s -u "$auth" "$base/queues/%2Fapp/app-queue" 2>/dev/null | grep -o '"type":"[a-z]*"' | head -1 | cut -d'"' -f4)
+              if [ -n "$qtype" ] && [ "$qtype" != "classic" ]; then
+                curl -s -u "$auth" -XDELETE "$base/queues/%2Fapp/app-queue" >/dev/null
+              fi
               curl -s -u "$auth" -H "content-type: application/json" \
                 -XPUT "$base/queues/%2Fapp/app-queue" \
-                -d '{"durable":true,"auto_delete":false,"arguments":{}}' >/dev/null
+                -d '{"durable":true,"auto_delete":false,"arguments":{"x-queue-type":"classic"}}' >/dev/null
