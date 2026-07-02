@@ -274,6 +274,20 @@ version mismatch).
   inspects — and hard-failed when up-replication lagged and the range renumbered; the
   fix seeds the rows, sets the replication factor, and lets default RF=3 distribute
   them.* [PRECONDITION]
+- **P-converge — A precondition that MUTATES live engine state to set a baseline must
+  poll to convergence, not single-shot apply + immediate verify.** Clearing a policy,
+  resetting a config parameter, deleting a queue/role, revoking a permission — these
+  land in the engine **asynchronously** (they propagate across cluster members), so a
+  lone mutate followed by an immediate verify races the propagation and false-fails
+  even though the mutation was accepted. The race is worst under **composition**: when
+  a workflow schedules the case more than once, the reconcile runs against the prior
+  run's inherited state, exactly where propagation lag bites. Wrap the mutate in a
+  bounded loop that re-issues it until the engine reports the target state (or give the
+  paired verify `retries`/`interval_sec`), so the baseline is reliably established. The
+  precondition analog of O-flap. *Example: a RabbitMQ policy-sync case (scheduled twice)
+  whose `clear_policy ha-all` + one-shot verify intermittently saw `ha-all` still
+  listed; the fix re-issues the clear until `list_policies` no longer reports it.*
+  [PRECONDITION]
 
 ### Manifests, literals, identity
 - **P15 — Get-or-apply for helper Pods.** `kubectl apply` of a bare helper Pod
