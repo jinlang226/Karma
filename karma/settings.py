@@ -29,14 +29,12 @@ class Settings:
     host: str = "127.0.0.1"
     port: int = 8080
 
-    # Judge LLM
-    judge_api_key: str | None = None
-    judge_base_url: str | None = None
-    judge_model: str = "gpt-4o"
-
-    # Agent model used when launching containerised agents
-    agent_model: str = "claude-sonnet-4-6"
-    anthropic_api_key: str | None = None
+    # NOTE: judge model/api-key/base-url and the agent model are intentionally
+    # NOT configured here. The judge resolves them per call from KARMA_JUDGE_*
+    # env (see judge/client.py) and mirrors the run's agent (judge/agent_defaults
+    # .py); each agent resolves its own model from its own env in entrypoint.sh
+    # (e.g. KARMA_CLAUDE_AGENT_MODEL). Keeping duplicate defaults here only
+    # misleads, since nothing reads them.
 
     # Execution limits
     command_timeout_sec: int = 120
@@ -75,19 +73,11 @@ class Settings:
         def _str(key: str, default: str) -> str:
             return os.environ.get(key, default)
 
-        def _opt(key: str, fallback: str | None = None) -> str | None:
-            return os.environ.get(key) or (os.environ.get(fallback) if fallback else None)
-
         return cls(
             resources_dir=_path("KARMA_RESOURCES_DIR", "cases"),
             runs_dir=_path("KARMA_RUNS_DIR", "runs"),
             host=_str("KARMA_HOST", "127.0.0.1"),
             port=_int("KARMA_PORT", 8080),
-            judge_api_key=_opt("KARMA_JUDGE_API_KEY", "OPENAI_API_KEY"),
-            judge_base_url=_opt("KARMA_JUDGE_BASE_URL", "OPENAI_BASE_URL"),
-            judge_model=_str("KARMA_JUDGE_MODEL", "gpt-4o"),
-            agent_model=_str("KARMA_AGENT_MODEL", "claude-sonnet-4-6"),
-            anthropic_api_key=_opt("ANTHROPIC_API_KEY"),
             command_timeout_sec=_int("KARMA_COMMAND_TIMEOUT_SEC", 120),
             precondition_timeout_sec=_int("KARMA_PRECONDITION_TIMEOUT_SEC", 600),
             setup_timeout_mode=_str("KARMA_SETUP_TIMEOUT_MODE", "auto"),
