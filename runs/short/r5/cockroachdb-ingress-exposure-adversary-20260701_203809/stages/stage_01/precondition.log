@@ -1,0 +1,78 @@
+[precondition:crdb_env_ready:preconditionUnits[0] 'crdb_env_ready':probe] $ /bin/sh -c 'kubectl -n cockroachdb get statefulset crdb-cluster >/dev/null 2>&1 || kubectl -n cockroachdb get pods 2>/dev/null | grep -q Running'
+
+[precondition:crdb_env_ready:preconditionUnits[0] 'crdb_env_ready':apply] $ /bin/sh -c 'kubectl delete namespace cockroachdb --ignore-not-found=true --wait=false; kubectl wait --for=delete namespace/cockroachdb --timeout=400s || true'
+
+[precondition:crdb_env_ready:preconditionUnits[0] 'crdb_env_ready':apply] $ /bin/sh -c 'kubectl create namespace ingress-nginx --dry-run=client -o yaml | kubectl apply -f -'
+namespace/ingress-nginx created
+
+[precondition:crdb_env_ready:preconditionUnits[0] 'crdb_env_ready':apply] $ /bin/sh -c 'kubectl apply -f https://raw.githubusercontent.com/kubernetes/ingress-nginx/main/deploy/static/provider/kind/deploy.yaml || true'
+namespace/ingress-nginx configured
+serviceaccount/ingress-nginx created
+serviceaccount/ingress-nginx-admission created
+role.rbac.authorization.k8s.io/ingress-nginx created
+role.rbac.authorization.k8s.io/ingress-nginx-admission created
+clusterrole.rbac.authorization.k8s.io/ingress-nginx unchanged
+clusterrole.rbac.authorization.k8s.io/ingress-nginx-admission unchanged
+rolebinding.rbac.authorization.k8s.io/ingress-nginx created
+rolebinding.rbac.authorization.k8s.io/ingress-nginx-admission created
+clusterrolebinding.rbac.authorization.k8s.io/ingress-nginx unchanged
+clusterrolebinding.rbac.authorization.k8s.io/ingress-nginx-admission unchanged
+configmap/ingress-nginx-controller created
+service/ingress-nginx-controller created
+service/ingress-nginx-controller-admission created
+deployment.apps/ingress-nginx-controller created
+job.batch/ingress-nginx-admission-create created
+job.batch/ingress-nginx-admission-patch created
+ingressclass.networking.k8s.io/nginx unchanged
+validatingwebhookconfiguration.admissionregistration.k8s.io/ingress-nginx-admission configured
+
+[precondition:crdb_env_ready:preconditionUnits[0] 'crdb_env_ready':apply] $ kubectl -n ingress-nginx rollout status deploy/ingress-nginx-controller --timeout=120s
+deployment "ingress-nginx-controller" successfully rolled out
+
+[precondition:crdb_env_ready:preconditionUnits[0] 'crdb_env_ready':apply] $ kubectl -n ingress-nginx patch deployment ingress-nginx-controller --type=json -p '[{"op":"add","path":"/spec/template/spec/containers/0/args/-","value":"--watch-ingress-without-class=false"}]'
+deployment.apps/ingress-nginx-controller patched
+
+[precondition:crdb_env_ready:preconditionUnits[0] 'crdb_env_ready':apply] $ kubectl -n ingress-nginx rollout status deploy/ingress-nginx-controller --timeout=120s
+Waiting for deployment "ingress-nginx-controller" rollout to finish: 0 of 1 updated replicas are available...
+deployment "ingress-nginx-controller" successfully rolled out
+
+[precondition:crdb_env_ready:preconditionUnits[0] 'crdb_env_ready':apply] $ kubectl create namespace cockroachdb
+namespace/cockroachdb created
+
+[precondition:crdb_env_ready:preconditionUnits[0] 'crdb_env_ready':apply] $ kubectl -n cockroachdb apply -f cases/cockroachdb/expose-ingress/resource/
+pod/curl-test created
+serviceaccount/crdb-cluster-sa created
+role.rbac.authorization.k8s.io/crdb-cluster-role created
+rolebinding.rbac.authorization.k8s.io/crdb-cluster-rolebinding created
+service/crdb-cluster created
+service/crdb-cluster-public created
+statefulset.apps/crdb-cluster created
+secret/crdb-ui-tls created
+Warning: tls: failed to find any PEM data in certificate input
+
+[precondition:crdb_env_ready:preconditionUnits[0] 'crdb_env_ready':apply] $ /bin/sh -c 'for i in $(seq 1 30); do count=$(kubectl -n cockroachdb get pod -l app.kubernetes.io/name=cockroachdb --no-headers 2>/dev/null | wc -l | tr -d " "); if [ "${count}" -ge 1 ]; then exit 0; fi; sleep 2; done; exit 1'
+
+[precondition:crdb_env_ready:preconditionUnits[0] 'crdb_env_ready':apply] $ kubectl -n cockroachdb wait --for=jsonpath={.status.phase}=Running pod -l app.kubernetes.io/name=cockroachdb --timeout=300s
+pod/crdb-cluster-0 condition met
+pod/crdb-cluster-1 condition met
+pod/crdb-cluster-2 condition met
+
+[precondition:crdb_env_ready:preconditionUnits[0] 'crdb_env_ready':apply] $ /bin/sh -c 'for i in $(seq 1 30); do kubectl -n cockroachdb exec crdb-cluster-0 -- ./cockroach init --insecure --host=crdb-cluster-0.crdb-cluster.cockroachdb.svc.cluster.local && exit 0; sleep 3; done; exit 1'
+Cluster successfully initialized
+
+[precondition:crdb_env_ready:preconditionUnits[0] 'crdb_env_ready':apply] $ kubectl -n cockroachdb wait --for=condition=ready pod -l app.kubernetes.io/name=cockroachdb --timeout=600s
+pod/crdb-cluster-0 condition met
+pod/crdb-cluster-1 condition met
+pod/crdb-cluster-2 condition met
+
+[precondition:crdb_env_ready:preconditionUnits[0] 'crdb_env_ready':apply] $ kubectl -n cockroachdb wait --for=condition=Ready pod/curl-test --timeout=60s
+pod/curl-test condition met
+
+[precondition:crdb_env_ready:preconditionUnits[0] 'crdb_env_ready':verify] $ /bin/sh -c 'flag=--insecure; kubectl -n cockroachdb exec crdb-cluster-0 -- ls /cockroach/cockroach-certs/ca.crt >/dev/null 2>&1 && flag=--certs-dir=/cockroach/cockroach-certs; kubectl -n cockroachdb exec crdb-cluster-0 -- ./cockroach sql $flag -e "SELECT 1;" 2>/dev/null'
+?column?
+1
+
+[precondition:crdb_ingress_infra:preconditionUnits[1] 'crdb_ingress_infra':probe] $ kubectl -n ingress-nginx get deploy ingress-nginx-controller
+NAME                       READY   UP-TO-DATE   AVAILABLE   AGE
+ingress-nginx-controller   1/1     1            1           2m51s
+

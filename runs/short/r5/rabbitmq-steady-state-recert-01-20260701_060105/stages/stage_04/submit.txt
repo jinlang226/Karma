@@ -1,0 +1,10 @@
+Everything checks out. Summary of the fix:
+
+- **What was broken**: Prometheus's ConfigMap (`prometheus-config`) only had a self-scrape job (`localhost:9090`); nothing pointed at RabbitMQ.
+- **Fix**: Updated the `prometheus-config` ConfigMap (native K8s resource, no CRDs) to:
+  1. Add a `rabbitmq` scrape job with three static targets — the per-pod stable DNS names from the existing `rabbitmq-headless` service (`rabbitmq-0/1/2.rabbitmq-headless.<ns>.svc.cluster.local:15692`), scraping `/metrics` (RabbitMQ's `rabbitmq_prometheus` plugin was already enabled and listening on 15692, confirmed via `rabbitmq-config` and a direct curl).
+  2. Add a `rabbitmq_rules.yml` recording rule (`rabbitmq_up = up{job="rabbitmq"}`) so the literal `rabbitmq_up` metric exists, since Prometheus's built-in `up` metric bypasses relabeling.
+  3. Referenced the rule file via `rule_files` in `prometheus.yml`.
+- Reloaded via the existing `--web.enable-lifecycle` `/​-/reload` endpoint (waited for kubelet's ConfigMap volume sync, ~60-90s, before each reload).
+
+Verified: all 3 RabbitMQ targets show `health: up` in `/api/v1/targets`, `rabbitmq_up` query returns 3 samples (all value `1`), and the RabbitMQ StatefulSet remains healthy (3/3 pods running, cluster_status shows all 3 nodes as running disk nodes).

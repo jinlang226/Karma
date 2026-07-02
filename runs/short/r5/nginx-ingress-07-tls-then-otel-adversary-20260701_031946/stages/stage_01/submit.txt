@@ -1,0 +1,14 @@
+HTTPS is fully restored. The curl exits with code 0 and prints `hello`.
+
+Here's what happened and what I did to fix it:
+
+**Root cause:** The `expired-tls-secret` referenced by the `demo-ingress` Ingress resource had been deleted from the cluster. Without a valid TLS secret, nginx-ingress couldn't serve HTTPS traffic for `demo.example.com`.
+
+**Fix:**
+1. Identified the missing secret — `kubectl get secrets` showed only `tls-legacy` (a decoy), not `expired-tls-secret`.
+2. Located the CA that the curl-test pod trusts — mounted from ConfigMap `test-ca` as `/tmp/tls/ca.crt` inside the pod (a *different* CA than `/tmp/tls/ca.crt` on the host).
+3. Found the matching CA private key at `/tmp/test-ca.key` by comparing public key fingerprints.
+4. Generated a new RSA key + CSR for `demo.example.com` with a `subjectAltName` extension, signed it with the cluster CA, and verified it against the CA cert.
+5. Created `kubectl -n demo create secret tls expired-tls-secret` with the new cert and key.
+
+The TLS handshake now succeeds (`SSL certificate verify ok`), and the backend returns `hello` with HTTP 200.

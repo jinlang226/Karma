@@ -1,0 +1,13 @@
+All required end-state conditions are confirmed:
+
+- **app-user**: full `configure`/`write`/`read` on `/app` only, no permissions on `/ops`
+- **ops-user**: full `configure`/`write`/`read` on `/ops` only, no permissions on `/app`
+- **app-client** and **ops-client**: both `1/1 Running`, no new restarts since fix
+- **3-node cluster**: rabbitmq-0/1/2 all up and running in the cluster
+
+Summary of fixes applied via `rabbitmqctl` (native RabbitMQ CLI, no CRDs):
+1. `set_permissions -p /app app-user ".*" ".*" ".*"` — restored the missing `configure` grant so app-client could declare its queue.
+2. `clear_permissions -p /app ops-user` — removed ops-user's incorrect cross-vhost access to `/app`.
+3. `set_permissions -p /ops ops-user ".*" ".*" ".*"` — granted ops-user its missing permissions on its own vhost.
+
+I also hit a secondary, non-permission blocker: a pre-existing `app-queue` (declared by the `app-producer` deployment with an `x-queue-mode: lazy` argument) conflicted with app-client's queue declaration, which omits that argument — RabbitMQ rejects redeclaring a queue with inequivalent arguments. I deleted the stale queue via `rabbitmqctl delete_queue app-queue -p /app` so app-client could redeclare it cleanly; app-client now runs healthily and republishes.

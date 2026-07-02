@@ -1,0 +1,41 @@
+[precondition:mongo_env_ready:preconditionUnits[0] 'mongo_env_ready':probe] $ kubectl -n mongodb get pod mongodb-replica-0 2>/dev/null | grep -c Running
+1
+
+[precondition:admin_user_fixture:preconditionUnits[1] 'admin_user_fixture':probe] $ /bin/sh -c '
+t=""; for cca in /etc/tls/ca.crt /etc/mongo-ca/ca.crt; do kubectl -n mongodb exec mongodb-replica-0 -- ls $cca >/dev/null 2>&1 && { t="--tls --tlsAllowInvalidHostnames --tlsAllowInvalidCertificates --tlsCAFile $cca"; break; }; done
+pw=$(kubectl -n mongodb get secret admin-user-password -o jsonpath="{.data.password}" 2>/dev/null | base64 -d 2>/dev/null)
+[ -n "$pw" ] || exit 1
+kubectl -n mongodb exec mongodb-replica-0 -- mongosh --quiet $t "mongodb://admin-user:$pw@localhost:27017/admin" --eval "db.runCommand({ping:1}).ok" 2>/dev/null | grep -q 1
+'
+
+
+[precondition:health_user_fixture:preconditionUnits[2] 'health_user_fixture':probe] $ /bin/sh -c '
+kubectl -n mongodb get secret health-user-password >/dev/null 2>&1 || exit 1
+kubectl -n mongodb get pod mongodb-replica-0 >/dev/null 2>&1 || exit 1
+admin_pw=$(kubectl -n mongodb get secret admin-user-password -o jsonpath="{.data.password}" 2>/dev/null | base64 -d 2>/dev/null)
+[ -n "$admin_pw" ] || exit 1
+t=""; for cca in /etc/tls/ca.crt /etc/mongo-ca/ca.crt; do kubectl -n mongodb exec mongodb-replica-0 -- ls $cca >/dev/null 2>&1 && { t="--tls --tlsAllowInvalidHostnames --tlsAllowInvalidCertificates --tlsCAFile $cca"; break; }; done
+kubectl -n mongodb exec mongodb-replica-0 -- mongosh --quiet $t "mongodb://admin-user:${admin_pw}@localhost:27017/admin" --eval "db.getUser(\"health-user\") ? quit(0) : quit(1)" >/dev/null 2>&1
+'
+
+
+[precondition:health_user_fixture:preconditionUnits[2] 'health_user_fixture':apply] $ /bin/sh -c '
+kubectl -n mongodb get secret health-user-password >/dev/null 2>&1 || \
+  kubectl -n mongodb create secret generic health-user-password --from-literal=password=healthpass123
+'
+
+secret/health-user-password created
+
+[precondition:health_user_fixture:preconditionUnits[2] 'health_user_fixture':apply] $ /bin/sh -c '
+admin_pw=$(kubectl -n mongodb get secret admin-user-password -o jsonpath="{.data.password}" 2>/dev/null | base64 -d 2>/dev/null)
+[ -n "$admin_pw" ] || { echo "admin-user-password secret unavailable; cannot ensure health-user"; exit 0; }
+kubectl -n mongodb exec mongodb-replica-0 -- mongosh --quiet "mongodb://admin-user:${admin_pw}@localhost:27017/admin" --eval "
+  if (!db.getUser(\"health-user\")) {
+    db.getSiblingDB(\"admin\").createUser({user:\"health-user\",pwd:\"healthpass123\",roles:[{role:\"clusterMonitor\",db:\"admin\"}]});
+  }" >/dev/null 2>&1 || true
+'
+
+
+[precondition:health_user_fixture:preconditionUnits[2] 'health_user_fixture':verify] $ kubectl -n mongodb get secret health-user-password >/dev/null 2>&1 && echo ok
+ok
+

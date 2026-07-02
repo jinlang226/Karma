@@ -1,0 +1,12 @@
+All 3 RabbitMQ pods are running and healthy, cluster status shows all 3 nodes as running. Everything checks out:
+
+- **Prometheus targets**: `prometheus` self-job UP, plus all 3 `rabbitmq` targets (`rabbitmq-0/1/2.rabbitmq-headless:15692`) UP.
+- **`rabbitmq_up` query**: returns exactly 3 samples, all value `1`.
+- **RabbitMQ cluster**: 3/3 pods `Running`, cluster_status shows all 3 nodes as running disk nodes.
+- **Vhost permissions**: `admin` has full `.*`/`.*`/`.*` on `/`, `/app`, `/ops`; `app-user` on `/app` and `ops-user` on `/ops` are intact (nothing was actually still revoked — already restored before I started).
+
+What I changed (native K8s resources only, no CRDs/operators):
+1. Updated the `prometheus-config` ConfigMap: added a `rabbitmq` scrape job (`static_configs` targeting the 3 pods via the `rabbitmq-headless` per-pod DNS names on port 15692, path `/metrics`), plus a `rule_files` entry and a `rabbitmq_rules.yml` key containing a recording rule `rabbitmq_up = up{job="rabbitmq"}` — since the RabbitMQ Prometheus plugin doesn't emit a metric literally named `rabbitmq_up`, this recording rule synthesizes it from Prometheus's own per-target `up` metric.
+2. Triggered `POST /-/reload` on the running Prometheus pod (it already has `--web.enable-lifecycle`) after waiting for the ConfigMap volume to propagate to the container — no pod restart needed.
+
+One thing worth flagging: `app-producer` is in `CrashLoopBackOff`, but that's due to an unrelated queue-argument mismatch (`x-queue-mode` inequivalent arg on redeclare of `app-queue`), not a permissions or Prometheus-wiring issue — out of scope for this task's stated requirements, but let me know if you'd like it addressed too.

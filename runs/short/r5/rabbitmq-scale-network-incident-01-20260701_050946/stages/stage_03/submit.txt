@@ -1,0 +1,19 @@
+Everything checks out. Summary:
+
+**Root causes found:**
+1. `app-user` had empty `configure` permission on `/app` → couldn't declare its queue.
+2. `ops-user` had full permissions incorrectly granted on `/app` (wrong-vhost scope violation).
+3. `ops-user` had **no** permissions at all on `/ops` (its own vhost) → couldn't connect.
+4. A secondary, permissions-unrelated issue surfaced once auth was fixed: `app-queue` in `/app` had drifted to `x-queue-mode: lazy` (from `app-producer`'s declare racing ahead of the setup job's plain-classic declare), which conflicted with `app-client`'s own declare call and caused inequivalent-args crashes.
+
+**Fixes applied (all via `rabbitmqctl`, no CRDs/operators):**
+- `set_permissions -p /app app-user ".*" ".*" ".*"`
+- `clear_permissions -p /app ops-user`
+- `set_permissions -p /ops ops-user ".*" ".*" ".*"`
+- `delete_queue -p /app app-queue` so `app-client` could redeclare it with matching, correct arguments (its own crash-loop retry handled the redeclare automatically).
+
+**Verified end state:**
+- `/app`: only `admin` and `app-user` (full configure/write/read); `ops-user` absent.
+- `/ops`: only `admin` and `ops-user` (full configure/write/read); `app-user` absent.
+- `app-client` and `ops-client` pods are `1/1 Running`, publishing successfully with no errors in logs.
+- RabbitMQ cluster still shows all 3 nodes running (`rabbitmq-0/1/2`).

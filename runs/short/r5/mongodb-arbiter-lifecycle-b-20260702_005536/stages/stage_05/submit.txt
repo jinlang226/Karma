@@ -1,0 +1,21 @@
+Everything is in order. Here's a summary of what was done:
+
+**Findings:**
+- The RS had been externally expanded from 3 to 5 members (StatefulSet scaled to 5 replicas, pods 3 and 4 added to the RS)
+- The ConfigMap existed with baseline settings (verbosity=1, slowms=200) but was **not mounted** — pods were using raw CLI flags with no config file
+
+**Changes applied:**
+
+| Setting | Before | After |
+|---|---|---|
+| `systemLog.verbosity` | 1 | **2** (+1 level) |
+| `operationProfiling.slowOpThresholdMs` | 200 ms | **400 ms** (2×) |
+| `wiredTiger.engineConfig.journalCompressor` | snappy (default, no config) | **zlib** |
+| RS member count | 5 | **3** (target restored) |
+
+**Steps taken:**
+1. Updated the `mongod-config` ConfigMap with verbosity=2, slowms=400, journalCompressor=zlib
+2. Removed RS members 3 and 4 one-at-a-time via `rs.reconfig()` (MongoDB only allows removing 1 voting member per reconfig)
+3. Patched the StatefulSet to scale to 3 replicas, mount the ConfigMap at `/etc/mongod`, and start mongod with `--config /etc/mongod/mongod.conf`
+4. Waited for the rolling restart to complete — all 3 pods now run with the config file
+5. Verified: verbosity=2, slowms=400, journalCompressor=zlib on all 3 members; RS healthy with 1 PRIMARY + 2 SECONDARY

@@ -1,0 +1,23 @@
+[precondition:rabbitmq_secrets_ready:preconditionUnits[0] 'rabbitmq_secrets_ready':probe] $ /bin/sh -c 'set -e; kubectl -n ${BENCH_NAMESPACE} get secret rabbitmq-erlang-cookie >/dev/null; kubectl -n ${BENCH_NAMESPACE} get secret rabbitmq-admin >/dev/null; kubectl -n ${BENCH_NAMESPACE} get secret rabbitmq-app >/dev/null'
+
+[precondition:rbac_ready:preconditionUnits[1] 'rbac_ready':probe] $ kubectl -n ${BENCH_NAMESPACE} get sa rabbitmq
+NAME       AGE
+rabbitmq   21m
+
+[precondition:infra_ready:preconditionUnits[2] 'infra_ready':probe] $ /bin/sh -c 'set -e; kubectl -n ${BENCH_NAMESPACE} get svc rabbitmq >/dev/null; kubectl -n ${BENCH_NAMESPACE} get svc rabbitmq-headless >/dev/null'
+
+[precondition:rabbitmq_cluster_ready:preconditionUnits[3] 'rabbitmq_cluster_ready':probe] $ /bin/sh -c 'set -e; [ "$(kubectl -n ${BENCH_NAMESPACE} get sts rabbitmq -o jsonpath="{.status.readyReplicas}")" = "3" ]'
+
+[precondition:setup_job_completed:preconditionUnits[4] 'setup_job_completed':probe] $ python3 cases/rabbitmq/manual_policy_sync/setup_precondition_check.py --namespace ${BENCH_NAMESPACE} --bootstrap-only
+setup-precondition-check: ok
+
+[precondition:curl_test_ready:preconditionUnits[5] 'curl_test_ready':probe] $ kubectl -n ${BENCH_NAMESPACE} wait --for=condition=ready pod -l app=curl-test --timeout=3s
+pod/curl-test condition met
+
+[precondition:policy_sync_baseline_ready:preconditionUnits[6] 'policy_sync_baseline_ready':probe] $ /bin/sh -c '! kubectl -n ${BENCH_NAMESPACE} exec rabbitmq-0 -- rabbitmqctl -q list_policies -p /app 2>/dev/null | grep -qw ha-all'
+
+[precondition:policy_sync_baseline_ready:preconditionUnits[6] 'policy_sync_baseline_ready':apply] $ kubectl -n ${BENCH_NAMESPACE} exec rabbitmq-0 -- rabbitmqctl clear_policy -p /app ha-all || true
+Clearing policy "ha-all" on vhost "/app" ...
+
+[precondition:policy_sync_baseline_ready:preconditionUnits[6] 'policy_sync_baseline_ready':verify] $ /bin/sh -c '! kubectl -n ${BENCH_NAMESPACE} exec rabbitmq-0 -- rabbitmqctl -q list_policies -p /app 2>/dev/null | grep -qw ha-all'
+

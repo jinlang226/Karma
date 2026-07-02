@@ -1,0 +1,17 @@
+The cluster is fully healthy. Here's a summary of what was diagnosed and fixed:
+
+**Root cause of the join/advertise errors:**
+When pod `crdb-cluster-0` restarted, DNS for its FQDN (`crdb-cluster-0.crdb-cluster.cockroachdb.svc.cluster.local`) hadn't propagated yet. Other nodes attempting to connect back got "no such host" for ~15 seconds, causing initial join failures. This resolved itself once DNS propagated, but left the cluster in a degraded state.
+
+**Secondary problem — cascading liveness failures:**
+The 60+ second range RPC blockage during the DNS outage disrupted the NodeLiveness Raft range (range 2). Specifically, range 2's lease was held by `crdb-cluster-2` (node 2), which got stuck in a liveness epoch increment loop — each write attempt to the liveness range took 28–30 seconds, far beyond the 3-second heartbeat timeout. This created a cascade where nodes 2 and 3 repeatedly failed their heartbeats.
+
+**Fix applied:**
+1. Restarted `crdb-cluster-2` to clear its disrupted process state
+2. Transferred the NodeLiveness range (range 2) lease from struggling node 2 to healthy node 1 (`ALTER RANGE 2 RELOCATE LEASE TO 1`)
+
+**Current state — all goals met:**
+- All 3 pods: `1/1 Running` 
+- All 3 nodes: `is_available=true`, `is_live=true`
+- SQL connections accepted (`SHOW DATABASES` works)
+- Gossip reports 3 live nodes

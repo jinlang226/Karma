@@ -1,0 +1,17 @@
+Restart counts are frozen (last restart 2m+ ago) — both pods are stable and healthy. Summary:
+
+**Root cause:** `/app` vhost was missing `app-user`'s permission entry entirely (so its client got `ACCESS_REFUSED`), while `ops-user` incorrectly held full permissions on `/app`. `/ops` was missing `ops-user`'s permission entry entirely.
+
+**Fix applied via `rabbitmqctl`:**
+- `clear_permissions -p /app ops-user` — removed ops-user's out-of-scope grant on `/app`
+- `set_permissions -p /app app-user ".*" ".*" ".*"` — full configure/write/read for app-user on `/app`
+- `set_permissions -p /ops ops-user ".*" ".*" ".*"` — full configure/write/read for ops-user on `/ops`
+- confirmed app-user has no grant on `/ops` (already absent)
+
+**Verified end state:**
+- `/app`: only `admin` and `app-user` (full perms) — `ops-user` removed
+- `/ops`: only `admin` and `ops-user` (full perms) — `app-user` absent
+- `app-client` and `ops-client` pods are `1/1 Running`, restart counts stable
+- 3-node cluster (`rabbitmq-0/1/2`) all reporting healthy in `cluster_status`
+
+Note: `app-producer` is still erroring, but that's an unrelated pre-existing queue-argument mismatch (`x-queue-mode` conflict on an existing `app-queue`), not a permissions issue, and it wasn't part of the required scope — left untouched.

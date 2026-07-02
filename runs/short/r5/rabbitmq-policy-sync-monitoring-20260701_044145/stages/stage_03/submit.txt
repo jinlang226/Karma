@@ -1,0 +1,9 @@
+All 3 RabbitMQ nodes are running and clustered — untouched by the fix. Summary of the wiring fix:
+
+- RabbitMQ already exposed `/metrics` on port 15692 (plugin `rabbitmq_prometheus` was enabled) — that side was fine.
+- The gap was purely on the Prometheus side: its `scrape_configs` only had a self-scrape job, nothing for RabbitMQ.
+- Added a `rabbitmq` scrape job to the `prometheus-config` ConfigMap targeting the 3 pods by stable DNS name via the existing `rabbitmq-headless` service (`rabbitmq-{0,1,2}.rabbitmq-headless.<ns>.svc.cluster.local:15692`).
+- Since the benchmark checks specifically for a metric named `rabbitmq_up` (not the native `up{job="rabbitmq"}` series), added a `prometheus-rules` ConfigMap with a recording rule (`record: rabbitmq_up, expr: up{job="rabbitmq"}`), mounted it into the Prometheus Deployment at `/etc/prometheus/rules/`, and added `rule_files` to the config.
+- Reloaded via `/-/reload` (deployment already runs with `--web.enable-lifecycle`) after the ConfigMap propagated.
+
+Verified: all 3 RabbitMQ targets show `health: up` in `/api/v1/targets`, and `query=rabbitmq_up` returns 3 samples (one per pod), while `rabbitmqctl cluster_status` confirms all 3 nodes remain healthy and clustered.

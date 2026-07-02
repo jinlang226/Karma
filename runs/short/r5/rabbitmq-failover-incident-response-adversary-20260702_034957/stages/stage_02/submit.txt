@@ -1,0 +1,17 @@
+The cluster is fully healthy. Here's a summary of what was found and fixed:
+
+**Root cause:** The adversary injected two artifacts after the cluster started:
+1. Overwrote each pod's `/var/lib/rabbitmq/.erlang.cookie` with a unique random value and backdated the `mtime` to midnight to hide it. On a container crash+restart (without pod deletion), each node would start with a *different* cookie and fail to rejoin the cluster.
+2. Created the `rabbitmq-cookie-perpod` secret with `rabbitmq-2: driftedcookie` (vs `supersecretcookie` for nodes 0 and 1) — the adversary's declared intent for the next scheduled restart.
+
+**What was actually working:** RabbitMQ's `RABBITMQ_ERLANG_COOKIE` env var overrode the on-disk file at startup, so all 3 VMs ran in-memory with `supersecretcookie`. The cluster was healthy at the Erlang/Mnesia level, but the on-disk cookie was a time bomb.
+
+**Fixes applied:**
+1. Restored `supersecretcookie` to `/var/lib/rabbitmq/.erlang.cookie` in all 3 pods (no restart needed — in-memory cookie unchanged)
+2. Patched `rabbitmq-cookie-perpod` secret so all three pods have consistent `supersecretcookie`
+
+**Current state:**
+- All 3 pods `Running`, 0 restarts
+- All 3 nodes in Mnesia `running_db_nodes`
+- No network partitions, no alarms, no maintenance mode
+- `app-queue` running with messages flowing (621 queued)

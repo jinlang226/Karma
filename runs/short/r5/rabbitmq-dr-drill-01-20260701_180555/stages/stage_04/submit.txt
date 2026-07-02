@@ -1,0 +1,46 @@
+The cluster is fully restored and healthy. Let me provide a complete summary of what was found and what was done.
+
+---
+
+## Diagnosis and Remediation
+
+### Root Cause
+
+rabbitmq-2 crashed during its initial startup with a `badmatch,ok` error in `rabbit_mnesia:run_peer_discovery_with_retries` — a known race in RabbitMQ 3.12's peer discovery lock unlock step. Kubernetes restarted the container; on the second attempt, rabbitmq-2 successfully joined the cluster (the emptyDir volume preserved partial Mnesia state from the first attempt, enabling the rejoin).
+
+A second, compounding issue: the `rabbitmq-cookie-perpod` secret was created as part of the DR drill with the value `driftedcookie` for rabbitmq-2 (vs. `supersecretcookie` for rabbitmq-0/1). While the StatefulSet does **not** currently reference this secret, its existence with a mismatched cookie is a latent hazard if any init-container or script were to apply it.
+
+### Actions taken
+
+1. **Verified Mnesia cluster membership** — propagated a `set_cluster_name` from rabbitmq-0 and confirmed instant propagation to rabbitmq-1 and rabbitmq-2, proving all three nodes share the same Mnesia database.
+
+2. **Set a canonical cluster name** — ran `rabbitmqctl set_cluster_name karma-rabbitmq-cluster` to normalize the cluster name (each node had bootstrapped with its own node-name, a cosmetic artifact of K8s peer discovery startup sequencing).
+
+3. **Fixed the drifted cookie in the per-pod secret** — patched `rabbitmq-cookie-perpod` to set rabbitmq-2's entry to `supersecretcookie` (matching the shared cookie):
+   ```
+   kubectl patch secret rabbitmq-cookie-perpod \
+     --type=json \
+     -p='[{"op":"replace","path":"/data/rabbitmq-2","value":"c3VwZXJzZWNyZXRjb29raWU="}]'
+   ```
+
+### Final cluster state
+
+```
+Cluster name:  karma-rabbitmq-cluster
+
+Disk Nodes (all 3)
+  rabbit@rabbitmq-0.rabbitmq-headless…
+  rabbit@rabbitmq-1.rabbitmq-headless…
+  rabbit@rabbitmq-2.rabbitmq-headless…
+
+Running Nodes (all 3) — same list as above
+
+Alarms:            (none)
+Network Partitions: (none)
+Maintenance:       all nodes — not under maintenance
+
+app-queue:  state=running, master=rabbitmq-0
+  Mirrors:  rabbitmq-1 (synchronized), rabbitmq-2 (synchronized)
+```
+
+Both goals are met with no data loss: all three nodes are full members of the same cluster, and the HA-mirrored `app-queue` is synchronized across all three nodes.

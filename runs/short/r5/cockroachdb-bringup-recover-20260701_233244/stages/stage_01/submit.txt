@@ -1,0 +1,15 @@
+The 3-node CockroachDB cluster is fully deployed and healthy. Here's a summary of what was created and the one non-obvious fix required:
+
+**Resources deployed:**
+- `Service/crdb-cluster` — headless service (grpc 26257, http 8080), selector on both required labels
+- `Service/crdb-cluster-public` — ClusterIP service for external SQL/HTTP access
+- `StatefulSet/crdb-cluster` — 3 replicas, `podManagementPolicy: Parallel`, image `v24.1.0`, 10Gi PVC per pod, insecure mode with full `--join` list
+- `PodDisruptionBudget/crdb-cluster-pdb` — `minAvailable: 2` enforces quorum preservation
+
+**Two fixes needed during bring-up:**
+
+1. **`podManagementPolicy: Parallel`** — without it, the StatefulSet waits for pod 0 to be Ready before creating pods 1 and 2, but pod 0 can't become Ready until `cockroach init` is run (which needs all nodes up). Parallel starts all 3 pods at once.
+
+2. **`publishNotReadyAddresses: true` on the headless service** — CockroachDB nodes gossip using their per-pod DNS names. With the default behavior, Kubernetes only creates DNS A records for Ready pods, so pods 1 and 2 couldn't resolve each other's names (`crdb-cluster-1.crdb-cluster.cockroachdb.svc.cluster.local: no such host`). Setting this flag publishes DNS for all pods regardless of readiness, allowing the cluster to bootstrap.
+
+After patching the headless service, all 3 nodes joined and became `is_available: true, is_live: true`. The PDB allows at most 1 voluntary disruption, preserving quorum.

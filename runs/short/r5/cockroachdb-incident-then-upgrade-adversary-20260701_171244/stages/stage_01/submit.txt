@@ -1,0 +1,19 @@
+The cluster is fully healthy. Here's what was found and fixed:
+
+**Root cause:** The StatefulSet command used a conditional to bind `crdb-cluster-1`'s HTTP server to `127.0.0.1:8080` (loopback only):
+```bash
+if [ "$POD_NAME" = "crdb-cluster-1" ]; then
+  HTTP_ADDR="127.0.0.1:8080";
+else
+  HTTP_ADDR="0.0.0.0:8080";
+fi
+```
+
+Kubernetes health probes connect via the pod's cluster IP, not loopback — so every liveness and readiness probe on pod 1 returned "connection refused," causing Kubernetes to repeatedly kill and restart it. This destabilized the cluster by breaking quorum and triggering liveness epoch failures on the other nodes.
+
+**Fix:** Patched the StatefulSet to remove the conditional, binding all pods to `0.0.0.0:8080`. The StatefulSet rolling update then cleanly replaced all pods.
+
+**Verification:**
+- All 3 pods: `1/1 Running`
+- All 3 nodes: `is_available=true, is_live=true`
+- SQL: `SELECT 1` succeeds

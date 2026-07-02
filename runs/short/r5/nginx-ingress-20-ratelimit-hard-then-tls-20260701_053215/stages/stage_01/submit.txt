@@ -1,0 +1,24 @@
+Both success criteria are met. Here's a summary of what was done and why:
+
+---
+
+## What was configured
+
+**Problem:** With 3 nginx replicas and random load balancing, a per-replica `limit-rps: 1` allows ~3 RPS total (each replica seeing only ~0.7 RPS from round-robin). No 429s would appear.
+
+**Solution — two changes:**
+
+1. **`rate-api` Ingress annotations** (rate limiting):
+   ```
+   nginx.ingress.kubernetes.io/limit-rps: "1"
+   nginx.ingress.kubernetes.io/limit-burst-multiplier: "1"
+   ```
+   - `limit-rps: 1` → each nginx replica limits to 1 req/sec per client IP
+   - `limit-burst-multiplier: 1` → burst = 1 (minimal burst headroom, so excess traffic is rejected quickly rather than absorbed)
+
+2. **`ingress-nginx-controller` Service** — added `sessionAffinity: ClientIP` (300s timeout):
+   - This ensures all requests from the same client IP (the curl-test pod) are routed to the **same nginx replica**, so the per-replica limit applies to the full client traffic stream — not split across 3 pods.
+
+**Result:**
+- `/api` at 2 RPS → ~half the requests get **429** (requests 4, 6, 8, 10)
+- `/health` (no rate limiting annotations) → all **200**

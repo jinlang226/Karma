@@ -1,0 +1,17 @@
+Rotation complete. Summary:
+
+**What was found:** TLS material (`rabbitmq-tls`, `rabbitmq-tls-ca` secrets) existed but was not actually wired into the RabbitMQ deployment — no TLS listener was configured, only plaintext AMQP on 5672. The existing leaf cert (CN=rabbitmq, issued by CN=rabbitmq-ca) had ~1 day of validity left.
+
+**What was done, using only native K8s resources (Secret/ConfigMap/StatefulSet/Service — no CRDs/operators):**
+1. Extracted the CA key from `rabbitmq-tls-ca` and the CA cert from `rabbitmq-tls`, verified they match.
+2. Generated a new 2048-bit leaf key + CSR (same CN=rabbitmq, same 11 SANs covering the service, headless service, and all 3 pod DNS names) and signed it with the existing CA — 365-day validity (364 days remaining, satisfies the ≥300-day requirement). CA itself untouched.
+3. Updated the `rabbitmq-tls` secret with the new `tls.crt`/`tls.key`, keeping `ca.crt` unchanged.
+4. Added `listeners.ssl.default = 5671` + `ssl_options.*` to the `rabbitmq-config` ConfigMap's `rabbitmq.conf`.
+5. Patched the `rabbitmq` StatefulSet to mount the `rabbitmq-tls` secret at `/etc/rabbitmq/certs` and expose container port 5671 — this triggered a native rolling update (`OrderedReady`/`maxUnavailable: 1`), which all 3 pods went through cleanly.
+6. Added the `amqps` (5671) port to both the `rabbitmq` and `rabbitmq-headless` Services.
+
+**Verification:**
+- All 3 nodes `Running`, cluster_status shows 3/3 running nodes, no alarms, no partitions.
+- Each node (and the service VIP) now serves `amqp/ssl` on 5671; TLS handshake from `openssl-toolbox` against all 3 pods + the service verified `Verify return code: 0 (ok)` against the CA.
+- Deployed leaf cert's modulus matches its key; CA fingerprint in the secret is unchanged (`6E:71:...:6A:07`).
+- The `/app` vhost's `app-queue` is actively receiving messages (42 and counting) post-rotation, confirming live traffic is unaffected — I checked queue presence per vhost per the task note before relying on it.

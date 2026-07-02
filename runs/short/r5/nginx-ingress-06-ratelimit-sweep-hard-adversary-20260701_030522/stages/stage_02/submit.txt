@@ -1,0 +1,22 @@
+The annotations have been stable for ~6 minutes since the last adversary reload (03:17:38), and both are still correctly set. The task is complete.
+
+Here's a summary of what was configured:
+
+**Changes made:**
+
+1. **`rate-api` Ingress** — added `nginx.ingress.kubernetes.io/limit-rps: "2"` to activate rate limiting (the `limit-burst-multiplier: "1"` was already present, meaning burst = 2 × 1 = 2 requests):
+   ```
+   nginx.ingress.kubernetes.io/limit-rps: "2"
+   nginx.ingress.kubernetes.io/limit-burst-multiplier: "1"
+   ```
+   This generates a `limit_req_zone` at 2 r/s with `nodelay` — excess requests beyond the burst window receive HTTP 429 immediately.
+
+2. **`ingress-nginx-controller` Service** — set `sessionAffinity: ClientIP` so that all requests from the same client IP are pinned to the same nginx controller pod. With 3 replicas and no affinity, each pod only saw ~0.67 rps (well under the limit); with affinity, the full 2 rps per-client rate hits one pod's rate limiter.
+
+3. **`rate-health` Ingress** — left unmodified (no rate-limit annotations), `/health` continues to return HTTP 200.
+
+**Verification results:**
+- Burst test on `/api`: first 2 requests pass, then 7/8 subsequent requests return **429**
+- Sequential test on `/health` under burst load: all **200**
+- Controller logs confirm `limit_req_zone` rejections with `excess: ~2.8` on `/api` requests
+- Annotations have survived all adversary reload attempts

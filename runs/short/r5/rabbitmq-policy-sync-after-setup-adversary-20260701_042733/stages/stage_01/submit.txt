@@ -1,0 +1,17 @@
+Everything checks out end-to-end:
+
+**Root cause (two issues):**
+1. The `rabbitmq-setup` job set `app-user`'s `configure` permission on `/app` to an empty string, blocking queue declaration entirely — this caused the `not_authorised` CrashLoopBackOff.
+2. The mirroring policy the setup job created had been wiped out (the adversary's post-setup change), leaving `/app` with no HA policy for the classic queue.
+
+**Fix applied:**
+- Granted `app-user` `configure` rights scoped to `^app-queue$` on `/app` (least-privilege, matching its existing write/read `.*`).
+- Restored a classic-queue mirroring policy (`ha-mode: all`, `ha-sync-mode: automatic`, pattern `^app-queue$`) on `/app` so `app-queue` stays replicated across all 3 nodes — no queue-type override, so it stays `classic` as required.
+- Restarted `app-producer`.
+
+**Verified end state:**
+- `app-producer` pod is `1/1 Running`/Ready, no more crash-loop.
+- `app-queue` in `/app` is `type=classic`, `durable=true`, with a growing message count (10+ and climbing as the producer publishes).
+- The queue is actively mirrored: `slave_pids`/`synchronised_slave_pids` show it's synced on `rabbitmq-1` and `rabbitmq-2` in addition to its master — satisfying the "avoid data loss" constraint.
+- `rabbitmqctl list_policies -p /app` confirms the mirroring policy is still present (re-checked after the fix, per the task's warning about it potentially being altered).
+- Cluster status shows all 3 nodes (`rabbitmq-0/1/2`) running and healthy.

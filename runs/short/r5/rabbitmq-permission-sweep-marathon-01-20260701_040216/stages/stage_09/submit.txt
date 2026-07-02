@@ -1,0 +1,10 @@
+Everything checks out. Summary:
+
+**Root cause:** RabbitMQ was already correctly exposing Prometheus metrics (port 15692, `/metrics`, `rabbitmq_prometheus` plugin enabled via `rabbitmq-config` ConfigMap) via the `rabbitmq` and `rabbitmq-headless` Services. Prometheus, however, had no scrape job for RabbitMQ at all — its `prometheus-config` ConfigMap only scraped itself.
+
+**Fix:** Updated the `prometheus-config` ConfigMap to add a `rabbitmq` scrape job using a native `dns_sd_configs` (DNS-based service discovery, no CRDs/operators) pointed at the headless service `rabbitmq-headless.karma-rabbitmq-permission-sweep-marat-488c23f5-cluster-a.svc.cluster.local`, type `A`, port `15692`, `metrics_path: /metrics`. Since it's a headless Service (`clusterIP: None`, `publishNotReadyAddresses: true`), DNS resolves to all 3 pod IPs, giving Prometheus one target per RabbitMQ pod. Reloaded config via the existing `--web.enable-lifecycle` `/-/reload` endpoint (no pod restart needed).
+
+**Verified:**
+- `/api/v1/targets` shows 3 `rabbitmq` job targets, all `health: "up"` at ports `15692`.
+- `up{job="rabbitmq"}` returns 3 samples, all value `1`.
+- RabbitMQ cluster remains healthy: 3/3 pods Running, `rabbitmqctl cluster_status` shows all 3 nodes as Running disk nodes.

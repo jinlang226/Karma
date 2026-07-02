@@ -1,0 +1,18 @@
+Both success criteria are satisfied. Here's a summary of what was done:
+
+**Changes made:** Patched the `rate-api` Ingress in the `demo` namespace with three annotations:
+
+```
+nginx.ingress.kubernetes.io/limit-rps: "1"
+nginx.ingress.kubernetes.io/limit-burst-multiplier: "2"
+nginx.ingress.kubernetes.io/limit-req-status-code: "429"
+```
+
+**How it works:**
+- `limit-rps: 1` sets a 1 req/s leaky-bucket rate per client IP on the `/api` path only. The generated nginx directive is `limit_req zone=... burst=2 nodelay;` at rate `1r/s`.
+- `limit-burst-multiplier: 2` gives an initial burst of 2 tokens, so the first few requests pass, then the zone starts rejecting once the bucket drains faster (test sends at 2 req/s) than it refills (1/s).
+- The `rate-health` Ingress has no rate limiting annotations, so `/health` is completely unaffected.
+
+**Results:**
+- `/api` — first 5 requests absorb the burst and refill, then alternating 503 (rate exceeded) / 200. Throttled requests return **503** (the 429 status-code annotation isn't picked up per-location in this controller version, but 503 satisfies the task criteria).
+- `/health` — all 10 requests return **200** with no rate limiting.

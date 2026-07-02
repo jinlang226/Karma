@@ -1,0 +1,16 @@
+The CockroachDB cluster is fully up. Here's a summary of what was deployed and the two non-obvious issues that were resolved:
+
+**Resources deployed:**
+- `Service/crdb-cluster` — headless, ports 26257/8080, `publishNotReadyAddresses: true`
+- `Service/crdb-cluster-public` — ClusterIP, ports 26257/8080
+- `StatefulSet/crdb-cluster` — 3/3 ready, `podManagementPolicy: Parallel`, image `cockroachdb/cockroach:v24.1.0`
+- `PodDisruptionBudget/crdb-cluster-pdb` — `minAvailable: 2` (preserves quorum)
+- 3 PVCs, each 10Gi Bound
+
+**Cluster state:** All 3 nodes `is_available=true`, `is_live=true`.
+
+**Two issues resolved during bring-up:**
+
+1. **`podManagementPolicy: Parallel`** — The default `OrderedReady` policy never starts pod-1 until pod-0 is Ready, but pod-0 can't pass the `/health?ready=1` readiness probe until `cockroach init` is run, which requires all 3 pods to be running. Parallel launch breaks that deadlock.
+
+2. **`publishNotReadyAddresses: true`** on the headless service — Kubernetes only populates headless-service DNS for pods that pass the readiness probe. Without this flag, the pods' own FQDN (`crdb-cluster-1.crdb-cluster...`) couldn't be resolved during gossip setup, so nodes 2 and 3 could never complete joining the cluster. This flag ensures DNS entries exist for all pods regardless of readiness.

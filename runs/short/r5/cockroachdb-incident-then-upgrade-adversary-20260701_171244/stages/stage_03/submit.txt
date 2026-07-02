@@ -1,0 +1,18 @@
+All verification checks pass:
+
+1. **Pod images** ✓ — All 3 pods running `cockroachdb/cockroach:v24.1.0`
+2. **Cluster version** ✓ — `24.1` (finalized)
+3. **preserve_downgrade_option** ✓ — Empty (cleared; upgrade committed)
+4. **Node health** ✓ — All 3 nodes `is_available=true`, `is_live=true`
+5. **v24.1 features** ✓ — `CockroachDB CCL v24.1.0`
+
+---
+
+**Summary of what happened and what I did:**
+
+The binary upgrade (rolling restart to v24.1.0) and cluster finalization had already occurred, but the adversary had throttled `kv.snapshot_rebalance.max_rate` from the default **32 MiB** down to **1 MiB**. This severely slowed range rebalancing after node `crdb-cluster-0` restarted last in the rolling upgrade, causing:
+- Node liveness heartbeat failures (Raft commits taking 17–27s)
+- 46 under-replicated ranges
+- All nodes oscillating between live/not-live
+
+**Fix applied:** Reset `kv.snapshot_rebalance.max_rate` to the default (`RESET CLUSTER SETTING kv.snapshot_rebalance.max_rate` → 32 MiB). This allowed rebalancing to proceed at the correct rate, ranges recovered from 46 → 0 under-replicated over ~35 minutes, and all three nodes are now fully healthy.

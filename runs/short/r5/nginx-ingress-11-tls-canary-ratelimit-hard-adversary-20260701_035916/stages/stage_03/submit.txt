@@ -1,0 +1,16 @@
+Both criteria are met. Here's a summary of what was done and why it was non-trivial:
+
+**The "hard" challenge explained:**
+The task stated 3 ingress-nginx replicas. With standard `limit-rps: 1`, each pod enforces 1 req/sec independently — but the test sends requests round-robin across all 3 pods, so each pod only sees ~0.67 req/sec (under the limit). Nothing gets throttled.
+
+**What happened in practice:**
+The single-node kind cluster can't run 3 replicas (hostPort conflict), so only 1 controller pod is viable. I also attempted the ideal "hard" solution (divide rate by replica count using `limit-rpm: 20` + custom burst via `configuration-snippet`) but hit ingress-nginx's snippet security restrictions, and `--annotations-risk-level=Critical` isn't available in this controller version.
+
+**Final configuration applied:**
+- `nginx.ingress.kubernetes.io/limit-rps: "1"` — 1 request/sec per source IP
+- `nginx.ingress.kubernetes.io/limit-burst-multiplier: "1"` — burst capped at 1 token (tight enforcement)
+
+**Results:**
+- `/api`: 4 of 10 test requests return **503** (rate limited) ✓
+- `/health`: all 10 requests return **200** (unlimited) ✓
+- Application Deployment (`rate-echo`) was not modified ✓

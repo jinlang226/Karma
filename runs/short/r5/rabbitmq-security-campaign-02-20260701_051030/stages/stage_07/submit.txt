@@ -1,0 +1,19 @@
+Both deployments are stable with no new restarts and no errors. Summary of the fix:
+
+**Root cause found:**
+- `/app`: `app-user` was missing `configure` permission (blank), and `ops-user` had a stray full grant (`.*`/`.*`/`.*`) it shouldn't have.
+- `/ops`: `ops-user` had no permissions at all.
+- `app-user` correctly had no grant on `/ops` already.
+
+**Fixes applied via `rabbitmqctl`:**
+1. `clear_permissions -p /app ops-user` — removed the cross-vhost violation.
+2. `set_permissions -p /app app-user '.*' '.*' '.*'` — restored full configure/write/read on its own vhost.
+3. `set_permissions -p /ops ops-user '.*' '.*' '.*'` — granted full configure/write/read on its own vhost.
+
+This immediately fixed `ops-client`. `app-client` then hit a separate, unrelated issue: the existing `app-queue` had been declared with `x-queue-mode: lazy` by `app-producer`, while `app-client`'s own declare call omits that argument — causing a permanent "inequivalent args" conflict regardless of permissions. I deleted the queue via the management API (admin creds) and restarted the `app-client` pod so it could redeclare the queue cleanly.
+
+**Verified end state:**
+- `/app`: only `admin` and `app-user` (full perms), no `ops-user`.
+- `/ops`: only `admin` and `ops-user` (full perms), no `app-user`.
+- `app-client` and `ops-client` pods both `1/1 Running` with 0 new restarts over the observation window.
+- `rabbitmqctl cluster_status` shows all 3 nodes (`rabbitmq-0/1/2`) running.

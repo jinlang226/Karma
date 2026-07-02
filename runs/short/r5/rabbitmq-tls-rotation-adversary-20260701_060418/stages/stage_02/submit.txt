@@ -1,0 +1,15 @@
+Leaf certificate rotation complete and verified.
+
+**What I found:** the task description said TLS was already enabled, but it wasn't — `rabbitmq.conf` had no `ssl_options`/TLS listener, and the StatefulSet mounted no cert volume at all. Only the `rabbitmq-tls`/`rabbitmq-tls-ca` secrets existed (with a near-expiry leaf, expiring in ~1 day). So rotating the leaf required both generating the new cert *and* wiring TLS into the deployment for the first time.
+
+**What I did (all native K8s resources, no CRDs/operators):**
+1. Generated a new 2048-bit RSA key + cert for `CN=rabbitmq` with the same 11-entry SAN list (service DNS names + per-pod StatefulSet hostnames), signed it with the existing `rabbitmq-tls-ca`'s `ca.key` — CA itself untouched.
+2. Updated the `rabbitmq-tls` secret in place with the new `tls.crt`/`tls.key`, keeping `ca.crt` unchanged.
+3. Added an `ssl_options` block + `listeners.ssl.default = 5671` to the `rabbitmq-config` ConfigMap, mounted the `rabbitmq-tls` secret into the StatefulSet at `/etc/rabbitmq/tls`, added container port 5671, and exposed 5671 on both the `rabbitmq` and `rabbitmq-headless` Services. Kept plaintext 5672 alongside it so nothing else in the namespace (e.g. `app-producer`, which only uses the plaintext management API) broke.
+4. Rolling update completed cleanly, one pod at a time — all 3 nodes came back `Ready`, cluster stayed fully formed (`rabbitmqctl cluster_status` shows all 3 disk/running nodes on all members).
+
+**Verification:**
+- All 3 pods (`rabbitmq-0/1/2`) serve `amqp/ssl` on 5671 with the identical new-leaf fingerprint (`89:91:29:34...`), expiring `2026-09-29` (89 days out, well over the 30-day minimum).
+- `openssl s_client` from the toolbox pod verified the full chain against the CA for each pod hostname and the ClusterIP service — `Verify return code: 0 (ok)`.
+- CA fingerprint (`CC:5E:CC:12...`) still matches the pre-rotation checkpoint in the `rabbitmq-tls-old` ConfigMap — confirms the CA was never touched.
+- `app-producer` and all 3 nodes remain healthy/running with zero restarts.

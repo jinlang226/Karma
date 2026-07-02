@@ -1,0 +1,9 @@
+The cluster is fully recovered. All three verification checks pass:
+
+1. **All pods Ready**: `crdb-cluster-0`, `crdb-cluster-1`, `crdb-cluster-2` — all `1/1 Running`
+2. **All nodes live**: `is_live=true` for all 3 nodes (n1, n2, n3)
+3. **SQL responding**: `SELECT 1` returns successfully
+
+**Root cause:** The StatefulSet had been updated with a deliberate bug — a bash conditional in the startup command bound `crdb-cluster-1`'s HTTP server to `127.0.0.1:8080` (localhost only) instead of `0.0.0.0:8080`. The Kubernetes liveness probe connects to the pod IP, not localhost, so it got "connection refused" and killed the pod repeatedly, causing CrashLoopBackOff. With node 2 down, the cluster lost quorum for the NodeLiveness Raft range, making the entire cluster degraded.
+
+**Fix applied:** Patched the StatefulSet command to unconditionally use `--http-addr=0.0.0.0:8080` for all pods, then deleted the stuck pod to break the CrashLoopBackOff. The rolling update replaced all 3 pods with the corrected spec.

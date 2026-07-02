@@ -1,0 +1,33 @@
+[precondition:failover_secrets_ready:preconditionUnits[0] 'failover_secrets_ready':probe] $ /bin/sh -c 'set -e; kubectl -n ${BENCH_NAMESPACE} get secret rabbitmq-cookie-perpod >/dev/null; kubectl -n ${BENCH_NAMESPACE} get secret rabbitmq-admin >/dev/null'
+Error from server (NotFound): secrets "rabbitmq-cookie-perpod" not found
+
+[precondition:failover_secrets_ready:preconditionUnits[0] 'failover_secrets_ready':apply] $ /bin/sh -c 'kubectl -n ${BENCH_NAMESPACE} create secret generic rabbitmq-cookie-perpod --from-literal=rabbitmq-0=supersecretcookie --from-literal=rabbitmq-1=supersecretcookie --from-literal=rabbitmq-2=driftedcookie --dry-run=client -o yaml | kubectl apply -f -'
+secret/rabbitmq-cookie-perpod created
+
+[precondition:failover_secrets_ready:preconditionUnits[0] 'failover_secrets_ready':apply] $ /bin/sh -c 'kubectl -n ${BENCH_NAMESPACE} create secret generic rabbitmq-admin --from-literal=username=admin --from-literal=password=adminpass --dry-run=client -o yaml | kubectl apply -f -'
+secret/rabbitmq-admin configured
+
+[precondition:failover_secrets_ready:preconditionUnits[0] 'failover_secrets_ready':verify] $ /bin/sh -c 'set -e; kubectl -n ${BENCH_NAMESPACE} get secret rabbitmq-cookie-perpod >/dev/null; kubectl -n ${BENCH_NAMESPACE} get secret rabbitmq-admin >/dev/null'
+
+[precondition:rbac_ready:preconditionUnits[1] 'rbac_ready':probe] $ kubectl -n ${BENCH_NAMESPACE} get sa rabbitmq
+NAME       SECRETS   AGE
+rabbitmq   0         3m17s
+
+[precondition:config_ready:preconditionUnits[2] 'config_ready':probe] $ kubectl -n ${BENCH_NAMESPACE} get configmap rabbitmq-config
+NAME              DATA   AGE
+rabbitmq-config   2      3m17s
+
+[precondition:services_ready:preconditionUnits[3] 'services_ready':probe] $ /bin/sh -c 'set -e; kubectl -n ${BENCH_NAMESPACE} get svc rabbitmq >/dev/null; kubectl -n ${BENCH_NAMESPACE} get svc rabbitmq-headless >/dev/null'
+
+[precondition:rabbitmq_statefulset_present:preconditionUnits[4] 'rabbitmq_statefulset_present':probe] $ kubectl -n ${BENCH_NAMESPACE} get sts rabbitmq
+NAME       READY   AGE
+rabbitmq   3/3     3m12s
+
+[precondition:rabbitmq_cluster_ready:preconditionUnits[5] 'rabbitmq_cluster_ready':probe] $ /bin/sh -c 'set -e; [ "$(kubectl -n ${BENCH_NAMESPACE} get sts rabbitmq -o jsonpath="{.status.readyReplicas}")" = "3" ]'
+
+[precondition:curl_test_ready:preconditionUnits[6] 'curl_test_ready':probe] $ kubectl -n ${BENCH_NAMESPACE} wait --for=condition=ready pod -l app=curl-test --timeout=3s
+pod/curl-test condition met
+
+[precondition:failover_baseline_ready:preconditionUnits[7] 'failover_baseline_ready':probe] $ python3 cases/rabbitmq/failover/setup_precondition_check.py --namespace ${BENCH_NAMESPACE} --min-ready 3
+setup-precondition-check: ok
+

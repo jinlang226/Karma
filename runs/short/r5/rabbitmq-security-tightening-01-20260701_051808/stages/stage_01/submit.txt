@@ -1,0 +1,13 @@
+All goals confirmed:
+
+- **app-producer**: `1/1 Running`, no more crash loop
+- **/app vhost**: `app-queue` exists, type `classic`, with 5 messages and growing
+- **Cluster**: 3 nodes (`rabbitmq-0/1/2`) all running as disk nodes, healthy
+
+**Root cause**: the `app-user` had permissions on `/app` vhost of `configure=""` (empty), `write=".*"`, `read=".*"` — the security tightening had stripped *configure* permission, so the user could publish/read but not declare (create) the queue, causing `not_authorised` on the producer's `PUT /api/queues/%2Fapp/app-queue` call.
+
+**Fix**: granted scoped `configure` permission limited to `app-` prefixed resources only (least-privilege, not a blanket `.*` grant):
+```
+rabbitmqctl set_permissions -p /app app-user "^app-.*" ".*" ".*"
+```
+Then restarted the `app-producer` deployment. No CRDs/operators used, no data touched/lost — only a permission grant was changed.

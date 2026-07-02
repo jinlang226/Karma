@@ -1,0 +1,21 @@
+All verification checks pass:
+
+| Check | Result |
+|---|---|
+| CA fingerprint | `7A:3B:EF...92:44` — **matches** oracle (unchanged) |
+| Leaf fingerprint | `C9:74:6A...AE:26` — **different** from old `CF:03:B5...74:C4` (rotated) |
+| New leaf validity | Jul 1 → Aug 30 (60 days, ≥30-day requirement met) |
+| TLS connection | `Verify return code: 0 (ok)`, TLS 1.3 |
+| Cluster nodes | All 3 running, no alarms, no partitions |
+
+**Summary of what was done:**
+
+1. **Detected adversary tampering** — StatefulSet had been scaled down from 3 to 1 replica, removing TLS configuration from the ConfigMap, and the TLS volume mount from the StatefulSet.
+
+2. **Restored StatefulSet to 3 replicas** — scaled back so all nodes rejoin the cluster.
+
+3. **Rotated the leaf certificate** — extracted `ca.crt` (kept unchanged) and `ca.key` from the secrets, generated a new 2048-bit RSA key, created a CSR with all original SANs, signed it with the CA for 60 days (valid Jul 1 → Aug 30 2026), and patched the `rabbitmq-tls` secret with the new `tls.crt` and `tls.key`.
+
+4. **Restored TLS configuration** — updated the ConfigMap to add `listeners.ssl.default = 5671` and `ssl_options.*`, patched the StatefulSet to mount the `rabbitmq-tls` secret at `/etc/rabbitmq/tls/`, and updated both Services to expose port 5671.
+
+5. **Rolling restarts** — performed two rolling restarts (first for scale-up, second for TLS config) with zero cluster downtime.

@@ -1,0 +1,17 @@
+All requirements are satisfied:
+
+**Root cause:** Two separate issues were masking each other:
+1. **Permission misconfiguration** — `app-user` had no permissions on `/app` (or anywhere), while `ops-user` had incorrectly been granted full `.*`/`.*`/`.*` access to `/app` (a vhost it shouldn't touch) and had no permissions on its own `/ops`.
+2. **Masked queue-argument mismatch** — once permissions were fixed, `app-client` failed a separate way: it tried to (re)declare the existing `app-queue` in `/app` without the `x-queue-mode: lazy` argument that `app-producer` had already declared it with, causing a RabbitMQ `inequivalent arg` rejection.
+
+**Fixes applied (native K8s/CLI only):**
+- `rabbitmqctl set_permissions -p /app app-user '.*' '.*' '.*'`
+- `rabbitmqctl set_permissions -p /ops ops-user '.*' '.*' '.*'`
+- `rabbitmqctl clear_permissions -p /app ops-user` (removed the out-of-scope grant)
+- Patched the `app-client` Deployment's container command (`kubectl patch --type=json`) to add `x-queue-mode: lazy` to its queue-declare payload, matching `app-producer`.
+
+**Verified end state:**
+- `/app` permissions: `admin`, `app-user` only (full `.*`/`.*`/`.*`) — no `ops-user`.
+- `/ops` permissions: `admin`, `ops-user` only (full `.*`/`.*`/`.*`) — no `app-user`.
+- `app-client`, `app-producer`, `ops-client` deployments all `1/1 Running`, 0 restarts.
+- RabbitMQ cluster shows all 3 nodes (`rabbitmq-0/1/2`) as running.

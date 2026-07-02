@@ -1,0 +1,17 @@
+TLS leaf certificate rotation is complete and verified. Summary:
+
+**What was found:** the `rabbitmq-tls`/`rabbitmq-tls-ca` secrets existed with a near-expiry leaf (expired the next day), but TLS was never actually wired into the running cluster — no `listeners.ssl` in `rabbitmq.conf`, no secret mounted into the pods, no 5671 port anywhere. So the fix required both rotating the cert and enabling TLS for real.
+
+**Actions taken (native resources only):**
+1. Pulled `ca.key` (from `rabbitmq-tls-ca`) and `ca.crt`/old leaf (from `rabbitmq-tls`), verified the key matches the CA cert.
+2. Generated a new 2048-bit RSA leaf key/CSR with the same CN/SANs as the old leaf, signed it with the existing CA for 60 days (well over the 30-day minimum).
+3. Patched the `rabbitmq-tls` Secret in place with the new `tls.crt`/`tls.key`, leaving `ca.crt` untouched.
+4. Added `listeners.ssl.default = 5671` + `ssl_options.*` to the `rabbitmq-config` ConfigMap, mounted the `rabbitmq-tls` secret into the StatefulSet at `/etc/rabbitmq/tls`, added the `amqp-tls` container port, and exposed 5671 on both Services.
+5. Watched the StatefulSet's rolling update (`OrderedReady`, one pod at a time) complete — all 3 pods came back `1/1 Running`, 0 restarts.
+
+**Verified:**
+- `rabbitmqctl cluster_status`: all 3 nodes up, no alarms, no partitions, each with an `amqp/ssl` listener on 5671.
+- `openssl s_client` from the `openssl-toolbox` pod against `rabbitmq` and all 3 per-pod DNS names: handshake succeeds, `Verify return code: 0 (ok)` against the CA.
+- Served leaf cert: `notAfter=Aug 30 2026` (60 days out), same on all 3 nodes.
+- CA fingerprint unchanged (`74:8B:89:...` matches the pre-rotation baseline in `rabbitmq-tls-old`); leaf fingerprint changed (`DE:14:33:...` → `04:93:33:...`).
+- `app-producer` kept running with no new errors; plain AMQP (5672) and management (15672) unaffected.

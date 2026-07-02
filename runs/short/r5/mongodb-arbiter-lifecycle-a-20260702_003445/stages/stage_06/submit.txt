@@ -1,0 +1,18 @@
+Everything is working correctly. Here's a summary of what was done:
+
+**Problem**: The StatefulSet had 5 replicas (should be 3), no probes configured, and the `health-user` for probe authentication didn't exist in MongoDB.
+
+**Fix applied**:
+
+1. **Created `health-user`** in MongoDB with `clusterMonitor` role — this is the credential used by probes.
+
+2. **Reconfigured the replica set** from 5 to 3 members (removed members _id=3 and _id=4 one at a time, stepping down the primary in between).
+
+3. **Scaled the StatefulSet** from 5 to 3 replicas.
+
+4. **Added tuned probes** to the StatefulSet:
+   - **Liveness**: `mongosh --eval "db.adminCommand({ping:1})"` via health-user — verifies MongoDB is alive and auth works
+   - **Readiness**: checks `db.hello()` for `isWritablePrimary` or `secondary` — marks the pod ready only when it's in an active RS state (PRIMARY or SECONDARY)
+   - Both use `initialDelaySeconds: 30`, `timeoutSeconds: 10`, `failureThreshold: 6` to handle MongoDB's startup time without premature kills
+
+**Final state**: 3 pods all `1/1 Ready`, replica set has 1 PRIMARY (replica-1) and 2 SECONDARY members.

@@ -1,0 +1,58 @@
+[precondition:rabbitmq_secrets_ready:preconditionUnits[0] 'rabbitmq_secrets_ready':probe] $ /bin/sh -c 'set -e; kubectl -n ${BENCH_NAMESPACE} get secret rabbitmq-erlang-cookie >/dev/null; kubectl -n ${BENCH_NAMESPACE} get secret rabbitmq-admin >/dev/null; kubectl -n ${BENCH_NAMESPACE} get secret rabbitmq-app >/dev/null; kubectl -n ${BENCH_NAMESPACE} get secret rabbitmq-ops >/dev/null'
+
+[precondition:rbac_ready:preconditionUnits[1] 'rbac_ready':probe] $ kubectl -n ${BENCH_NAMESPACE} get sa rabbitmq
+NAME       AGE
+rabbitmq   20m
+
+[precondition:config_ready:preconditionUnits[2] 'config_ready':probe] $ kubectl -n ${BENCH_NAMESPACE} get configmap rabbitmq-config
+NAME              DATA   AGE
+rabbitmq-config   2      20m
+
+[precondition:services_ready:preconditionUnits[3] 'services_ready':probe] $ /bin/sh -c 'set -e; kubectl -n ${BENCH_NAMESPACE} get svc rabbitmq >/dev/null; kubectl -n ${BENCH_NAMESPACE} get svc rabbitmq-headless >/dev/null'
+
+[precondition:rabbitmq_statefulset_present:preconditionUnits[4] 'rabbitmq_statefulset_present':probe] $ kubectl -n ${BENCH_NAMESPACE} get sts rabbitmq
+NAME       READY   AGE
+rabbitmq   3/3     20m
+
+[precondition:rabbitmq_cluster_ready:preconditionUnits[5] 'rabbitmq_cluster_ready':probe] $ /bin/sh -c 'set -e; [ "$(kubectl -n ${BENCH_NAMESPACE} get sts rabbitmq -o jsonpath="{.status.readyReplicas}")" = "3" ]'
+
+[precondition:setup_job_completed:preconditionUnits[6] 'setup_job_completed':probe] $ python3 cases/rabbitmq/manual_user_permission/setup_precondition_check.py --namespace ${BENCH_NAMESPACE} --bootstrap-only
+setup-precondition-check: failed
+ - app-user configure permission on /app is not intentionally broken (value='.*')
+ - ops-user mis-grant on /app is not planted
+ - ops-user already has access on /ops (scenario not broken)
+
+[precondition:setup_job_completed:preconditionUnits[6] 'setup_job_completed':apply] $ kubectl -n ${BENCH_NAMESPACE} delete job rabbitmq-setup --ignore-not-found=true
+job.batch "rabbitmq-setup" deleted
+
+[precondition:setup_job_completed:preconditionUnits[6] 'setup_job_completed':apply] $ envsubst '$BENCH_NAMESPACE $BENCH_NS_SOURCE $BENCH_NS_TARGET $BENCH_PARAM_CLUSTER_PREFIX $BENCH_PARAM_BLUE_CLUSTER_PREFIX $BENCH_PARAM_GREEN_CLUSTER_PREFIX $BENCH_PARAM_FROM_VERSION' < cases/rabbitmq/manual_user_permission/resource/setup-job.yaml | kubectl -n ${BENCH_NAMESPACE} apply -f -
+job.batch/rabbitmq-setup created
+
+[precondition:setup_job_completed:preconditionUnits[6] 'setup_job_completed':apply] $ kubectl -n ${BENCH_NAMESPACE} wait --for=condition=complete job/rabbitmq-setup --timeout=300s
+job.batch/rabbitmq-setup condition met
+
+[precondition:setup_job_completed:preconditionUnits[6] 'setup_job_completed':verify] $ python3 cases/rabbitmq/manual_user_permission/setup_precondition_check.py --namespace ${BENCH_NAMESPACE} --bootstrap-only
+setup-precondition-check: ok
+
+[precondition:app_client_deployed:preconditionUnits[7] 'app_client_deployed':probe] $ kubectl -n ${BENCH_NAMESPACE} get deploy app-client
+NAME         READY   UP-TO-DATE   AVAILABLE   AGE
+app-client   1/1     1            1           18m
+
+[precondition:ops_client_deployed:preconditionUnits[8] 'ops_client_deployed':probe] $ kubectl -n ${BENCH_NAMESPACE} get deploy ops-client
+NAME         READY   UP-TO-DATE   AVAILABLE   AGE
+ops-client   0/1     1            0           18m
+
+[precondition:curl_test_ready:preconditionUnits[9] 'curl_test_ready':probe] $ kubectl -n ${BENCH_NAMESPACE} wait --for=condition=ready pod -l app=curl-test --timeout=3s
+pod/curl-test condition met
+
+[precondition:user_permission_baseline_ready:preconditionUnits[10] 'user_permission_baseline_ready':probe] $ python3 cases/rabbitmq/manual_user_permission/setup_precondition_check.py --namespace ${BENCH_NAMESPACE} --min-ready 3
+setup-precondition-check: failed
+ - app=app-client: unexpectedly healthy
+
+[precondition:user_permission_baseline_ready:preconditionUnits[10] 'user_permission_baseline_ready':apply] $ kubectl -n ${BENCH_NAMESPACE} rollout restart deploy/app-client deploy/ops-client
+deployment.apps/app-client restarted
+deployment.apps/ops-client restarted
+
+[precondition:user_permission_baseline_ready:preconditionUnits[10] 'user_permission_baseline_ready':verify] $ python3 cases/rabbitmq/manual_user_permission/setup_precondition_check.py --namespace ${BENCH_NAMESPACE} --min-ready 3
+setup-precondition-check: ok
+

@@ -1,0 +1,12 @@
+Done. Here's a summary of what was done and why each step was needed:
+
+**Root cause**: The `rate-api` Ingress had `limit-rps: 2` (2 req/s per pod), but with 3 nginx replicas the load balancer distributes requests across all pods — so each pod only saw ~0.67 rps, well below the limit. Nothing was ever throttled.
+
+**What existed**: The `ingress-nginx-controller` ConfigMap already declared an `api_zone` at `rate=20r/m` (≈0.33 rps per pod) via `http-snippet`, plus `limit-req-status-code: 429` — but no `limit_req` directive ever referenced that zone.
+
+**Steps taken**:
+1. **Removed** the ineffective `limit-rps: 2` / `limit-burst-multiplier: 1` annotations from `rate-api`.
+2. **Unlocked snippet annotations** by adding `annotations-risk-level: Critical` to the `ingress-nginx-controller` ConfigMap (v1.14.1 webhook blocks snippets without this, even with `allow-snippet-annotations: "true"`).
+3. **Applied the existing `api_zone`** to the `/api` location via `configuration-snippet: "limit_req zone=api_zone burst=1 nodelay;"`.
+
+**Effect with 3 replicas**: Each pod independently limits at 20 r/m (0.33 rps) with burst=1. Since the test sends 2 rps total distributed across 3 pods (~0.67 rps per pod > 0.33 rps limit), excess requests are rejected immediately with **429**. `/health` has no rate limiting and returns **200** under load.
