@@ -29,5 +29,7 @@ runs/<suite>/<iteration>/<run_id>/
 | `examples/r5` | all-100 example re-sweep (all-remote); 96% |
 | `short/r0`–`r4` | short-workflow sweeps (successive rounds) |
 | `short/r5` | **representative 300/522 short-workflow half** (stratified by service, 48% adversary ratio preserved); split heavy→remote, light→local |
+| `short/r6` | **convergence sweep** of the previously-failed short cases, driven to the invariant (only agent-faults remain): 17 distinct, 16 pass + 1 agent-fault. Hardened P-converge + C-typereconcile en route |
+| `short/r7` | *(next batch)* |
 | `long/r0`–`r4`, `error-prone/r0`–`r4` | long / error-prone sweeps |
 | `<suite>/fixrun` | targeted re-runs of specific failures |
