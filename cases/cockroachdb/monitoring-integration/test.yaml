@@ -101,12 +101,16 @@ preconditionUnits:
   # destructive apply is skipped (cluster inherited), so this unit ensures JUST
   # the monitoring stack + curl-test helper + the crdb monitoring RBAC/services
   # idempotently and ADDITIVELY — it never deletes the cockroachdb namespace or
-  # the inherited cluster. Its probe gates only on the curl-test pod being Ready;
-  # if it is already there the whole ensure is skipped.
+  # the inherited cluster. C3: its skip-probe checks this unit's OWN deliverable —
+  # a Ready Prometheus pod in the monitoring namespace (the oracle queries
+  # prometheus.monitoring.svc:9090) AND the curl-test helper — so an inherited
+  # curl-test from a prior stage (e.g. expose-ingress) can't make the probe pass
+  # and skip the Prometheus deploy. Only when BOTH are already up is the ensure
+  # skipped.
   - name: crdb_monitoring_stack
     on_probe_fail: skip
     probe:
-      - command: "kubectl -n cockroachdb get pod curl-test -o jsonpath='{.status.conditions[?(@.type==\"Ready\")].status}' 2>/dev/null | grep -q True"
+      - command: "/bin/sh -c 'kubectl -n monitoring get pod -l prometheus=crdb -o jsonpath=\"{.items[*].status.conditions[?(@.type==\\\"Ready\\\")].status}\" 2>/dev/null | grep -q True && kubectl -n cockroachdb get pod curl-test -o jsonpath=\"{.status.conditions[?(@.type==\\\"Ready\\\")].status}\" 2>/dev/null | grep -q True'"
         timeout_sec: 10
     apply:
       - command: "/bin/sh -c 'kubectl create namespace monitoring --dry-run=client -o yaml | kubectl apply -f -'"
