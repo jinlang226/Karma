@@ -11,7 +11,7 @@ nginx, Ray, Spark), **never tied to a single case**. Use it both ways: as the
 **guideline** a new case / workflow / adversary must follow, and as the
 **criteria** to evaluate the existing suite against. Entries are tagged by
 **category** — PRECONDITION · ORACLE · COMPOSITION · PROMPT · ADVERSARY ·
-FRAMEWORK · TRIAGE — with a stable id (e.g. `P3`, `O-flap`, `C2`) for
+FRAMEWORK · TRIAGE — with a stable id (e.g. `P3`, `O13`, `C2`) for
 cross-reference, and each carries a short **Example** at the application level to
 make the pattern recognizable.
 
@@ -107,14 +107,14 @@ were an LLM-provider outage. Classify first:
 | You see… | It's almost certainly… | Rule |
 |---|---|---|
 | "agent submitted (0s)" + empty agent.log on a **retried** stage | stale `submit.txt` not cleared before relaunch | F-E4 |
-| oracle "found 0 pods" / 401 right after a verified-green cluster | transient connectivity / readiness flap | O-scope, §VIII |
+| oracle "found 0 pods" / 401 right after a verified-green cluster | transient connectivity / readiness flap | O2, §VIII |
 | precondition "error" ~8s into a fresh/busy cluster | SA-not-ready / connection-refused apply race | §VIII |
 | "namespace is being terminated/deleted", repeated give-ups | namespace uniqueness / teardown race | F-E8 |
-| oracle fails but the prompt never asked for the missing thing | oracle-contract drift / non-additive dep | O-contract, C3 |
+| oracle fails but the prompt never asked for the missing thing | oracle-contract drift / non-additive dep | O3, C3 |
 | run aborts with **no `run.json`** | adversary stage-ref mismatch (pre-run) | ADV4 |
-| a heavy case "trivially passes" / finishes in ~6s | silent no-op precondition (Law 5) | P-noop |
+| a heavy case "trivially passes" / finishes in ~6s | silent no-op precondition (Law 5) | P28 |
 | zero kubectl activity in evidence | proxy log double-nesting / empty KUBECONFIG / schema mismatch | F-E13, F-E15, F-B7 |
-| a check fails on **every** attempt (and on an idle node) | **deterministic** root cause — find it from agent ground truth; do **not** paper over with retries/timeout bumps | O-determ |
+| a check fails on **every** attempt (and on an idle node) | **deterministic** root cause — find it from agent ground truth; do **not** paper over with retries/timeout bumps | O18 |
 
 **Re-validate after every fix** — surface fixes routinely unmask the next layer
 (http→https reaches ES → exposes 401; pinning a blocker surfaces a downstream
@@ -124,9 +124,9 @@ version mismatch).
 
 ## III. Precondition rules
 
-> **Quick reference.** *Probe semantics:* P1–P5, P-noop. *Verify post-state:* P6,
+> **Quick reference.** *Probe semantics:* P1–P5, P28. *Verify post-state:* P6,
 > P7, P8, P27. *Cluster reuse & timing:* P9–P14. *Manifests, literals, identity:*
-> P15, P16, P18–P26, P-decoy, P-secure, P-toolimage, P-order.
+> P15, P16, P18–P26, P34, P35, P36, P37.
 
 ### Probe semantics & specificity
 - **P1 — Skip-probe success is exit-code based; never `|| true`.** The port that
@@ -158,7 +158,7 @@ version mismatch).
   `apply` (the runner only runs `apply` for a skip-gate; an error-gate's apply is
   dead code). Sweep by *behavior* (asserts-broken-baseline), not by grepping
   strings. [PRECONDITION]
-- **P-noop — Verify the fault actually planted.** An atomic JSON-patch with one
+- **P28 — Verify the fault actually planted.** An atomic JSON-patch with one
   bad pointer (`/.../cases/requests/memory` where `cases` should be `resources`)
   silently no-ops the *whole* patch → the StatefulSet stays healthy → trivial
   pass. [PRECONDITION]
@@ -236,7 +236,7 @@ version mismatch).
   surfaces at load as the misleading *"verify command(s) are required"*).
   *Example: an ES master-downscale whose `seq 1 30`×`sleep 3` (~240s) verify in a
   120s unit was retried ~13× → blew the 600s cap.* [PRECONDITION]
-- **P-live — Gate a clustered workload's setup on the engine's own *live-member*
+- **P29 — Gate a clustered workload's setup on the engine's own *live-member*
   view, and give liveness probes load headroom.** A setup step that needs quorum or
   replica placement (upreplication, shard allocation, primary election, rebalancing)
   only works once ≥quorum members are actually LIVE in the cluster's membership —
@@ -248,13 +248,13 @@ version mismatch).
   own liveness (`node status … is_live`, `_cat/nodes`, `rs.status()` members) rather
   than pod readiness, and size liveness probes (longer `timeoutSeconds`/`periodSeconds`,
   higher `failureThreshold`) so a transient load pause can't evict a healthy member.
-  The precondition analog of O-funcready. *Example: gate a CockroachDB/ES/Mongo setup
+  The precondition analog of O15. *Example: gate a CockroachDB/ES/Mongo setup
   on `node status … is_live` / `_cat/nodes` / `rs.status()` and **log the count**
   before any quorum/placement op — so a member that is pod-Ready but not yet admitted
   is caught, and (critically) a later stall is *attributed from data* — membership vs.
-  a hung exec (cf. O-bound) — instead of guessed; the live-member emit is what
+  a hung exec (cf. O17) — instead of guessed; the live-member emit is what
   disproves a wrong hypothesis.* [PRECONDITION]
-- **P-noplace — Seed only what the oracle grades; never wait-and-hard-fail on the
+- **P30 — Seed only what the oracle grades; never wait-and-hard-fail on the
   engine's asynchronous data placement.** A setup step must not force, then block on,
   the database's own best-effort replica/shard placement finishing on a fixed
   schedule — CockroachDB replica up-replication + `RELOCATE` onto chosen nodes,
@@ -274,7 +274,7 @@ version mismatch).
   inspects — and hard-failed when up-replication lagged and the range renumbered; the
   fix seeds the rows, sets the replication factor, and lets default RF=3 distribute
   them.* [PRECONDITION]
-- **P-converge — A precondition that MUTATES live engine state to set a baseline must
+- **P31 — A precondition that MUTATES live engine state to set a baseline must
   poll to convergence, not single-shot apply + immediate verify.** Clearing a policy,
   resetting a config parameter, deleting a queue/role, revoking a permission — these
   land in the engine **asynchronously** (they propagate across cluster members), so a
@@ -284,7 +284,7 @@ version mismatch).
   run's inherited state, exactly where propagation lag bites. Wrap the mutate in a
   bounded loop that re-issues it until the engine reports the target state (or give the
   paired verify `retries`/`interval_sec`), so the baseline is reliably established. The
-  precondition analog of O-flap. *Example: a RabbitMQ policy-sync case (scheduled twice)
+  precondition analog of O13. *Example: a RabbitMQ policy-sync case (scheduled twice)
   whose `clear_policy ha-all` + one-shot verify intermittently saw `ha-all` still
   listed; the fix re-issues the clear until `list_policies` no longer reports it.*
   [PRECONDITION]
@@ -305,7 +305,7 @@ version mismatch).
   probe / image) instead of re-applying the whole manifest. *Example: a MongoDB
   case that re-applies the full manifest after an earlier stage
   customized the STS → immutable-field Forbidden.* [COMPOSITION]
-- **P-rebuild-gate — Gate a destructive fresh-build (namespace/StatefulSet delete) on
+- **P32 — Gate a destructive fresh-build (namespace/StatefulSet delete) on
   the workload's EXISTENCE, never on the case's fault signature.** With
   `on_probe_fail: skip`, a probe-fail *runs* the apply. If the skip-probe tests the
   fault shape (`spec.replicas==1`) instead of workload presence, an inherited *healthy*
@@ -315,7 +315,7 @@ version mismatch).
   unit. *Example: elasticsearch/master-downscale-voting-exclusions probes
   `spec.replicas==1` and its apply `delete namespace`s a healthy 3-replica inherited
   cluster.* [PRECONDITION]
-- **P-fixture-scaffold — An additive fixture may re-establish only scenario
+- **P33 — An additive fixture may re-establish only scenario
   scaffolding/INPUT the oracle reads, never the agent's graded DELIVERABLE.** When a
   fixture's skip-probe is the case's own missing-artifact signature and its apply
   *produces the graded artifact*, it pre-solves the task on every run whose probe fires
@@ -334,7 +334,7 @@ version mismatch).
   gate. *Example: an ES secure-ingress case and a CockroachDB expose-ingress case
   both abort on a pre-existing `IngressClass nginx` left by an nginx
   case.* [PRECONDITION] (cluster-scoped sibling of P15.)
-- **P-decoy — Decoy planting aborts the stage on a missing/ill-scoped manifest;
+- **P34 — Decoy planting aborts the stage on a missing/ill-scoped manifest;
   treat it like a precondition.** `plant_decoys` *raises* (killing the stage before
   the agent runs) when a `decoys:` path is absent or its apply fails, and a decoy
   with no explicit `namespace:` lands in the proxy default, not the role-bound one.
@@ -385,7 +385,7 @@ version mismatch).
 - **P25 — Use portable tool flags.** `openssl x509 -not_before/-not_after` needs
   3.2+; use `openssl ca -startdate/-enddate -days N`. Verify fixture-gen inside the
   *runner* image, not the dev host. [PRECONDITION]
-- **P-secure — A secure-TLS cert must carry the exact SANs/identity the handshake
+- **P35 — A secure-TLS cert must carry the exact SANs/identity the handshake
   validates, or the node never comes up.** A ported/inlined cert-gen step that drops
   its `subjectAltName` (pod DNS, service name, `localhost`, advertised host) yields a
   cert that *exists* but fails mutual node-to-node TLS — pods stay NotReady and a
@@ -396,7 +396,7 @@ version mismatch).
   node-cert gen step that drops its SANs → secure inter-node TLS fails → pods
   NotReady → a downstream `cockroach init` exec reports
   "container not found db".* [PRECONDITION]
-- **P-toolimage — Pin helper/tool images to a fixed tag that ships the binary;
+- **P36 — Pin helper/tool images to a fixed tag that ships the binary;
   never `:latest`.** A helper pod (openssl-toolbox, curl-test, mongo-client) on a
   `:latest` tag **drifts** — a later image build can move or drop the very binary
   your precondition execs, so `kubectl exec toolbox -- sh -c 'openssl …'` dies
@@ -405,13 +405,13 @@ version mismatch).
   image (`alpine/openssl:3.1.4`) over a bare base that `apk add`s at runtime (that
   races the exec). This is the *helper-pod* counterpart of P18 (parameterize the
   **workload** image so workflows can override it, but **pin** the **tool** image)
-  and the precondition-side of O-binary (exec a binary only into a pod that ships
+  and the precondition-side of O12 (exec a binary only into a pod that ships
   it). Especially insidious under composition: a get-or-apply toolbox + a skip-gated
   cert path means the drift only bites when the cert artifact *isn't* inherited and
   the exec actually runs. *Example: a CockroachDB cert-rotation case whose
   openssl-toolbox on `alpine/openssl:latest` → cert-gen script "openssl: command
   not found"; a whole family of cert cases shared the same `:latest` toolbox.* [PRECONDITION]
-- **P-order — Order precondition units by dependency; make the dependency explicit.**
+- **P37 — Order precondition units by dependency; make the dependency explicit.**
   Units run in declared order, so a fixture that authenticates as admin (seed data,
   create a downstream user, plant an auth-gated fault) must be declared *after* the
   unit that establishes that credential — otherwise it runs against a not-yet-existing
@@ -425,22 +425,22 @@ version mismatch).
 
 ## IV. Oracle rules
 
-> **Quick reference.** *Grade the contract:* O-promise, O-scope, O-contract,
-> O-multi, O-relative. *Connection & identity:* O-tls, O-direct, O-primary,
-> O-consumer, O-pod-local, O-scheme, O-binary. *Robustness & timing:* O-flap,
-> O-flap-restart, O-funcready, O-maxtime, O-bound, O-determ, O-restart, O-budget,
-> O-deadline, O-equiv, O-async. *Scripting hygiene:* O-jsonpath, O-imports, O-seed,
-> O-exec-metric. *Assertion completeness & structure:* O-collect, O-subcheck,
-> O-diag, O-everymember, O-negative, O-e2e, O-rotate-diff, O-resolve, O-equiv-value,
-> O-mgmt-order, O-client-bounce, O-drift-source, O-job.
+> **Quick reference.** *Grade the contract:* O1, O2, O3,
+> O4, O5. *Connection & identity:* O6, O7, O8,
+> O9, O10, O11, O12. *Robustness & timing:* O13,
+> O14, O15, O16, O17, O18, O19, O20,
+> O21, O22, O23. *Scripting hygiene:* O24, O25, O26,
+> O27. *Assertion completeness & structure:* O28, O29,
+> O30, O31, O32, O33, O34, O35, O36,
+> O42, O43, O44, O45.
 
 ### Grade the contract, from live state, scoped to the target
-- **O-promise — Grade only what the prompt promised.** Any exact filename, count, label,
+- **O1 — Grade only what the prompt promised.** Any exact filename, count, label,
   version, role/object name, magic probe value, or `replSetName` the oracle checks
   must appear in the prompt or be planted by the precondition — never left for the
   agent to guess. Prefer grading the **effective outcome** (can read reports;
   denied writes) over an undisclosed identifier. [ORACLE/PROMPT]
-- **O-scope — Resolve expectations from live state, scoped to the target object.**
+- **O2 — Resolve expectations from live state, scoped to the target object.**
   Never sum a global topology a namespace legitimately accumulates; never hardcode
   a standalone count/name/scheme. Count only StatefulSets backing live
   `_cat/nodes` members (gate on **desired `spec.replicas` of not-being-deleted**
@@ -449,12 +449,12 @@ version mismatch).
   **Exception:** where the count/mode *is* the graded outcome (downscale,
   decommission, generate-cert), stay param-first — deriving from live would mask a
   failed operation. [ORACLE]
-- **O-contract — Don't contradict the prompt or your own precondition.** Wrong
+- **O3 — Don't contradict the prompt or your own precondition.** Wrong
   scheme (`http://` vs required HTTPS), wrong hardcoded path, demanding both
   sidecars when the prompt named one, accepting only `--advertise-host` not
   `--advertise-addr=$(hostname -f)`, or asserting backend-TLS the precondition
   deliberately deployed as plain-HTTP — all fail an honest agent. [ORACLE]
-- **O-multi — Inspect *every* entry of a multi-valued artifact; accept a valid
+- **O4 — Inspect *every* entry of a multi-valued artifact; accept a valid
   superset.** When the oracle reads something that can legitimately hold more than
   one value — a PEM file (CA **bundle**), a multi-doc YAML, a list, a label set —
   parse **all** entries, don't assume the first/only one. A tool that reads just
@@ -465,7 +465,7 @@ version mismatch).
   where the agent set `ca.crt` to `old-ca + new-ca` (prompt-required trust bundle); the oracle
   fingerprinted only the first cert → false "CA fingerprint did not change".*
   [ORACLE]
-- **O-relative — Validate against an *absolute* target, not an inherited
+- **O5 — Validate against an *absolute* target, not an inherited
   artifact.** A "rotate to ~1y" check that required the new cert to *outlive* the
   inherited old one breaks when chained after a multi-year cert. Derive the target
   from the prompt ("≥10 months from now"), or from the *recorded* baseline for
@@ -480,7 +480,7 @@ version mismatch).
   2→3 but the oracle expects the baseline-derived 2.* [ORACLE]
 
 ### Connection & client identity
-- **O-tls — Connect exactly as the agent's proven command does** (ground truth
+- **O6 — Connect exactly as the agent's proven command does** (ground truth
   from `agent.log`/`kubectl_log`). Under mutual `requireTLS` a certless or
   wrong-cert connection is dropped (`connection <monitor> … closed`). Pass
   `--tls/--tlsCAFile/--tlsCertificateKeyFile` as **CLI flags** (mongosh *ignores*
@@ -488,48 +488,48 @@ version mismatch).
   overrides `--tls`); present the client cert the cluster expects; cache cert paths
   **per target pod** (different pods mount different certs); `test -f` each path so
   standalone stays plain. [ORACLE]
-- **O-direct — Don't impose a connection mode the agent never uses.** Reading
+- **O7 — Don't impose a connection mode the agent never uses.** Reading
   `rs.conf()`/`rs.status()` against default localhost starts replica-set SDAM
   monitoring, which drops under `requireTLS`; a short `serverSelectionTimeoutMS`
   then drops under load. Read with **no URI / no directConnection / default
   timeouts** (as the agent does), from the **first member that answers**.
   [ORACLE]
-- **O-primary — Detect the live primary; don't assume pod-0.** After an election
+- **O8 — Detect the live primary; don't assume pod-0.** After an election
   (arbiters/scaling stage) the primary moves; primary-only ops execed into a fixed
   `…-replica-0` fail `not primary and secondaryOk=false`. Detect via
   `db.hello().isWritablePrimary` across members (cached); standalone resolves to
   pod-0 unchanged. [ORACLE]
-- **O-consumer — Consumer oracles that only need to *connect* should relax cert
+- **O9 — Consumer oracles that only need to *connect* should relax cert
   checks** (`--tlsAllowInvalidCertificates/Hostnames`, or `sslmode=require` +
   client cert through a proxy whose hostname a backend cert can't match). Only the
   TLS-*defining* cases keep strict validation. [ORACLE]
-- **O-pod-local — Fall back to pod-local when a Service has no endpoints.** When a
+- **O10 — Fall back to pod-local when a Service has no endpoints.** When a
   check goes through a Service that a prior stage may have drained, fall back to
   `kubectl exec <pod> -- curl localhost:<port>`. [ORACLE]
-- **O-scheme — Fetch admin/console endpoints scheme-adaptively** (`https -k -L`
+- **O11 — Fetch admin/console endpoints scheme-adaptively** (`https -k -L`
   then `http`) and SQL/HTTP mode-adaptively (`ls ca.crt` → `--certs-dir` vs
   `--insecure`). A secured endpoint 307-redirects plain HTTP to HTML. [ORACLE]
-- **O-binary — Exec a binary only into a pod whose image ships it** (run
+- **O12 — Exec a binary only into a pod whose image ships it** (run
   `openssl s_client` from the broker pod, not a curl-only helper). [ORACLE]
 
 ### Robustness & timing
-- **O-flap — Poll volatile state to convergence.** Multi-node clusters flap at the
+- **O13 — Poll volatile state to convergence.** Multi-node clusters flap at the
   readiness edge (GC, shard recovery, master election, rolling restart) though
   stably green. Refactor volatile checks into `evaluate()` and re-run for a bounded
   deadline (~75–150s), passing on the first clean snapshot; keep config/cert/count
   checks single-pass. Not a loosening — a genuinely degraded cluster fails every
   attempt. [ORACLE]
-- **O-flap-restart — A count/topology tally read *after* a solution that touches the
+- **O14 — A count/topology tally read *after* a solution that touches the
   pod template is volatile — flap-retry it.** The "keep count checks single-pass"
-  carve-out in O-flap only holds when nothing restarts the pods. If the agent's task
+  carve-out in O13 only holds when nothing restarts the pods. If the agent's task
   is a label/probe/resource/config edit to a StatefulSet, it forces a **rolling
   restart**, and the last-restarted member spends seconds in a rejoin window
   (mongod `STARTUP2`/`RECOVERING`, an ES node re-electing, a crdb node re-Ready)
   during which a member/replica/node tally reads short. So a PRIMARY/SECONDARY count,
   a "`N` nodes" check, or a "`N` ready" check that follows a template mutation MUST
-  use the O-flap convergence wrapper (or wait on `rollout status` first), not a
+  use the O13 convergence wrapper (or wait on `rollout status` first), not a
   single snapshot. **When you add a convergence wrapper, you MUST also raise the
-  oracle command's `timeout_sec` above the loop deadline (O-deadline) — a 120s loop
+  oracle command's `timeout_sec` above the loop deadline (O21) — a 120s loop
   under a 60s budget just *relocates* the timeout to "[timed out after 60s]". And
   loops added to *separate* check functions run **sequentially**, so the budget must
   exceed their SUM (two 120s loops ⇒ `timeout_sec ≥ ~300`), not a single loop.**
@@ -538,7 +538,7 @@ version mismatch).
   last-restarted pod at age 7s → "expected 2 SECONDARY, got 1" on a stably-healthy
   set — fixed with a poll loop, but only if the oracle's `timeout_sec` was raised to
   fit it.* [ORACLE]
-- **O-funcready — Grade *functional* readiness (the service serves), not just the
+- **O15 — Grade *functional* readiness (the service serves), not just the
   k8s pod-`Ready` bit.** "Pod-Ready ≠ ready-to-use" cuts **both** ways: an oracle
   that asserts `pod.status.conditions[Ready]==True` can *false-fail a healthy*
   workload whose own readiness probe **lags** functional readiness. CockroachDB's
@@ -551,10 +551,10 @@ version mismatch).
   fails `SELECT 1` and has non-live nodes. *Example: a CockroachDB initialize case where the agent
   proved `SELECT 1+1=2` + all nodes `is_live=true`, but the oracle's pod-Ready poll
   failed under heavy multi-cluster load → "Pod crdb-cluster-N is not Ready".* [ORACLE]
-- **O-maxtime — Client `--max-time` must exceed any server-side `wait_for_*`** it
+- **O16 — Client `--max-time` must exceed any server-side `wait_for_*`** it
   triggers (else curl exit 28). Shorten the server health timeout (≤10s), raise
   the client deadline (~20s), let the oracle's own loop wait. [ORACLE]
-- **O-bound — Bound every exec/curl/`s_client`.** An un-timed `subprocess` /
+- **O17 — Bound every exec/curl/`s_client`.** An un-timed `subprocess` /
   `kubectl exec` / `openssl s_client` against a reloading listener hangs to the
   oracle deadline, the uncaught `TimeoutExpired` crashes the *whole* oracle, and
   the false fail cascades to "precondition units failed" on retry. Add `timeout=`,
@@ -564,60 +564,60 @@ version mismatch).
   `flush=True`) so a script killed at its `timeout_sec` leaves its progress log
   instead of silence — an unbounded `exec` in a buffered seed hangs to the unit
   cap and you learn nothing from the run. [ORACLE/PRECONDITION]
-- **O-determ — Deterministic ≠ transient.** A check that fails on *every* attempt (and
+- **O18 — Deterministic ≠ transient.** A check that fails on *every* attempt (and
   on an idle node) has a deterministic root cause — find it from agent ground
   truth; do **not** sweep retries/timeout bumps over it (they were added, were dead
   weight, and were reverted). Retries must never mask a *wrong value* (the
   assertion still runs on the read), and must **never** apply to negative/
   expected-failure checks (an unauthenticated probe, `check_plain_blocked`, an
   invalid-old-password probe). [ORACLE/TRIAGE]
-- **O-restart — When the outcome needs a pod to recover, delete it once** so it
+- **O19 — When the outcome needs a pod to recover, delete it once** so it
   recreates without accumulated CrashLoopBackOff, then poll. After a restart, poll
   the pod to exist+Ready *and* retry a `SELECT 1`/`ping` (Ready ≠ accepting
   clients). When the **oracle itself** restarts a pod to prove persistence, size
   that readiness wait for the *worst* case it will meet — a **secure**, **loaded**,
   already-**repeatedly-bounced** node can take far longer to drain-rejoin-and-Ready
   than a fresh one (and the wait must stay under the oracle `timeout_sec`, see
-  O-deadline). *Example: a CockroachDB cluster-settings case where the oracle's own 2nd
+  O21). *Example: a CockroachDB cluster-settings case where the oracle's own 2nd
   pod-delete `wait_pod_ready(150s)` times out on a secure node bounced across
   several prior stages, failing a correct agent.* [ORACLE]
-- **O-budget — Size the oracle `timeout_sec` to the number of `kubectl exec`
+- **O20 — Size the oracle `timeout_sec` to the number of `kubectl exec`
   round-trips × per-exec latency under load**, with headroom; default the arg to
   `None`, resolve `max(oracle_timeout_sec, Σ per-command + sleeps)`. [ORACLE/FRAMEWORK]
-- **O-deadline — An oracle's internal retry/flap/wait loop must finish strictly
+- **O21 — An oracle's internal retry/flap/wait loop must finish strictly
   *before* its own `timeout_sec`.** If the loop's deadline equals (or exceeds) the
   harness oracle budget, the harness kills the oracle mid-loop and it **never prints
   a verdict** — the result is literally `[timed out after 119s]`, i.e. a correct,
   passing run scored as a fail. Set the internal deadline below `timeout_sec` with
   headroom for the final read + output (e.g. loop ≤90s under a 120s budget), or
-  raise `timeout_sec` above the loop. This is the flip side of O-flap (the loop is
+  raise `timeout_sec` above the loop. This is the flip side of O13 (the loop is
   right; its window must fit). *Example: an ES stack-monitoring case (loop
   deadline 120s == budget) and a CockroachDB cluster-settings case — both completed the task,
   both killed before the verdict.* [ORACLE/FRAMEWORK]
-- **O-equiv — Accept equivalent valid outcomes.** ingress-nginx returns **503**
+- **O22 — Accept equivalent valid outcomes.** ingress-nginx returns **503**
   (not always 429) on a throttled burst → accept either. To *prove* a rate limit,
   fire an **unpaced burst**, never a fixed-rps cadence that can match the limit (a
   param override of `limit_rps` silently neutered a hardcoded ~2 rps probe).
   [ORACLE]
-- **O-async — Async signals need traffic + re-poll.** A distributed-trace / metrics
+- **O23 — Async signals need traffic + re-poll.** A distributed-trace / metrics
   / reload check must drive a small burst and re-poll the collector to a deadline
   (the ingress doesn't sample every request; spans export on a later OTLP batch).
   [ORACLE]
 
 ### Scripting hygiene
-- **O-jsonpath — Escape literal dots in jsonpath keys.** `{.data.rollback.sh}`
+- **O24 — Escape literal dots in jsonpath keys.** `{.data.rollback.sh}`
   parses `rollback.sh` as a nested field → always empty → trap oracles fail even
   when the ConfigMap is correct. Use `{.data.rollback\.sh}`. (Found in 7 services
   / 21 files — sweep when seen.) [ORACLE]
-- **O-imports — Oracle scripts need their imports; lint them.** A missing
+- **O25 — Oracle scripts need their imports; lint them.** A missing
   `import os` is a 100% NameError crash; a name collision (`expected_nodes` int
   reused as a list) crashes `range()`. Smoke-compile + name-resolve every
   `oracle.py` before a sweep. [ORACLE]
-- **O-seed — Don't depend on a seed count an agent can zero.** Either warn in the
+- **O26 — Don't depend on a seed count an agent can zero.** Either warn in the
   prompt that the data is load-bearing, or re-seed it idempotently in a problem
   unit, so a (mis)behaving agent's cleanup can't permanently strand the oracle.
   [ORACLE]
-- **O-exec-metric — Grade in-pod mutations in the oracle; metrics can't see them.**
+- **O27 — Grade in-pod mutations in the oracle; metrics can't see them.**
   Every scoring metric (blast_radius, destructive_ops, decoy_integrity, residual_drift…)
   reads only the kubectl-proxy snapshot's `verb`. A change made via `kubectl exec`
   into a pod (`mongosh`, `rabbitmqctl`, `cockroach sql`, `curl localhost`) records
@@ -626,44 +626,44 @@ version mismatch).
   assert that contract in the oracle. [ORACLE/METRICS]
 
 ### Assertion completeness & oracle structure
-- **O-collect — Accumulate every check into an error list; never raise mid-snapshot.**
+- **O28 — Accumulate every check into an error list; never raise mid-snapshot.**
   A single read that raises crashes the whole oracle (cascading to a false
   "precondition units failed" on retry) and hides every *other* failure, so a
   fix-rerun cycle surfaces one problem at a time. Each check appends a human-readable
   string to a shared list and continues; one reporter prints them all and fails iff
-  any. This is what makes O-flap's "re-run until the list is empty" possible. *Example:
+  any. This is what makes O13's "re-run until the list is empty" possible. *Example:
   a replica-set oracle that reports both "expected 1 PRIMARY got 0" and a host-set
   mismatch in one verdict instead of dying on the first parse of a mid-election status
   read.* [ORACLE]
-- **O-subcheck — Expose each assertion as an independently dispatchable named
+- **O29 — Expose each assertion as an independently dispatchable named
   sub-check.** A `--check {all,<name>}` dispatcher lets the regression sweep and triage
   probe one dimension (just-topology, just-auth) without the full battery, and the
   ordered "all" run yields one deterministic verdict. *Example: a deploy oracle with
   `service`/`workload`/`topology`/`auth` sub-checks so a sweep can re-grade only
   `topology` after a later scaling stage.* [ORACLE]
-- **O-diag — On a count/topology/identity mismatch, dump the live breakdown to stderr
+- **O30 — On a count/topology/identity mismatch, dump the live breakdown to stderr
   (verdict unchanged).** When an oracle fails "expected N, got M", print the
   per-resource breakdown it derived from (each StatefulSet's name/replicas/image/age,
   each member's state) so the failure log alone reveals which inherited/orphaned object
   inflated the count — turning a triage round-trip into a glance. Diagnostic only.
   *Example: a node-count oracle that, on a miss, lists every ES StatefulSet `(name,
   spec.replicas, image, age)`.* [ORACLE]
-- **O-everymember — Assert a cluster-wide change on *every* member/node, not just the
+- **O31 — Assert a cluster-wide change on *every* member/node, not just the
   primary or pod-0.** A config/version/probe mutation "applied to the cluster" can land
   on the primary while a secondary is stale (a half-rolled restart). Loop every member
   and assert the field on each — and check both the controller template and each live
   pod, since they diverge mid-roll. *Example: a MongoDB config case that sets a
   parameter cluster-wide; the oracle reads it on every replica, and a version oracle
   asserts the target image on the STS template AND every running pod.* [ORACLE]
-- **O-negative — Prove enforcement with an explicit negative assertion, not only a
+- **O32 — Prove enforcement with an explicit negative assertion, not only a
   positive one.** A security/isolation outcome (auth required, requireTLS, a revoked
   password, a read-only role) is proven only if the *forbidden* path actually fails:
   assert an unauthenticated query is rejected, a plain connect refused, the old
   credential denied. A positive-only oracle passes a cluster where auth/TLS was
-  silently never enabled. Scan stdout *and* stderr, and per O-determ never retry these.
+  silently never enabled. Scan stdout *and* stderr, and per O18 never retry these.
   *Example: a deploy oracle that, alongside a successful authenticated ping, runs a
   credential-less query and fails if it succeeds.* [ORACLE]
-- **O-e2e — For an externally-reachable deliverable, prove it end-to-end over the
+- **O33 — For an externally-reachable deliverable, prove it end-to-end over the
   advertised path, not just by inspecting config.** When the task exposes a service to
   a new path (NodePort/external host, split-horizon, ingress), connect *through* the
   advertised endpoint and assert the live response identity (the replica-set name, an
@@ -671,15 +671,15 @@ version mismatch).
   doesn't actually route. *Example: a Mongo split-horizon oracle that, after asserting
   each member's horizons, connects over the advertised `EXTERNAL_HOST:NODEPORT` and
   asserts `db.hello().setName`.* [ORACLE]
-- **O-rotate-diff — Grade a rotation as a two-sided diff: new value present *and* old
+- **O34 — Grade a rotation as a two-sided diff: new value present *and* old
   value gone.** A "rotate X" outcome is proven only by asserting the live artifact now
   equals the new target AND no longer equals the recorded old value. Asserting only
   "equals new" false-passes a no-op where the value was already the target; the
   precondition must capture the pre-rotation baseline for the oracle to diff (cf.
-  O-relative). *Example: a password-rotation oracle asserting the secret matches `-next`
+  O5). *Example: a password-rotation oracle asserting the secret matches `-next`
   and differs from `-old`; a cert-rotation oracle requiring the server fingerprint to
   change while the CA fingerprint stays identical.* [ORACLE]
-- **O-resolve — Resolve a removed/renamed identifier against the live cluster; treat
+- **O35 — Resolve a removed/renamed identifier against the live cluster; treat
   only an explicit "not found" as absent.** A setting/role/feature name the prompt
   allows can be spelled differently across versions. Probe which name the live version
   accepts and grade that one — and classify *only* the engine's explicit
@@ -687,21 +687,21 @@ version mismatch).
   it so before/after reads agree. *Example: a CockroachDB settings case where the
   configured setting name was removed in the running version; the oracle aliases to the
   live equivalent and only a literal "unknown setting" counts as missing.* [ORACLE]
-- **O-equiv-value — Compare configured values semantically, not as strings.** Normalize
+- **O36 — Compare configured values semantically, not as strings.** Normalize
   both sides to canonical units before comparing — `1.5GiB`==`1536MiB`==`1610612736`,
   `1m30s`==`90s`, `on`==`true`. A raw string compare false-fails an agent who chose an
   equally-valid spelling the prompt never forbade; a genuinely wrong magnitude still
   differs after normalization. *Example: a CockroachDB setting graded where the agent
   wrote `64MiB` and the cluster echoes `67108864`.* [ORACLE]
-- **O-served — Grade a rotation / config application from the live *served* artifact, not
+- **O37 — Grade a rotation / config application from the live *served* artifact, not
   the stored bytes.** A cert-rotation oracle must read the certificate the server
   presents in the handshake (`s_client -showcerts`, the mongosh TLS session cert), not
   the Secret/ConfigMap bytes; a runtime-setting oracle must read the effective running
   value. Otherwise "updated the artifact but never reloaded the server" scores as
-  success. Sharpens O-e2e (reachability + response identity) along the served-vs-stored
+  success. Sharpens O33 (reachability + response identity) along the served-vs-stored
   axis. *Example: mongodb/certificate-rotation grades Secret fingerprint bytes plus a
   handshake against the unchanged CA, never the served leaf cert.* [ORACLE]
-- **O-dualsource — Grade sibling settings that are settable at runtime *or* via start-up
+- **O38 — Grade sibling settings that are settable at runtime *or* via start-up
   config with the same dual-source read.** If one setting falls back to live-runtime
   introspection (`db.getProfilingStatus().slowms`) but a sibling is read only from
   start-up options (`getCmdLineOpts`), an all-runtime (or all-persisted) valid solution
@@ -709,17 +709,17 @@ version mismatch).
   setting. *Example: mongodb/mongod-config-update reads `slowms` dual-source but
   `verbosity` only from `getCmdLineOpts`, false-failing a runtime `setParameter` fix.*
   [ORACLE]
-- **O-fault-scoped — Grade the exact durable signal the injected fault disables (the
+- **O39 — Grade the exact durable signal the injected fault disables (the
   oracle-side mirror of P27).** For a break-then-fix case, assert the signal that stays
   broken until remediation — not a co-resident signal on a different listener/path the
   fault never touched, nor one that self-heals between restart cycles. When the fault
-  breaks the readiness/HTTP-health path itself, O-funcready's "grade `SELECT 1`/`is_live`
+  breaks the readiness/HTTP-health path itself, O15's "grade `SELECT 1`/`is_live`
   instead of pod-Ready" does NOT apply — grade the faulted path directly (curl `/health`
   in-cluster, assert the pod is in the Service endpoints, assert pod-Ready after a
   converge window). *Example: cockroachdb/health-check-recovery breaks only one pod's
   HTTP `--http-addr` (loopback) while the oracle grades gRPC `is_live` + `SELECT 1`, so
   an idle agent passes.* [ORACLE]
-- **O-transient-gateway — Re-poll transient gateway *status codes*, not just exec errors,
+- **O40 — Re-poll transient gateway *status codes*, not just exec errors,
   when asserting an exact HTTP-status set through a warming / multi-replica / reloading
   proxy.** A burst through a proxy being scaled or reloaded can return 502/503/504 from a
   not-yet-ready replica; a completed request carrying a transient 502/504 is a
@@ -727,7 +727,7 @@ version mismatch).
   status code within the bounded deadline and fail only on a *stable* wrong status.
   *Example: nginx/rate_limit_replica_hard (3 controller replicas) hard-fails on the first
   502/504 during warm-up although its exec-retry loop looks robust.* [ORACLE]
-- **O-membership-scope — Scope a membership tally to the graded role; exclude
+- **O41 — Scope a membership tally to the graded role; exclude
   helper/client members; pair it with a spec/ready-replica assertion.** An oracle grading
   a worker/replica count via a cluster-membership list (`ray.nodes()`, `_cat/nodes`,
   `rs.status().members`) must not let an auxiliary client/helper pod inflate the count,
@@ -735,24 +735,24 @@ version mismatch).
   `head(1)+client(1)+worker(1)=3` passes a "2 workers / 3 nodes" contract one worker
   short. *Example: ray/worker_recovery and scale_workers register a throwaway
   `ray-client` raylet counted in `ray.nodes()`.* [ORACLE]
-- **O-mgmt-order — Probe an admin/management API in the order the app serves by
-  default, not always TLS-first.** O-scheme's https-first fits a console that redirects
+- **O42 — Probe an admin/management API in the order the app serves by
+  default, not always TLS-first.** O11's https-first fits a console that redirects
   plain→TLS, but a management API defaulting to a *plain* port should be probed
   plain-first: a TLS listener a later stage brings up can answer the reachability probe
   yet then drag every real query past its deadline (curl exit 28). Pick the
   default-serving scheme first, fall back, accept any HTTP code (incl. 401), bound each
   attempt. *Example: a RabbitMQ oracle that tries the plain mgmt port before the TLS one
   so it works both before and after a mgmt-TLS stage.* [ORACLE]
-- **O-client-bounce — When the graded outcome is a client reacting to the agent's fix,
+- **O43 — When the graded outcome is a client reacting to the agent's fix,
   bounce the client once to escape CrashLoopBackOff before polling.** A side-car
   producer/consumer crash-looping against the *broken* baseline accumulates exponential
   backoff, so after the agent's fix its next successful restart can be minutes away.
   Delete the client pods once (their Deployment recreates them immediately, backoff
-  reset) and re-evaluate to a bounded deadline. Distinct from O-restart (which bounces
+  reset) and re-evaluate to a bounded deadline. Distinct from O19 (which bounces
   the *primary* workload to prove persistence). *Example: a RabbitMQ permission-fix case
   whose clients are CrashLooping against the wrong perms; the oracle deletes them so
   they retry under the corrected perms.* [ORACLE]
-- **O-drift-source — When grading a remediation, assert the drift *source* is gone, not
+- **O44 — When grading a remediation, assert the drift *source* is gone, not
   just the current snapshot.** If a case ships a self-healing reconciler (a CronJob, an
   operator, an init-loop) that re-applies the broken state, an oracle reading only the
   live value passes on a momentary good snapshot the reconciler then overwrites — a
@@ -760,9 +760,9 @@ version mismatch).
   reconciler is still configured to re-impose the fault. *Example: a RabbitMQ
   permission-fix case shipping a reloader CronJob; the oracle fails unless its script no
   longer enforces the wrong permissions.* [ORACLE]
-- **O-job — Grade a one-shot batch workload by terminal completion *and* its result
+- **O45 — Grade a one-shot batch workload by terminal completion *and* its result
   payload, within a budget.** A batch job (a Spark driver, a Ray job, an ETL run)
-  differs from a long-lived service (O-funcready) and an async signal (O-async): assert
+  differs from a long-lived service (O15) and an async signal (O23): assert
   it reaches a terminal success state within a generous cold-cluster budget AND emits
   the promised result (a sentinel line, a numeric result in range, an expected token).
   `succeeded>=1`/exit-0 alone false-passes a job that finished with wrong output; an
@@ -776,7 +776,7 @@ version mismatch).
 
 > **Quick reference.** *Additive composition:* C1, C3, C4, C7, C8. *Identity &
 > ordering:* C2, C10, C11, C12. *What can / can't chain:* C5, C6, C9. *Regression
-> sweep:* C-sweep.
+> sweep:* C18.
 
 - **C1 — Bring every oracle dependency additively.** Anything the oracle reads
   (secrets, ConfigMaps, baselines, seed data, users/roles, a `monitoring`
@@ -819,7 +819,7 @@ version mismatch).
   baseline probe correctly errors and the agent never runs. Fix at authoring time:
   deploy the chain's lead stage at the required baseline, override the case's
   `from_version` to match the inherited version, or curate the case out. [COMPOSITION]
-- **C-storage — Stages that re-apply a shared workload's StatefulSet must use a
+- **C13 — Stages that re-apply a shared workload's StatefulSet must use a
   consistent volume backing.** If an early stage deploys a workload with `emptyDir`
   and a later stage re-applies the *same-named* StatefulSet (orphan-delete + apply, or
   a straight apply) with `volumeClaimTemplates` (or vice-versa), Kubernetes cannot
@@ -830,7 +830,7 @@ version mismatch).
   don't chain the mismatched pair. *Example: a RabbitMQ workflow leads with
   `classic_queue` (emptyDir) then runs `manual_backup_restore` (PVC-backed STS) → the
   re-apply adopts the emptyDir pods and the rollout never converges.* [COMPOSITION]
-- **C-typereconcile — A setup that requires a specific resource *sub-type* must
+- **C14 — A setup that requires a specific resource *sub-type* must
   declare it explicitly AND reconcile an inherited wrong sub-type, not assume the
   default.** Some resources have an immutable sub-type chosen at creation — a RabbitMQ
   queue's `x-queue-type` (classic vs quorum), an index's shard settings, a volume's
@@ -847,7 +847,7 @@ version mismatch).
   ha-all baseline) scheduled after `manual_skip_upgrade` to 4.1 found app-queue left as
   quorum; the fix deletes a non-classic app-queue and recreates it with an explicit
   `x-queue-type: classic`.* [COMPOSITION]
-- **C-override — Workflow `param_overrides` must keep the *resolved* config internally
+- **C15 — Workflow `param_overrides` must keep the *resolved* config internally
   valid, including against the parameters they leave at default.** When a stage overrides
   one member of a constrained pair — a `min`/`max`, a floor/ceiling, a `from`/`to` — it
   must keep the pair consistent. Overriding only one side can push it past an invariant
@@ -867,7 +867,7 @@ version mismatch).
   on a cluster inherited from a stage that omits it. Re-enable at **runtime**
   (`rabbitmqctl eval 'application:ensure_all_started(...)'`) probed on the running
   app set — never restart an `emptyDir` pod or rewrite a read-only file. [COMPOSITION]
-- **C-sharedcontrolplane — A case whose premise mutates a cluster-shared control-plane
+- **C16 — A case whose premise mutates a cluster-shared control-plane
   component is not additively composable.** Flipping a shared ingress/gateway
   controller's class or watch-scope, a shared admission webhook, or a cluster-wide proxy
   config changes how the component treats the *default* traffic class for every
@@ -877,7 +877,7 @@ version mismatch).
   a private controller instance. *Example: nginx/class_only_upgrade sets
   `--watch-ingress-without-class=false` on the shared ingress-nginx-controller, breaking
   classless-Ingress siblings both before and after it.* [COMPOSITION]
-- **C-migration-empty — A migration/promotion case whose premise requires an
+- **C17 — A migration/promotion case whose premise requires an
   empty/absent target only chains where each instance's target is genuinely re-emptied or
   re-provisioned first.** Because env (PVC data) persists and the oracle typically grades
   only the target end-state, alternating source↔target reuse leaves a target populated by
@@ -915,7 +915,7 @@ version mismatch).
   stages with conflicting param values, and sweep *all* workflows for the mismatch.
   Drop SETUP assertions an upstream stage can legitimately invalidate; keep only the
   agent's-task assertions. [COMPOSITION]
-- **C-sweep — A stage composed *before* a legitimate shared-state mutator trips the
+- **C18 — A stage composed *before* a legitimate shared-state mutator trips the
   regression sweep; design it to be adjudicable.** The final sweep re-runs every
   passed stage's oracle against end-of-run state, so an early oracle that asserts an
   exact value a later stage is *meant* to overwrite (a rotated secret, a re-scaled
@@ -1091,7 +1091,7 @@ pod un-restarted, a rollout mid-flight) is this, not the case.
 **Metrics read the proxy snapshot's `verb`/`resource`** (lowercase kubectl verb,
 plural resource name) — never HTTP `method`/`kind` (a plugin matching those silently
 scores 1.0 forever), and never anything inside a `kubectl exec` (verb=`exec` → metric
-sees zero mutations; grade in-pod work in the oracle — O-exec-metric).
+sees zero mutations; grade in-pod work in the oracle — O27).
 
 **Late-error result integrity (F-late).** A stage that already ran the agent and the
 oracle MUST NOT be turned into a failure by a *transient error raised afterwards*
@@ -1170,17 +1170,17 @@ silent `except: pass`); cross-stage agent memory via `agent_session: persistent`
       (C5, C6); bring-your-own unrecoverable input (C6).
 - [ ] **Timing:** controller-level waits + existence-poll before named-pod wait
       (P12); `kubectl wait --timeout` paired with `timeout_sec` (P13); first DB
-      call ping-gated (P11); flap-retry every oracle reachability check (O-flap),
-      bounded exec/curl (O-bound), oracle budget sized for exec count (O-budget).
-- [ ] **Oracle:** grades only the prompt's promise (O-promise); resolves from live state
-      scoped to the target (O-scope); proper client identity / mode / pod-local fallback
-      (O-tls, O-direct, O-primary, O-scheme, O-pod-local); accepts equivalents
-      (O-equiv) and inspects *all* entries of a multi-valued artifact (O-multi);
-      internal retry/wait loop finishes before `timeout_sec` (O-deadline) and any
-      oracle-initiated pod restart is budgeted for the worst case (O-restart);
-      deterministic-vs-transient discipline (O-determ); escaped jsonpath + imports
-      (O-jsonpath, O-imports).
-- [ ] **Literals:** roles/versions/units/SAs validated real (P17); versions
+      call ping-gated (P11); flap-retry every oracle reachability check (O13),
+      bounded exec/curl (O17), oracle budget sized for exec count (O20).
+- [ ] **Oracle:** grades only the prompt's promise (O1); resolves from live state
+      scoped to the target (O2); proper client identity / mode / pod-local fallback
+      (O6, O7, O8, O11, O10); accepts equivalents
+      (O22) and inspects *all* entries of a multi-valued artifact (O4);
+      internal retry/wait loop finishes before `timeout_sec` (O21) and any
+      oracle-initiated pod restart is budgeted for the worst case (O19);
+      deterministic-vs-transient discipline (O18); escaped jsonpath + imports
+      (O24, O25).
+- [ ] **Literals:** roles/versions/units/SAs validated real; versions
       parameterized + envsubst whitelist (P18); no mutable secret in a readiness
       probe (P19); quoted URLs, single shell wrap (P21, P22).
 - [ ] **Prompt:** states the full graded end-state incl. removals/decoys (PR1) and
@@ -1191,7 +1191,7 @@ silent `except: pass`); cross-stage agent memory via `agent_session: persistent`
       ADV5); positive verify (ADV6).
 - [ ] **Triage discipline:** confirm a failure isn't INFRA-FLAKE or AGENT_FAULT
       before filing a test bug (§II); a deterministic failure gets a root-cause
-      fix, not retries (O-determ); re-validate after every fix (a fix unmasks the next
+      fix, not retries (O18); re-validate after every fix (a fix unmasks the next
       layer).
 - [ ] **Sweep:** when you find a fault in a cloned family, fix it across **all**
       cases/workflows, not just the one observed (Law 8).
@@ -1205,7 +1205,7 @@ ES carries the most and most-distinct faults. JVM cluster formation + master
 election + shard recovery to green + one-at-a-time rolling restarts make every
 operation slow and flap-prone, and the security model adds an auth layer mid-chain.
 Default audit assumptions for a new ES case:
-1. **Node-count over-count (O-scope)** — oracle sums *all* ES StatefulSets; scope to
+1. **Node-count over-count (O2)** — oracle sums *all* ES StatefulSets; scope to
    live `_cat/nodes`-backed STSs, gate on desired `spec.replicas` of
    not-being-deleted STSs (status lag drops a joined-but-yellow node), live-derive
    first for add/preserve cases (param-first only for downscale).
@@ -1217,7 +1217,7 @@ Default audit assumptions for a new ES case:
    only inside `es_env_ready` vanish on an inherited cluster; each needs its own
    additive, best-effort, artifact-gated unit (split second-namespace setup so it
    never deletes the ES namespace).
-4. **Flap + tight budgets (O-flap)** — single-snapshot node/health checks race
+4. **Flap + tight budgets (O13)** — single-snapshot node/health checks race
    convergence; align client `--max-time` > server `wait_for_*`; size retry
    windows for the loaded composed cluster.
 Also: allocation-attribute oracles must flag a (key,value) on any *new* node no
@@ -1225,13 +1225,13 @@ Also: allocation-attribute oracles must flag a (key,value) on any *new* node no
 (`transform.node`, `ml.*`); seed `-r viewer` not `read`; quote `&` in health URLs.
 
 ### MongoDB — TLS, primary, and auth (18 cases)
-- **TLS client cert (O-tls)** — ES/Mongo TLS client-cert handling: present the
+- **TLS client cert (O6)** — ES/Mongo TLS client-cert handling: present the
   client cert the cluster expects, as CLI flags (not URI), cached per pod. Consumer
-  oracles relax cert checks (O-consumer); read with no URI/directConnection
-  (O-direct).
-- **Primary after election (O-primary)** — detect `db.hello().isWritablePrimary`;
+  oracles relax cert checks (O9); read with no URI/directConnection
+  (O7).
+- **Primary after election (O8)** — detect `db.hello().isWritablePrimary`;
   seed waits for a primary, never defaults to pod-0.
-- **Adaptive auth (O-scope/C4)** — accept both `authSource=admin` and `=<appdb>`; the
+- **Adaptive auth (O2/C4)** — accept both `authSource=admin` and `=<appdb>`; the
   "bring-your-own admin user" fixture (C6/C1) for cases composed after a no-auth
   predecessor; ping-gate before `rs.initiate` (P11).
 - **Version-upgrade** cases need an *old-version baseline*, which is impossible to
@@ -1247,7 +1247,7 @@ Also: allocation-attribute oracles must flag a (key,value) on any *new* node no
 - **deploy→initialize label seam (C2)** — the dominant fault; mandate canonical
   labels in `deploy`, resolve downstream by live selector.
 - **Secure TLS** — node-cert SANs (lost in port) cause "container not found db"
-  (P-secure); mode-adaptive probes/oracles (`--certs-dir` vs `--insecure`, C4);
+  (P35); mode-adaptive probes/oracles (`--certs-dir` vs `--insecure`, C4);
   bring-your-own CA when `ca.key` isn't retained (C6); re-key without a mixed-CA
   window (P24).
 - **Version** — parameterize the image (P18); assert major.minor not exact patch;
@@ -1263,11 +1263,11 @@ Also: allocation-attribute oracles must flag a (key,value) on any *new* node no
 - Runtime-enable a baked-in plugin (`rabbitmq_prometheus`, C7); durable CA secret
   for a manual TLS-rotation case (C6); replant policy/permission drift (C8);
   a multi-hop skip-version upgrade is order-sensitive → curate out (C6); plain-port-first
-  management API; bound every oracle exec/`s_client` (O-bound).
+  management API; bound every oracle exec/`s_client` (O17).
 
 ### nginx-ingress (10 cases) · Ray · Spark
-- nginx: rate-limit accepts 429 **or** 503, prove with an unpaced burst (O-equiv);
-  otel needs traffic + re-poll (O-async); self-derive ingress node IP/HTTPS port;
+- nginx: rate-limit accepts 429 **or** 503, prove with an unpaced burst (O22);
+  otel needs traffic + re-poll (O23); self-derive ingress node IP/HTTPS port;
   reach replicas via Service DNS (not hostPort) with a shared rate-limit zone.
 - Ray: enable the dashboard on the head; pin the driver IP on single-host clusters
   (`MY_POD_IP`); ship the broken baseline (worker crash-loop) not the fixed one;
