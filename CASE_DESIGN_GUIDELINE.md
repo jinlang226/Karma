@@ -254,6 +254,26 @@ version mismatch).
   is caught, and (critically) a later stall is *attributed from data* — membership vs.
   a hung exec (cf. O-bound) — instead of guessed; the live-member emit is what
   disproves a wrong hypothesis.* [PRECONDITION]
+- **P-noplace — Seed only what the oracle grades; never wait-and-hard-fail on the
+  engine's asynchronous data placement.** A setup step must not force, then block on,
+  the database's own best-effort replica/shard placement finishing on a fixed
+  schedule — CockroachDB replica up-replication + `RELOCATE` onto chosen nodes,
+  Elasticsearch shard `reroute` / `routing.allocation` convergence, Mongo chunk
+  balancing. That placement is **unbounded** (no timing guarantee), its resource
+  identity is **unstable** (a range/shard splits or renumbers mid-wait, so a poll on a
+  captured id never resolves), and it usually needs **spare capacity** that may not
+  exist yet — so any lag makes the unit `return 1` and the agent never runs. Seed
+  **only the state the oracle actually checks** (typically: the data exists and reads
+  back), and let the engine place copies itself (default replication factor
+  distributes them across the members). If placement genuinely must be shaped, use the
+  engine's **declarative** setting (an allocation/zone attribute) and move on — do not
+  add an imperative relocate-and-wait-until-converged loop that hard-fails. Corollary
+  of P3/§minimal-setup: hand-built state the oracle never verifies is pure fragility.
+  *Example: a CockroachDB decommission seed forced 3-way up-replication then
+  hand-`RELOCATE`d copies onto the to-be-removed nodes — placement the oracle never
+  inspects — and hard-failed when up-replication lagged and the range renumbered; the
+  fix seeds the rows, sets the replication factor, and lets default RF=3 distribute
+  them.* [PRECONDITION]
 
 ### Manifests, literals, identity
 - **P15 — Get-or-apply for helper Pods.** `kubectl apply` of a bare helper Pod
