@@ -787,6 +787,20 @@ version mismatch).
   ha-all baseline) scheduled after `manual_skip_upgrade` to 4.1 found app-queue left as
   quorum; the fix deletes a non-classic app-queue and recreates it with an explicit
   `x-queue-type: classic`.* [COMPOSITION]
+- **C-override — Workflow `param_overrides` must keep the *resolved* config internally
+  valid, including against the parameters they leave at default.** When a stage overrides
+  one member of a constrained pair — a `min`/`max`, a floor/ceiling, a `from`/`to` — it
+  must keep the pair consistent. Overriding only one side can push it past an invariant
+  the engine enforces, or past the **default** value of the side left untouched. The
+  workflow author sees only the value they changed; the engine validates the *whole*
+  resolved config and rejects the violation — so the stage becomes impossible for **any**
+  agent, however competent (a workflow-definition bug, never an agent fault). When a sweep
+  walks one bound across stages, walk or pin the other bound too so the invariant holds at
+  every step. Statically checkable: resolve each stage's overrides against the case
+  defaults and assert the pairwise constraint. *Example: a CockroachDB `zone-config`
+  range-size sweep drove `range_max_bytes` down to 64 MiB while `range_min_bytes` stayed at
+  its 128 MiB default; CockroachDB enforces `range_min_bytes < range_max_bytes`, so those
+  stages could never apply.* [COMPOSITION]
 - **C7 — Restore a runtime feature additively when its baked-in config is skipped.**
   A scenario property baked into the case's own StatefulSet/ConfigMap (the
   `rabbitmq_prometheus` plugin on :15692) silently drops when the apply is skipped
