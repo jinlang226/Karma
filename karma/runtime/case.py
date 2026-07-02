@@ -48,6 +48,25 @@ from .._warn import warn
 # Internal helpers
 # ---------------------------------------------------------------------------
 
+def _read_oracle_verdict_from_disk(run_dir: Path, stage_id: str) -> str | None:
+    """Return the oracle verdict already written to oracle.json, or None.
+
+    F-late: run_oracle writes oracle.json before run_stage returns, so a verdict
+    survives on disk even if a later transient error (a broken proxy pipe during
+    teardown) aborts the stage. The outer except recovers it rather than nullifying
+    an already-graded stage.
+    """
+    import json
+
+    try:
+        path = protocol.stage_oracle_path(run_dir, stage_id)
+        with open(path) as fh:
+            verdict = json.load(fh).get("verdict")
+        return verdict if verdict in ("pass", "fail", "error") else None
+    except Exception:
+        return None
+
+
 def _default_timeout_for_command(command: str, phase: str) -> int:
     """Per-command default timeout (seconds), inferred from the command verb.
 
@@ -667,6 +686,21 @@ def run_stage(
     role_bindings: dict[str, str] = {}
     identity_bindings: dict[str, str] = {}
     ns_baseline: set[str] = set()
+    # F-late: bind these before the try so the outer except can recover the real
+    # state instead of nullifying an already-graded stage (see the except below).
+    submitted = False
+    oracle_verdict = None
+
+    # F-late: progress reporting is best-effort — a broken progress pipe (a closed
+    # SSE/dispatcher stream raising [Errno 32] Broken pipe) must never abort a stage.
+    if on_progress is not None:
+        _raw_on_progress = on_progress
+
+        def on_progress(msg, _cb=_raw_on_progress):
+            try:
+                _cb(msg)
+            except Exception:
+                pass
 
     try:
         from ..definitions.prompts import render_stage_prompt, assemble_agent_prompt
@@ -956,11 +990,28 @@ def run_stage(
         }
 
     except Exception as exc:
+        # F-late: a transient error raised AFTER the oracle already graded the stage
+        # (a broken proxy pipe during evidence/adversary-lift/teardown) must not
+        # discard the verdict. Recover it from oracle.json on disk and preserve the
+        # real `submitted`; the late error becomes a note, not a verdict override.
+        recovered = _read_oracle_verdict_from_disk(run_dir, stage_id)
+        if recovered is not None:
+            final = "pass" if recovered == "pass" else (recovered or "error")
+            return {
+                "stage_id": stage_id,
+                "status": final,
+                "oracle_verdict": recovered,
+                "submitted": submitted,
+                "duration_sec": time.monotonic() - start_time,
+                "error": f"post-grade error (verdict recovered): {exc}",
+                "evidence_path": str(protocol.stage_evidence_path(run_dir, stage_id)),
+                "oracle_path": str(protocol.stage_oracle_path(run_dir, stage_id)),
+            }
         return {
             "stage_id": stage_id,
             "status": "error",
             "oracle_verdict": None,
-            "submitted": False,
+            "submitted": submitted,
             "duration_sec": time.monotonic() - start_time,
             "error": str(exc),
             "evidence_path": str(protocol.stage_evidence_path(run_dir, stage_id)),
