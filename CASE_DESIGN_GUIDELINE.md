@@ -1013,7 +1013,7 @@ version mismatch).
   to clobber). *Example: a "block the SQL port" adversary whose policy allows only the
   admin/HTTP port — denying SQL by omission — while the admin endpoint the agent
   diagnoses through stays reachable.*
-- **ADV-configpatch — A config-drift adversary mutating one field inside a shared
+- **ADV10 — A config-drift adversary mutating one field inside a shared
   multi-field config blob must patch only that field and snapshot/restore the rest —
   never rewrite the whole blob from a hardcoded template.** When the config is one opaque
   key (`elasticsearch.yml`), a merge/replace patch replaces the entire file and clobbers
@@ -1022,7 +1022,7 @@ version mismatch).
   through no agent fault. Extends ADV8's snapshot discipline to the shared-blob case.
   *Example: elasticsearch/es-config-seed-hosts-drift merge-patches the whole
   `elasticsearch.yml` key from a template.*
-- **ADV-netverify — A NetworkPolicy adversary must template its selector from the probe's
+- **ADV11 — A NetworkPolicy adversary must template its selector from the probe's
   identity param and positively assert the block took effect.** (a) Derive `podSelector`
   from the same `{{params.cluster_prefix}}` the probe keys on — a hardcoded `app: rabbitmq`
   selects zero pods when the workload is named `rabbitmq-cluster-a`, a vacuous fault; (b)
