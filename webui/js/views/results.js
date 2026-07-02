@@ -132,7 +132,7 @@
   // "Judge all" is scoped to the folder currently being browsed: at the top
   // level it judges every run under runs/, inside a folder only the runs under
   // that folder (recursively). The label reflects that scope.
-  function judgeAllLabel() { return runsFolder ? `Judge all in ${runsFolder}` : "Judge all"; }
+  function judgeAllLabel() { return runsFolder ? `Judge all in "${runsFolder}"` : "Judge all"; }
 
   function subtabs() {
     const tabs = el("div", { class: "subtabs" },
