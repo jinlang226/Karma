@@ -137,6 +137,18 @@ preconditionUnits:
       # additive and never wipes inherited broker state.
       - command: "kubectl -n ${BENCH_NAMESPACE} delete statefulset {{params.cluster_prefix}} --cascade=orphan --ignore-not-found=true"
         sleep: 1
+      # This case's StatefulSet is PVC-backed (its backup/restore Jobs mount the
+      # data-* PVCs by claimName), but an inherited cluster may have been stood up
+      # with emptyDir pods (e.g. a leading classic_queue stage). Kubernetes cannot
+      # roll orphaned emptyDir pods onto the PVC template -- rollout status stalls
+      # at "0 out of 3 updated". Drop the orphaned broker pods so the PVC-backed STS
+      # provisions fresh PVC-mounted pods. This never deletes the data-* PVCs, so
+      # inherited broker state on a PVC-source cluster survives (pods rebind them);
+      # standalone the selector matches nothing and this is a no-op.
+      - command: "kubectl -n ${BENCH_NAMESPACE} delete pod -l app={{params.cluster_prefix}} --ignore-not-found=true"
+        sleep: 1
+      - command: "/bin/sh -c 'kubectl -n ${BENCH_NAMESPACE} wait --for=delete pod -l app={{params.cluster_prefix}} --timeout=300s || true'"
+        sleep: 1
       - command: "envsubst '$BENCH_NAMESPACE $BENCH_NS_SOURCE $BENCH_NS_TARGET $BENCH_PARAM_CLUSTER_PREFIX $BENCH_PARAM_BLUE_CLUSTER_PREFIX $BENCH_PARAM_GREEN_CLUSTER_PREFIX $BENCH_PARAM_FROM_VERSION' < cases/rabbitmq/manual_backup_restore/resource/statefulset.yaml | kubectl -n ${BENCH_NAMESPACE} apply -f -"
         sleep: 1
       - command: "kubectl -n ${BENCH_NAMESPACE} rollout status statefulset/{{params.cluster_prefix}} --timeout=600s"
