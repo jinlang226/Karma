@@ -437,7 +437,15 @@ version mismatch).
   artifact.** A "rotate to ~1y" check that required the new cert to *outlive* the
   inherited old one breaks when chained after a multi-year cert. Derive the target
   from the prompt ("≥10 months from now"), or from the *recorded* baseline for
-  relative asks ("+1", "2x") — never the raw inherited value. [ORACLE]
+  relative asks ("+1", "2x") — never the raw inherited value. A relative-change case's
+  oracle whose expected value is a **fixed** derivation of the seeded baseline
+  (`baseline+1`) is only correct on the case's **first** application: if a workflow
+  schedules the same relative-change case **twice**, the second run legitimately
+  advances the value again (`baseline+2`) and the fixed oracle false-fails the *correct*
+  agent. Either read the live pre-change value in the oracle, or don't schedule a
+  relative-change case more than once per workflow. *Example: a MongoDB
+  `mongod-config-update` ("+1 verbosity") run at two stages; the agent correctly moves
+  2→3 but the oracle expects the baseline-derived 2.* [ORACLE]
 
 ### Connection & client identity
 - **O-tls — Connect exactly as the agent's proven command does** (ground truth
@@ -729,7 +737,25 @@ version mismatch).
   (a CA **private key**, an original password, an old version/FCV, an admin user),
   it must **establish its own** additively when absent — or, if that's physically
   impossible (FCV downgrade; a base older than the chain leaves), be **curated out**
-  of incompatible workflows. Don't fake it destructively. [COMPOSITION]
+  of incompatible workflows. Don't fake it destructively. A frequent instance is a
+  **version-baseline** case: an upgrade case whose precondition asserts a *starting*
+  version (a `from_version: 3.9` skip-upgrade) cannot be chained after a stage that
+  stood the cluster up at a *different* version (a `classic_queue` deploy pinned to
+  `rabbitmq:3.12`) — the persistence invariant forbids a downgrade-reset, so the
+  baseline probe correctly errors and the agent never runs. Fix at authoring time:
+  deploy the chain's lead stage at the required baseline, override the case's
+  `from_version` to match the inherited version, or curate the case out. [COMPOSITION]
+- **C-storage — Stages that re-apply a shared workload's StatefulSet must use a
+  consistent volume backing.** If an early stage deploys a workload with `emptyDir`
+  and a later stage re-applies the *same-named* StatefulSet (orphan-delete + apply, or
+  a straight apply) with `volumeClaimTemplates` (or vice-versa), Kubernetes cannot
+  roll the running pods from one volume shape to the other — `rollout status` stalls
+  at `0 out of N updated` until the unit times out. The mismatch is invisible until
+  composed: each case's StatefulSet is valid standalone. Align the volume backing
+  across every stage that touches the shared workload (all `emptyDir` or all PVC), or
+  don't chain the mismatched pair. *Example: a RabbitMQ workflow leads with
+  `classic_queue` (emptyDir) then runs `manual_backup_restore` (PVC-backed STS) → the
+  re-apply adopts the emptyDir pods and the rollout never converges.* [COMPOSITION]
 - **C7 — Restore a runtime feature additively when its baked-in config is skipped.**
   A scenario property baked into the case's own StatefulSet/ConfigMap (the
   `rabbitmq_prometheus` plugin on :15692) silently drops when the apply is skipped
@@ -923,6 +949,22 @@ pod un-restarted, a rollout mid-flight) is this, not the case.
 plural resource name) — never HTTP `method`/`kind` (a plugin matching those silently
 scores 1.0 forever), and never anything inside a `kubectl exec` (verb=`exec` → metric
 sees zero mutations; grade in-pod work in the oracle — O-exec-metric).
+
+**Late-error result integrity (F-late).** A stage that already ran the agent and the
+oracle MUST NOT be turned into a failure by a *transient error raised afterwards*
+(during evidence collection, adversary-lift, proxy teardown, or a progress-callback
+write). `run_stage`'s outer `except` once did exactly that: a stray `[Errno 32] Broken
+pipe` — writing to a closed proxy pipe or a dead progress stream — was caught by the
+catch-all and returned `status=error, submitted=False, oracle_verdict=None`, **silently
+discarding an oracle verdict already written to `oracle.json` on disk**. The on-disk
+artifacts (`oracle.json`, `submit.txt`) were correct; only the recorded result was
+wrong. **Guarantees the runtime must hold:** (a) progress callbacks are best-effort — a
+broken progress pipe can never fail a stage; (b) the final `except` recovers the
+already-computed verdict from `oracle.json` and the real `submitted` value rather than
+nullifying them — a late unrelated error is a note, not a verdict override. **Triage
+tell:** `oracle.json` says `pass` but `run.json` says `error`/`[Errno 32] Broken pipe`,
+or the agent's `submit.txt`/`result=success` is present yet the stage is
+`submitted=False` — this is the harness, not your case. [FRAMEWORK]
 
 **Retry correctness.** A retried stage clears its stale `submit.txt` before
 relaunch (else it "submits in 0s" against the prior attempt's file).
