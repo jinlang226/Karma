@@ -31,35 +31,65 @@ deploy:
     - command: "kubectl -n {{params.namespace}} get secret {{params.password_secret_name}}"
       timeout_sec: 10
   apply:
+    # ADV8: snapshot the LIVE pre-corruption password into an -adv-backup Secret
+    # BEFORE corrupting, so lift restores exactly what was there (a prior stage
+    # may have rotated the password away from the case default). Guarded so a
+    # re-run that finds the fault already planted never snapshots the corrupted
+    # value. The adversary runtime executes commands with shell=True (ONE shell
+    # parse), so $(...) is expanded exactly once here — do NOT re-wrap in
+    # /bin/sh -c "…$var…": the outer parse expands the unset $var to "" (ADV6).
+    - command: >-
+        test "$(kubectl -n {{params.namespace}} get secret {{params.password_secret_name}}
+        -o jsonpath='{.data.{{params.password_key}}}' | base64 -d)" = '{{params.corrupt_password}}'
+        || kubectl -n {{params.namespace}} create secret generic {{params.password_secret_name}}-adv-backup
+        --from-literal={{params.password_key}}="$(kubectl -n {{params.namespace}} get secret {{params.password_secret_name}}
+        -o jsonpath='{.data.{{params.password_key}}}' | base64 -d)"
+        --dry-run=client -o yaml | kubectl -n {{params.namespace}} apply -f -
+      timeout_sec: 20
     - command: >-
         kubectl -n {{params.namespace}} patch secret {{params.password_secret_name}}
         --type=json
         -p '[{"op":"replace","path":"/stringData","value":{"{{params.password_key}}":"{{params.corrupt_password}}"}}]'
       timeout_sec: 20
   verify:
+    # ADV6: single-parse equality (the statefulset-scaled-down form). The prior
+    # `/bin/sh -c "val=$(...); test \"$val\" = ..."` was DOUBLE-parsed: the
+    # shell=True outer pass expanded the unset $val to "" -> unsatisfiable ->
+    # the inject always reported failed and lift.apply never ran (fault leaked
+    # past lift into the regression sweep).
     - command: >-
-        /bin/sh -c "val=$(kubectl -n {{params.namespace}} get secret {{params.password_secret_name}}
-        -o jsonpath='{.data.{{params.password_key}}}' | base64 -d);
-        test \"$val\" = '{{params.corrupt_password}}'"
+        test "$(kubectl -n {{params.namespace}} get secret {{params.password_secret_name}}
+        -o jsonpath='{.data.{{params.password_key}}}' | base64 -d)" = '{{params.corrupt_password}}'
       timeout_sec: 15
 
 lift:
   on_probe_fail: skip
   probe:
+    # Fault still present (agent did not remediate) => run the lift apply (ADV1).
     - command: >-
-        /bin/sh -c "val=$(kubectl -n {{params.namespace}} get secret {{params.password_secret_name}}
-        -o jsonpath='{.data.{{params.password_key}}}' | base64 -d);
-        test \"$val\" = '{{params.corrupt_password}}'"
+        test "$(kubectl -n {{params.namespace}} get secret {{params.password_secret_name}}
+        -o jsonpath='{.data.{{params.password_key}}}' | base64 -d)" = '{{params.corrupt_password}}'
       timeout_sec: 15
   apply:
+    # ADV8: restore the snapshotted pre-corruption value (already base64 in the
+    # backup Secret, copied verbatim into /data); fall back to the documented
+    # canonical default only when the backup is missing.
     - command: >-
         kubectl -n {{params.namespace}} patch secret {{params.password_secret_name}}
         --type=json
-        -p '[{"op":"replace","path":"/stringData","value":{"{{params.password_key}}":"{{params.correct_password}}"}}]'
+        -p "[{\"op\":\"replace\",\"path\":\"/data/{{params.password_key}}\",\"value\":\"$(kubectl -n {{params.namespace}}
+        get secret {{params.password_secret_name}}-adv-backup -o jsonpath='{.data.{{params.password_key}}}' 2>/dev/null
+        || printf %s '{{params.correct_password}}' | base64)\"}]"
       timeout_sec: 20
+    - command: "kubectl -n {{params.namespace}} delete secret {{params.password_secret_name}}-adv-backup --ignore-not-found=true"
+      timeout_sec: 15
   verify:
-    - command: "kubectl -n {{params.namespace}} get secret {{params.password_secret_name}}"
-      timeout_sec: 10
+    # Positive assertion the fault is gone (ADV6): the live value no longer
+    # equals the injected corruption.
+    - command: >-
+        test "$(kubectl -n {{params.namespace}} get secret {{params.password_secret_name}}
+        -o jsonpath='{.data.{{params.password_key}}}' | base64 -d)" != '{{params.corrupt_password}}'
+      timeout_sec: 15
 
 prompt_hints:
   deploy: |
