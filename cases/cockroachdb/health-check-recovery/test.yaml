@@ -105,6 +105,63 @@ preconditionUnits:
       - command: "kubectl -n cockroachdb get pods 2>/dev/null | grep -c Running"
         timeout_sec: 10
 
+  # Additive fault re-plant (C8): the loopback --http-addr fault on pod-1 is
+  # planted only inside the skip-gated fresh build above; composed mid-workflow
+  # after a healthy crdb stage the build probe sees the inherited cluster and
+  # skips, so the fault is never (re)planted and the stage grades an
+  # already-healthy cluster vacuously. Re-plant JUST the fault additively
+  # (modeled on cases/mongodb/health-check-recovery's health_probe_fault_ready):
+  # patch ONLY the container command (P16 -- never re-apply the whole manifest)
+  # with the same if-POD_NAME loopback logic fault/statefulset.yaml uses, then
+  # delete pod-1 so the StatefulSet re-rolls it with the fault (ADV7: a template
+  # patch alone never restarts running pods). The StatefulSet is PVC-backed
+  # (volumeClaimTemplates: datadir), so bouncing pod-1 is data-safe.
+  # LIMITATION: the fault command hardcodes --insecure; on an inherited SECURE
+  # cluster (mounted certs dir) planting it would crash-loop pod-1 with a
+  # wrong-flag command instead of shaping the health fault, so the apply guards
+  # detect that (plus a non-canonical container/env shape) and skip planting
+  # entirely (best-effort exit 0, P8) rather than brick the cluster -- the
+  # stage then grades the inherited healthy cluster.
+  - name: health_probe_fault_ready
+    on_probe_fail: skip
+    probe:
+      # True (skip) when the unsolved fault is ALREADY present: pod-1's live
+      # container command carries the loopback 127.0.0.1:8080 http-addr the
+      # oracle's faulted-path checks grade (O39).
+      - command: |
+          /bin/sh -c '
+          kubectl -n cockroachdb get pod crdb-cluster-1 -o jsonpath="{.spec.containers[0].command}" 2>/dev/null | grep -q "127.0.0.1:8080"
+          '
+        timeout_sec: 15
+    apply:
+      # Guard, patch, re-roll -- each guard exits 0 (skip planting, P8) when the
+      # inherited cluster does not match the shape the fault command assumes:
+      # secure mode (--insecure would brick it), a non-`db` first container, or
+      # missing POD_NAME/POD_NAMESPACE downward-API env (the command needs both).
+      - command: |
+          /bin/sh -c '
+          kubectl -n cockroachdb get statefulset crdb-cluster >/dev/null 2>&1 || exit 0
+          kubectl -n cockroachdb exec crdb-cluster-0 -- ls /cockroach/cockroach-certs/ca.crt >/dev/null 2>&1 && exit 0
+          [ "$(kubectl -n cockroachdb get statefulset crdb-cluster -o jsonpath="{.spec.template.spec.containers[0].name}" 2>/dev/null)" = "db" ] || exit 0
+          envs=$(kubectl -n cockroachdb get statefulset crdb-cluster -o jsonpath="{.spec.template.spec.containers[0].env[*].name}" 2>/dev/null)
+          echo "$envs" | grep -qw POD_NAME || exit 0
+          echo "$envs" | grep -qw POD_NAMESPACE || exit 0
+          kubectl -n cockroachdb patch statefulset crdb-cluster --type=strategic --patch-file cases/cockroachdb/health-check-recovery/patch/command-patch.yaml || exit 0
+          kubectl -n cockroachdb delete pod crdb-cluster-1 --ignore-not-found=true || true
+          '
+        timeout_sec: 120
+        sleep: 5
+    verify:
+      # Best-effort (P8): a skipped plant (secure/non-canonical inherited
+      # cluster) must degrade to grading the healthy cluster, never to a
+      # framework precondition ERROR.
+      - command: |
+          /bin/sh -c '
+          kubectl -n cockroachdb get pod crdb-cluster-1 -o jsonpath="{.spec.containers[0].command}" 2>/dev/null | grep -q "127.0.0.1:8080"
+          true
+          '
+        timeout_sec: 15
+
 oracle:
   verify:
     commands:
