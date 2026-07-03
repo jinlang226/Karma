@@ -17,7 +17,13 @@ preconditionUnits:
   - name: mongo_env_ready
     on_probe_fail: skip
     probe:
-      - command: "kubectl -n mongodb get pod mongodb-replica-0 2>/dev/null | grep -c Running"
+      # AUTHORITATIVE skip-if-running probe (P32): succeed when the canonical
+      # StatefulSet exists OR any pod is Running, so the destructive namespace
+      # rebuild below is skipped on an inherited cluster even if its pods are
+      # momentarily not Running (mid-restart from a prior stage) -- the
+      # StatefulSet persists across that window. The bare `grep -c Running`
+      # could miss such a cluster and clobber inherited state.
+      - command: "/bin/sh -c 'kubectl -n mongodb get statefulset mongodb-replica >/dev/null 2>&1 || kubectl -n mongodb get pods 2>/dev/null | grep -q Running'"
         timeout_sec: 10
     apply:
       - command: "/bin/sh -c 'kubectl delete namespace mongodb --ignore-not-found=true; kubectl wait --for=delete namespace/mongodb --timeout=120s || true'"
@@ -91,23 +97,18 @@ preconditionUnits:
       - command: "/bin/sh -c 'kubectl -n mongodb get secret admin-user-password >/dev/null 2>&1 && echo ok'"
         timeout_sec: 15
 
-  # Problem-shape replant (composition safety, Pattern 1) -- NEEDS KIND VALIDATION.
-  # The unsolved problem is "cluster running the OLD release (mongo:5.0.5, FCV 5.0)".
-  # That baseline is planted only inside the destructive mongo_env_ready.apply,
-  # which is SKIPPED on an inherited cluster -> a prior stage may have already moved
-  # the cluster to a NEWER version, leaving the 5.0->7.0 upgrade task
-  # trivially-solved or unsatisfiable while the oracle grades the absolute 7.0.5/FCV
-  # 7.0 target. This unit re-plants the old baseline ONLY when the live cluster is
-  # not already at it: roll the image back in place via `kubectl set image` (PVC/
-  # data preserved, no namespace delete) and best-effort drop FCV to 5.0.
-  #
-  # HIGH-RISK / NEEDS KIND VALIDATION: a MongoDB version/FCV DOWNGRADE is inherently
-  # destructive and is NOT supported across more than one major version with data
-  # present -- it can violate the persistence invariant. The FCV set is best-effort
-  # (|| true) and a roll all the way back to 5.0 from an inherited newer cluster is
-  # a HARD downgrade. If a predecessor can leave the cluster newer than 5.0, this
-  # case is genuinely order-sensitive: bind it to a FRESH namespace rather than rely
-  # on this in-place roll.
+  # Version-baseline guard (C6). The unsolved problem is "cluster running the OLD
+  # release (mongo:5.0.5, FCV 5.0)". Standalone, the destructive mongo_env_ready
+  # build (which runs only when NO mongodb StatefulSet exists) plants that
+  # baseline fresh. Composed, an inherited cluster may already be PAST it -- and
+  # a newer mongod cannot restart on data files it already wrote, so an in-place
+  # `set image` downgrade crash-loops every member and wrecks the whole
+  # inherited cluster. This unit therefore NEVER rolls the binary back: when the
+  # live image is NEWER than mongo:5.0.5 it fails FAST and CLEAN (exit 1,
+  # nothing mutated). The real fix is workflow curation (guideline
+  # §X-MongoDB): curate this case out of chains past its base version. A
+  # live image OLDER than the baseline is still rolled FORWARD to it (a normal
+  # upgrade, data-safe), and FCV is aligned best-effort.
   - name: mongo_old_version_baseline_ready
     on_probe_fail: skip
     probe:
@@ -118,6 +119,20 @@ preconditionUnits:
           '
         timeout_sec: 15
     apply:
+      # C6 fail-fast: refuse to mutate when the inherited cluster is NEWER than
+      # the required baseline -- never roll the binary back in place.
+      - command: |
+          /bin/sh -c '
+          img=$(kubectl -n mongodb get sts mongodb-replica -o jsonpath="{.spec.template.spec.containers[0].image}" 2>/dev/null)
+          tag=${img##*:}; btag="mongo:5.0.5"; btag=${btag##*:}
+          if [ -n "$img" ] && [ "$tag" != "$btag" ] && [ "$(printf "%s\n%s\n" "$tag" "$btag" | sort -V | tail -1)" = "$tag" ]; then
+            echo "mongodb/version-upgrade-hard C6: inherited StatefulSet runs $img, NEWER than the mongo:5.0.5 baseline." >&2
+            echo "An in-place downgrade cannot work: a newer mongod cannot restart on data it already wrote (crash-loop)." >&2
+            echo "Nothing was mutated. Curate this case out of chains past its base version (C6, guideline §X-MongoDB)." >&2
+            exit 1
+          fi
+          '
+        timeout_sec: 20
       - command: "kubectl -n mongodb set image statefulset/mongodb-replica mongod=mongo:5.0.5"
         sleep: 3
       - command: |

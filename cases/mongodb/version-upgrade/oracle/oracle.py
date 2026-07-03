@@ -20,8 +20,15 @@ APP_COLLECTION = os.environ.get("BENCH_PARAM_APP_COLLECTION", "data")
 SEED_MIN_DOCS = int(os.environ.get("BENCH_PARAM_SEED_MIN_DOCS", "1"))
 
 
-def run(cmd):
-    return subprocess.run(cmd, text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+def run(cmd, timeout=30):
+    """Run a command bounded (O17): a hung kubectl/mongosh exec becomes a
+    failed attempt instead of an uncaught TimeoutExpired that would crash the
+    whole oracle at its deadline."""
+    try:
+        return subprocess.run(cmd, text=True, stdout=subprocess.PIPE,
+                              stderr=subprocess.PIPE, timeout=timeout)
+    except subprocess.TimeoutExpired:
+        return subprocess.CompletedProcess(cmd, 124, "", "timed out")
 
 
 _TLS_FLAGS_CACHE = None
@@ -66,16 +73,16 @@ def _mongo_tls_flags(probe_pod=None):
     return list(flags)
 
 def _resolve_expected_replicas():
-    """Topology size to enforce.
+    """Topology size to enforce, resolved fresh on every call (O2).
 
     The environment PERSISTS across workflow stages, so an earlier
     replica-scaling stage may have grown the replica set past the standalone
     default of 3. Resolve the expected count from (in priority order): an
-    explicit ``expected_replicas``/``target_replicas`` param override, else the
-    LIVE StatefulSet (ready, else spec'd replicas), else the standalone default
-    of 3. This adapts the topology/count check to whatever the workflow
-    accumulated without loosening it -- a non-solving agent that drops or fails
-    a member still mismatches the live ready/spec count.
+    explicit ``expected_replicas``/``target_replicas`` param override, else
+    the LIVE StatefulSet's desired ``spec.replicas`` (ignored while the STS is
+    being deleted; transient ``status.readyReplicas`` is only a last-resort
+    fallback when the spec carries no count -- a mid-rollout ready count would
+    grade against a shrunken snapshot), else the standalone default of 3.
     """
     for key in ("BENCH_PARAM_EXPECTED_REPLICAS", "BENCH_PARAM_TARGET_REPLICAS"):
         val = os.environ.get(key)
@@ -90,9 +97,10 @@ def _resolve_expected_replicas():
             sts = json.loads(res.stdout)
             status = sts.get("status", {}) or {}
             spec = sts.get("spec", {}) or {}
-            live = status.get("readyReplicas")
+            deleting = bool((sts.get("metadata", {}) or {}).get("deletionTimestamp"))
+            live = spec.get("replicas") if not deleting else None
             if not isinstance(live, int) or live <= 0:
-                live = spec.get("replicas")
+                live = status.get("readyReplicas")
             if isinstance(live, int) and live > 0:
                 return live
         except (json.JSONDecodeError, AttributeError):
@@ -100,7 +108,11 @@ def _resolve_expected_replicas():
     return 3
 
 
-EXPECTED_REPLICAS = _resolve_expected_replicas()
+def expected_replicas():
+    """Per-call accessor for the expected-replica count (O2): re-resolves on
+    every use, so convergence-loop attempts track the live desired size
+    instead of a value frozen at import time."""
+    return _resolve_expected_replicas()
 
 
 def fail(prefix, errors):
@@ -166,7 +178,7 @@ def load_json(pod, uri, eval_str, label, errors):
 
 
 def find_primary(admin_uri, errors):
-    for idx in range(EXPECTED_REPLICAS):
+    for idx in range(expected_replicas()):
         pod = f"{CLUSTER_PREFIX}-{idx}"
         res = run_mongo(pod, admin_uri, "db.hello().isWritablePrimary")
         if res.returncode == 0 and "true" in (res.stdout or ""):
@@ -191,10 +203,10 @@ def _workload_attempt():
 
     spec_replicas = sts.get("spec", {}).get("replicas")
     ready_replicas = sts.get("status", {}).get("readyReplicas")
-    if spec_replicas != EXPECTED_REPLICAS:
-        errors.append(f"StatefulSet replicas expected {EXPECTED_REPLICAS}, got {spec_replicas}")
-    if ready_replicas != EXPECTED_REPLICAS:
-        errors.append(f"Ready replicas expected {EXPECTED_REPLICAS}, got {ready_replicas}")
+    if spec_replicas != expected_replicas():
+        errors.append(f"StatefulSet replicas expected {expected_replicas()}, got {spec_replicas}")
+    if ready_replicas != expected_replicas():
+        errors.append(f"Ready replicas expected {expected_replicas()}, got {ready_replicas}")
 
     containers = sts.get("spec", {}).get("template", {}).get("spec", {}).get("containers", [])
     if not containers:
@@ -217,8 +229,8 @@ def _workload_attempt():
         return errors
 
     items = pods.get("items", [])
-    if len(items) != EXPECTED_REPLICAS:
-        errors.append(f"Expected {EXPECTED_REPLICAS} pods, found {len(items)}")
+    if len(items) != expected_replicas():
+        errors.append(f"Expected {expected_replicas()} pods, found {len(items)}")
 
     for item in items:
         name = item.get("metadata", {}).get("name", "unknown")
@@ -295,14 +307,14 @@ def _topology_attempt():
     status = load_json(primary, admin_uri, "JSON.stringify(rs.status())", "rs.status()", errors)
     if isinstance(status, dict):
         members = status.get("members", [])
-        if len(members) != EXPECTED_REPLICAS:
-            errors.append(f"Replica members expected {EXPECTED_REPLICAS}, got {len(members)}")
+        if len(members) != expected_replicas():
+            errors.append(f"Replica members expected {expected_replicas()}, got {len(members)}")
         primary_n = sum(1 for m in members if m.get("stateStr") == "PRIMARY")
         secondary_n = sum(1 for m in members if m.get("stateStr") == "SECONDARY")
         if primary_n != 1:
             errors.append(f"Expected 1 PRIMARY, got {primary_n}")
-        if secondary_n != EXPECTED_REPLICAS - 1:
-            errors.append(f"Expected {EXPECTED_REPLICAS - 1} SECONDARY, got {secondary_n}")
+        if secondary_n != expected_replicas() - 1:
+            errors.append(f"Expected {expected_replicas() - 1} SECONDARY, got {secondary_n}")
     else:
         errors.append("Unable to read replica set status")
 
