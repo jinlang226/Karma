@@ -178,8 +178,12 @@ preconditionUnits:
       - command: |
           /bin/sh -c '
           pw=$(kubectl -n elasticsearch get secret elastic-password -o jsonpath="{.data.password}" 2>/dev/null | base64 -d 2>/dev/null); A=""; [ -n "$pw" ] && A="-u elastic:$pw"
+          # C4: probe both schemes each attempt — an inherited TLS cluster only
+          # answers https; a hardcoded http:// would dead-loop here.
           for i in $(seq 1 30); do
-            kubectl -n elasticsearch exec {{params.curl_pod_name}} -- curl -sk $A --max-time 5 "http://{{params.http_service_name}}.elasticsearch.svc:9200/_cluster/health?wait_for_status=yellow&timeout=5s" | grep -q status && exit 0
+            for S in https http; do
+              kubectl -n elasticsearch exec {{params.curl_pod_name}} -- curl -sk $A --max-time 5 "$S://{{params.http_service_name}}.elasticsearch.svc:9200/_cluster/health?wait_for_status=yellow&timeout=5s" | grep -q status && exit 0
+            done
             sleep 2
           done
           exit 0
@@ -193,8 +197,10 @@ preconditionUnits:
       - command: |
           /bin/sh -c '
           pw=$(kubectl -n elasticsearch get secret elastic-password -o jsonpath="{.data.password}" 2>/dev/null | base64 -d 2>/dev/null); A=""; [ -n "$pw" ] && A="-u elastic:$pw"
+          # C4: detect the live scheme (an inherited TLS cluster only answers https).
+          S=https; kubectl -n elasticsearch exec {{params.curl_pod_name}} -- curl -sk $A --max-time 5 "https://{{params.http_service_name}}.elasticsearch.svc:9200/" >/dev/null 2>&1 || S=http
           kubectl -n elasticsearch exec {{params.curl_pod_name}} -- /bin/sh -c '\''
-          cat <<EOF | curl -s -k $1 -XPOST http://{{params.http_service_name}}.elasticsearch.svc:9200/_bulk?refresh=true -H "Content-Type: application/x-ndjson" --data-binary @-
+          cat <<EOF | curl -s -k $1 -XPOST "$2://{{params.http_service_name}}.elasticsearch.svc:9200/_bulk?refresh=true" -H "Content-Type: application/x-ndjson" --data-binary @-
           {"index":{"_index":"{{params.source_index_name}}","_id":"seed-1"}}
           {"service":"api","@timestamp":"2026-01-01T00:00:00Z"}
           {"index":{"_index":"{{params.source_index_name}}","_id":"seed-2"}}
@@ -202,28 +208,34 @@ preconditionUnits:
           {"index":{"_index":"{{params.source_index_name}}","_id":"seed-3"}}
           {"service":"api","@timestamp":"2026-01-01T00:00:02Z"}
           EOF
-          '\'' sh "$A" || true
+          '\'' sh "$A" "$S" || true
           '
         sleep: 1
       # (Re)create + start the transform (PUT is idempotent for an absent id).
       - command: |
           /bin/sh -c '
           pw=$(kubectl -n elasticsearch get secret elastic-password -o jsonpath="{.data.password}" 2>/dev/null | base64 -d 2>/dev/null); A=""; [ -n "$pw" ] && A="-u elastic:$pw"
-          kubectl -n elasticsearch exec {{params.curl_pod_name}} -- curl -sk $A -XPUT http://{{params.http_service_name}}.elasticsearch.svc:9200/_transform/{{params.transform_id}} -H "Content-Type: application/json" -d "{\"source\":{\"index\":\"{{params.source_index_name}}\"},\"dest\":{\"index\":\"{{params.dest_index_name}}\"},\"pivot\":{\"group_by\":{\"service\":{\"terms\":{\"field\":\"service.keyword\"}}},\"aggregations\":{\"event_count\":{\"value_count\":{\"field\":\"service.keyword\"}}}},\"sync\":{\"time\":{\"field\":\"@timestamp\",\"delay\":\"1s\"}}}" || true
+          # C4: detect the live scheme (an inherited TLS cluster only answers https).
+          S=https; kubectl -n elasticsearch exec {{params.curl_pod_name}} -- curl -sk $A --max-time 5 "https://{{params.http_service_name}}.elasticsearch.svc:9200/" >/dev/null 2>&1 || S=http
+          kubectl -n elasticsearch exec {{params.curl_pod_name}} -- curl -sk $A -XPUT "$S://{{params.http_service_name}}.elasticsearch.svc:9200/_transform/{{params.transform_id}}" -H "Content-Type: application/json" -d "{\"source\":{\"index\":\"{{params.source_index_name}}\"},\"dest\":{\"index\":\"{{params.dest_index_name}}\"},\"pivot\":{\"group_by\":{\"service\":{\"terms\":{\"field\":\"service.keyword\"}}},\"aggregations\":{\"event_count\":{\"value_count\":{\"field\":\"service.keyword\"}}}},\"sync\":{\"time\":{\"field\":\"@timestamp\",\"delay\":\"1s\"}}}" || true
           '
         sleep: 1
       - command: |
           /bin/sh -c '
           pw=$(kubectl -n elasticsearch get secret elastic-password -o jsonpath="{.data.password}" 2>/dev/null | base64 -d 2>/dev/null); A=""; [ -n "$pw" ] && A="-u elastic:$pw"
-          kubectl -n elasticsearch exec {{params.curl_pod_name}} -- curl -sk $A -XPOST http://{{params.http_service_name}}.elasticsearch.svc:9200/_transform/{{params.transform_id}}/_start || true
+          # C4: detect the live scheme (an inherited TLS cluster only answers https).
+          S=https; kubectl -n elasticsearch exec {{params.curl_pod_name}} -- curl -sk $A --max-time 5 "https://{{params.http_service_name}}.elasticsearch.svc:9200/" >/dev/null 2>&1 || S=http
+          kubectl -n elasticsearch exec {{params.curl_pod_name}} -- curl -sk $A -XPOST "$S://{{params.http_service_name}}.elasticsearch.svc:9200/_transform/{{params.transform_id}}/_start" || true
           '
         sleep: 1
       # Poll until checkpoint>=1, then capture the baseline ConfigMap.
       - command: |
           /bin/sh -c '
           pw=$(kubectl -n elasticsearch get secret elastic-password -o jsonpath="{.data.password}" 2>/dev/null | base64 -d 2>/dev/null); A=""; [ -n "$pw" ] && A="-u elastic:$pw"
+          # C4: detect the live scheme (an inherited TLS cluster only answers https).
+          S=https; kubectl -n elasticsearch exec {{params.curl_pod_name}} -- curl -sk $A --max-time 5 "https://{{params.http_service_name}}.elasticsearch.svc:9200/" >/dev/null 2>&1 || S=http
           for i in $(seq 1 30); do
-            checkpoint=$(kubectl -n elasticsearch exec {{params.curl_pod_name}} -- curl -sk $A --max-time 5 http://{{params.http_service_name}}.elasticsearch.svc:9200/_transform/{{params.transform_id}}/_stats 2>/dev/null | python3 -c "import json,sys; data=json.load(sys.stdin); t=data.get(\"transforms\",[]); print(t[0].get(\"checkpointing\",{}).get(\"last\",{}).get(\"checkpoint\",0) if t else 0)" 2>/dev/null || echo 0)
+            checkpoint=$(kubectl -n elasticsearch exec {{params.curl_pod_name}} -- curl -sk $A --max-time 5 "$S://{{params.http_service_name}}.elasticsearch.svc:9200/_transform/{{params.transform_id}}/_stats" 2>/dev/null | python3 -c "import json,sys; data=json.load(sys.stdin); t=data.get(\"transforms\",[]); print(t[0].get(\"checkpointing\",{}).get(\"last\",{}).get(\"checkpoint\",0) if t else 0)" 2>/dev/null || echo 0)
             if [ "${checkpoint}" -ge 1 ]; then
               kubectl -n elasticsearch create configmap {{params.checkpoint_configmap}} --from-literal=checkpoint_before="${checkpoint}" --dry-run=client -o yaml | kubectl apply -f -
               exit 0
@@ -242,14 +254,16 @@ preconditionUnits:
       - command: |
           /bin/sh -c '
           pw=$(kubectl -n elasticsearch get secret elastic-password -o jsonpath="{.data.password}" 2>/dev/null | base64 -d 2>/dev/null); A=""; [ -n "$pw" ] && A="-u elastic:$pw"
+          # C4: detect the live scheme (an inherited TLS cluster only answers https).
+          S=https; kubectl -n elasticsearch exec {{params.curl_pod_name}} -- curl -sk $A --max-time 5 "https://{{params.http_service_name}}.elasticsearch.svc:9200/" >/dev/null 2>&1 || S=http
           kubectl -n elasticsearch exec {{params.curl_pod_name}} -- /bin/sh -c '\''
-          cat <<EOF | curl -s -k $1 -XPOST http://{{params.http_service_name}}.elasticsearch.svc:9200/_bulk?refresh=true -H "Content-Type: application/x-ndjson" --data-binary @-
+          cat <<EOF | curl -s -k $1 -XPOST "$2://{{params.http_service_name}}.elasticsearch.svc:9200/_bulk?refresh=true" -H "Content-Type: application/x-ndjson" --data-binary @-
           {"index":{"_index":"{{params.source_index_name}}","_id":"seed-new-1"}}
           {"service":"api","@timestamp":"2026-01-02T00:00:00Z"}
           {"index":{"_index":"{{params.source_index_name}}","_id":"seed-new-2"}}
           {"service":"web","@timestamp":"2026-01-02T00:00:01Z"}
           EOF
-          '\'' sh "$A" || true
+          '\'' sh "$A" "$S" || true
           '
         sleep: 1
     verify:
