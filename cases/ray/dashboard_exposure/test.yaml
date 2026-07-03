@@ -7,6 +7,10 @@ prompt: |
 
   Your task: update the ray-head Service to expose the dashboard on port {{params.dashboard_port}}.
 
+  The head serves the dashboard on container port 8265 (the environment
+  normally ensures the dashboard process is running on the head — if you find
+  it is not, enable it on the ray-head deployment as part of your fix).
+
   Use this command to test:
   ```bash
   kubectl -n ray exec curl-test -- curl -sS -o /dev/null -w "%{http_code}" \
@@ -56,6 +60,34 @@ preconditionUnits:
     verify:
       - command: "kubectl -n ray get pods 2>/dev/null | grep -c Running"
         timeout_sec: 10
+
+  # Additive dashboard-process fixture (C1): the oracle needs the head's
+  # dashboard process, but only THIS case's head manifest enables it — every
+  # sibling ray case starts the head with --include-dashboard=false, so when
+  # this case is composed after another ray stage (ray_env_ready skipped) the
+  # oracle's dependency is absent and no Service change can ever return 200.
+  # This unit probes the dashboard from inside the head pod (loopback :8265)
+  # and, only when absent, best-effort (P8: every mutation `|| true`, verify is
+  # a no-op) patches JUST the head deployment's command to the case's own
+  # dashboard-enabled variant (P16 — patch, never a manifest re-apply) and
+  # waits briefly for the roll. A failure here degrades to a clean oracle
+  # FAIL, never a precondition ERROR. The prompt also states the head must
+  # serve the dashboard (PR2) so the requirement stays agent-derivable.
+  - name: dashboard_process_ready
+    on_probe_fail: skip
+    probe:
+      - command: "kubectl -n ray exec deploy/ray-head -- python -c 'import urllib.request; urllib.request.urlopen(\"http://localhost:8265/api/cluster_status\", timeout=5)'"
+        timeout_sec: 20
+    apply:
+      - command: "kubectl -n ray patch deploy ray-head --type=json --patch-file cases/ray/dashboard_exposure/resource/enable-dashboard-patch.json || true"
+        sleep: 2
+      # Bounded, best-effort wait (P13: --timeout paired with timeout_sec).
+      - command: "kubectl -n ray rollout status deploy/ray-head --timeout=240s || true"
+        timeout_sec: 300
+        sleep: 2
+    verify:
+      - command: "/bin/sh -c 'true'"
+        timeout_sec: 5
 
   # Additive fixture unit (Rule 4): the oracle's HTTP check execs into the
   # curl-test pod. Standalone, ray_env_ready's apply creates it. But in a
