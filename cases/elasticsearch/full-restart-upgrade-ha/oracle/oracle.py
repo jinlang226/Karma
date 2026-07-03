@@ -2,6 +2,7 @@
 import json
 import os
 import re
+import shlex
 import subprocess
 import sys
 
@@ -219,7 +220,6 @@ def curl(path, errors):
     scheme = detect_scheme()
     auth = ""
     if ELASTIC_PASSWORD:
-        import shlex
         auth = f"-u {shlex.quote('elastic:' + ELASTIC_PASSWORD)} "
     cmd = [
         "kubectl",
@@ -234,7 +234,10 @@ def curl(path, errors):
         # ``wait_for`` in `path`, otherwise curl aborts (exit 28) before ES can
         # answer. The retry loop in main() does the real waiting, so each call's
         # server wait stays short (10s).
-        f"curl -s -S -k {auth}--max-time 20 {scheme}://{SERVICE}:9200{path}",
+        # P22: shell-quote the URL — an unquoted `&` in `path` backgrounds curl
+        # and `>=` (wait_for_nodes) becomes a redirection inside the pod's sh
+        # (quoted with shlex like the auth string above).
+        f"curl -s -S -k {auth}--max-time 20 {shlex.quote(f'{scheme}://{SERVICE}:9200{path}')}",
     ]
     result = run(cmd)
     if result.returncode != 0:
@@ -317,16 +320,21 @@ def evaluate():
         errors.append("Failed to read cluster health")
 
     if index and expected:
-        count = curl(f"/{index}/_count", errors)
-        if isinstance(count, dict):
-            actual = count.get("count")
-            try:
-                expected_val = int(expected)
-            except ValueError:
-                errors.append(f"Invalid expected_count value: {expected}")
-            else:
-                if actual != expected_val:
-                    errors.append(f"Expected {expected_val} docs in {index}, got {actual}")
+        try:
+            expected_val = int(expected)
+        except ValueError:
+            errors.append(f"Invalid expected_count value: {expected}")
+            expected_val = 0
+        # P20/O26: sibling cases seed the same `app-data` index, so under
+        # composition the live total is legitimately above this case's own
+        # seed — an exact-count assertion deterministically false-fails a
+        # correct upgrade. Assert the SPECIFIC deterministic seed docs
+        # (_id seed-1..seed-N, written with refresh) survived instead: a
+        # data-losing restart drops exactly these docs, so nothing is masked.
+        for i in range(1, expected_val + 1):
+            doc = curl(f"/{index}/_doc/seed-{i}", errors)
+            if not (isinstance(doc, dict) and doc.get("found") is True):
+                errors.append(f"Seeded doc {index}/_doc/seed-{i} missing after upgrade")
 
     sts_result = run(["kubectl", "-n", NAMESPACE, "get", "sts", STS_NAME, "-o", "json"])
     if sts_result.returncode == 0:

@@ -2,6 +2,7 @@
 import json
 import os
 import re
+import shlex
 import subprocess
 import sys
 
@@ -264,7 +265,9 @@ def curl(path, errors):
         # ``wait_for`` in `path`, otherwise curl aborts (exit 28) before ES can
         # answer. The retry loop in main() does the real waiting, so each call's
         # server wait stays short (10s).
-        f"curl -s -S -k {creds} --max-time 20 {scheme}://{SERVICE}:9200{path}",
+        # P22: shell-quote the URL — an unquoted `&` in `path` backgrounds curl
+        # inside the pod's sh and grep gets no input.
+        f"curl -s -S -k {creds} --max-time 20 {shlex.quote(f'{scheme}://{SERVICE}:9200{path}')}",
     ]
     result = run(cmd)
     if result.returncode != 0:
