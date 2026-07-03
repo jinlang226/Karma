@@ -54,11 +54,15 @@ def mgmt_base():
 
 
 def _resolve_expected_nodes():
-    """Cluster size to enforce: param override -> live StatefulSet -> default 3.
+    """Cluster size to enforce: param override -> the case contract's 3.
 
-    The env PERSISTS across stages, so a prior scale stage may have grown the
-    cluster past the standalone default of 3. Only the count target adapts; the
-    per-node membership and cookie checks still fail for any unready member.
+    The prompt promises a 3-node cluster, so the node count IS a graded
+    outcome: param-first (BENCH_PARAM_EXPECTED_NODES / BENCH_PARAM_TARGET_NODES),
+    else the contract default 3 -- NEVER derived from readyReplicas or
+    spec.replicas (O2 exception: live derivation lets a downscaled/broken
+    cluster shrink its own expectation, masking e.g. a scale_down_cluster
+    adversary). A workflow that legitimately resizes the cluster must say so
+    via the param override.
     """
     for key in ("BENCH_PARAM_EXPECTED_NODES", "BENCH_PARAM_TARGET_NODES"):
         val = os.environ.get(key)
@@ -67,17 +71,6 @@ def _resolve_expected_nodes():
                 return int(val)
             except ValueError:
                 pass
-    try:
-        sts = run_json(["kubectl", "-n", NAMESPACE, "get", "sts", CLUSTER_PREFIX, "-o", "json"])
-        status = sts.get("status", {}) or {}
-        spec = sts.get("spec", {}) or {}
-        live = status.get("readyReplicas")
-        if not isinstance(live, int) or live <= 0:
-            live = spec.get("replicas")
-        if isinstance(live, int) and live > 0:
-            return live
-    except Exception:
-        pass
     return 3
 
 
@@ -155,8 +148,9 @@ def main():
                 cookies[key] = base64.b64decode(value).decode().strip()
             except Exception:
                 cookies[key] = None
-        # Derive the per-pod cookie keys from the LIVE cluster size rather than
-        # a hardcoded 0..2, so a scaled cluster is still fully checked.
+        # Derive the per-pod cookie keys from the FIXED expected node count
+        # (param-first, contract default 3 -- see _resolve_expected_nodes), so
+        # a cluster a fault shrank cannot shrink the cookie check either.
         expected_keys = [f"{CLUSTER_PREFIX}-{i}" for i in range(expected_nodes)]
         missing = [k for k in expected_keys if k not in cookies]
         if missing:

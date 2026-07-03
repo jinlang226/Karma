@@ -71,11 +71,15 @@ def mgmt_base():
 
 
 def _resolve_expected_nodes():
-    """Cluster size to enforce: param override -> live StatefulSet -> default 3.
+    """Cluster size to enforce: param override -> the case contract's 3.
 
-    The env PERSISTS across stages, so a prior scale stage may have grown the
-    cluster past the standalone default of 3. Adapt the count target without
-    loosening it -- a non-ready/dropped node still fails the per-pod checks.
+    The prompt promises a 3-node cluster, so the node count IS a graded
+    outcome: param-first (BENCH_PARAM_EXPECTED_NODES / BENCH_PARAM_TARGET_NODES),
+    else the contract default 3 -- NEVER derived from readyReplicas or
+    spec.replicas (O2 exception: live derivation lets a downscaled/broken
+    cluster shrink its own expectation, masking e.g. a scale_down_cluster
+    adversary). A workflow that legitimately resizes the cluster must say so
+    via the param override.
     """
     for key in ("BENCH_PARAM_EXPECTED_NODES", "BENCH_PARAM_TARGET_NODES"):
         val = os.environ.get(key)
@@ -84,17 +88,6 @@ def _resolve_expected_nodes():
                 return int(val)
             except ValueError:
                 pass
-    try:
-        sts = run_json(["kubectl", "-n", NAMESPACE, "get", "sts", CLUSTER_PREFIX, "-o", "json"])
-        status = sts.get("status", {}) or {}
-        spec = sts.get("spec", {}) or {}
-        live = status.get("readyReplicas")
-        if not isinstance(live, int) or live <= 0:
-            live = spec.get("replicas")
-        if isinstance(live, int) and live > 0:
-            return live
-    except Exception:
-        pass
     return 3
 
 
