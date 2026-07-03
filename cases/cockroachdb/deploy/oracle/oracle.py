@@ -406,9 +406,15 @@ def evaluate():
     if err:
         errors.append(f"Failed to read endpoints for crdb-cluster: {err}")
     else:
+        # Identity/routing check only: the headless service must enroll every
+        # replica. Count notReadyAddresses too -- endpoint READINESS mirrors the
+        # laggy pod-Ready bit (O15) that the functional checks above (is_live +
+        # SELECT 1) already grade; requiring ready-only addresses here would
+        # re-impose the pod-Ready gate this oracle deliberately avoids.
         addresses = 0
         for subset in endpoints.get("subsets") or []:
             addresses += len(subset.get("addresses") or [])
+            addresses += len(subset.get("notReadyAddresses") or [])
         if addresses < EXPECTED_REPLICAS:
             errors.append(f"Expected {EXPECTED_REPLICAS} endpoints, found {addresses}")
 
