@@ -842,7 +842,7 @@ version mismatch).
 
 ## V. Composition & workflow rules
 
-> **Quick reference.** *Additive composition:* C1, C3, C4, C7, C8. *Identity &
+> **Quick reference.** *Additive composition:* C1, C3, C4, C7, C8, C19. *Identity &
 > ordering:* C2, C10, C11, C12. *What can / can't chain:* C5, C6, C9. *Regression
 > sweep:* C18.
 
@@ -1000,6 +1000,27 @@ version mismatch).
   false positive — and it can only do so if the later stage's prompt makes the
   overwrite clear. Either say so in the prompt or drop the brittle SETUP assertion
   (cf. C10); a real regression should still fail the sweep. [COMPOSITION]
+- **C19 — A fault baked into the workload's own StatefulSet cert/volume
+  topology cannot be additively re-planted onto a foreign inherited cluster; it is
+  non-composable, so it must run only where its own build does.** When a
+  break-then-fix case's fault lives in mounts its *own* StatefulSet declares (a
+  `es-transport-ca-bundle` ConfigMap + per-node CA-signed cert secrets, a keystore
+  volume, a specific cert layout), the C8 additive-replant escape hatch **fails
+  silently**: composed after a different case, the generic skip-gate (C3) skips the
+  destructive build, and the replant's ConfigMaps/secrets land on volume mounts the
+  *inherited* StatefulSet doesn't have — so bouncing a pod just restarts it with its
+  original (working) cert, the cluster is healthy, and the oracle false-fails on the
+  fault-specific check (a 2-cert bundle that was never needed). You cannot fix this
+  additively (the replant has nowhere to land) and you cannot rebuild mid-chain
+  without destroying inherited state (Law 1). Give the case an **authoritative
+  skip-gate** (C3) that rebuilds its own topology when absent, and schedule it only
+  as the **cluster-establishing stage** (stage_01 / the first stage in its
+  namespace) or standalone — never mid-chain onto a cluster another case built.
+  *Example: elasticsearch/transport-additional-ca-trust (fault = ca1-only transport
+  bundle + ca2-signed node-2, both mounted by its own STS) scheduled at stage_07 of
+  bootstrap-recovery-harden: the replant no-ops on the inherited cluster and a
+  healthy 3-node cluster false-fails "bundle should contain 2 certs, found 1".*
+  [COMPOSITION]
 - **C11 — Probe/verify the namespace the workload actually runs in.** Multi-namespace
   cases (e.g. a Spark per-team workload) must check the core-workload namespace, not the bare
   umbrella one. [COMPOSITION]
