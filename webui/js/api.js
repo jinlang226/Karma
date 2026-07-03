@@ -89,32 +89,47 @@
         return handle;
       }
 
-      const es = new EventSource(path);
       let gotAny = false;
       let finished = false;
+      let es = null;
+      let earlyRetries = 0;
+      const MAX_EARLY_RETRIES = 6;   // ride out the subscribe-before-known race
       function finish() {
         if (finished) return;
         finished = true;
-        es.close();
+        if (es) es.close();
         onDone && onDone();
       }
-      es.onmessage = (e) => {
-        gotAny = true;
-        let obj;
-        try { obj = JSON.parse(e.data); } catch (_e) { return; }
-        if (obj && obj.type === "done") { finish(); return; }
-        onEvent && onEvent(obj);
-      };
-      es.onerror = () => {
-        // EventSource fires onerror both on a transient drop (it would
-        // auto-reconnect) and when the server closes the stream after the
-        // terminal event. We only treat it as terminal once: if SSE never
-        // delivered anything, fall back to polling; otherwise finish once.
-        if (finished) return;
-        if (!gotAny) { es.close(); startPolling(); }
-        else finish();
-      };
-      const handle = { close() { closed = true; es.close(); clearTimeout(pollTimer); _streams.delete(handle); } };
+      function connect() {
+        es = new EventSource(path);
+        es.onmessage = (e) => {
+          gotAny = true;
+          let obj;
+          try { obj = JSON.parse(e.data); } catch (_e) { return; }
+          if (obj && obj.type === "done") { finish(); return; }
+          onEvent && onEvent(obj);
+        };
+        es.onerror = () => {
+          // EventSource errors both on a transient drop and when the server
+          // closes the stream after the terminal event. If we've already
+          // delivered events, treat it as terminal (finish once). If we never
+          // got anything, the likely cause is subscribing before the stream was
+          // known (the job just started and hasn't published yet) -> a 404 that
+          // won't auto-reconnect; retry a few times before falling back to
+          // polling, so live progress still shows without a page refresh.
+          if (finished || closed) return;
+          es.close();
+          if (gotAny) { finish(); return; }
+          if (earlyRetries < MAX_EARLY_RETRIES) {
+            earlyRetries++;
+            setTimeout(() => { if (!closed && !finished) connect(); }, 400);
+          } else {
+            startPolling();
+          }
+        };
+      }
+      connect();
+      const handle = { close() { closed = true; if (es) es.close(); clearTimeout(pollTimer); _streams.delete(handle); } };
       _streams.add(handle);
       return handle;
     },
