@@ -62,7 +62,13 @@ preconditionUnits:
       # namespace. The case's health-check fixtures (the health-user-password
       # secret + the health-user) are ensured ADDITIVELY by a separate unit
       # below, never by wiping/redeploying the namespace.
-      - command: "kubectl -n mongodb get pod {{params.cluster_prefix}}-0 2>/dev/null | grep -c Running"
+      # AUTHORITATIVE skip-if-running probe (P32): succeed when the canonical
+      # StatefulSet exists OR any pod is Running, so the destructive namespace
+      # rebuild below is skipped on an inherited cluster even if its pods are
+      # momentarily not Running (mid-restart from a prior stage) -- the
+      # StatefulSet persists across that window. The bare `grep -c Running`
+      # could miss such a cluster and clobber inherited state.
+      - command: "/bin/sh -c 'kubectl -n mongodb get statefulset {{params.cluster_prefix}} >/dev/null 2>&1 || kubectl -n mongodb get pods 2>/dev/null | grep -q Running'"
         timeout_sec: 10
     apply:
       - command: "/bin/sh -c 'kubectl delete namespace mongodb --ignore-not-found=true; kubectl wait --for=delete namespace/mongodb --timeout=120s || true'"
@@ -201,6 +207,41 @@ preconditionUnits:
     verify:
       - command: "kubectl -n mongodb get secret health-user-password >/dev/null 2>&1 && echo ok"
         timeout_sec: 10
+
+  # Fault replant (C8, modeled on health-check-recovery's
+  # health_probe_fault_ready): the unsolved problem is "probes too aggressive
+  # to stay Ready". Standalone, mongo_env_ready patches the faulty values in at
+  # build time; composed, that destructive build is skipped on an inherited
+  # cluster and a prior identical stage may already have healed the probes --
+  # without replanting, the oracle would pass with zero agent action (O1).
+  # Probe the faulty values' ABSENCE and patch them back in + bounce the pods
+  # (a template patch alone never takes effect -- ADV7's rollout discipline).
+  # Additive (no namespace/STS delete, PVC data preserved) and best-effort
+  # (P8): a patch that cannot apply degrades to an oracle fail of the
+  # fault-shape, never a precondition ERROR. Declared last so the admin/health
+  # user fixtures above exec into still-healthy pods (P37).
+  - name: probe_fault_replant
+    on_probe_fail: skip
+    probe:
+      # True (skip) when the fault is ALREADY present: the readiness probe
+      # carries the faulty timeoutSeconds/failureThreshold pair -- the two
+      # fields the fault genuinely breaks and the oracle grades.
+      - command: |
+          /bin/sh -c '
+          rt=$(kubectl -n mongodb get sts {{params.cluster_prefix}} -o jsonpath="{.spec.template.spec.containers[0].readinessProbe.timeoutSeconds}" 2>/dev/null)
+          rf=$(kubectl -n mongodb get sts {{params.cluster_prefix}} -o jsonpath="{.spec.template.spec.containers[0].readinessProbe.failureThreshold}" 2>/dev/null)
+          [ "$rt" = "{{params.faulty_readiness_timeout}}" ] && [ "$rf" = "{{params.faulty_readiness_failure_threshold}}" ]
+          '
+        timeout_sec: 15
+    apply:
+      - command: |
+          /bin/sh -c 'kubectl -n mongodb patch sts {{params.cluster_prefix}} --type=json -p='\''[{"op":"replace","path":"/spec/template/spec/containers/0/readinessProbe/initialDelaySeconds","value":{{params.faulty_readiness_initial_delay}}},{"op":"replace","path":"/spec/template/spec/containers/0/readinessProbe/timeoutSeconds","value":{{params.faulty_readiness_timeout}}},{"op":"replace","path":"/spec/template/spec/containers/0/readinessProbe/failureThreshold","value":{{params.faulty_readiness_failure_threshold}}},{"op":"replace","path":"/spec/template/spec/containers/0/livenessProbe/initialDelaySeconds","value":{{params.faulty_liveness_initial_delay}}},{"op":"replace","path":"/spec/template/spec/containers/0/livenessProbe/timeoutSeconds","value":{{params.faulty_liveness_timeout}}},{"op":"replace","path":"/spec/template/spec/containers/0/livenessProbe/failureThreshold","value":{{params.faulty_liveness_failure_threshold}}}]'\'' || true'
+        sleep: 2
+      - command: "/bin/sh -c 'kubectl -n mongodb delete pod -l app={{params.cluster_prefix}} --ignore-not-found=true || true'"
+        sleep: 2
+    verify:
+      - command: "/bin/sh -c 'true'"
+        timeout_sec: 5
 
 oracle:
   verify:
