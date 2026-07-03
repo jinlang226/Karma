@@ -137,19 +137,26 @@ def evaluate():
     """One full snapshot of the health-check-recovery checks; returns error list."""
     errors = []
 
-    # Check all pods are present and Running (resolved robustly to the build's
-    # labels). We do NOT gate on the k8s pod-Ready condition: this case recovers
-    # a node, and CockroachDB's /health?ready=1 probe lags functional readiness
-    # (ranges still replicating after the restart) even though the node already
-    # serves SQL -- so pod-Ready can read False on a functionally-recovered node
-    # and false-fail it. Functional readiness is graded below via node status
-    # is_live + the SELECT 1 serving test (O-funcready).
+    # Check all pods are present, Running AND Ready (resolved robustly to the
+    # build's labels). This case's planted fault breaks pod-1's HTTP health
+    # listener (--http-addr=127.0.0.1), i.e. the readiness path itself -- so
+    # per O39 the oracle MUST grade the faulted signal directly: with the
+    # fault in place pod-1's Ready condition can never stabilize True, while
+    # phase stays Running and gRPC is_live + SQL keep working (an idle agent
+    # used to pass). O15's "don't gate on pod-Ready" exemption does not apply
+    # when the fault IS the health path; the convergence loop below absorbs
+    # the legitimate post-recovery Ready lag.
     try:
         for pod in crdb_pods():
             name = pod["metadata"]["name"]
             phase = pod["status"].get("phase", "Unknown")
             if phase != "Running":
                 errors.append(f"Pod {name} is not Running (phase: {phase})")
+            conditions = pod["status"].get("conditions") or []
+            ready = any(c.get("type") == "Ready" and c.get("status") == "True"
+                        for c in conditions)
+            if not ready:
+                errors.append(f"Pod {name} is not Ready (health endpoint not serving)")
     except (KeyError, TypeError):
         errors.append("Failed to parse pod status")
 
@@ -215,11 +222,14 @@ def main():
     # short while to become Ready and report is_live again. A single snapshot can
     # race that convergence and see e.g. "2 live nodes" on a cluster healthily
     # finishing recovery (the same case passes at the prior stages). Re-evaluate
-    # for up to ~70s and pass on the first clean snapshot. This does not loosen
-    # the check -- a node that genuinely fails to recover never becomes live, so
-    # the oracle still fails after the deadline.
+    # for up to ~150s and pass on the first clean snapshot (sized generously
+    # because the Ready condition -- now graded directly per O39 -- lags
+    # functional recovery under load, O15). This does not loosen the check --
+    # with the fault unfixed pod-1 never turns Ready, so the oracle still
+    # fails after the deadline. The 150s deadline fits the 240s oracle budget
+    # with headroom (O21).
     import time
-    deadline = time.monotonic() + 70
+    deadline = time.monotonic() + 150
     errors = evaluate()
     while errors and time.monotonic() < deadline:
         time.sleep(7)
