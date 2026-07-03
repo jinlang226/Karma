@@ -63,7 +63,13 @@ preconditionUnits:
   - name: mongo_env_ready
     on_probe_fail: skip
     probe:
-      - command: "kubectl -n mongodb get pod {{params.cluster_prefix}}-0 2>/dev/null | grep -c Running"
+      # AUTHORITATIVE skip-if-running probe (P32): succeed when the canonical
+      # StatefulSet exists OR any pod is Running, so the destructive namespace
+      # rebuild below is skipped on an inherited cluster even if its pods are
+      # momentarily not Running (mid-restart from a prior stage) -- the
+      # StatefulSet persists across that window. The bare `grep -c Running`
+      # could miss such a cluster and clobber inherited state.
+      - command: "/bin/sh -c 'kubectl -n mongodb get statefulset {{params.cluster_prefix}} >/dev/null 2>&1 || kubectl -n mongodb get pods 2>/dev/null | grep -q Running'"
         timeout_sec: 10
     apply:
       - command: "/bin/sh -c 'kubectl delete namespace mongodb --ignore-not-found=true; kubectl wait --for=delete namespace/mongodb --timeout=120s || true'"
