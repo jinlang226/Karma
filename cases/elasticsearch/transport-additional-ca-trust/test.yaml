@@ -94,41 +94,84 @@ preconditionUnits:
           kubectl -n elasticsearch cp openssl-toolbox:/tmp/certs "${TMP_DIR}/certs"
           kubectl -n elasticsearch create secret generic {{params.ca1_secret_name}} --from-file=ca.crt="${TMP_DIR}/certs/ca1.crt" --from-file=node.crt="${TMP_DIR}/certs/server1.crt" --from-file=node.key="${TMP_DIR}/certs/server1.key" --dry-run=client -o yaml | kubectl apply -f -
           kubectl -n elasticsearch create secret generic {{params.ca2_secret_name}} --from-file=ca.crt="${TMP_DIR}/certs/ca2.crt" --from-file=node.crt="${TMP_DIR}/certs/server2.crt" --from-file=node.key="${TMP_DIR}/certs/server2.key" --dry-run=client -o yaml | kubectl apply -f -
-          cat "${TMP_DIR}/certs/ca1.crt" "${TMP_DIR}/certs/ca2.crt" > "${TMP_DIR}/certs/transport-bundle.crt"
+          # Law 5/P28: the planted fault IS the missing ca2 trust — the initial
+          # bundle carries ca1 ONLY, so the ca2-signed pod-2 genuinely cannot
+          # join. (An earlier version baked BOTH CAs in pre-boot, so the
+          # advertised degraded cluster never existed and every run trivially
+          # passed with zero agent action.) Adding ca2 is the AGENT task.
+          cat "${TMP_DIR}/certs/ca1.crt" > "${TMP_DIR}/certs/transport-bundle.crt"
           kubectl -n elasticsearch create configmap {{params.transport_bundle_configmap}} --from-file=ca.crt="${TMP_DIR}/certs/transport-bundle.crt" --dry-run=client -o yaml | kubectl apply -f -
           '
         sleep: 1
-      - command: "kubectl -n elasticsearch wait --for=condition=ready pod -l app={{params.cluster_prefix}} --timeout=600s"
+      # P27: with the ca1-only bundle planted, pod-2 (its node cert is signed
+      # by ca2, which the other nodes do not trust) can NEVER join the cluster
+      # — a `wait --for=condition=ready -l app=...` across ALL pods would gate
+      # the build on the very capability the fault disables and dead-lock to
+      # the setup cap. Wait for the two ca1-signed pods by name (P12: poll for
+      # existence before a named-pod wait), and for pod-2 only on
+      # existence/phase, never Ready.
+      - command: "/bin/sh -c 'for i in $(seq 1 60); do kubectl -n elasticsearch get pod {{params.cluster_prefix}}-0 >/dev/null 2>&1 && kubectl -n elasticsearch get pod {{params.cluster_prefix}}-1 >/dev/null 2>&1 && exit 0; sleep 5; done; exit 1'"
+        timeout_sec: 320
+        sleep: 1
+      - command: "kubectl -n elasticsearch wait --for=condition=ready pod/{{params.cluster_prefix}}-0 --timeout=600s"
+        timeout_sec: 620
+        sleep: 1
+      - command: "kubectl -n elasticsearch wait --for=condition=ready pod/{{params.cluster_prefix}}-1 --timeout=600s"
+        timeout_sec: 620
+        sleep: 1
+      # pod-2: existence + Running phase only (the ES process starts and serves
+      # its local HTTP port; it just cannot join over transport).
+      - command: "/bin/sh -c 'for i in $(seq 1 60); do p=$(kubectl -n elasticsearch get pod {{params.cluster_prefix}}-2 -o jsonpath=\"{.status.phase}\" 2>/dev/null); [ \"$p\" = \"Running\" ] && exit 0; sleep 5; done; exit 1'"
+        timeout_sec: 320
         sleep: 1
       - command: "kubectl -n elasticsearch wait --for=condition=ready pod/curl-test --timeout=300s"
         sleep: 1
+    # P28/P6: verify the fault actually planted, from the CONTROL PLANE (P27):
+    # the trust bundle holds exactly ONE cert (ca2 absent). Never wait on
+    # pod-2 Ready or on 3 joined nodes here — that is the agent's deliverable.
     verify:
+      - command: "/bin/sh -c 'n=$(kubectl -n elasticsearch get configmap {{params.transport_bundle_configmap}} -o jsonpath=\"{.data.ca\\\\.crt}\" 2>/dev/null | grep -c \"BEGIN CERTIFICATE\"); [ \"$n\" = \"1\" ]'"
+        timeout_sec: 15
       - command: "kubectl -n elasticsearch get pods 2>/dev/null | grep -c Running"
         timeout_sec: 10
 
-  # Self-contained transport CA bundle (composition safety): the oracle requires the
-  # {{params.transport_bundle_configmap}} ConfigMap to trust 2 CA certs. es_env_ready
-  # seeds it on its destructive fresh-build path, which is SKIPPED on an inherited
-  # cluster (the probe sees pods Running), so the ConfigMap is absent and the oracle
-  # fails "configmap not found". Establish it additively when missing: generate two
-  # self-signed CA certs in the openssl helper and create the 2-cert bundle. It never
-  # deletes the namespace or touches the running nodes -- the inherited cluster keeps
-  # its own transport config; this bundle satisfies the trust invariant the oracle
-  # checks (the agent's task per the prompt is node-restore, not CA work). Standalone
-  # the ConfigMap already exists so the probe matches and this unit skips.
-  - name: transport_ca_bundle_fixture
+  # C8 re-plant fixture (break-then-fix): the graded fault is "the transport
+  # trust bundle lacks the second CA, so the ca2-signed node cannot join".
+  # es_env_ready plants it only on its destructive fresh-build path, which is
+  # SKIPPED on an inherited cluster — and on a SECOND scheduling of this case
+  # the inherited bundle already holds ca1+ca2 from the previous heal, so
+  # without a re-plant the oracle's 2-cert check would pass with ZERO agent
+  # action. (An earlier fixture created the 2-cert bundle itself, pre-solving
+  # the trust half of the task.) This unit: (a) ensures the ca1/ca2 CA secrets
+  # exist (generated when absent — the agent's fix reads ca2's cert from its
+  # secret, C6 bring-your-own), (b) (re)writes the bundle with ca1 ONLY
+  # whenever it is missing or already contains ca2, and (c) bounces only the
+  # ca2-signed pod ({{params.cluster_prefix}}-2, when it exists) so the
+  # re-planted drift takes live effect (the ADV7 analog: a ConfigMap edit
+  # alone changes nothing until the pod re-reads its trust). It never deletes
+  # the namespace and never touches the ca1-signed pods or their data.
+  - name: transport_ca_fault_replant
     on_probe_fail: skip
+    # Probe (=> skip) only when the exact faulted state is present (C8/P3):
+    # the ca2 secret the agent's fix depends on exists AND the bundle holds
+    # exactly one CA cert. A healed (2-cert), missing, or secret-less bundle
+    # fails the probe => apply re-plants.
     probe:
-      - command: "kubectl -n elasticsearch get configmap {{params.transport_bundle_configmap}}"
-        timeout_sec: 10
+      - command: "/bin/sh -c 'kubectl -n elasticsearch get secret {{params.ca2_secret_name}} >/dev/null 2>&1 || exit 1; n=$(kubectl -n elasticsearch get configmap {{params.transport_bundle_configmap}} -o jsonpath=\"{.data.ca\\\\.crt}\" 2>/dev/null | grep -c \"BEGIN CERTIFICATE\"); [ \"$n\" = \"1\" ]'"
+        timeout_sec: 15
     apply:
+      # Get-or-apply helper pod (P15), best-effort waits (P8).
       - command: "/bin/sh -c 'kubectl -n elasticsearch get pod openssl-toolbox >/dev/null 2>&1 || kubectl -n elasticsearch apply -f cases/elasticsearch/transport-additional-ca-trust/resource/openssl-toolbox.yaml'"
         sleep: 2
-      - command: "kubectl -n elasticsearch wait --for=condition=ready pod/openssl-toolbox --timeout=300s"
+      - command: "/bin/sh -c 'kubectl -n elasticsearch wait --for=condition=ready pod/openssl-toolbox --timeout=300s || true'"
+        timeout_sec: 320
         sleep: 1
+      # (a) Generate the two CA secrets only when absent (P8: every step
+      # tolerant; a failure degrades to a graded oracle fail, never a
+      # precondition ERROR).
       - command: |
           /bin/sh -c '
-          set -e
+          kubectl -n elasticsearch get secret {{params.ca1_secret_name}} >/dev/null 2>&1 && kubectl -n elasticsearch get secret {{params.ca2_secret_name}} >/dev/null 2>&1 && exit 0
           TMP_DIR=$(mktemp -d)
           kubectl -n elasticsearch exec openssl-toolbox -- /bin/sh -c '\''
           set -e
@@ -137,15 +180,36 @@ preconditionUnits:
           openssl req -x509 -new -nodes -key /tmp/cab/ca1.key -sha256 -days 3650 -subj "/CN=es-ca-1" -out /tmp/cab/ca1.crt
           openssl genrsa -out /tmp/cab/ca2.key 2048
           openssl req -x509 -new -nodes -key /tmp/cab/ca2.key -sha256 -days 3650 -subj "/CN=es-ca-2" -out /tmp/cab/ca2.crt
-          cat /tmp/cab/ca1.crt /tmp/cab/ca2.crt > /tmp/cab/bundle.crt
-          '\''
-          kubectl -n elasticsearch cp openssl-toolbox:/tmp/cab "${TMP_DIR}/cab"
-          kubectl -n elasticsearch create configmap {{params.transport_bundle_configmap}} --from-file=ca.crt="${TMP_DIR}/cab/bundle.crt" --dry-run=client -o yaml | kubectl apply -f -
+          '\'' || exit 0
+          kubectl -n elasticsearch cp openssl-toolbox:/tmp/cab "${TMP_DIR}/cab" || exit 0
+          kubectl -n elasticsearch get secret {{params.ca1_secret_name}} >/dev/null 2>&1 || kubectl -n elasticsearch create secret generic {{params.ca1_secret_name}} --from-file=ca.crt="${TMP_DIR}/cab/ca1.crt" || true
+          kubectl -n elasticsearch get secret {{params.ca2_secret_name}} >/dev/null 2>&1 || kubectl -n elasticsearch create secret generic {{params.ca2_secret_name}} --from-file=ca.crt="${TMP_DIR}/cab/ca2.crt" || true
+          exit 0
           '
         sleep: 2
+      # (b) Re-plant the ca1-only bundle from the live ca1 secret (never a
+      # hardcoded cert): the missing-ca2 drift IS the case's premise.
+      - command: |
+          /bin/sh -c '
+          TMP_DIR=$(mktemp -d)
+          kubectl -n elasticsearch get secret {{params.ca1_secret_name}} -o jsonpath="{.data.ca\.crt}" 2>/dev/null | base64 -d > "${TMP_DIR}/ca1.crt" || exit 0
+          grep -q "BEGIN CERTIFICATE" "${TMP_DIR}/ca1.crt" || exit 0
+          kubectl -n elasticsearch create configmap {{params.transport_bundle_configmap}} --from-file=ca.crt="${TMP_DIR}/ca1.crt" --dry-run=client -o yaml | kubectl apply -f - || true
+          exit 0
+          '
+        sleep: 2
+      # (c) Bounce ONLY the ca2-signed pod so the drift takes live effect on
+      # this case's own topology; a foreign inherited cluster (no such pod) is
+      # left untouched (best-effort, P8). The pod's data is PVC-backed.
+      - command: "/bin/sh -c 'kubectl -n elasticsearch get pod {{params.cluster_prefix}}-2 >/dev/null 2>&1 && kubectl -n elasticsearch delete pod {{params.cluster_prefix}}-2 --wait=false || true'"
+        timeout_sec: 60
+        sleep: 5
+    # Best-effort no-op verify (P8): the oracle adjudicates the heal; a fixture
+    # that could not fully re-plant must degrade to a graded fail, never a
+    # framework precondition ERROR.
     verify:
-      - command: "/bin/sh -c 'kubectl -n elasticsearch get configmap {{params.transport_bundle_configmap}} >/dev/null 2>&1; true'"
-        timeout_sec: 10
+      - command: "/bin/sh -c 'true'"
+        timeout_sec: 5
 
 oracle:
   verify:
