@@ -35,9 +35,13 @@ lift:
         2>&1 | grep -q 'not found'"
       timeout_sec: 10
   apply:
-    - command: >-
-        /bin/sh -c "kubectl -n {{params.namespace}} create secret tls {{params.secret_name}}
-        --cert=/tmp/expired-tls.crt --key=/tmp/expired-tls.key"
+    # Law 4 (run isolation): the renew_tls_secret precondition keys its host
+    # /tmp cert artifacts by the KUBECONFIG basename ($K) so parallel
+    # campaigns against two clusters never collide; derive the same key here
+    # (same KUBECONFIG env) and fall back to the legacy un-keyed paths for
+    # artifacts written before the keying change.
+    - command: |
+        /bin/sh -c 'K=$(basename "${KUBECONFIG:-default}"); C="/tmp/expired-tls.$K.crt"; Y="/tmp/expired-tls.$K.key"; [ -f "$C" ] || { C=/tmp/expired-tls.crt; Y=/tmp/expired-tls.key; }; kubectl -n {{params.namespace}} create secret tls {{params.secret_name}} --cert="$C" --key="$Y"'
       timeout_sec: 20
   verify:
     - command: "kubectl -n {{params.namespace}} get secret {{params.secret_name}}"
