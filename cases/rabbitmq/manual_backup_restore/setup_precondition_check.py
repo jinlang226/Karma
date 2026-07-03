@@ -156,6 +156,61 @@ def _check_backup_snapshot_mode(ns, cluster_prefix):
     return errors
 
 
+def _restore_target_wiped(namespace, cluster_prefix, errors):
+    """Assert the data-loss fault is PLANTED: data-0 holds no broker data.
+
+    A Bound data-0 PVC is NOT evidence the wipe ran -- after seed+snapshot the
+    PVC is Bound WITH data on every run, so a phase-only probe skips the wipe
+    and the fault is never planted (P3/P28). Mount the restore-target PVC in a
+    short-lived probe pod and require the mnesia directory to be absent; a
+    restored (or never-wiped) PVC fails this, so a second scheduling re-plants
+    the wipe (break-then-fix, C8).
+    """
+    pod_name = f"{cluster_prefix}-restore-probe"
+    manifest = f"""apiVersion: v1
+kind: Pod
+metadata:
+  name: {pod_name}
+spec:
+  restartPolicy: Never
+  containers:
+    - name: check
+      image: busybox:1.36
+      command: [\"/bin/sh\", \"-c\", \"test ! -e /data/mnesia\"]
+      volumeMounts:
+        - name: data
+          mountPath: /data
+  volumes:
+    - name: data
+      persistentVolumeClaim:
+        claimName: data-{cluster_prefix}-0
+"""
+    try:
+        run(["kubectl", "-n", namespace, "delete", "pod", pod_name, "--ignore-not-found=true"])
+        run(["kubectl", "-n", namespace, "apply", "-f", "-"], input_data=manifest)
+        run(
+            [
+                "kubectl",
+                "-n",
+                namespace,
+                "wait",
+                f"pod/{pod_name}",
+                "--for=jsonpath={.status.phase}=Succeeded",
+                "--timeout=90s",
+            ]
+        )
+    except Exception as exc:
+        errors.append(
+            f"restore target data-{cluster_prefix}-0 still holds broker data "
+            f"(mnesia present) or is unreadable -- data-loss fault not planted: {exc}"
+        )
+    finally:
+        try:
+            run(["kubectl", "-n", namespace, "delete", "pod", pod_name, "--ignore-not-found=true"])
+        except Exception:
+            pass
+
+
 def _check_restore_pvc_mode(ns, cluster_prefix):
     errors = []
     pvc_phases = {"__cluster_prefix__": cluster_prefix}
@@ -165,6 +220,10 @@ def _check_restore_pvc_mode(ns, cluster_prefix):
         except Exception as exc:
             errors.append(f"failed to read PVC {pvc}: {exc}")
     errors.extend(_validate_restore_pvc_phases(pvc_phases))
+    # Only probe emptiness when the PVCs themselves are readable; the phase
+    # errors above already fail the mode.
+    if not errors:
+        _restore_target_wiped(ns, cluster_prefix, errors)
     return errors
 
 

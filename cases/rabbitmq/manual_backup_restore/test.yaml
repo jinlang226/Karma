@@ -189,19 +189,41 @@ preconditionUnits:
       - command: "python3 cases/rabbitmq/manual_backup_restore/setup_precondition_check.py --namespace ${BENCH_NAMESPACE} --mode backup-snapshot"
         timeout_sec: 120
 
+  # Data-loss fault (P3/P28/C8): the probe tests the FAULT ITSELF -- the
+  # restore-target PVC must be EMPTY of broker (mnesia) data, checked by a
+  # short-lived probe pod -- not merely that a Bound PVC exists (after
+  # seed+snapshot the PVC is Bound WITH data on every run, so a phase-only
+  # probe skipped the wipe and the fault was never planted). Probe fail ->
+  # the apply wipes: delete the data PVCs and recreate an empty data-0. A
+  # second scheduling with data already wiped-and-restored fails the probe
+  # again and re-plants the wipe (break-then-fix, C8); the preceding
+  # backup_snapshot_ready unit has already scaled the StatefulSet to 0, so
+  # the PVCs are unmounted and deletable.
   - name: restore_pvc_ready
     on_probe_fail: skip
     probe:
       - command: "python3 cases/rabbitmq/manual_backup_restore/setup_precondition_check.py --namespace ${BENCH_NAMESPACE} --mode restore-pvc"
-        timeout_sec: 30
+        timeout_sec: 150
     apply:
+      # Guard for the composed second-scheduling path: if backup_snapshot_ready
+      # skipped (tarball already present) the broker may still be RUNNING here,
+      # and deleting an in-use PVC hangs on the pvc-protection finalizer. Scale
+      # to 0 and wait the pods out first (idempotent no-op on the fresh path,
+      # where the snapshot unit already scaled down).
+      - command: "/bin/sh -c 'kubectl -n ${BENCH_NAMESPACE} scale statefulset/{{params.cluster_prefix}} --replicas=0 2>/dev/null || true'"
+        timeout_sec: 60
+        sleep: 1
+      - command: "/bin/sh -c 'kubectl -n ${BENCH_NAMESPACE} wait --for=delete pod/{{params.cluster_prefix}}-0 pod/{{params.cluster_prefix}}-1 pod/{{params.cluster_prefix}}-2 --timeout=300s 2>/dev/null || true'"
+        timeout_sec: 320
+        sleep: 1
       - command: "kubectl -n ${BENCH_NAMESPACE} delete pvc data-{{params.cluster_prefix}}-0 data-{{params.cluster_prefix}}-1 data-{{params.cluster_prefix}}-2 --ignore-not-found=true"
+        timeout_sec: 180
         sleep: 1
       - command: "envsubst '$BENCH_NAMESPACE $BENCH_NS_SOURCE $BENCH_NS_TARGET $BENCH_PARAM_CLUSTER_PREFIX $BENCH_PARAM_BLUE_CLUSTER_PREFIX $BENCH_PARAM_GREEN_CLUSTER_PREFIX $BENCH_PARAM_FROM_VERSION' < cases/rabbitmq/manual_backup_restore/resource/data-pvc-0.yaml | kubectl -n ${BENCH_NAMESPACE} apply -f -"
         sleep: 1
     verify:
       - command: "python3 cases/rabbitmq/manual_backup_restore/setup_precondition_check.py --namespace ${BENCH_NAMESPACE} --mode restore-pvc"
-        timeout_sec: 30
+        timeout_sec: 150
 
   - name: curl_test_ready
     on_probe_fail: skip
