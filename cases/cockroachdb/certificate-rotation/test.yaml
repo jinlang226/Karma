@@ -118,8 +118,21 @@ preconditionUnits:
     # passes regardless of what CA an upstream stage left.
     on_probe_fail: skip
     probe:
-      - command: "kubectl -n cockroachdb get configmap {{params.old_cert_configmap_name}}"
-        timeout_sec: 10
+      # O5/C8: gating on ConfigMap EXISTENCE alone lets a second scheduling of
+      # this case inherit a STALE baseline -- the prior stage's agent rotated
+      # the secret, the old ConfigMap still exists, so the recorded "old"
+      # fingerprint already differs from the live node.crt and an idle agent
+      # passes. Skip only when the recorded fingerprint still MATCHES the live
+      # Secret's node.crt; any mismatch (or missing piece) re-runs the apply,
+      # which re-keys the cluster and re-records the baseline.
+      - command: |
+          /bin/sh -c '
+          cm=$(kubectl -n cockroachdb get configmap {{params.old_cert_configmap_name}} -o jsonpath="{.data.fingerprint}" 2>/dev/null)
+          [ -n "$cm" ] || exit 1
+          live=$(kubectl -n cockroachdb get secret {{params.cert_secret_name}} -o jsonpath="{.data.node\.crt}" 2>/dev/null | base64 -d 2>/dev/null | openssl x509 -noout -fingerprint -sha256 2>/dev/null | sed "s/.*=//")
+          [ -n "$live" ] && [ "$cm" = "$live" ]
+          '
+        timeout_sec: 20
     apply:
       # Reuse an existing openssl-toolbox if present (a prior stage may have made
       # one; applying our Pod spec over it is rejected on immutable fields like
@@ -168,5 +181,7 @@ preconditionUnits:
 oracle:
   verify:
     commands:
+      # 240s: the oracle's served-cert convergence loop (O37) runs up to ~90s
+      # plus the fingerprint/validity execs, so the budget must exceed it (O21).
       - command: "python3 cases/cockroachdb/certificate-rotation/oracle/oracle.py"
-        timeout_sec: 120
+        timeout_sec: 240
