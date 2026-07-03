@@ -15,6 +15,17 @@ spec:
       containers:
       - name: spark-etl
         image: apache/spark:3.5.3
+        # Broken baseline (Law 5): the job is configured with only 256m of
+        # driver/executor memory. In local[2] mode the executor runs inside
+        # the driver JVM, and a 256m heap is below Spark's own minimum
+        # (~471MB reserved system memory), so the submit fails
+        # deterministically with a "must be at least ... increase heap size"
+        # memory error — the fault the prompt describes. The agent must raise
+        # the memory (e.g. 1g for both --driver-memory and
+        # spark.executor.memory) and re-run. Do NOT ship the remediated
+        # values (1g / AQE flags) here: they are exactly the fix_applied()
+        # markers the oracle greps for, and a pre-fixed baseline lets an idle
+        # agent pass.
         command:
         - /bin/bash
         - -c
@@ -24,14 +35,10 @@ spec:
           echo "Stage 1: load raw data"
           echo "Stage 2: clean and transform"
           echo "Stage 3: aggregate by user_id (skewed on user_id 999)"
-          # --executor-memory 256m is too small for the skewed Stage 3 aggregation
-          # and triggers OutOfMemoryError. The agent must raise it (e.g. 1g),
-          # scale workers, or enable AQE skew handling before re-running.
           /opt/spark/bin/spark-submit \
             --master local[2] \
-            --conf spark.executor.memory=1g \
-            --conf spark.sql.adaptive.enabled=true \
-            --conf spark.sql.adaptive.skewJoin.enabled=true \
+            --driver-memory 256m \
+            --conf spark.executor.memory=256m \
             --class org.apache.spark.examples.SparkPi \
             /opt/spark/examples/jars/spark-examples_2.12-3.5.3.jar \
             500

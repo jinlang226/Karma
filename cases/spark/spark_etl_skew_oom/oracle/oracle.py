@@ -43,15 +43,29 @@ def job_command_text() -> str:
 
 
 def fix_applied() -> bool:
-    """True if any of the documented remediations is detectable in cluster state."""
+    """True if any of the documented remediations is detectable in cluster state.
+
+    Law 5 guard: none of these branches may match the SHIPPED broken baseline
+    (etl-job.yaml carries `--driver-memory 256m` + `spark.executor.memory=256m`
+    and no AQE flags), so an untouched cluster can never count as remediated.
+    """
     command = job_command_text().lower()
 
-    # Option B: executor memory raised above the failing 256m baseline.
-    if "spark.executor.memory=256m" not in command and "--executor-memory 256m" not in command:
-        if "executor.memory" in command or "--executor-memory" in command:
-            return True
+    # Primary fix: the failing 256m memory settings are gone from the job
+    # command — raised (e.g. 1g) or removed entirely (spark's defaults are
+    # ~1g). O22: accept every equivalent valid form; either one unblocks the
+    # job. The shipped baseline carries these markers, so this is False
+    # pre-agent.
+    mem_fault_markers = (
+        "spark.executor.memory=256m",
+        "--executor-memory 256m",
+        "spark.driver.memory=256m",
+        "--driver-memory 256m",
+    )
+    if not any(marker in command for marker in mem_fault_markers):
+        return True
 
-    # Option C: Adaptive Query Execution / skew join enabled on the job.
+    # Also acceptable alongside: AQE / skew-join handling enabled on the job.
     if "spark.sql.adaptive.enabled=true" in command or "skewjoin.enabled=true" in command:
         return True
 
