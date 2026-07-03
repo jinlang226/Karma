@@ -11,8 +11,10 @@
 # mongodb-replica-0 on a freshly-initiated set, but step-down will cause an
 # election and another member may become primary.
 #
-# Deploy: exec rs.stepDown() into the current primary pod.
-# Lift:   verify a primary exists; no-op if election already happened cleanly.
+# Deploy: locate the LIVE primary (never assume pod-0), exec rs.stepDown() into
+#         it, and positively confirm it stepped (ADV1) -- recording which member
+#         was stepped in the adversary-stepdown-marker ConfigMap for verify.
+# Lift:   wait until some member reports primary again; fail if none does.
 
 params:
   namespace:
@@ -37,13 +39,54 @@ deploy:
     - command: "kubectl -n {{params.namespace}} get pod {{params.primary_pod}}"
       timeout_sec: 10
   apply:
-    - command: >-
-        /bin/sh -c 'NS={{params.namespace}}; POD={{params.primary_pod}}; P=$(kubectl -n "$NS" get secret {{params.admin_secret_name}} -o jsonpath="{.data.password}" | base64 -d); T=""; for ca in /etc/tls/ca.crt /etc/mongo-ca/ca.crt /etc/mongodb/tls/ca.crt /etc/ssl/mongodb/ca.crt; do kubectl -n "$NS" exec "$POD" -- test -f "$ca" 2>/dev/null && { T="--tls --tlsAllowInvalidHostnames --tlsCAFile $ca"; break; }; done; kubectl -n "$NS" exec "$POD" -- mongosh --quiet $T -u "{{params.admin_username}}" -p "$P" --authenticationDatabase admin --eval "rs.stepDown({{params.stepdown_secs}})" || true'
-      timeout_sec: 30
+    # ADV1: locate the LIVE primary (an earlier election may have moved it off
+    # pod-0), step THAT member down, and gate on the step actually taking
+    # effect. rs.stepDown closes the client connection on success, so mongosh's
+    # exit code alone is untrustworthy -- the isWritablePrimary poll below is
+    # the real gate (no blind `|| true`); if the member never demotes, the
+    # inject FAILS instead of reporting a vacuous ok. The stepped member's name
+    # is recorded in the adversary-stepdown-marker ConfigMap so verify can
+    # assert the effect on the right pod.
+    - command: |
+        /bin/sh -c '
+        NS={{params.namespace}}
+        P=$(kubectl -n "$NS" get secret {{params.admin_secret_name}} -o jsonpath="{.data.password}" | base64 -d)
+        pods=$(kubectl -n "$NS" get pods -l app=mongodb-replica --field-selector=status.phase=Running -o jsonpath="{.items[*].metadata.name}" 2>/dev/null)
+        [ -n "$pods" ] || pods="{{params.primary_pod}}"
+        PRIMARY=""
+        for pod in $pods; do
+          T=""; for ca in /etc/tls/ca.crt /etc/mongo-ca/ca.crt /etc/mongodb/tls/ca.crt /etc/ssl/mongodb/ca.crt; do kubectl -n "$NS" exec "$pod" -- test -f "$ca" 2>/dev/null && { T="--tls --tlsAllowInvalidHostnames --tlsCAFile $ca"; break; }; done
+          kubectl -n "$NS" exec "$pod" -- mongosh --quiet $T -u "{{params.admin_username}}" -p "$P" --authenticationDatabase admin --eval "db.hello().isWritablePrimary" 2>/dev/null | grep -q true && { PRIMARY="$pod"; PT="$T"; break; }
+        done
+        [ -n "$PRIMARY" ] || { echo "primary_stepdown: no live primary found; cannot inject" >&2; exit 1; }
+        kubectl -n "$NS" create configmap adversary-stepdown-marker --from-literal=stepped_pod="$PRIMARY" --dry-run=client -o yaml | kubectl -n "$NS" apply -f -
+        kubectl -n "$NS" exec "$PRIMARY" -- mongosh --quiet $PT -u "{{params.admin_username}}" -p "$P" --authenticationDatabase admin --eval "rs.stepDown({{params.stepdown_secs}})"
+        for i in $(seq 1 10); do
+          kubectl -n "$NS" exec "$PRIMARY" -- mongosh --quiet $PT -u "{{params.admin_username}}" -p "$P" --authenticationDatabase admin --eval "db.hello().isWritablePrimary" 2>/dev/null | grep -q false && exit 0
+          sleep 3
+        done
+        echo "primary_stepdown: $PRIMARY still reports isWritablePrimary=true after stepDown" >&2
+        exit 1
+        '
+      timeout_sec: 120
   verify:
-    - command: >-
-        /bin/sh -c 'NS={{params.namespace}}; POD={{params.primary_pod}}; P=$(kubectl -n "$NS" get secret {{params.admin_secret_name}} -o jsonpath="{.data.password}" | base64 -d); T=""; for ca in /etc/tls/ca.crt /etc/mongo-ca/ca.crt /etc/mongodb/tls/ca.crt /etc/ssl/mongodb/ca.crt; do kubectl -n "$NS" exec "$POD" -- test -f "$ca" 2>/dev/null && { T="--tls --tlsAllowInvalidHostnames --tlsCAFile $ca"; break; }; done; for i in $(seq 1 12); do kubectl -n "$NS" exec "$POD" -- mongosh --quiet $T -u "{{params.admin_username}}" -p "$P" --authenticationDatabase admin --eval "db.hello().isWritablePrimary" 2>/dev/null | grep -q false && exit 0; sleep 5; done; exit 0'
-      timeout_sec: 90
+    # ADV6: positively assert the fault took effect -- the stepped member is no
+    # longer primary -- and exit 1 on fall-through (never a blind exit 0).
+    - command: |
+        /bin/sh -c '
+        NS={{params.namespace}}
+        P=$(kubectl -n "$NS" get secret {{params.admin_secret_name}} -o jsonpath="{.data.password}" | base64 -d)
+        POD=$(kubectl -n "$NS" get configmap adversary-stepdown-marker -o jsonpath="{.data.stepped_pod}" 2>/dev/null)
+        [ -n "$POD" ] || { echo "primary_stepdown verify: stepdown marker missing" >&2; exit 1; }
+        T=""; for ca in /etc/tls/ca.crt /etc/mongo-ca/ca.crt /etc/mongodb/tls/ca.crt /etc/ssl/mongodb/ca.crt; do kubectl -n "$NS" exec "$POD" -- test -f "$ca" 2>/dev/null && { T="--tls --tlsAllowInvalidHostnames --tlsCAFile $ca"; break; }; done
+        for i in $(seq 1 12); do
+          kubectl -n "$NS" exec "$POD" -- mongosh --quiet $T -u "{{params.admin_username}}" -p "$P" --authenticationDatabase admin --eval "db.hello().isWritablePrimary" 2>/dev/null | grep -q false && exit 0
+          sleep 5
+        done
+        echo "primary_stepdown verify: stepped member $POD is still primary" >&2
+        exit 1
+        '
+      timeout_sec: 120
 
 lift:
   # Skip if a primary already exists (election succeeded).
@@ -53,12 +96,40 @@ lift:
         /bin/sh -c 'NS={{params.namespace}}; P=$(kubectl -n "$NS" get secret {{params.admin_secret_name}} -o jsonpath="{.data.password}" | base64 -d); POD=$(kubectl -n "$NS" get pods -l app=mongodb-replica --field-selector=status.phase=Running -o name 2>/dev/null | head -1); [ -z "$POD" ] && exit 0; T=""; for ca in /etc/tls/ca.crt /etc/mongo-ca/ca.crt /etc/mongodb/tls/ca.crt /etc/ssl/mongodb/ca.crt; do kubectl -n "$NS" exec "$POD" -- test -f "$ca" 2>/dev/null && { T="--tls --tlsAllowInvalidHostnames --tlsCAFile $ca"; break; }; done; ! kubectl -n "$NS" exec "$POD" -- mongosh --quiet $T -u "{{params.admin_username}}" -p "$P" --authenticationDatabase admin --eval "db.hello().isWritablePrimary" 2>/dev/null | grep -q true'
       timeout_sec: 15
   apply:
-    - command: >-
-        /bin/sh -c 'NS={{params.namespace}}; P=$(kubectl -n "$NS" get secret {{params.admin_secret_name}} -o jsonpath="{.data.password}" | base64 -d); for i in $(seq 1 12); do for pod in mongodb-replica-0 mongodb-replica-1 mongodb-replica-2; do T=""; for ca in /etc/tls/ca.crt /etc/mongo-ca/ca.crt /etc/mongodb/tls/ca.crt /etc/ssl/mongodb/ca.crt; do kubectl -n "$NS" exec "$pod" -- test -f "$ca" 2>/dev/null && { T="--tls --tlsAllowInvalidHostnames --tlsCAFile $ca"; break; }; done; kubectl -n "$NS" exec "$pod" -- mongosh --quiet $T -u "{{params.admin_username}}" -p "$P" --authenticationDatabase admin --eval "db.hello().isWritablePrimary" 2>/dev/null | grep -q true && exit 0; done; sleep 5; done; exit 0'
-      timeout_sec: 90
+    # Wait for the set to re-elect; a replica set STILL without a primary here
+    # is a real unrecovered fault, so the fall-through is exit 1 (ADV1), never
+    # a vacuous ok. Also removes the deploy-time stepdown marker.
+    - command: |
+        /bin/sh -c '
+        NS={{params.namespace}}
+        P=$(kubectl -n "$NS" get secret {{params.admin_secret_name}} -o jsonpath="{.data.password}" | base64 -d)
+        kubectl -n "$NS" delete configmap adversary-stepdown-marker --ignore-not-found >/dev/null 2>&1
+        for i in $(seq 1 12); do
+          for pod in mongodb-replica-0 mongodb-replica-1 mongodb-replica-2; do
+            T=""; for ca in /etc/tls/ca.crt /etc/mongo-ca/ca.crt /etc/mongodb/tls/ca.crt /etc/ssl/mongodb/ca.crt; do kubectl -n "$NS" exec "$pod" -- test -f "$ca" 2>/dev/null && { T="--tls --tlsAllowInvalidHostnames --tlsCAFile $ca"; break; }; done
+            kubectl -n "$NS" exec "$pod" -- mongosh --quiet $T -u "{{params.admin_username}}" -p "$P" --authenticationDatabase admin --eval "db.hello().isWritablePrimary" 2>/dev/null | grep -q true && exit 0
+          done
+          sleep 5
+        done
+        echo "primary_stepdown lift: no member reports primary after the wait" >&2
+        exit 1
+        '
+      timeout_sec: 120
   verify:
-    - command: "kubectl -n {{params.namespace}} get pods -l app=mongodb-replica"
-      timeout_sec: 10
+    # ADV6: positively assert the fault is gone -- some member serves as
+    # primary again -- with exit 1 on fall-through.
+    - command: |
+        /bin/sh -c '
+        NS={{params.namespace}}
+        P=$(kubectl -n "$NS" get secret {{params.admin_secret_name}} -o jsonpath="{.data.password}" | base64 -d)
+        for pod in mongodb-replica-0 mongodb-replica-1 mongodb-replica-2; do
+          T=""; for ca in /etc/tls/ca.crt /etc/mongo-ca/ca.crt /etc/mongodb/tls/ca.crt /etc/ssl/mongodb/ca.crt; do kubectl -n "$NS" exec "$pod" -- test -f "$ca" 2>/dev/null && { T="--tls --tlsAllowInvalidHostnames --tlsCAFile $ca"; break; }; done
+          kubectl -n "$NS" exec "$pod" -- mongosh --quiet $T -u "{{params.admin_username}}" -p "$P" --authenticationDatabase admin --eval "db.hello().isWritablePrimary" 2>/dev/null | grep -q true && exit 0
+        done
+        echo "primary_stepdown lift verify: no primary found" >&2
+        exit 1
+        '
+      timeout_sec: 90
 
 prompt_hints:
   deploy: |
