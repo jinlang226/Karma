@@ -37,6 +37,9 @@ params:
   curl_pod_name:
     default: "curl-test"
     description: "Helper pod used to query Elasticsearch over HTTP"
+  target_master_nodes:
+    default: 1
+    description: "Graded master/node count after the recovery (O2-exception: the count IS the outcome, so the oracle is param-first and never live-derives it)"
 namespace_contract:
   required_roles: []
 
@@ -59,10 +62,14 @@ preconditionUnits:
   # confirmed from the CONTROL PLANE: sts/es-cluster spec.replicas == 1.
   - name: es_env_ready
     on_probe_fail: skip
-    # Skip-gate: if the StatefulSet is already scaled to 1, the fault is already
-    # present (a prior fresh build) -> skip. Absent (>1 or no STS) -> apply.
+    # P32 skip-gate: gate the DESTRUCTIVE fresh build on workload EXISTENCE (the
+    # StatefulSet present in any state, or any pod Running), never on the fault
+    # signature (spec.replicas==1) — the old fault-shape probe made an inherited
+    # HEALTHY 3-replica cluster fail the probe, so the apply `delete namespace`d
+    # it and destroyed every prior stage's state. Re-planting the quorum fault on
+    # an inherited cluster is the additive voting_drift_ready unit's job below.
     probe:
-      - command: "/bin/sh -c '[ \"$(kubectl -n elasticsearch get sts {{params.cluster_prefix}} -o jsonpath=\"{.spec.replicas}\" 2>/dev/null)\" = \"1\" ]'"
+      - command: "/bin/sh -c 'kubectl -n elasticsearch get sts {{params.cluster_prefix}} >/dev/null 2>&1 || kubectl -n elasticsearch get pods --field-selector=status.phase=Running -o name 2>/dev/null | grep -q .'"
         timeout_sec: 10
     apply:
       - command: "/bin/sh -c 'kubectl delete namespace elasticsearch --ignore-not-found=true --wait=false; kubectl wait --for=delete namespace/elasticsearch --timeout=400s || true'"
@@ -101,34 +108,45 @@ preconditionUnits:
       - command: "kubectl -n elasticsearch wait --for=condition=ready pod/{{params.curl_pod_name}} --timeout=60s"
         timeout_sec: 70
 
-  # Additive problem-shape fixture (composition safety, Pattern 1): the unsolved
-  # problem is the UNSAFE coordination setting
-  # persistent.cluster.auto_shrink_voting_configuration=false. es_env_ready plants
-  # it on its destructive fresh-build path, which is SKIPPED on an INHERITED
-  # running cluster (sts already != 1 replica -> the new control-plane skip-gate
-  # fails -> es_env_ready skips), so on an inherited HEALTHY cluster the setting
-  # would be at its safe default and the oracle's "auto_shrink disabled" check
-  # would pass with ZERO agent action -- a solved task silently bypassing the
-  # challenge. Re-plant the fault additively on a HEALTHY inherited cluster.
+  # Additive fault re-plant fixture (P32/C8): the unsolved problem is BOTH the
+  # unsafe coordination setting
+  # persistent.cluster.auto_shrink_voting_configuration=false AND the quorum
+  # loss (masters scaled to {{params.target_master_nodes}}). es_env_ready plants
+  # them only on its destructive fresh-build path, which is SKIPPED whenever the
+  # workload already exists (P32 existence gate above) — so on an inherited
+  # HEALTHY cluster the fault is absent and the oracle would otherwise pass with
+  # ZERO agent action. This unit re-plants the exact drift additively: write the
+  # unsafe setting through the still-elected master, THEN scale the StatefulSet
+  # down to the target count (breaking quorum), exactly the fresh build's fault.
   #
-  # P27: this unit's data-plane check is valid ONLY while a master is elected.
-  # Every step first confirms `/_cluster/health` is reachable (a master exists)
-  # and SKIPS cleanly otherwise -- so on the quorum-broken standalone path (where
-  # es_env_ready already scaled to 1 and planted the setting) the probe finds no
-  # master, fails, and `on_probe_fail: skip` makes this a no-op. It never reads
-  # `/_cluster/settings` on a master-less cluster, never scales the StatefulSet,
-  # deletes the namespace, or touches data.
+  # P27: the data-plane steps are valid ONLY while a master is elected. Every
+  # step first confirms `/_cluster/health` answers (a master exists) and skips
+  # cleanly otherwise -- so on the quorum-broken standalone path (fault already
+  # planted) this is a no-op. It never reads `/_cluster/settings` on a
+  # master-less cluster, never deletes the namespace, or touches data.
   - name: voting_drift_ready
     on_probe_fail: skip
-    # Probe matches (=> skip) when EITHER the cluster is already quorum-broken (no
-    # master; standalone path already planted the fault) OR a master is reachable
-    # AND the setting already reads false. It fails (=> apply) only when a master
-    # is reachable and the setting is NOT yet false (inherited healthy cluster).
+    # Probe matches (=> skip) only when the fault is fully present: the STS is
+    # already at the target replica count AND (no master answers — quorum broken
+    # — OR the unsafe setting already reads false). Any healthy/partially-healed
+    # state (replicas above target, or a reachable master with the setting at
+    # its safe default) fails the probe => apply re-plants (C8).
     probe:
-      - command: "/bin/sh -c 'pw=$(kubectl -n elasticsearch get secret elastic-password -o jsonpath=\"{.data.password}\" 2>/dev/null | base64 -d 2>/dev/null); A=\"\"; [ -n \"$pw\" ] && A=\"-u elastic:$pw\"; S=https; kubectl -n elasticsearch exec {{params.curl_pod_name}} -- curl -sk $A --max-time 5 \"https://{{params.http_service_name}}.elasticsearch.svc:9200/\" >/dev/null 2>&1 || S=http; H=$(kubectl -n elasticsearch exec {{params.curl_pod_name}} -- curl -sk $A --max-time 5 \"$S://{{params.http_service_name}}.elasticsearch.svc:9200/_cluster/health\" 2>/dev/null); echo \"$H\" | grep -q \"\\\"status\\\"\" || exit 0; kubectl -n elasticsearch exec {{params.curl_pod_name}} -- curl -sk $A --max-time 5 \"$S://{{params.http_service_name}}.elasticsearch.svc:9200/_cluster/settings\" 2>/dev/null | grep -q \"\\\"auto_shrink_voting_configuration\\\":\\\"false\\\"\"'"
+      - command: "/bin/sh -c 'r=$(kubectl -n elasticsearch get sts {{params.cluster_prefix}} -o jsonpath=\"{.spec.replicas}\" 2>/dev/null); [ \"$r\" = \"{{params.target_master_nodes}}\" ] || exit 1; pw=$(kubectl -n elasticsearch get secret elastic-password -o jsonpath=\"{.data.password}\" 2>/dev/null | base64 -d 2>/dev/null); A=\"\"; [ -n \"$pw\" ] && A=\"-u elastic:$pw\"; S=https; kubectl -n elasticsearch exec {{params.curl_pod_name}} -- curl -sk $A --max-time 5 \"https://{{params.http_service_name}}.elasticsearch.svc:9200/\" >/dev/null 2>&1 || S=http; H=$(kubectl -n elasticsearch exec {{params.curl_pod_name}} -- curl -sk $A --max-time 5 \"$S://{{params.http_service_name}}.elasticsearch.svc:9200/_cluster/health\" 2>/dev/null); echo \"$H\" | grep -q \"\\\"status\\\"\" || exit 0; kubectl -n elasticsearch exec {{params.curl_pod_name}} -- curl -sk $A --max-time 5 \"$S://{{params.http_service_name}}.elasticsearch.svc:9200/_cluster/settings\" 2>/dev/null | grep -q \"\\\"auto_shrink_voting_configuration\\\":\\\"false\\\"\"'"
         timeout_sec: 20
     apply:
+      # Step 1 (in-service proof, P27): plant the unsafe setting while a master
+      # is still reachable; skips silently when the data plane is already down.
       - command: "/bin/sh -c 'pw=$(kubectl -n elasticsearch get secret elastic-password -o jsonpath=\"{.data.password}\" 2>/dev/null | base64 -d 2>/dev/null); A=\"\"; [ -n \"$pw\" ] && A=\"-u elastic:$pw\"; S=https; kubectl -n elasticsearch exec {{params.curl_pod_name}} -- curl -sk $A --max-time 5 \"https://{{params.http_service_name}}.elasticsearch.svc:9200/\" >/dev/null 2>&1 || S=http; kubectl -n elasticsearch exec {{params.curl_pod_name}} -- curl -sk $A --max-time 5 \"$S://{{params.http_service_name}}.elasticsearch.svc:9200/_cluster/health\" 2>/dev/null | grep -q \"\\\"status\\\"\" || exit 0; kubectl -n elasticsearch exec {{params.curl_pod_name}} -- curl -sk $A -XPUT \"$S://{{params.http_service_name}}.elasticsearch.svc:9200/_cluster/settings\" -H \"Content-Type: application/json\" -d \"{\\\"persistent\\\":{\\\"cluster.auto_shrink_voting_configuration\\\":false}}\" >/dev/null 2>&1; true'"
+        sleep: 1
+      # Step 2 (re-break quorum, C8): scale THIS case's StatefulSet down to the
+      # target master count so the advertised "only one master-eligible node"
+      # premise is live again. Best-effort (P8): a foreign-named inherited
+      # cluster is left untouched and degrades to a graded oracle verdict.
+      - command: "/bin/sh -c 'kubectl -n elasticsearch get sts {{params.cluster_prefix}} >/dev/null 2>&1 && kubectl -n elasticsearch scale sts/{{params.cluster_prefix}} --replicas={{params.target_master_nodes}} || true'"
+        sleep: 1
+      - command: "/bin/sh -c 'kubectl -n elasticsearch rollout status sts/{{params.cluster_prefix}} --timeout=180s || true'"
+        timeout_sec: 200
         sleep: 1
     # P27: verify only confirms the planted setting WHEN a master is reachable.
     # On the quorum-broken standalone path (no master) the verify treats the

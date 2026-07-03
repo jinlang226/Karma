@@ -89,11 +89,13 @@ APP_LABEL = resolve_app_label()
 
 
 def _resolve_expected_nodes(default=1):
-    """Target master/node count (param override -> live Ready es pods -> default).
+    """Target master/node count (param -> default 1; NEVER live-derived).
 
-    The env PERSISTS across stages, so adapt the topology target to the live
-    cluster without loosening it. The explicit downscale-target param wins; the
-    live count is the fallback.
+    O2-exception: the downscaled count IS the graded outcome, so it must stay
+    param-first (``target_master_nodes``, declared in test.yaml with default 1,
+    mirroring safe-downscale's BENCH_PARAM_TARGET_REPLICAS). Deriving it from
+    the live Ready-pod count would mask a failed/never-done downscale: an
+    untouched 3-node cluster would grade itself against expected=3 and pass.
     """
     for key in ("BENCH_PARAM_TARGET_MASTER_NODES", "BENCH_PARAM_EXPECTED_NODES"):
         val = os.environ.get(key)
@@ -102,19 +104,6 @@ def _resolve_expected_nodes(default=1):
                 return int(val)
             except ValueError:
                 pass
-    res = run(["kubectl", "-n", NAMESPACE, "get", "pods", "-l", APP_LABEL, "-o", "json"])
-    if res.returncode == 0:
-        try:
-            items = json.loads(res.stdout).get("items", [])
-            ready = sum(
-                1 for p in items
-                if any(c.get("type") == "Ready" and c.get("status") == "True"
-                       for c in p.get("status", {}).get("conditions", []))
-            )
-            if ready > 0:
-                return ready
-        except (json.JSONDecodeError, AttributeError):
-            pass
     return default
 
 
