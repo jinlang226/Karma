@@ -306,6 +306,12 @@ def create_app(
             return jsonify({"error": "not found"}), 404
         return jsonify(job)
 
+    @app.route("/api/judge/jobs/<job_id>/cancel", methods=["POST"])
+    def api_judge_job_cancel(job_id):
+        if not judging.request_judge_cancel(job_id):
+            return jsonify({"error": "job not found or not running"}), 404
+        return jsonify({"job_id": job_id, "status": "cancelling"})
+
     @app.route("/api/judge/jobs/<job_id>/stream")
     def api_judge_job_stream(job_id):
         if not hub.is_known(job_id):

@@ -22,6 +22,8 @@
   let pendingRun = null;   // set by KARMA.showRun to deep-link a run detail
   const lastJudgeLog = {}; // runId -> last judge log text, kept across reloads
   let runsFolder = "";     // current Runs folder being browsed ("" = top level)
+  let activeJudgeJob = null; // job_id while a "Judge all" is running (else null)
+  let judgeCancelling = false; // true between a cancel click and the job ending
   let runsFilter = "";     // loose search query across all runs
   let allRuns = [];        // last-fetched runs, used by the folder/search render
 
@@ -151,46 +153,82 @@
     // "Judge all" sits at the far right of the same row -- scores every finished
     // run in the current folder scope (objective stage-pass + LLM adjudication of
     // regression-sweep failures).
-    const judgeAll = el("button", { id: "judge-all-btn", class: "btn secondary", onClick: () => startJudgeAll(judgeAll) });
-    setJudgeAllLabel(judgeAll);
+    const judgeAll = el("button", { id: "judge-all-btn", class: "btn secondary", onClick: () => onJudgeAllClick(judgeAll) });
+    if (activeJudgeJob) judgeAll.textContent = judgeCancelling ? "Cancelling…" : "Cancel judging…";
+    else setJudgeAllLabel(judgeAll);
     return el("div", { class: "subtabs-row" }, tabs, judgeAll);
+  }
+
+  // One button, two modes: start a Judge all, or cancel the one in flight.
+  function onJudgeAllClick(btn) {
+    if (activeJudgeJob) cancelJudgeAll(btn);
+    else startJudgeAll(btn);
+  }
+
+  // While a job is running the button stays enabled and reads "Cancel judging
+  // (i/N)"; clicking it stops the remaining worklist (the in-flight run finishes).
+  function judgeProgressLabel(i, n) {
+    return `Cancel judging${i != null && n != null ? ` (${i}/${n})` : "…"}`;
   }
 
   async function startJudgeAll(btn) {
     btn.disabled = "disabled";
-    btn.textContent = "Judging…";
+    btn.textContent = "Starting…";
+    let jobId = null;
     try {
-      const { job_id } = await api.post("/api/judge/start", { target_type: "all", target_path: runsFolder });
-      api.stream(`/api/judge/jobs/${job_id}/stream`, {
-        statusPath: `/api/judge/jobs/${job_id}`,
+      const resp = await api.post("/api/judge/start", { target_type: "all", target_path: runsFolder });
+      jobId = resp.job_id;
+      activeJudgeJob = jobId;
+      judgeCancelling = false;
+      btn.disabled = null;                      // enabled so it can now cancel
+      btn.textContent = judgeProgressLabel();
+      api.stream(`/api/judge/jobs/${jobId}/stream`, {
+        statusPath: `/api/judge/jobs/${jobId}`,
         onEvent: (ev) => {
           if (ev.type === "judge_scan") {
             // The backend pre-filtered to the runs that actually need judging.
-            // Frame the work up front so the counter isn't mistaken for a
-            // "judged of total" tally crawling through already-scored runs.
             if (!ev.to_judge) {
-              btn.textContent = "Judging…";
               const scored = ev.already_scored || 0;
               KARMA.toast(`All ${scored} finished runs already judged — nothing to do.`, "info");
             } else {
-              btn.textContent = `Judging 0/${ev.to_judge}…`;
+              if (!judgeCancelling) btn.textContent = judgeProgressLabel(0, ev.to_judge);
               KARMA.toast(
                 `Judging ${ev.to_judge} unjudged run${ev.to_judge === 1 ? "" : "s"}` +
                 ` (${ev.already_scored || 0} already scored).`, "info");
             }
           } else if (ev.type === "judge_progress" && ev.index && ev.total) {
-            btn.textContent = `Judging ${ev.index}/${ev.total}…`;
+            if (!judgeCancelling) btn.textContent = judgeProgressLabel(ev.index, ev.total);
           } else if (ev.type === "judge_complete") {
-            KARMA.toast("Judge all " + (ev.status || "complete"), ev.status === "error" ? "error" : "success");
-            if (sub === "runs") render();   // refresh the list with new scores
+            const st = ev.status || "complete";
+            KARMA.toast("Judge all " + st, st === "error" ? "error" : (st === "cancelled" ? "info" : "success"));
+            if (sub === "runs") render();   // refresh the list with new scores (incl. partial on cancel)
           }
         },
-        onDone: () => { btn.disabled = null; setJudgeAllLabel(btn); },
+        onDone: () => { activeJudgeJob = null; judgeCancelling = false; btn.disabled = null; setJudgeAllLabel(btn); },
       });
     } catch (e) {
       KARMA.toastError(e);
+      activeJudgeJob = null;
+      judgeCancelling = false;
       btn.disabled = null;
       setJudgeAllLabel(btn);
+    }
+  }
+
+  async function cancelJudgeAll(btn) {
+    if (!activeJudgeJob) return;
+    judgeCancelling = true;
+    btn.disabled = "disabled";
+    btn.textContent = "Cancelling…";
+    try {
+      await api.post(`/api/judge/jobs/${activeJudgeJob}/cancel`, {});
+      // The job ends after its current run; the stream's judge_complete
+      // (status "cancelled") + onDone restore the button.
+    } catch (e) {
+      KARMA.toastError(e);
+      judgeCancelling = false;           // cancel POST failed -> let it keep running
+      btn.disabled = null;
+      btn.textContent = judgeProgressLabel();
     }
   }
 
@@ -309,7 +347,7 @@
     // refresh the "Judge all" scope label here -- unless a judge is mid-run
     // (button disabled), where its progress text must not be clobbered.
     const jb = document.getElementById("judge-all-btn");
-    if (jb && !jb.disabled) setJudgeAllLabel(jb);
+    if (jb && !jb.disabled && !activeJudgeJob) setJudgeAllLabel(jb);
     const body = document.getElementById("runs-body");
     if (body) {
       renderRunRows(body);
