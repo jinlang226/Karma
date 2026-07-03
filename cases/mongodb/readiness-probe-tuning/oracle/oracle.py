@@ -34,8 +34,15 @@ FAULTY_LIVENESS_FAILURE_THRESHOLD = int(os.environ.get("BENCH_PARAM_FAULTY_LIVEN
 POD_PREFIX = f"{CLUSTER_PREFIX}-"
 
 
-def run(cmd):
-    return subprocess.run(cmd, text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+def run(cmd, timeout=30):
+    """Run a command bounded (O17): a hung kubectl/mongosh exec becomes a
+    failed attempt instead of an uncaught TimeoutExpired that would crash the
+    whole oracle at its deadline."""
+    try:
+        return subprocess.run(cmd, text=True, stdout=subprocess.PIPE,
+                              stderr=subprocess.PIPE, timeout=timeout)
+    except subprocess.TimeoutExpired:
+        return subprocess.CompletedProcess(cmd, 124, "", "timed out")
 
 
 _TLS_FLAGS_CACHE = None
@@ -80,16 +87,16 @@ def _mongo_tls_flags(probe_pod=None):
     return list(flags)
 
 def _resolve_expected_replicas():
-    """Topology size to enforce.
+    """Topology size to enforce, resolved fresh on every call (O2).
 
     The environment PERSISTS across workflow stages, so an earlier
     replica-scaling stage may have grown the replica set past the standalone
     default of 3. Resolve the expected count from (in priority order): an
-    explicit ``expected_replicas``/``target_replicas`` param override, else the
-    LIVE StatefulSet (ready, else spec'd replicas), else the standalone default
-    of 3. This adapts the topology/count check to whatever the workflow
-    accumulated without loosening it -- a non-solving agent that drops or fails
-    a member still mismatches the live ready/spec count.
+    explicit ``expected_replicas``/``target_replicas`` param override, else
+    the LIVE StatefulSet's desired ``spec.replicas`` (ignored while the STS is
+    being deleted; transient ``status.readyReplicas`` is only a last-resort
+    fallback when the spec carries no count -- a mid-rollout ready count would
+    grade against a shrunken snapshot), else the standalone default of 3.
     """
     for key in ("BENCH_PARAM_EXPECTED_REPLICAS", "BENCH_PARAM_TARGET_REPLICAS"):
         val = os.environ.get(key)
@@ -104,9 +111,10 @@ def _resolve_expected_replicas():
             sts = json.loads(res.stdout)
             status = sts.get("status", {}) or {}
             spec = sts.get("spec", {}) or {}
-            live = status.get("readyReplicas")
+            deleting = bool((sts.get("metadata", {}) or {}).get("deletionTimestamp"))
+            live = spec.get("replicas") if not deleting else None
             if not isinstance(live, int) or live <= 0:
-                live = spec.get("replicas")
+                live = status.get("readyReplicas")
             if isinstance(live, int) and live > 0:
                 return live
         except (json.JSONDecodeError, AttributeError):
@@ -114,7 +122,11 @@ def _resolve_expected_replicas():
     return 3
 
 
-EXPECTED_REPLICAS = _resolve_expected_replicas()
+def expected_replicas():
+    """Per-call accessor for the expected-replica count (O2): re-resolves on
+    every use, so convergence-loop attempts track the live desired size
+    instead of a value frozen at import time."""
+    return _resolve_expected_replicas()
 
 
 def fail(prefix, errors):
@@ -180,10 +192,10 @@ def _workload_attempt():
     if sts:
         spec_replicas = sts.get("spec", {}).get("replicas")
         ready_replicas = sts.get("status", {}).get("readyReplicas")
-        if spec_replicas != EXPECTED_REPLICAS:
-            errors.append(f"statefulset replicas expected {EXPECTED_REPLICAS}, got {spec_replicas}")
-        if ready_replicas != EXPECTED_REPLICAS:
-            errors.append(f"ready replicas expected {EXPECTED_REPLICAS}, got {ready_replicas}")
+        if spec_replicas != expected_replicas():
+            errors.append(f"statefulset replicas expected {expected_replicas()}, got {spec_replicas}")
+        if ready_replicas != expected_replicas():
+            errors.append(f"ready replicas expected {expected_replicas()}, got {ready_replicas}")
 
     pods_res = run(["kubectl", "-n", NAMESPACE, "get", "pods", "-l", f"app={CLUSTER_PREFIX}", "-o", "json"])
     if pods_res.returncode != 0:
@@ -196,8 +208,8 @@ def _workload_attempt():
         return errors
 
     items = pods.get("items", [])
-    if len(items) != EXPECTED_REPLICAS:
-        errors.append(f"expected {EXPECTED_REPLICAS} pods, got {len(items)}")
+    if len(items) != expected_replicas():
+        errors.append(f"expected {expected_replicas()} pods, got {len(items)}")
     for pod in items:
         name = pod.get("metadata", {}).get("name", "unknown")
         conditions = pod.get("status", {}).get("conditions", [])
@@ -236,8 +248,14 @@ def check_probes():
     readiness = c.get("readinessProbe", {})
     liveness = c.get("livenessProbe", {})
 
-    # Each probe field must be made strictly more tolerant than the faulty
-    # baseline (a larger value = more headroom for mongod startup/election).
+    # O1/O22: grade only the fields the planted fault genuinely breaks. The
+    # instability comes from the 1s probe timeoutSeconds (a loaded mongod ping
+    # exceeds it) and the failureThreshold of 2 (two slow pings evict a healthy
+    # member); those must exceed the faulty baseline. initialDelaySeconds only
+    # delays the FIRST probe -- the faulty 5/15s values are workable once
+    # timeout/threshold are sane, and the prompt never asks to raise them, so
+    # demanding all six fields strictly greater failed valid solutions. The
+    # workload/topology stability checks below prove the chosen values work.
     def _more_tolerant(probe, field, faulty, label):
         val = probe.get(field)
         if not isinstance(val, int) or val <= faulty:
@@ -245,10 +263,8 @@ def check_probes():
                 f"{label} {field} ({val}) must be increased above the faulty baseline ({faulty})"
             )
 
-    _more_tolerant(readiness, "initialDelaySeconds", FAULTY_READINESS_INITIAL_DELAY, "readiness")
     _more_tolerant(readiness, "timeoutSeconds", FAULTY_READINESS_TIMEOUT, "readiness")
     _more_tolerant(readiness, "failureThreshold", FAULTY_READINESS_FAILURE_THRESHOLD, "readiness")
-    _more_tolerant(liveness, "initialDelaySeconds", FAULTY_LIVENESS_INITIAL_DELAY, "liveness")
     _more_tolerant(liveness, "timeoutSeconds", FAULTY_LIVENESS_TIMEOUT, "liveness")
     _more_tolerant(liveness, "failureThreshold", FAULTY_LIVENESS_FAILURE_THRESHOLD, "liveness")
 
@@ -256,7 +272,7 @@ def check_probes():
 
 
 def _find_primary(admin_uri, errors):
-    for i in range(EXPECTED_REPLICAS):
+    for i in range(expected_replicas()):
         pod = f"{POD_PREFIX}{i}"
         res = run_mongo(pod, admin_uri, "db.hello().isWritablePrimary")
         if res.returncode == 0 and "true" in (res.stdout or ""):
@@ -279,12 +295,12 @@ def _topology_attempt():
         members = status.get("members", [])
         primary_n = sum(1 for m in members if m.get("stateStr") == "PRIMARY")
         secondary_n = sum(1 for m in members if m.get("stateStr") == "SECONDARY")
-        if len(members) != EXPECTED_REPLICAS:
-            errors.append(f"replica set members expected {EXPECTED_REPLICAS}, got {len(members)}")
+        if len(members) != expected_replicas():
+            errors.append(f"replica set members expected {expected_replicas()}, got {len(members)}")
         if primary_n != 1:
             errors.append(f"expected 1 PRIMARY, got {primary_n}")
-        if secondary_n != EXPECTED_REPLICAS - 1:
-            errors.append(f"expected {EXPECTED_REPLICAS - 1} SECONDARY, got {secondary_n}")
+        if secondary_n != expected_replicas() - 1:
+            errors.append(f"expected {expected_replicas() - 1} SECONDARY, got {secondary_n}")
     else:
         errors.append("unable to read replica set status")
     return errors
@@ -314,7 +330,7 @@ def check_health_auth():
 
     # directConnection skips SDAM topology monitoring (see check_topology).
     uri = f"mongodb://{HEALTH_USER}:{health_pw}@localhost:27017/admin?directConnection=true"
-    for i in range(EXPECTED_REPLICAS):
+    for i in range(expected_replicas()):
         pod = f"{POD_PREFIX}{i}"
         res = run_mongo(pod, uri, "db.hello().ok")
         if res.returncode != 0:
