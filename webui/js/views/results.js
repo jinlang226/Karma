@@ -127,6 +127,8 @@
       runsFilter = "";
       render();
     }
+    // Re-adopt an in-flight "Judge all" that outlived a page refresh.
+    reattachActiveJudge();
   }
 
   function stopTimers() { if (refreshTimer) { clearTimeout(refreshTimer); refreshTimer = null; } }
@@ -171,41 +173,51 @@
     return `Cancel judging${i != null && n != null ? ` (${i}/${n})` : "…"}`;
   }
 
+  const judgeBtn = () => document.getElementById("judge-all-btn");
+
+  // Subscribe to a running job's SSE stream. Handlers look the button up by id
+  // (not a captured reference) so they survive re-renders and a page refresh:
+  // the job runs in a backend thread, and the SSE hub replays buffered progress
+  // to a late/reconnecting subscriber, so re-adopting an in-flight job just works.
+  function attachJudgeStream(jobId) {
+    api.stream(`/api/judge/jobs/${jobId}/stream`, {
+      statusPath: `/api/judge/jobs/${jobId}`,
+      onEvent: (ev) => {
+        const b = judgeBtn();
+        if (ev.type === "judge_scan") {
+          if (!ev.to_judge) {
+            KARMA.toast(`All ${ev.already_scored || 0} finished runs already judged — nothing to do.`, "info");
+          } else {
+            if (b && !judgeCancelling) b.textContent = judgeProgressLabel(0, ev.to_judge);
+            KARMA.toast(
+              `Judging ${ev.to_judge} unjudged run${ev.to_judge === 1 ? "" : "s"}` +
+              ` (${ev.already_scored || 0} already scored).`, "info");
+          }
+        } else if (ev.type === "judge_progress" && ev.index && ev.total) {
+          if (b && !judgeCancelling) b.textContent = judgeProgressLabel(ev.index, ev.total);
+        } else if (ev.type === "judge_complete") {
+          const st = ev.status || "complete";
+          KARMA.toast("Judge all " + st, st === "error" ? "error" : (st === "cancelled" ? "info" : "success"));
+          if (sub === "runs") render();   // refresh the list with new scores (incl. partial on cancel)
+        }
+      },
+      onDone: () => {
+        activeJudgeJob = null; judgeCancelling = false;
+        const b = judgeBtn(); if (b) { b.disabled = null; setJudgeAllLabel(b); }
+      },
+    });
+  }
+
   async function startJudgeAll(btn) {
     btn.disabled = "disabled";
     btn.textContent = "Starting…";
-    let jobId = null;
     try {
       const resp = await api.post("/api/judge/start", { target_type: "all", target_path: runsFolder });
-      jobId = resp.job_id;
-      activeJudgeJob = jobId;
+      activeJudgeJob = resp.job_id;
       judgeCancelling = false;
       btn.disabled = null;                      // enabled so it can now cancel
       btn.textContent = judgeProgressLabel();
-      api.stream(`/api/judge/jobs/${jobId}/stream`, {
-        statusPath: `/api/judge/jobs/${jobId}`,
-        onEvent: (ev) => {
-          if (ev.type === "judge_scan") {
-            // The backend pre-filtered to the runs that actually need judging.
-            if (!ev.to_judge) {
-              const scored = ev.already_scored || 0;
-              KARMA.toast(`All ${scored} finished runs already judged — nothing to do.`, "info");
-            } else {
-              if (!judgeCancelling) btn.textContent = judgeProgressLabel(0, ev.to_judge);
-              KARMA.toast(
-                `Judging ${ev.to_judge} unjudged run${ev.to_judge === 1 ? "" : "s"}` +
-                ` (${ev.already_scored || 0} already scored).`, "info");
-            }
-          } else if (ev.type === "judge_progress" && ev.index && ev.total) {
-            if (!judgeCancelling) btn.textContent = judgeProgressLabel(ev.index, ev.total);
-          } else if (ev.type === "judge_complete") {
-            const st = ev.status || "complete";
-            KARMA.toast("Judge all " + st, st === "error" ? "error" : (st === "cancelled" ? "info" : "success"));
-            if (sub === "runs") render();   // refresh the list with new scores (incl. partial on cancel)
-          }
-        },
-        onDone: () => { activeJudgeJob = null; judgeCancelling = false; btn.disabled = null; setJudgeAllLabel(btn); },
-      });
+      attachJudgeStream(resp.job_id);
     } catch (e) {
       KARMA.toastError(e);
       activeJudgeJob = null;
@@ -213,6 +225,21 @@
       btn.disabled = null;
       setJudgeAllLabel(btn);
     }
+  }
+
+  // After a page refresh the backend job keeps running in its thread but the
+  // in-page state is gone. Re-adopt any running "Judge all" so the button
+  // reflects reality (and can still cancel); the SSE replay repopulates progress.
+  async function reattachActiveJudge() {
+    if (activeJudgeJob) return;
+    let jobs;
+    try { jobs = await api.get("/api/judge/jobs"); } catch (_) { return; }
+    const running = (jobs || []).filter((j) => j.target_type === "all" && j.status === "running");
+    if (!running.length) return;
+    activeJudgeJob = running[running.length - 1].job_id;   // newest
+    judgeCancelling = false;
+    const b = judgeBtn(); if (b) { b.disabled = null; b.textContent = judgeProgressLabel(); }
+    attachJudgeStream(activeJudgeJob);
   }
 
   async function cancelJudgeAll(btn) {
