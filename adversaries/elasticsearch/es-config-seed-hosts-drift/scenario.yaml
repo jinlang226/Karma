@@ -25,11 +25,40 @@ deploy:
     - command: "kubectl -n {{params.namespace}} get configmap {{params.configmap_name}}"
       timeout_sec: 10
   apply:
+    # ADV10/ADV8: snapshot the LIVE elasticsearch.yml verbatim into a backup
+    # ConfigMap before drifting, so lift restores exactly the inherited config
+    # (the old hardcoded template forced xpack.security.* back off, clobbering
+    # any security an earlier stage enabled). Guarded so a re-run that finds the
+    # drift already planted never snapshots the drifted blob. The adversary
+    # runtime executes with shell=True (ONE shell parse), so $(...) expands once.
     - command: >-
-        kubectl -n {{params.namespace}} patch configmap {{params.configmap_name}}
-        --type=merge
-        -p '{"data":{"elasticsearch.yml":"cluster.name: {{params.cluster_prefix}}\nnode.name: ${POD_NAME}\nnode.roles: [ master, data, ingest ]\nnetwork.host: 0.0.0.0\ndiscovery.seed_hosts:\n  - invalid-host-1\n  - invalid-host-2\n  - invalid-host-3\ncluster.initial_master_nodes:\n  - {{params.cluster_prefix}}-0\n  - {{params.cluster_prefix}}-1\n  - {{params.cluster_prefix}}-2\nnode.store.allow_mmap: false\nxpack.security.enabled: false\nxpack.security.http.ssl.enabled: false\nxpack.security.transport.ssl.enabled: false\n"}}'
+        kubectl -n {{params.namespace}} get configmap {{params.configmap_name}}
+        -o jsonpath='{.data.elasticsearch\.yml}' | grep -q 'invalid-host-'
+        || kubectl -n {{params.namespace}} create configmap {{params.configmap_name}}-adv-backup
+        --from-literal=elasticsearch.yml="$(kubectl -n {{params.namespace}} get configmap {{params.configmap_name}}
+        -o jsonpath='{.data.elasticsearch\.yml}')"
+        --dry-run=client -o yaml | kubectl -n {{params.namespace}} apply -f -
       timeout_sec: 20
+    # ADV10: patch ONLY the discovery.seed_hosts list entries of the LIVE blob
+    # (awk rewrites just the `- <host>` items under discovery.seed_hosts:); every
+    # other line — security flags, roles, custom settings — passes through
+    # untouched. The merge patch replaces only the elasticsearch.yml key.
+    - command: >-
+        kubectl -n {{params.namespace}} patch configmap {{params.configmap_name}} --type=merge
+        -p "$(kubectl -n {{params.namespace}} create configmap {{params.configmap_name}}
+        --from-literal=elasticsearch.yml="$(kubectl -n {{params.namespace}} get configmap {{params.configmap_name}}
+        -o jsonpath='{.data.elasticsearch\.yml}'
+        | awk '/^discovery.seed_hosts:/{print; inlist=1; n=0; next} inlist && /^[[:space:]]*-[[:space:]]/{n++; print "  - invalid-host-" n; next} {inlist=0; print}')"
+        --dry-run=client -o json)"
+      timeout_sec: 20
+    # ADV7: a ConfigMap edit alone changes nothing live — the running pods keep
+    # their loaded discovery config. Delete the pods with the StatefulSet
+    # selector so they re-roll onto the drifted seed_hosts and lose discovery.
+    - command: >-
+        kubectl -n {{params.namespace}} delete pod -l app={{params.cluster_prefix}}
+        --ignore-not-found=true --wait=false
+      timeout_sec: 30
+      sleep: 5
   verify:
     - command: >-
         /bin/sh -c "kubectl -n {{params.namespace}} get configmap {{params.configmap_name}}
@@ -44,14 +73,35 @@ lift:
         -o jsonpath='{.data.elasticsearch\\.yml}' | grep -q 'invalid-host-1'"
       timeout_sec: 15
   apply:
+    # ADV10/ADV8: restore the deploy-time snapshot VERBATIM (never a hardcoded
+    # template). Guarded on the backup existing so a missing snapshot can never
+    # clobber the live blob with an empty value; the `! get || patch` polarity
+    # makes a missing backup a clean no-op (exit 0) instead of failing the lift
+    # apply and skipping the pod re-roll below, while a real patch failure
+    # still exits non-zero (Law 5: never silently swallow the restore).
     - command: >-
-        kubectl -n {{params.namespace}} patch configmap {{params.configmap_name}}
-        --type=merge
-        -p '{"data":{"elasticsearch.yml":"cluster.name: {{params.cluster_prefix}}\nnode.name: ${POD_NAME}\nnode.roles: [ master, data, ingest ]\nnetwork.host: 0.0.0.0\ndiscovery.seed_hosts:\n  - {{params.cluster_prefix}}-0.{{params.cluster_prefix}}.{{params.namespace}}.svc.cluster.local\n  - {{params.cluster_prefix}}-1.{{params.cluster_prefix}}.{{params.namespace}}.svc.cluster.local\n  - {{params.cluster_prefix}}-2.{{params.cluster_prefix}}.{{params.namespace}}.svc.cluster.local\ncluster.initial_master_nodes:\n  - {{params.cluster_prefix}}-0\n  - {{params.cluster_prefix}}-1\n  - {{params.cluster_prefix}}-2\nnode.store.allow_mmap: false\nxpack.security.enabled: false\nxpack.security.http.ssl.enabled: false\nxpack.security.transport.ssl.enabled: false\n"}}'
+        ! kubectl -n {{params.namespace}} get configmap {{params.configmap_name}}-adv-backup >/dev/null 2>&1
+        || kubectl -n {{params.namespace}} patch configmap {{params.configmap_name}} --type=merge
+        -p "$(kubectl -n {{params.namespace}} create configmap {{params.configmap_name}}
+        --from-literal=elasticsearch.yml="$(kubectl -n {{params.namespace}} get configmap {{params.configmap_name}}-adv-backup
+        -o jsonpath='{.data.elasticsearch\.yml}')"
+        --dry-run=client -o json)"
       timeout_sec: 20
+    - command: "kubectl -n {{params.namespace}} delete configmap {{params.configmap_name}}-adv-backup --ignore-not-found=true"
+      timeout_sec: 15
+    # ADV7: re-roll the pods so the restored seed_hosts takes live effect.
+    - command: >-
+        kubectl -n {{params.namespace}} delete pod -l app={{params.cluster_prefix}}
+        --ignore-not-found=true --wait=false
+      timeout_sec: 30
+      sleep: 5
   verify:
-    - command: "kubectl -n {{params.namespace}} get configmap {{params.configmap_name}}"
-      timeout_sec: 10
+    # Positive assertion the drift is gone from the blob (ADV6; grep -q on a
+    # possibly-empty stream exits non-zero only via the && exit 1 branch).
+    - command: >-
+        /bin/sh -c "kubectl -n {{params.namespace}} get configmap {{params.configmap_name}}
+        -o jsonpath='{.data.elasticsearch\\.yml}' | grep -q 'invalid-host-' && exit 1; exit 0"
+      timeout_sec: 15
 
 prompt_hints:
   deploy: |

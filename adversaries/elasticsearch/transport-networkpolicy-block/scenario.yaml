@@ -44,8 +44,24 @@ deploy:
         EOF
       timeout_sec: 20
   verify:
+    # ADV11(b): existence alone is doubly vacuous — also assert the policy's
+    # templated selector actually matches >=1 Running target pod (a selector
+    # matching zero pods is a no-op fault), and best-effort probe that 9300 is
+    # really unreachable in-cluster. Caveat: kind's default CNI (kindnetd) does
+    # NOT enforce NetworkPolicy, so the reachability probe is advisory only
+    # (logged, never gating); the selector-match check is the hard gate.
     - command: "kubectl -n {{params.namespace}} get networkpolicy {{params.policy_name}}"
       timeout_sec: 10
+    - command: >-
+        /bin/sh -c "kubectl -n {{params.namespace}} get pods -l app={{params.cluster_prefix}}
+        --field-selector=status.phase=Running -o name 2>/dev/null | grep -q ."
+      timeout_sec: 15
+    - command: >-
+        /bin/sh -c "kubectl -n {{params.namespace}} exec {{params.cluster_prefix}}-0 --
+        bash -c 'timeout 3 bash -c \"</dev/tcp/{{params.cluster_prefix}}-1.{{params.cluster_prefix}}.{{params.namespace}}.svc.cluster.local/9300\"' >/dev/null 2>&1
+        && echo 'WARNING: transport port 9300 still reachable (non-enforcing CNI, e.g. kind/kindnetd?)'
+        || echo 'transport port 9300 unreachable as intended'; exit 0"
+      timeout_sec: 20
 
 lift:
   on_probe_fail: skip
