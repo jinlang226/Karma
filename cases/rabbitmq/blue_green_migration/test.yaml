@@ -171,9 +171,13 @@ preconditionUnits:
       - command: "python3 cases/rabbitmq/blue_green_migration/setup_precondition_check.py --source-namespace ${BENCH_NS_SOURCE} --target-namespace ${BENCH_NS_TARGET} --bootstrap-only"
         timeout_sec: 60
     apply:
-      - command: "kubectl -n ${BENCH_NS_SOURCE} delete job rabbitmq-blue-setup --ignore-not-found=true"
+      # Law 4 (producer/consumer agree): the setup-job manifests name the jobs
+      # ${BENCH_PARAM_*_CLUSTER_PREFIX}-setup, so delete by the SAME derived
+      # names -- a literal rabbitmq-blue-setup silently deletes nothing when the
+      # prefix params are overridden, and the re-apply then no-ops on the stale job.
+      - command: "kubectl -n ${BENCH_NS_SOURCE} delete job ${BENCH_PARAM_BLUE_CLUSTER_PREFIX}-setup --ignore-not-found=true"
         sleep: 1
-      - command: "kubectl -n ${BENCH_NS_TARGET} delete job rabbitmq-green-setup --ignore-not-found=true"
+      - command: "kubectl -n ${BENCH_NS_TARGET} delete job ${BENCH_PARAM_GREEN_CLUSTER_PREFIX}-setup --ignore-not-found=true"
         sleep: 1
       - command: "envsubst '$BENCH_NAMESPACE $BENCH_NS_SOURCE $BENCH_NS_TARGET $BENCH_PARAM_CLUSTER_PREFIX $BENCH_PARAM_BLUE_CLUSTER_PREFIX $BENCH_PARAM_GREEN_CLUSTER_PREFIX $BENCH_PARAM_FROM_VERSION' < cases/rabbitmq/blue_green_migration/resource/setup-job-source.yaml | kubectl -n ${BENCH_NS_SOURCE} apply -f -"
         sleep: 1
@@ -188,6 +192,28 @@ preconditionUnits:
     verify:
       - command: "python3 cases/rabbitmq/blue_green_migration/setup_precondition_check.py --source-namespace ${BENCH_NS_SOURCE} --target-namespace ${BENCH_NS_TARGET} --bootstrap-only"
         timeout_sec: 60
+
+  # C17 (empty-target premise): the prompt promises "the green cluster starts
+  # empty", but env persists -- in an alternating workflow the graded target may
+  # already hold the seed range from a prior stage, letting an idle agent pass.
+  # Re-plant the premise every stage: force-run (P4, probe exit 1), additive and
+  # strictly best-effort (P8: every step || true, verify true). Purging the
+  # TARGET's app-queue only touches the INCOMING stage's own premise -- no prior
+  # stage grades this namespace's queue contents as its end-state at this point,
+  # so the regression sweep is unaffected. Declared after
+  # cluster_setup_jobs_completed so the queue exists (P37); a missing queue or
+  # pod degrades to a no-op.
+  - name: green_target_empty
+    on_probe_fail: skip
+    probe:
+      - command: "/bin/sh -c 'exit 1'"
+        timeout_sec: 5
+    apply:
+      - command: "/bin/sh -c 'kubectl -n ${BENCH_NS_TARGET} exec ${BENCH_PARAM_GREEN_CLUSTER_PREFIX}-0 -- rabbitmqctl purge_queue -p /app app-queue || true'"
+        timeout_sec: 60
+    verify:
+      - command: "/bin/sh -c 'true'"
+        timeout_sec: 5
 
   - name: seed_data_ready
     on_probe_fail: skip
