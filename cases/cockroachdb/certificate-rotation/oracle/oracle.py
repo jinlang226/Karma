@@ -8,6 +8,7 @@
 import os
 import subprocess
 import sys
+import time
 from datetime import datetime, timezone
 
 
@@ -15,8 +16,39 @@ CERT_SECRET = os.environ.get("BENCH_PARAM_CERT_SECRET_NAME", "crdb-cluster-certs
 OLD_CERT_CM = os.environ.get("BENCH_PARAM_OLD_CERT_CONFIGMAP_NAME", "crdb-old-cert")
 
 
-def run(cmd):
-    return subprocess.run(cmd, text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+def run(cmd, timeout=30):
+    """Run a command with a hard timeout (O17); a timeout becomes a failed result."""
+    try:
+        return subprocess.run(
+            cmd, text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+            timeout=timeout,
+        )
+    except subprocess.TimeoutExpired as exc:
+        return subprocess.CompletedProcess(
+            cmd, 124, exc.stdout or "", (exc.stderr or "") + "\n[command timed out]"
+        )
+
+
+def served_leaf_fingerprint():
+    """SHA-256 fingerprint of the leaf cert crdb-cluster-0 actually SERVES (O37).
+
+    Read via a live TLS handshake from the openssl-toolbox pod (the crdb image
+    does not ship openssl, O12) against pod-0's HTTP port 8080 -- a secure
+    CockroachDB node serves its node cert there. The s_client is bounded both
+    in-pod (`timeout 15`) and on the exec (O17). Returns (fingerprint, error).
+    """
+    cmd = [
+        "kubectl", "-n", "cockroachdb", "exec", "openssl-toolbox", "--",
+        "sh", "-c",
+        "timeout 15 openssl s_client -connect "
+        "crdb-cluster-0.crdb-cluster.cockroachdb.svc.cluster.local:8080 "
+        "-showcerts </dev/null 2>/dev/null | "
+        "openssl x509 -noout -fingerprint -sha256",
+    ]
+    result = run(cmd, timeout=30)
+    if result.returncode != 0 or "=" not in result.stdout:
+        return "", (result.stderr.strip() or result.stdout.strip() or "TLS handshake failed")
+    return result.stdout.strip().split("=", 1)[-1].upper().replace(":", ""), ""
 
 
 def main():
@@ -98,6 +130,29 @@ def main():
         new_fp = new_fp_result.stdout.strip().split("=", 1)[-1].upper().replace(":", "")
         if old_fp and new_fp == old_fp:
             errors.append("Node certificate fingerprint did not change")
+
+    # O37: the Secret bytes alone do not prove the rotation took effect -- the
+    # SQL check above also succeeds against the OLD served cert (same CA), so
+    # "updated the Secret but never restarted the nodes" would score as done.
+    # Require the leaf cert pod-0 actually presents in the TLS handshake to
+    # equal the Secret's new node.crt. The pods may still be settling from the
+    # agent's restart, so poll to a bounded deadline (~90s, kept under the
+    # oracle timeout_sec per O21); a node never reloaded keeps serving the old
+    # leaf and still fails after the deadline.
+    if new_fp:
+        deadline = time.monotonic() + 90
+        served_fp, served_err = served_leaf_fingerprint()
+        while served_fp != new_fp and time.monotonic() < deadline:
+            time.sleep(6)
+            served_fp, served_err = served_leaf_fingerprint()
+        if served_fp != new_fp:
+            if served_fp:
+                errors.append(
+                    "Served certificate does not match rotated node.crt "
+                    f"(served {served_fp[:16]}..., secret {new_fp[:16]}...)"
+                )
+            else:
+                errors.append(f"Unable to read served certificate: {served_err}")
 
     new_na_cmd = [
         "/bin/sh",
