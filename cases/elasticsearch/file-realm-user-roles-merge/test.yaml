@@ -211,9 +211,12 @@ preconditionUnits:
         sleep: 1
       - command: "/bin/sh -c 'kubectl -n elasticsearch wait --for=condition=ready pod/curl-test --timeout=300s || true'"
         sleep: 1
+      # P14: the inner loop must finish strictly under the unit budget or the
+      # harness kills it mid-loop and re-runs the whole verify into the 600s
+      # setup cap. 40 iterations x (5s curl + 2s sleep) ~ 280s < timeout_sec 300.
       - command: |
           /bin/sh -c '
-          for i in $(seq 1 60); do
+          for i in $(seq 1 40); do
             code=$(kubectl -n elasticsearch exec curl-test -- curl -s -k -o /dev/null -w "%{http_code}" -u {{params.ops_user}}:{{params.ops_password}} --max-time 5 "https://{{params.http_service_name}}.elasticsearch.svc:9200/_cluster/health" 2>/dev/null || echo 000)
             if [ "$code" = "200" ]; then
               kubectl -n elasticsearch exec curl-test -- curl -s -k -u {{params.ops_user}}:{{params.ops_password}} -XPUT "https://{{params.http_service_name}}.elasticsearch.svc:9200/{{params.seed_index_name}}" -H "Content-Type: application/json" -d "{\"settings\":{\"number_of_shards\":1,\"number_of_replicas\":1}}" || true
@@ -224,6 +227,7 @@ preconditionUnits:
           done
           exit 0
           '
+        timeout_sec: 300
         sleep: 1
     verify:
       - command: "/bin/sh -c 'kubectl -n elasticsearch get secret {{params.aggregate_secret_name}} >/dev/null 2>&1 || true; true'"

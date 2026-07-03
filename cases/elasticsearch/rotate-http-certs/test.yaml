@@ -156,22 +156,32 @@ preconditionUnits:
     probe:
       - command: "kubectl -n elasticsearch get configmap {{params.old_fingerprint_configmap_name}}"
         timeout_sec: 10
+    # P8: an additive composition fixture is strictly best-effort — no `set -e`,
+    # every step guarded, always exit 0. On an inherited NON-TLS cluster the
+    # {{params.tls_secret_name}} Secret does not exist; the old `set -e` capture
+    # hard-failed there and turned the whole stage into a framework precondition
+    # ERROR. Now a missing/partial baseline degrades to a clean graded oracle
+    # FAIL instead.
     apply:
       - command: |
           /bin/sh -c '
-          set -e
           T=$(mktemp -d)
-          kubectl -n elasticsearch get secret {{params.tls_secret_name}} -o jsonpath="{.data.ca\.crt}" | base64 -d > "$T/ca.crt"
-          kubectl -n elasticsearch get secret {{params.tls_secret_name}} -o jsonpath="{.data.tls\.crt}" | base64 -d > "$T/tls.crt"
-          kubectl -n elasticsearch create configmap {{params.http_ca_configmap_name}} --from-file=ca.crt="$T/ca.crt" --dry-run=client -o yaml | kubectl apply -f -
-          CA_FP=$(openssl x509 -noout -fingerprint -sha256 -in "$T/ca.crt" | cut -d= -f2)
-          LEAF_FP=$(openssl x509 -noout -fingerprint -sha256 -in "$T/tls.crt" | cut -d= -f2)
-          kubectl -n elasticsearch create configmap {{params.old_fingerprint_configmap_name}} --from-file=ca.crt="$T/ca.crt" --from-literal=ca_fingerprint_sha256="$CA_FP" --from-literal=leaf_fingerprint_sha256="$LEAF_FP" --dry-run=client -o yaml | kubectl apply -f -
+          kubectl -n elasticsearch get secret {{params.tls_secret_name}} -o jsonpath="{.data.ca\.crt}" 2>/dev/null | base64 -d > "$T/ca.crt" || exit 0
+          kubectl -n elasticsearch get secret {{params.tls_secret_name}} -o jsonpath="{.data.tls\.crt}" 2>/dev/null | base64 -d > "$T/tls.crt" || exit 0
+          grep -q "BEGIN CERTIFICATE" "$T/ca.crt" || exit 0
+          grep -q "BEGIN CERTIFICATE" "$T/tls.crt" || exit 0
+          kubectl -n elasticsearch create configmap {{params.http_ca_configmap_name}} --from-file=ca.crt="$T/ca.crt" --dry-run=client -o yaml | kubectl apply -f - || true
+          CA_FP=$(openssl x509 -noout -fingerprint -sha256 -in "$T/ca.crt" | cut -d= -f2) || exit 0
+          LEAF_FP=$(openssl x509 -noout -fingerprint -sha256 -in "$T/tls.crt" | cut -d= -f2) || exit 0
+          kubectl -n elasticsearch create configmap {{params.old_fingerprint_configmap_name}} --from-file=ca.crt="$T/ca.crt" --from-literal=ca_fingerprint_sha256="$CA_FP" --from-literal=leaf_fingerprint_sha256="$LEAF_FP" --dry-run=client -o yaml | kubectl apply -f - || true
+          exit 0
           '
         timeout_sec: 60
         sleep: 1
+    # P8: no-op verify — a missing baseline must never ERROR the precondition;
+    # the oracle adjudicates the rotation with whatever baseline exists.
     verify:
-      - command: "kubectl -n elasticsearch get configmap {{params.old_fingerprint_configmap_name}} -o jsonpath='{.data.ca_fingerprint_sha256}'"
+      - command: "/bin/sh -c 'kubectl -n elasticsearch get configmap {{params.old_fingerprint_configmap_name}} >/dev/null 2>&1 || true; true'"
         timeout_sec: 10
 
 oracle:
