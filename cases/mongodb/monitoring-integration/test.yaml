@@ -46,7 +46,13 @@ preconditionUnits:
   - name: mongo_env_ready
     on_probe_fail: skip
     probe:
-      - command: "kubectl -n mongodb get pod {{params.cluster_prefix}}-0 2>/dev/null | grep -c Running"
+      # AUTHORITATIVE skip-if-running probe (P32): succeed when the canonical
+      # StatefulSet exists OR any pod is Running, so the destructive namespace
+      # rebuild below is skipped on an inherited cluster even if its pods are
+      # momentarily not Running (mid-restart from a prior stage) -- the
+      # StatefulSet persists across that window. The bare `grep -c Running`
+      # could miss such a cluster and clobber inherited state.
+      - command: "/bin/sh -c 'kubectl -n mongodb get statefulset {{params.cluster_prefix}} >/dev/null 2>&1 || kubectl -n mongodb get pods 2>/dev/null | grep -q Running'"
         timeout_sec: 10
     apply:
       - command: "/bin/sh -c 'kubectl delete namespace mongodb --ignore-not-found=true; kubectl wait --for=delete namespace/mongodb --timeout=120s || true; kubectl delete namespace monitoring --ignore-not-found=true; kubectl wait --for=delete namespace/monitoring --timeout=120s || true'"
@@ -134,6 +140,50 @@ preconditionUnits:
     verify:
       - command: "/bin/sh -c 'kubectl -n monitoring get pod -l app=prometheus >/dev/null 2>&1; true'"
         timeout_sec: 10
+
+  # Fault replant (C8/P3): the unsolved problem is "Prometheus scrapes only
+  # itself". The stack fixture above probes its own deliverable (the Prometheus
+  # pod), which is a PROXY for this case's fault: composed after a prior
+  # monitoring-integration stage the pod is Running with a config that already
+  # scrapes mongodb, the fixture skips, and the oracle passes with zero agent
+  # action. This unit probes the FAULT itself -- the scrape config must not
+  # reference a mongodb target -- and, on an inherited solved config, re-plants
+  # the self-scrape-only baseline + reloads Prometheus. Data-only: no
+  # namespace or pod deletion (the deployment sets --web.enable-lifecycle, so
+  # POST /-/reload applies the ConfigMap once the kubelet syncs the volume).
+  - name: prometheus_selfscrape_replant
+    on_probe_fail: skip
+    probe:
+      # True (skip) when the fault is ALREADY present: the scrape config has no
+      # mongodb target (also true on a fresh build, where the stack fixture /
+      # env build just planted the self-scrape baseline).
+      - command: |
+          /bin/sh -c '! kubectl -n monitoring get configmap {{params.prometheus_configmap_name}} -o jsonpath="{.data.prometheus\.yml}" 2>/dev/null | grep -qi mongodb'
+        timeout_sec: 15
+    apply:
+      - command: "kubectl -n monitoring apply -f cases/mongodb/monitoring-integration/resource/prometheus-config.yaml"
+        sleep: 2
+      # Reload until the RUNNING Prometheus drops the mongodb scrape job; the
+      # kubelet syncs the ConfigMap volume within ~1 min, so poll reload + the
+      # live /api/v1/status/config. Best-effort (P8): a slow sync degrades to
+      # the (correctly unsolved) baseline, never a precondition ERROR.
+      - command: |
+          /bin/sh -c '
+          for i in $(seq 1 20); do
+            kubectl -n mongodb exec {{params.curl_pod_name}} -- curl -s -X POST http://prometheus.monitoring.svc.cluster.local:9090/-/reload >/dev/null 2>&1 || true
+            cfg=$(kubectl -n mongodb exec {{params.curl_pod_name}} -- curl -s --max-time 10 http://prometheus.monitoring.svc.cluster.local:9090/api/v1/status/config 2>/dev/null)
+            echo "$cfg" | grep -qi mongodb || exit 0
+            sleep 5
+          done
+          exit 0
+          '
+        timeout_sec: 160
+    verify:
+      # The stored config is authoritative and deterministic: it must no longer
+      # reference a mongodb scrape target.
+      - command: |
+          /bin/sh -c '! kubectl -n monitoring get configmap {{params.prometheus_configmap_name}} -o jsonpath="{.data.prometheus\.yml}" 2>/dev/null | grep -qi mongodb'
+        timeout_sec: 15
 
 oracle:
   verify:

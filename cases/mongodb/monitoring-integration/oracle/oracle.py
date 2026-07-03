@@ -17,8 +17,15 @@ METRICS_PORT = int(os.environ.get("BENCH_PARAM_METRICS_PORT", "9216"))
 METRICS_PATH = os.environ.get("BENCH_PARAM_METRICS_PATH", "/metrics")
 
 
-def run(cmd):
-    return subprocess.run(cmd, text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+def run(cmd, timeout=30):
+    """Run a command bounded (O17): a hung kubectl/mongosh exec becomes a
+    failed attempt instead of an uncaught TimeoutExpired that would crash the
+    whole oracle at its deadline."""
+    try:
+        return subprocess.run(cmd, text=True, stdout=subprocess.PIPE,
+                              stderr=subprocess.PIPE, timeout=timeout)
+    except subprocess.TimeoutExpired:
+        return subprocess.CompletedProcess(cmd, 124, "", "timed out")
 
 
 def fail(prefix, errors):
