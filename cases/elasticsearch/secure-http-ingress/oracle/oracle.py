@@ -16,6 +16,43 @@ INGRESS_HOST = "es.example.com"
 # applied ONLY to the backend ES service, never to the ingress checks.
 PASSWORD_SECRET = os.environ.get("BENCH_PARAM_ELASTIC_PASSWORD_SECRET_NAME", "elastic-password")
 PASSWORD_KEY = os.environ.get("BENCH_PARAM_ELASTIC_PASSWORD_KEY", "password")
+def _password_from_sts():
+    """Fall back to a live ES StatefulSet's ELASTIC_PASSWORD env when the
+    elastic-password secret is absent (skip-gated on an inherited cluster), so
+    the oracle authenticates instead of 401-ing (C1). Reads the literal env
+    value, or resolves its secretKeyRef; returns the password or None."""
+    import base64
+    res = run(["kubectl", "-n", NAMESPACE, "get", "sts", "-o", "json"])
+    if res.returncode != 0:
+        return None
+    try:
+        items = json.loads(res.stdout).get("items", [])
+    except (json.JSONDecodeError, AttributeError):
+        return None
+    for sts in items:
+        spec = sts.get("spec", {}) or {}
+        containers = spec.get("template", {}).get("spec", {}).get("containers", []) or []
+        if "elasticsearch" not in " ".join(c.get("image", "") for c in containers):
+            continue
+        for c in containers:
+            for e in c.get("env", []) or []:
+                if e.get("name") != "ELASTIC_PASSWORD":
+                    continue
+                if e.get("value"):
+                    return e["value"]
+                ref = (e.get("valueFrom", {}) or {}).get("secretKeyRef", {}) or {}
+                name = ref.get("name")
+                if name:
+                    rs = run(["kubectl", "-n", NAMESPACE, "get", "secret", name,
+                              "-o", "jsonpath={.data." + (ref.get("key") or "password") + "}"])
+                    if rs.returncode == 0 and rs.stdout.strip():
+                        try:
+                            return base64.b64decode(rs.stdout.strip()).decode()
+                        except Exception:
+                            pass
+    return None
+
+
 ELASTIC_PASSWORD = None  # set in main() once kubectl is reachable
 
 
@@ -158,7 +195,7 @@ def evaluate():
 
 def main():
     global ELASTIC_PASSWORD
-    ELASTIC_PASSWORD = _elastic_password()
+    ELASTIC_PASSWORD = _elastic_password() or _password_from_sts()
 
     # The es-http.svc backend and the ingress-nginx controller both flake during
     # warm-up: a single curl through the freshly-created Ingress / a just-rolled
