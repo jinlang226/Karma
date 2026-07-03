@@ -654,24 +654,52 @@ def normalize_decoy_config(case_data: dict[str, Any]) -> list[dict[str, Any]]:
     return result
 
 
+def decoy_manifest_namespace(resources_dir: Any, rel_path: str) -> str:
+    """Return the first non-empty ``metadata.namespace`` in a decoy manifest.
+
+    The ``decoy_integrity`` metric matches mutations by the descriptor's
+    ``namespace``; an empty namespace can never match a snapshot entry, so a
+    descriptor left at ``""`` makes the metric vacuous (always 1.0). Parses
+    every document of the (possibly multi-doc) manifest; returns ``""`` when
+    unreadable or when no document declares a namespace (Law 4).
+    """
+    try:
+        import yaml
+
+        with open(Path(resources_dir) / rel_path, encoding="utf-8") as fh:
+            for doc in yaml.safe_load_all(fh):
+                if isinstance(doc, dict):
+                    ns = str(((doc.get("metadata") or {}).get("namespace")) or "").strip()
+                    if ns:
+                        return ns
+    except Exception:
+        pass
+    return ""
+
+
 def discover_case_decoys(
     resources_dir: Any, service: str, case_name: str
 ) -> list[dict[str, Any]]:
     """Return decoy descriptors discovered under the case's ``decoy/`` dir.
 
     Scans ``<resources_dir>/<service>/<case_name>/decoy/*.yaml`` and returns
-    one descriptor per file (``path`` relative to *resources_dir*, empty
-    ``namespace`` because the manifests carry their own). This restores the
-    old auto-discovery of decoy manifests; the new code only read an explicit
-    ``decoys:`` key that no shipped case declares, so decoys were never
-    planted and the ``decoy_integrity`` metric had nothing to score.
+    one descriptor per file (``path`` relative to *resources_dir*,
+    ``namespace`` resolved from the manifest's own ``metadata.namespace`` so
+    the ``decoy_integrity`` metric can match mutations against it). This
+    restores the old auto-discovery of decoy manifests; the new code only
+    read an explicit ``decoys:`` key that no shipped case declares, so decoys
+    were never planted and the ``decoy_integrity`` metric had nothing to
+    score.
     """
     base = Path(resources_dir)
     decoy_dir = base / service / case_name / "decoy"
     if not decoy_dir.is_dir():
         return []
     return [
-        {"path": str(p.relative_to(base)), "namespace": ""}
+        {
+            "path": str(p.relative_to(base)),
+            "namespace": decoy_manifest_namespace(base, str(p.relative_to(base))),
+        }
         for p in sorted(decoy_dir.glob("*.yaml"))
     ]
 

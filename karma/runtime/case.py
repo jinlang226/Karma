@@ -39,7 +39,7 @@ from ..sandbox import launch_agent, cleanup_agent
 from ..oracle import run_oracle
 from ..evidence import collect_evidence
 from ..adversary import deploy as adversary_deploy, lift as adversary_lift, report as adversary_report
-from ..definitions.cases import discover_case_decoys
+from ..definitions.cases import decoy_manifest_namespace, discover_case_decoys
 from .. import protocol
 from .._warn import warn
 
@@ -797,6 +797,18 @@ def run_stage(
         decoy_configs += discover_case_decoys(
             resources_dir, row.get("service"), row.get("case_name")
         )
+        # Resolve any descriptor left without a namespace from its manifest's
+        # own metadata.namespace, and write the merged list back onto the case
+        # so evidence/metrics grade the SAME set that was planted (Law 4 --
+        # previously discovered decoys never reached decoy_integrity, and the
+        # empty namespace could never match a snapshot entry, so the metric
+        # scored 1.0 unconditionally).
+        for decoy in decoy_configs:
+            if not str(decoy.get("namespace") or "").strip():
+                decoy["namespace"] = decoy_manifest_namespace(
+                    resources_dir, str(decoy.get("path") or "")
+                )
+        case["decoys"] = decoy_configs
         if decoy_configs:
             environment.plant_decoys(decoy_configs, role_bindings, resources_dir=resources_dir, run_dir=stage_dir)
 
