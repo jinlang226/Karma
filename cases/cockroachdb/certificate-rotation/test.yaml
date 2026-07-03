@@ -73,11 +73,21 @@ preconditionUnits:
       - command: "kubectl -n cockroachdb exec -i openssl-toolbox -- sh -s < cases/cockroachdb/certificate-rotation/resource/gen-old-certs.sh"
         timeout_sec: 120
         sleep: 2
-      - command: "/bin/sh -c 'rm -rf /tmp/crdb-old-certs; kubectl -n cockroachdb cp openssl-toolbox:/tmp/certs /tmp/crdb-old-certs'"
+      # P39: stage the CA/leaf material on a RUN-SCOPED path, never a fixed host
+      # scratch dir. `/tmp/crdb-old-certs` was shared across every concurrent
+      # instance of this case on one dispatcher host (the suite runs 3 crdb cert
+      # cases at once), so `rm -rf`+`cp` races corrupted the baseline vs the live
+      # per-cluster CA -> "CA fingerprint changed" false-fail. mktemp -d gives a
+      # unique dir per invocation and copy+consume+cleanup live in ONE command
+      # (Law 4: same producer/consumer path), so there is no shared host state.
+      - command: "/bin/sh -c 'D=$(mktemp -d); kubectl -n cockroachdb cp openssl-toolbox:/tmp/certs \"$D/certs\"; kubectl -n cockroachdb create secret generic {{params.cert_secret_name}} --from-file=ca.crt=\"$D/certs/ca.crt\" --from-file=node.crt=\"$D/certs/node.crt\" --from-file=node.key=\"$D/certs/node.key\" --from-file=client.root.crt=\"$D/certs/client.root.crt\" --from-file=client.root.key=\"$D/certs/client.root.key\" --dry-run=client -o yaml | kubectl apply -f -; rm -rf \"$D\"'"
         sleep: 1
-      - command: "/bin/sh -c 'kubectl -n cockroachdb create secret generic {{params.cert_secret_name}} --from-file=ca.crt=/tmp/crdb-old-certs/ca.crt --from-file=node.crt=/tmp/crdb-old-certs/node.crt --from-file=node.key=/tmp/crdb-old-certs/node.key --from-file=client.root.crt=/tmp/crdb-old-certs/client.root.crt --from-file=client.root.key=/tmp/crdb-old-certs/client.root.key --dry-run=client -o yaml | kubectl apply -f -'"
-        sleep: 1
-      - command: "/bin/sh -c 'fingerprint=$(openssl x509 -noout -fingerprint -sha256 -in /tmp/crdb-old-certs/node.crt | sed \"s/.*=//\"); ca_fingerprint=$(openssl x509 -noout -fingerprint -sha256 -in /tmp/crdb-old-certs/ca.crt | sed \"s/.*=//\"); not_after=$(openssl x509 -noout -enddate -in /tmp/crdb-old-certs/node.crt | sed \"s/notAfter=//\"); kubectl -n cockroachdb create configmap {{params.old_cert_configmap_name}} --from-literal=fingerprint=\"$fingerprint\" --from-literal=ca_fingerprint=\"$ca_fingerprint\" --from-literal=not_after=\"$not_after\" --dry-run=client -o yaml | kubectl apply -f -'"
+      # P39: record the baseline fingerprints IN-CLUSTER -- read the CA/leaf certs
+      # straight from the openssl-toolbox pod (the authoritative source at
+      # /tmp/certs) via `kubectl exec ... openssl`, and write them into the
+      # per-namespace ConfigMap. No host `openssl` and no shared host file, so
+      # concurrent runs on one dispatcher can never clobber each other's baseline.
+      - command: "/bin/sh -c 'fingerprint=$(kubectl -n cockroachdb exec openssl-toolbox -- openssl x509 -noout -fingerprint -sha256 -in /tmp/certs/node.crt | sed \"s/.*=//\"); ca_fingerprint=$(kubectl -n cockroachdb exec openssl-toolbox -- openssl x509 -noout -fingerprint -sha256 -in /tmp/certs/ca.crt | sed \"s/.*=//\"); not_after=$(kubectl -n cockroachdb exec openssl-toolbox -- openssl x509 -noout -enddate -in /tmp/certs/node.crt | sed \"s/notAfter=//\"); kubectl -n cockroachdb create configmap {{params.old_cert_configmap_name}} --from-literal=fingerprint=\"$fingerprint\" --from-literal=ca_fingerprint=\"$ca_fingerprint\" --from-literal=not_after=\"$not_after\" --dry-run=client -o yaml | kubectl apply -f -'"
         sleep: 1
       - command: "kubectl -n cockroachdb apply -f cases/cockroachdb/certificate-rotation/resource/statefulset.yaml"
         sleep: 5
@@ -145,9 +155,14 @@ preconditionUnits:
       - command: "kubectl -n cockroachdb exec -i openssl-toolbox -- sh -s < cases/cockroachdb/certificate-rotation/resource/gen-old-certs.sh"
         timeout_sec: 120
         sleep: 2
-      - command: "/bin/sh -c 'rm -rf /tmp/crdb-old-certs; kubectl -n cockroachdb cp openssl-toolbox:/tmp/certs /tmp/crdb-old-certs'"
-        sleep: 1
-      - command: "/bin/sh -c 'kubectl -n cockroachdb create secret generic {{params.cert_secret_name}} --from-file=ca.crt=/tmp/crdb-old-certs/ca.crt --from-file=node.crt=/tmp/crdb-old-certs/node.crt --from-file=node.key=/tmp/crdb-old-certs/node.key --from-file=client.root.crt=/tmp/crdb-old-certs/client.root.crt --from-file=client.root.key=/tmp/crdb-old-certs/client.root.key --dry-run=client -o yaml | kubectl apply -f -'"
+      # P39: stage the CA/leaf material on a RUN-SCOPED path, never a fixed host
+      # scratch dir. `/tmp/crdb-old-certs` was shared across every concurrent
+      # instance of this case on one dispatcher host (the suite runs 3 crdb cert
+      # cases at once), so `rm -rf`+`cp` races corrupted the baseline vs the live
+      # per-cluster CA -> "CA fingerprint changed" false-fail. mktemp -d gives a
+      # unique dir per invocation and copy+consume+cleanup live in ONE command
+      # (Law 4: same producer/consumer path), so there is no shared host state.
+      - command: "/bin/sh -c 'D=$(mktemp -d); kubectl -n cockroachdb cp openssl-toolbox:/tmp/certs \"$D/certs\"; kubectl -n cockroachdb create secret generic {{params.cert_secret_name}} --from-file=ca.crt=\"$D/certs/ca.crt\" --from-file=node.crt=\"$D/certs/node.crt\" --from-file=node.key=\"$D/certs/node.key\" --from-file=client.root.crt=\"$D/certs/client.root.crt\" --from-file=client.root.key=\"$D/certs/client.root.key\" --dry-run=client -o yaml | kubectl apply -f -; rm -rf \"$D\"'"
         sleep: 1
       # Cycle the pods so they remount the re-keyed secret. Scale to 0 FIRST so
       # every old-CA pod is gone before any new-CA pod starts -- a delete/rolling
@@ -172,7 +187,12 @@ preconditionUnits:
       - command: "/bin/sh -c 'for i in $(seq 1 45); do kubectl -n cockroachdb exec crdb-cluster-0 -- ./cockroach sql --certs-dir=/cockroach/cockroach-certs --host=crdb-cluster-0.crdb-cluster.cockroachdb.svc.cluster.local -e \"SELECT 1;\" && exit 0; sleep 4; done; exit 1'"
         timeout_sec: 300
         sleep: 2
-      - command: "/bin/sh -c 'fingerprint=$(openssl x509 -noout -fingerprint -sha256 -in /tmp/crdb-old-certs/node.crt | sed \"s/.*=//\"); ca_fingerprint=$(openssl x509 -noout -fingerprint -sha256 -in /tmp/crdb-old-certs/ca.crt | sed \"s/.*=//\"); not_after=$(openssl x509 -noout -enddate -in /tmp/crdb-old-certs/node.crt | sed \"s/notAfter=//\"); kubectl -n cockroachdb create configmap {{params.old_cert_configmap_name}} --from-literal=fingerprint=\"$fingerprint\" --from-literal=ca_fingerprint=\"$ca_fingerprint\" --from-literal=not_after=\"$not_after\" --dry-run=client -o yaml | kubectl apply -f -'"
+      # P39: record the baseline fingerprints IN-CLUSTER -- read the CA/leaf certs
+      # straight from the openssl-toolbox pod (the authoritative source at
+      # /tmp/certs) via `kubectl exec ... openssl`, and write them into the
+      # per-namespace ConfigMap. No host `openssl` and no shared host file, so
+      # concurrent runs on one dispatcher can never clobber each other's baseline.
+      - command: "/bin/sh -c 'fingerprint=$(kubectl -n cockroachdb exec openssl-toolbox -- openssl x509 -noout -fingerprint -sha256 -in /tmp/certs/node.crt | sed \"s/.*=//\"); ca_fingerprint=$(kubectl -n cockroachdb exec openssl-toolbox -- openssl x509 -noout -fingerprint -sha256 -in /tmp/certs/ca.crt | sed \"s/.*=//\"); not_after=$(kubectl -n cockroachdb exec openssl-toolbox -- openssl x509 -noout -enddate -in /tmp/certs/node.crt | sed \"s/notAfter=//\"); kubectl -n cockroachdb create configmap {{params.old_cert_configmap_name}} --from-literal=fingerprint=\"$fingerprint\" --from-literal=ca_fingerprint=\"$ca_fingerprint\" --from-literal=not_after=\"$not_after\" --dry-run=client -o yaml | kubectl apply -f -'"
         sleep: 1
     verify:
       - command: "kubectl -n cockroachdb get configmap {{params.old_cert_configmap_name}} -o jsonpath='{.data.not_after}'"
