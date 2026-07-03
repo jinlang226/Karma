@@ -14,8 +14,15 @@ SEED_DOCS = int(os.environ.get("BENCH_PARAM_SEED_DOCS", "3"))
 TLS_URI = "mongodb://localhost:27017/?directConnection=true"
 
 
-def run(cmd):
-    return subprocess.run(cmd, text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+def run(cmd, timeout=30):
+    """Run a command bounded (O17): a hung kubectl/mongosh exec becomes a
+    failed attempt instead of an uncaught TimeoutExpired that would crash the
+    whole oracle at its deadline."""
+    try:
+        return subprocess.run(cmd, text=True, stdout=subprocess.PIPE,
+                              stderr=subprocess.PIPE, timeout=timeout)
+    except subprocess.TimeoutExpired:
+        return subprocess.CompletedProcess(cmd, 124, "", "timed out")
 
 
 def fail(prefix, errors):
@@ -28,9 +35,14 @@ def fail(prefix, errors):
 
 
 def check_plain_blocked():
+    # Deliberate negative probe (O32): the plain connect MUST fail. Cap server
+    # selection at 5s so the expected failure resolves fast instead of burning
+    # the full bounded-exec window against the closed TLS listener (O21).
     errors = []
     plain = run([
-        "kubectl", "-n", NAMESPACE, "exec", POD, "--", "mongosh", "--quiet", "--eval", "db.adminCommand({ping:1})"
+        "kubectl", "-n", NAMESPACE, "exec", POD, "--", "mongosh", "--quiet",
+        "mongodb://localhost:27017/?directConnection=true&serverSelectionTimeoutMS=5000",
+        "--eval", "db.adminCommand({ping:1})"
     ])
     if plain.returncode == 0:
         errors.append("plain connection succeeded; TLS is not required")
