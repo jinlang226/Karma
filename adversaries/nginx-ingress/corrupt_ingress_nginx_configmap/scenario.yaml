@@ -42,13 +42,20 @@ lift:
         -o jsonpath={.data.log-format-upstream} | grep -q 'INVALID'"
       timeout_sec: 10
   apply:
+    # No `|| true` (ADV6/Law 5): the lift probe above already gates on the
+    # fault being present, so when this apply runs the key exists and the
+    # remove patch must succeed -- a swallowed failure would leave the fault
+    # active through the final sweep while reporting a clean lift.
     - command: >-
-        /bin/sh -c "kubectl -n {{params.namespace}} patch configmap {{params.configmap_name}}
-        --type json -p '[{\"op\":\"remove\",\"path\":\"/data/log-format-upstream\"}]'
-        2>/dev/null || true"
+        kubectl -n {{params.namespace}} patch configmap {{params.configmap_name}}
+        --type json -p '[{"op":"remove","path":"/data/log-format-upstream"}]'
       timeout_sec: 20
   verify:
-    - command: "kubectl -n {{params.namespace}} get configmap {{params.configmap_name}}"
+    # ADV6: positively assert the fault is REMOVED -- the INVALID marker is no
+    # longer in log-format-upstream (empty-tolerant: key absent or a value not
+    # containing the marker both pass), not merely that the ConfigMap exists.
+    - command: |
+        /bin/sh -c '! kubectl -n {{params.namespace}} get configmap {{params.configmap_name}} -o jsonpath={.data.log-format-upstream} 2>/dev/null | grep -q INVALID'
       timeout_sec: 10
 
 prompt_hints:
