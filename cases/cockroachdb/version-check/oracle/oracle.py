@@ -72,6 +72,20 @@ def conn_flag():
     return _CONN_FLAG
 
 
+def norm_version(value):
+    """Canonicalize a version string for comparison (O36).
+
+    Strips surrounding whitespace and one optional leading 'v'/'V', so an agent
+    that recorded "v24.1" (the spelling `SELECT version()` and the image tag
+    use, which the prompt never forbids) matches the cluster's "24.1". A
+    genuinely wrong version still differs after normalization.
+    """
+    value = value.strip()
+    if value[:1] in ("v", "V"):
+        value = value[1:]
+    return value
+
+
 def tsv_last_value(output):
     lines = [line.strip() for line in output.splitlines() if line.strip()]
     if not lines:
@@ -204,7 +218,9 @@ def main():
         elif any(f"cockroachdb/cockroach:v{TO_VERSION}" not in image for image in images):
             errors.append(f"Unexpected pod images: {' '.join(images)}")
 
-    if cm_version and cluster_version and cm_version != cluster_version:
+    # O36/O1: compare semantically, not as raw strings -- normalize whitespace
+    # and an optional leading 'v' on both sides before diffing.
+    if cm_version and cluster_version and norm_version(cm_version) != norm_version(cluster_version):
         errors.append(f"ConfigMap db_version does not match cluster version ({cluster_version})")
 
     if errors:

@@ -142,6 +142,20 @@ def parse_tsv(output):
     return header, rows
 
 
+def tsv_last_value(output):
+    """Return the last TSV value of a `--format=tsv` SHOW output (header-safe).
+
+    Mirrors version-check's oracle so single-value SHOW reads parse identically
+    across the family.
+    """
+    lines = [line.strip() for line in output.splitlines() if line.strip()]
+    if not lines:
+        return ""
+    if len(lines) == 1:
+        return lines[0]
+    return lines[-1].split("\t")[-1]
+
+
 def to_bool(value):
     return str(value).strip().lower() in ("true", "t", "1", "yes")
 
@@ -179,14 +193,26 @@ def evaluate():
         "./cockroach",
         "sql",
         conn_flag(),
+        "--format=tsv",
         "-e",
         "SHOW CLUSTER SETTING version;",
     ]
     result = run(cmd)
     if result.returncode != 0:
         errors.append(result.stderr.strip() or "Failed to check cluster version")
-    elif TARGET_VERSION not in result.stdout:
-        errors.append("Cluster version not finalized")
+    else:
+        # A mid-migration cluster reports a transitional fence version like
+        # "23.2-upgrading-to-24.1-step-004", which substring-CONTAINS the
+        # target "24.1" -- so a `TARGET_VERSION in stdout` check passed an
+        # UNFINALIZED upgrade (O36/O39). Parse the actual value and require it
+        # to EQUAL the target exactly; any -upgrading-to-/-step- suffix (or a
+        # stale version) therefore still fails.
+        active = tsv_last_value(result.stdout)
+        if active != TARGET_VERSION:
+            errors.append(
+                f"Cluster version not finalized (version is '{active}', "
+                f"expected '{TARGET_VERSION}')"
+            )
 
     cmd = [
         "kubectl",
