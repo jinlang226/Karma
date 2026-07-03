@@ -156,6 +156,33 @@ def parse_users_roles(text):
     return users
 
 
+def check_auth_enforced():
+    """O32: one UNRETRIED negative probe — a wrong password must be rejected.
+
+    Proves the file realm actually enforces auth: `-u report-user:<wrong>` must
+    NOT succeed. Fails only when the forbidden request SUCCEEDS (2xx); an
+    unreachable endpoint is reported to stderr but is not a rejection proof
+    either way. Run exactly once, outside the convergence loop (O18: negative /
+    expected-failure checks are never retried).
+    """
+    scheme = detect_scheme()
+    result = run([
+        "kubectl", "-n", NAMESPACE, "exec", "curl-test", "--",
+        "curl", "-s", "-S", "-k", "-o", "/dev/null",
+        "-w", "%{http_code}", "--max-time", "10",
+        "-u", f"{REPORT_USER}:definitely-wrong-password",
+        f"{scheme}://{SERVICE}.{NAMESPACE}.svc:9200/{INDEX}/_count",
+    ])
+    code = (result.stdout or "").strip()
+    if code.isdigit() and 200 <= int(code) < 300:
+        return (f"SECURITY NOT ENFORCED: {REPORT_USER} with a wrong password was "
+                f"accepted (HTTP {code}) — file-realm auth is not actually active")
+    if not code.isdigit() or code == "000":
+        print(f"note: negative auth probe inconclusive (code={code or 'none'}); "
+              "positive checks remain authoritative", file=sys.stderr)
+    return None
+
+
 def evaluate():
     """One full snapshot of the file-realm merge checks; returns the error list."""
     errors = []
@@ -210,6 +237,11 @@ def main():
     while errors and time.monotonic() < deadline:
         time.sleep(8)
         errors = evaluate()
+
+    # O32: negative enforcement probe, exactly once, never retried (O18).
+    neg = check_auth_enforced()
+    if neg:
+        errors.append(neg)
 
     if errors:
         print_errors(errors)

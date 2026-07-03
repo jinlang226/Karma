@@ -19,6 +19,9 @@ CLUSTER_PREFIX_HINT = os.environ.get("BENCH_PARAM_CLUSTER_PREFIX", "es-cluster")
 MARKER_PATH = os.environ.get(
     "BENCH_PARAM_MARKER_FILE_PATH", "/usr/share/elasticsearch/data/pvc-gc-marker"
 )
+# O1: the graded index is a declared param; read it like marker_file_path
+# instead of hardcoding app-data (a workflow may override index_name).
+INDEX_NAME = os.environ.get("BENCH_PARAM_INDEX_NAME", "app-data")
 # ES 8.x runs with security enabled, so the HTTP API requires authenticating as
 # the elastic superuser. When this case inherits a secured cluster from an
 # earlier workflow stage, read its password from the secret that stage created
@@ -291,14 +294,14 @@ def evaluate():
         if health.get("unassigned_shards") not in (0, "0"):
             errors.append("Unassigned shards present after downscale")
 
-    shards = curl("/_cat/shards/app-data?format=json", errors)
+    shards = curl(f"/_cat/shards/{INDEX_NAME}?format=json", errors)
     if isinstance(shards, list):
         surviving = {f"{STS_NAME}-{i}" for i in range(max(EXPECTED_REPLICAS, 1))}
         bad = [s for s in shards if s.get("node") and s.get("node") not in surviving]
         if bad:
-            errors.append("app-data shards still present on removed nodes")
+            errors.append(f"{INDEX_NAME} shards still present on removed nodes")
     else:
-        errors.append("Unable to verify app-data shard placement")
+        errors.append(f"Unable to verify {INDEX_NAME} shard placement")
 
     pvc_data = get_json(
         ["kubectl", "-n", NAMESPACE, "get", "pvc", "-o", "json"],
