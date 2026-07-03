@@ -5,11 +5,18 @@ prompt: |
   A Ray cluster is running, and the ray-client pod contains a job script at
   /opt/job.py. The job should connect to the head service and print "{{params.expected_output}}".
 
-  Current issue: the script uses the wrong head address and fails to connect.
+  Current issue: the script points at a head address that does not exist in
+  this namespace, so it fails to connect.
 
   Your task:
-  - Update the job script so it connects to ray-head:6379.
+  - Update the job script so it connects to the Ray cluster that is actually
+    running in the namespace (its head is behind the ray-head Service).
   - Ensure the job runs successfully and prints "{{params.expected_output}}".
+
+  Note: /opt/job.py is mounted read-only from the ray-job-script ConfigMap (via
+  subPath, which does not refresh in place) — after updating the script you may
+  need to recreate the ray-client pod; its manifest is at
+  cases/ray/job_submission/resource/ray-client.yaml.
 
   You can test with:
   ```bash
@@ -62,21 +69,24 @@ preconditionUnits:
       - command: "kubectl -n ray get pods 2>/dev/null | grep -c Running"
         timeout_sec: 10
 
-  # Additive fixture unit (Rule 4): the oracle execs `python /opt/job.py` inside
-  # ray-client. Standalone, ray_env_ready's apply provides the ray-job-script
-  # ConfigMap and a ray-client that mounts it at /opt/job.py. But in a workflow
-  # this case usually inherits a live cluster from a prior stage (deploy/scale/
-  # upgrade), whose ray-client pod does NOT mount the job script and whose apply
-  # is skipped here -- so /opt/job.py is missing and the oracle cannot run. This
-  # unit ensures JUST that fixture idempotently: it (re)creates the job-script
-  # ConfigMap and, if /opt/job.py is absent, recreates ONLY the throwaway
+  # Additive fixture unit (C1) + fault re-plant (C8): the oracle execs
+  # `python /opt/job.py` inside ray-client. Standalone, ray_env_ready's apply
+  # provides the ray-job-script ConfigMap and a ray-client that mounts it at
+  # /opt/job.py. But in a workflow this case usually inherits a live cluster
+  # from a prior stage (deploy/scale/upgrade), whose ray-client pod does NOT
+  # mount the job script and whose apply is skipped here -- so /opt/job.py is
+  # missing and the oracle cannot run. This unit ensures JUST that fixture:
+  # it (re)creates the job-script ConfigMap and recreates ONLY the throwaway
   # ray-client client pod with the mount. It never touches the head/worker
-  # cluster state or the namespace. The probe gates on the script being present,
-  # so standalone (script already there) it is a harmless no-op.
+  # cluster state or the namespace. The probe gates on the FAULT SIGNATURE
+  # (the broken ray-head-old address), not mere script presence (C8/P3): a
+  # present-but-already-FIXED script inherited from a prior identical stage
+  # must be re-broken, or the stage passes with zero agent work (Law 5).
+  # Standalone (broken script freshly mounted) it is a harmless no-op.
   - name: job_script_ready
     on_probe_fail: skip
     probe:
-      - command: "kubectl -n ray exec ray-client -- test -s /opt/job.py 2>/dev/null && echo present"
+      - command: "kubectl -n ray exec ray-client -- grep -q ray-head-old /opt/job.py 2>/dev/null && echo fault-present"
         timeout_sec: 15
     apply:
       - command: "kubectl -n ray apply -f cases/ray/job_submission/resource/ray-job-script.yaml"
@@ -89,7 +99,7 @@ preconditionUnits:
         timeout_sec: 660
         sleep: 1
     verify:
-      - command: "kubectl -n ray exec ray-client -- test -s /opt/job.py 2>/dev/null && echo present"
+      - command: "kubectl -n ray exec ray-client -- grep -q ray-head-old /opt/job.py 2>/dev/null && echo fault-present"
         timeout_sec: 15
 
 oracle:
