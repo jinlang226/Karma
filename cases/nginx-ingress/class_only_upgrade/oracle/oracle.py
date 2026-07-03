@@ -1,24 +1,32 @@
 #!/usr/bin/env python3
+"""Oracle for nginx-ingress/class_only_upgrade.
+
+Curls the case's private gateway (class-demo/ingress-gateway, which forwards
+to private controller instance #2) from the in-cluster curl pod and passes
+when the expected body is served for the target host. All state lives in the
+case's private namespaces (C16): class-demo + class-ingress-nginx(-2).
+"""
 import os
 import subprocess
 import sys
 import time
 
-# Param-aware: a workflow can override host/expected_body via param_overrides;
-# read BENCH_PARAM_* (default = the standalone value) so the oracle checks the
-# host this stage was asked to serve on the live cluster. Pass criterion
-# unchanged.
+# Param-aware: a workflow can override host/expected_body/curl_pod_name via
+# param_overrides; read BENCH_PARAM_* (default = the standalone value) so the
+# oracle checks the host this stage was asked to serve on the live cluster.
+# Pass criterion unchanged.
 HOST = os.environ.get("BENCH_PARAM_HOST") or "class.example.com"
 EXPECTED_BODY = os.environ.get("BENCH_PARAM_EXPECTED_BODY") or "hello"
+CURL_POD = os.environ.get("BENCH_PARAM_CURL_POD_NAME") or "curl-test"
 
 # Reachability is transient-prone: once the agent assigns the IngressClass the
 # selected controller reloads asynchronously and the gateway Service may still be
 # warming up. A single curl races that, so re-evaluate within a bounded window
 # and pass as soon as the body matches. This does not loosen the criterion -- a
 # host that never serves the expected body still fails after the deadline.
-# O-deadline: keep the loop window strictly below the oracle timeout_sec (150s)
-# with headroom for a final (possibly slow) exec + output, so the harness can
-# never kill the loop before it prints a verdict.
+# O21 arithmetic: worst case = last attempt starts just under DEADLINE_SEC
+# (110s) + one bounded exec (30s) = 140s < the oracle command's timeout_sec
+# (150s), so the harness can never kill the loop before it prints a verdict.
 DEADLINE_SEC = 110
 INTERVAL_SEC = 3
 
@@ -38,9 +46,9 @@ def main():
     cmd = [
         "kubectl",
         "-n",
-        "demo",
+        "class-demo",
         "exec",
-        "curl-test",
+        CURL_POD,
         "--",
         "curl",
         "-sS",
@@ -50,7 +58,7 @@ def main():
         "15",
         "-H",
         f"Host: {HOST}",
-        "http://ingress-gateway.demo.svc.cluster.local/",
+        "http://ingress-gateway.class-demo.svc.cluster.local/",
     ]
     deadline = time.monotonic() + DEADLINE_SEC
     last_err = "no response"

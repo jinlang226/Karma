@@ -1,0 +1,427 @@
+# Private ingress-nginx controller instance #2 for nginx-ingress/class_only_upgrade.
+#
+# C16 remedy: this case's premise (class-scoped controllers that ignore classless
+# Ingresses) is a control-plane behavior, so the case brings its OWN controllers in
+# private namespaces instead of mutating the cluster-shared ingress-nginx
+# controller. This manifest is VENDORED + REWRITTEN from the same pinned controller
+# build the sibling nginx cases vendor (registry.k8s.io/ingress-nginx/
+# controller:v1.14.1@sha256:f95a79b8...) rather than sed-rewriting the upstream
+# deploy.yaml at precondition time: a vendored manifest needs no network fetch at
+# run time, is reviewable, and cannot drift or half-rewrite under a sed pipeline.
+#
+# Deliberate deltas from the upstream manifest (collision avoidance, P26/C16):
+#   - namespace: class-ingress-nginx-2 (private; upstream hardcodes ingress-nginx,
+#     which the sibling cases' shared controller owns)
+#   - cluster-scoped names: ClusterRole/ClusterRoleBinding "class-ingress-nginx-2"
+#     (upstream's "ingress-nginx" names stay owned by the shared controller)
+#   - --controller-class=k8s.io/ingress-nginx-2, --ingress-class=ingress-2,
+#     --election-id=class-ingress-nginx-2-leader: distinct from instance #1
+#     (k8s.io/ingress-nginx-1 / ingress-1) and from the shared controller
+#     (k8s.io/ingress-nginx / nginx); controller-class matching is exact-string,
+#     so the "-2" suffix cannot collide with the shared class
+#   - --watch-ingress-without-class=false: this private instance must NEVER pick
+#     up sibling cases' classless Ingresses (that flag on the SHARED controller
+#     was the original C16 violation; on a private instance it is correct)
+#   - admission webhook stack STRIPPED (no ValidatingWebhookConfiguration,
+#     certgen Jobs, webhook Service, or --validating-webhook args): a
+#     cluster-scoped webhook with failurePolicy=Fail would block every Ingress
+#     apply cluster-wide whenever this case's namespace is absent/terminating --
+#     exactly the shared-state hazard C16 forbids
+#   - no hostPort 80/443 and no --publish-status-address: the shared controller
+#     owns the node ports; this instance is reached only via its ClusterIP
+#     Service through the case's gateway (--publish-service instead)
+#
+# The IngressClass objects (ingress-1 / ingress-2) live in ingress-classes.yaml,
+# applied separately by the precondition (they are delete+recreated per rebuild
+# because spec.controller is immutable).
+apiVersion: v1
+kind: Namespace
+metadata:
+  labels:
+    app.kubernetes.io/instance: class-ingress-nginx-2
+    app.kubernetes.io/name: ingress-nginx
+  name: class-ingress-nginx-2
+---
+apiVersion: v1
+automountServiceAccountToken: true
+kind: ServiceAccount
+metadata:
+  labels:
+    app.kubernetes.io/component: controller
+    app.kubernetes.io/instance: class-ingress-nginx-2
+    app.kubernetes.io/name: ingress-nginx
+  name: ingress-nginx
+  namespace: class-ingress-nginx-2
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  labels:
+    app.kubernetes.io/component: controller
+    app.kubernetes.io/instance: class-ingress-nginx-2
+    app.kubernetes.io/name: ingress-nginx
+  name: ingress-nginx
+  namespace: class-ingress-nginx-2
+rules:
+- apiGroups:
+  - ""
+  resources:
+  - namespaces
+  verbs:
+  - get
+- apiGroups:
+  - ""
+  resources:
+  - configmaps
+  - pods
+  - secrets
+  - endpoints
+  verbs:
+  - get
+  - list
+  - watch
+- apiGroups:
+  - ""
+  resources:
+  - services
+  verbs:
+  - get
+  - list
+  - watch
+- apiGroups:
+  - networking.k8s.io
+  resources:
+  - ingresses
+  verbs:
+  - get
+  - list
+  - watch
+- apiGroups:
+  - networking.k8s.io
+  resources:
+  - ingresses/status
+  verbs:
+  - update
+- apiGroups:
+  - networking.k8s.io
+  resources:
+  - ingressclasses
+  verbs:
+  - get
+  - list
+  - watch
+- apiGroups:
+  - coordination.k8s.io
+  resourceNames:
+  - class-ingress-nginx-2-leader
+  resources:
+  - leases
+  verbs:
+  - get
+  - update
+- apiGroups:
+  - coordination.k8s.io
+  resources:
+  - leases
+  verbs:
+  - create
+- apiGroups:
+  - ""
+  resources:
+  - events
+  verbs:
+  - create
+  - patch
+- apiGroups:
+  - discovery.k8s.io
+  resources:
+  - endpointslices
+  verbs:
+  - list
+  - watch
+  - get
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  labels:
+    app.kubernetes.io/component: controller
+    app.kubernetes.io/instance: class-ingress-nginx-2
+    app.kubernetes.io/name: ingress-nginx
+  name: ingress-nginx
+  namespace: class-ingress-nginx-2
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: ingress-nginx
+subjects:
+- kind: ServiceAccount
+  name: ingress-nginx
+  namespace: class-ingress-nginx-2
+---
+# Cluster-scoped: name is prefixed "class-" so it can never clobber the shared
+# controller's ClusterRole "ingress-nginx" (P26).
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  labels:
+    app.kubernetes.io/instance: class-ingress-nginx-2
+    app.kubernetes.io/name: ingress-nginx
+  name: class-ingress-nginx-2
+rules:
+- apiGroups:
+  - ""
+  resources:
+  - configmaps
+  - endpoints
+  - nodes
+  - pods
+  - secrets
+  - namespaces
+  verbs:
+  - list
+  - watch
+- apiGroups:
+  - coordination.k8s.io
+  resources:
+  - leases
+  verbs:
+  - list
+  - watch
+- apiGroups:
+  - ""
+  resources:
+  - nodes
+  verbs:
+  - get
+- apiGroups:
+  - ""
+  resources:
+  - services
+  verbs:
+  - get
+  - list
+  - watch
+- apiGroups:
+  - networking.k8s.io
+  resources:
+  - ingresses
+  verbs:
+  - get
+  - list
+  - watch
+- apiGroups:
+  - ""
+  resources:
+  - events
+  verbs:
+  - create
+  - patch
+- apiGroups:
+  - networking.k8s.io
+  resources:
+  - ingresses/status
+  verbs:
+  - update
+- apiGroups:
+  - networking.k8s.io
+  resources:
+  - ingressclasses
+  verbs:
+  - get
+  - list
+  - watch
+- apiGroups:
+  - discovery.k8s.io
+  resources:
+  - endpointslices
+  verbs:
+  - list
+  - watch
+  - get
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  labels:
+    app.kubernetes.io/instance: class-ingress-nginx-2
+    app.kubernetes.io/name: ingress-nginx
+  name: class-ingress-nginx-2
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: class-ingress-nginx-2
+subjects:
+- kind: ServiceAccount
+  name: ingress-nginx
+  namespace: class-ingress-nginx-2
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  labels:
+    app.kubernetes.io/component: controller
+    app.kubernetes.io/instance: class-ingress-nginx-2
+    app.kubernetes.io/name: ingress-nginx
+  name: ingress-nginx-controller
+  namespace: class-ingress-nginx-2
+---
+apiVersion: v1
+kind: Service
+metadata:
+  labels:
+    app.kubernetes.io/component: controller
+    app.kubernetes.io/instance: class-ingress-nginx-2
+    app.kubernetes.io/name: ingress-nginx
+  name: ingress-nginx-controller
+  namespace: class-ingress-nginx-2
+spec:
+  type: ClusterIP
+  selector:
+    app.kubernetes.io/component: controller
+    app.kubernetes.io/instance: class-ingress-nginx-2
+    app.kubernetes.io/name: ingress-nginx
+  ports:
+  - appProtocol: http
+    name: http
+    port: 80
+    protocol: TCP
+    targetPort: http
+  - appProtocol: https
+    name: https
+    port: 443
+    protocol: TCP
+    targetPort: https
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  labels:
+    app.kubernetes.io/component: controller
+    app.kubernetes.io/instance: class-ingress-nginx-2
+    app.kubernetes.io/name: ingress-nginx
+  name: ingress-nginx-controller
+  namespace: class-ingress-nginx-2
+spec:
+  minReadySeconds: 0
+  revisionHistoryLimit: 10
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/component: controller
+      app.kubernetes.io/instance: class-ingress-nginx-2
+      app.kubernetes.io/name: ingress-nginx
+  strategy:
+    rollingUpdate:
+      maxUnavailable: 1
+    type: RollingUpdate
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/component: controller
+        app.kubernetes.io/instance: class-ingress-nginx-2
+        app.kubernetes.io/name: ingress-nginx
+    spec:
+      automountServiceAccountToken: true
+      containers:
+      - args:
+        - /nginx-ingress-controller
+        - --election-id=class-ingress-nginx-2-leader
+        - --controller-class=k8s.io/ingress-nginx-2
+        - --ingress-class=ingress-2
+        - --configmap=$(POD_NAMESPACE)/ingress-nginx-controller
+        - --publish-service=$(POD_NAMESPACE)/ingress-nginx-controller
+        - --watch-ingress-without-class=false
+        env:
+        - name: POD_NAME
+          valueFrom:
+            fieldRef:
+              fieldPath: metadata.name
+        - name: POD_NAMESPACE
+          valueFrom:
+            fieldRef:
+              fieldPath: metadata.namespace
+        - name: LD_PRELOAD
+          value: /usr/local/lib/libmimalloc.so
+        image: registry.k8s.io/ingress-nginx/controller:v1.14.1@sha256:f95a79b85fb93ac3de752c71a5c27d5ceae10a18b61904dec224c1c6a4581e47
+        imagePullPolicy: IfNotPresent
+        lifecycle:
+          preStop:
+            exec:
+              command:
+              - /wait-shutdown
+        livenessProbe:
+          failureThreshold: 5
+          httpGet:
+            path: /healthz
+            port: 10254
+            scheme: HTTP
+          initialDelaySeconds: 10
+          periodSeconds: 10
+          successThreshold: 1
+          timeoutSeconds: 1
+        name: controller
+        ports:
+        - containerPort: 80
+          name: http
+          protocol: TCP
+        - containerPort: 443
+          name: https
+          protocol: TCP
+        readinessProbe:
+          failureThreshold: 3
+          httpGet:
+            path: /healthz
+            port: 10254
+            scheme: HTTP
+          initialDelaySeconds: 10
+          periodSeconds: 10
+          successThreshold: 1
+          timeoutSeconds: 1
+        resources:
+          requests:
+            cpu: 100m
+            memory: 90Mi
+        securityContext:
+          allowPrivilegeEscalation: false
+          capabilities:
+            add:
+            - NET_BIND_SERVICE
+            drop:
+            - ALL
+          readOnlyRootFilesystem: false
+          runAsGroup: 82
+          runAsNonRoot: true
+          runAsUser: 101
+          seccompProfile:
+            type: RuntimeDefault
+      dnsPolicy: ClusterFirst
+      nodeSelector:
+        kubernetes.io/os: linux
+      serviceAccountName: ingress-nginx
+      terminationGracePeriodSeconds: 0
+---
+# Inert on kind (kindnetd does not enforce NetworkPolicy) but correct on
+# clusters that do: only class-demo (the case's app/gateway namespace) and
+# same-namespace traffic may reach this controller.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: class-ingress-nginx-2-allow
+  namespace: class-ingress-nginx-2
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/component: controller
+      app.kubernetes.io/instance: class-ingress-nginx-2
+      app.kubernetes.io/name: ingress-nginx
+  policyTypes:
+  - Ingress
+  ingress:
+  - from:
+    - namespaceSelector:
+        matchLabels:
+          kubernetes.io/metadata.name: class-ingress-nginx-2
+    - namespaceSelector:
+        matchLabels:
+          kubernetes.io/metadata.name: class-demo
