@@ -12,8 +12,13 @@ import sys
 TO_VERSION = os.environ.get("BENCH_PARAM_TO_VERSION", "24.1.1")
 TARGET_IMAGE = f"cockroachdb/cockroach:v{TO_VERSION}"
 TARGET_VERSION = f"v{TO_VERSION}"
-# Accept any patch of the target major.minor (e.g. v24.1.0 for a 24.1 cluster):
-# a prior workflow upgrade stage may leave the cluster on a different 24.1.x patch.
+# The graded outcome IS the version move (baseline v24.1.0 -> to_version), so
+# the image check must be exact-patch param-first (O2 exception): grading only
+# major.minor let an idle agent pass standalone (24.1.0 already matches 24.1).
+# Workflows that target a different patch override to_version (or pin it to an
+# upstream stage's param, C10). The SQL `SELECT version()` sanity read stays
+# major.minor -- its string format varies and the image assertions carry the
+# exact-patch teeth.
 TARGET_MAJMIN = ".".join(TO_VERSION.split(".")[:2])
 
 
@@ -174,6 +179,11 @@ def evaluate():
         )
         if partition not in (0, "0", None):
             errors.append(f"Partition not reset: {partition}")
+        tmpl_image = ((spec.get("template", {}).get("spec", {})
+                       .get("containers") or [{}])[0].get("image") or "")
+        if tmpl_image.split(":")[-1].lstrip("v") != TO_VERSION:
+            errors.append(f"StatefulSet template image is "
+                          f"{tmpl_image or 'unset'} (expected {TARGET_IMAGE})")
 
     pods = crdb_pods()
     if len(pods) != expected_nodes():
@@ -185,8 +195,8 @@ def evaluate():
             errors.append(f"No containers found in pod {name}")
             continue
         image = containers[0].get("image") or ""
-        if ".".join(image.split(":")[-1].lstrip("v").split(".")[:2]) != TARGET_MAJMIN:
-            errors.append(f"Pod {name} image is {image} (expected v{TARGET_MAJMIN}.x)")
+        if image.split(":")[-1].lstrip("v") != TO_VERSION:
+            errors.append(f"Pod {name} image is {image} (expected {TARGET_IMAGE})")
 
     cmd = [
         "kubectl",
