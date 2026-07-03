@@ -90,16 +90,16 @@ def _mongo_tls_flags(probe_pod=None):
 
 
 def _resolve_expected_replicas():
-    """Topology size to enforce.
+    """Topology size to enforce, resolved fresh on every call (O2).
 
     The environment PERSISTS across workflow stages, so an earlier
     replica-scaling stage may have grown the replica set past the standalone
     default of 3. Resolve the expected count from (in priority order): an
-    explicit ``expected_replicas``/``target_replicas`` param override, else the
-    LIVE StatefulSet (ready, else spec'd replicas), else the standalone default
-    of 3. This adapts the topology/count check to whatever the workflow
-    accumulated without loosening it -- a non-solving agent that drops or fails
-    a member still mismatches the live ready/spec count.
+    explicit ``expected_replicas``/``target_replicas`` param override, else
+    the LIVE StatefulSet's desired ``spec.replicas`` (ignored while the STS is
+    being deleted; transient ``status.readyReplicas`` is only a last-resort
+    fallback when the spec carries no count -- a mid-rollout ready count would
+    grade against a shrunken snapshot), else the standalone default of 3.
     """
     for key in ("BENCH_PARAM_EXPECTED_REPLICAS", "BENCH_PARAM_TARGET_REPLICAS"):
         val = os.environ.get(key)
@@ -114,9 +114,10 @@ def _resolve_expected_replicas():
             sts = json.loads(res.stdout)
             status = sts.get("status", {}) or {}
             spec = sts.get("spec", {}) or {}
-            live = status.get("readyReplicas")
+            deleting = bool((sts.get("metadata", {}) or {}).get("deletionTimestamp"))
+            live = spec.get("replicas") if not deleting else None
             if not isinstance(live, int) or live <= 0:
-                live = spec.get("replicas")
+                live = status.get("readyReplicas")
             if isinstance(live, int) and live > 0:
                 return live
         except (json.JSONDecodeError, AttributeError):
@@ -124,7 +125,11 @@ def _resolve_expected_replicas():
     return 3
 
 
-EXPECTED_REPLICAS = _resolve_expected_replicas()
+def expected_replicas():
+    """Per-call accessor for the expected-replica count (O2): re-resolves on
+    every use, so convergence-loop attempts track the live desired size
+    instead of a value frozen at import time."""
+    return _resolve_expected_replicas()
 
 
 def fail(prefix, errors):
@@ -180,7 +185,7 @@ def check_topology():
     # cluster got here, and standalone the first member answers immediately.
     conf = None
     last_errors = ["rs.conf() unreadable from any replica-set member"]
-    member_pods = [f"{CLUSTER_PREFIX}-{i}" for i in range(EXPECTED_REPLICAS)]
+    member_pods = [f"{CLUSTER_PREFIX}-{i}" for i in range(expected_replicas())]
     for _round in range(3):
         for member_pod in member_pods:
             attempt_errors = []
@@ -196,12 +201,12 @@ def check_topology():
         errors.extend(last_errors)
     if isinstance(conf, dict):
         members = conf.get("members", [])
-        if len(members) != EXPECTED_REPLICAS:
-            errors.append(f"Expected {EXPECTED_REPLICAS} members in rs.conf(), got {len(members)}")
+        if len(members) != expected_replicas():
+            errors.append(f"Expected {expected_replicas()} members in rs.conf(), got {len(members)}")
 
         expected_hosts = {
             f"{CLUSTER_PREFIX}-{idx}.{SERVICE_NAME}.{NAMESPACE}.svc.cluster.local:27017": idx
-            for idx in range(EXPECTED_REPLICAS)
+            for idx in range(expected_replicas())
         }
         for member in members:
             host = member.get("host")
@@ -224,7 +229,7 @@ def check_topology():
 
 def check_services():
     errors = []
-    for idx in range(EXPECTED_REPLICAS):
+    for idx in range(expected_replicas()):
         svc_name = f"mongo-external-{idx}"
         res = run(["kubectl", "-n", NAMESPACE, "get", "svc", svc_name, "-o", "json"])
         if res.returncode != 0:
@@ -304,7 +309,7 @@ def _stage_client_tls_flags():
 def check_connectivity():
     errors = []
     hosts = ",".join(
-        f"{EXTERNAL_HOST_PREFIX}-{idx + 1}:{NODEPORT_START + idx}" for idx in range(EXPECTED_REPLICAS)
+        f"{EXTERNAL_HOST_PREFIX}-{idx + 1}:{NODEPORT_START + idx}" for idx in range(expected_replicas())
     )
     uri = f"mongodb://{hosts}/admin?replicaSet={REPLICA_SET_NAME}"
 
