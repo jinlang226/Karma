@@ -28,8 +28,15 @@ TARGET_COMPRESSOR = os.environ.get("BENCH_PARAM_TARGET_JOURNAL_COMPRESSOR", "zli
 POD_PREFIX = f"{CLUSTER_PREFIX}-"
 
 
-def run(cmd):
-    return subprocess.run(cmd, text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+def run(cmd, timeout=30):
+    """Run a command bounded (O17): a hung kubectl/mongosh exec becomes a
+    failed attempt instead of an uncaught TimeoutExpired that would crash the
+    whole oracle at its deadline."""
+    try:
+        return subprocess.run(cmd, text=True, stdout=subprocess.PIPE,
+                              stderr=subprocess.PIPE, timeout=timeout)
+    except subprocess.TimeoutExpired:
+        return subprocess.CompletedProcess(cmd, 124, "", "timed out")
 
 
 _TLS_FLAGS_CACHE = None
@@ -75,16 +82,16 @@ def _mongo_tls_flags(probe_pod=None):
 
 
 def _resolve_expected_replicas():
-    """Topology size to enforce.
+    """Topology size to enforce, resolved fresh on every call (O2).
 
     The environment PERSISTS across workflow stages, so an earlier
     replica-scaling stage may have grown the replica set past the standalone
     default of 3. Resolve the expected count from (in priority order): an
-    explicit ``expected_replicas``/``target_replicas`` param override, else the
-    LIVE StatefulSet (ready, else spec'd replicas), else the standalone default
-    of 3. This adapts the topology/count check to whatever the workflow
-    accumulated without loosening it -- a non-solving agent that drops or fails
-    a member still mismatches the live ready/spec count.
+    explicit ``expected_replicas``/``target_replicas`` param override, else
+    the LIVE StatefulSet's desired ``spec.replicas`` (ignored while the STS is
+    being deleted; transient ``status.readyReplicas`` is only a last-resort
+    fallback when the spec carries no count -- a mid-rollout ready count would
+    grade against a shrunken snapshot), else the standalone default of 3.
     """
     for key in ("BENCH_PARAM_EXPECTED_REPLICAS", "BENCH_PARAM_TARGET_REPLICAS"):
         val = os.environ.get(key)
@@ -99,9 +106,10 @@ def _resolve_expected_replicas():
             sts = json.loads(res.stdout)
             status = sts.get("status", {}) or {}
             spec = sts.get("spec", {}) or {}
-            live = status.get("readyReplicas")
+            deleting = bool((sts.get("metadata", {}) or {}).get("deletionTimestamp"))
+            live = spec.get("replicas") if not deleting else None
             if not isinstance(live, int) or live <= 0:
-                live = spec.get("replicas")
+                live = status.get("readyReplicas")
             if isinstance(live, int) and live > 0:
                 return live
         except (json.JSONDecodeError, AttributeError):
@@ -109,7 +117,11 @@ def _resolve_expected_replicas():
     return 3
 
 
-EXPECTED_REPLICAS = _resolve_expected_replicas()
+def expected_replicas():
+    """Per-call accessor for the expected-replica count (O2): re-resolves on
+    every use, so convergence-loop attempts track the live desired size
+    instead of a value frozen at import time."""
+    return _resolve_expected_replicas()
 
 
 def fail(prefix, errors):
@@ -158,7 +170,7 @@ def load_json(pod, uri, eval_str, label, errors):
 
 
 def _find_primary(admin_uri, errors):
-    for i in range(EXPECTED_REPLICAS):
+    for i in range(expected_replicas()):
         pod = f"{POD_PREFIX}{i}"
         res = run_mongo(pod, admin_uri, "db.hello().isWritablePrimary")
         if res.returncode == 0 and "true" in (res.stdout or ""):
@@ -179,9 +191,9 @@ def _workload_attempt():
         errors.append("failed to parse statefulset JSON")
         return errors
 
-    if sts.get("spec", {}).get("replicas") != EXPECTED_REPLICAS:
+    if sts.get("spec", {}).get("replicas") != expected_replicas():
         errors.append("statefulset replicas mismatch")
-    if sts.get("status", {}).get("readyReplicas") != EXPECTED_REPLICAS:
+    if sts.get("status", {}).get("readyReplicas") != expected_replicas():
         errors.append("ready replicas mismatch")
 
     pods_res = run(["kubectl", "-n", NAMESPACE, "get", "pods", "-l", f"app={CLUSTER_PREFIX}", "-o", "json"])
@@ -195,8 +207,8 @@ def _workload_attempt():
         return errors
 
     items = pods.get("items", [])
-    if len(items) != EXPECTED_REPLICAS:
-        errors.append(f"expected {EXPECTED_REPLICAS} pods, got {len(items)}")
+    if len(items) != expected_replicas():
+        errors.append(f"expected {expected_replicas()} pods, got {len(items)}")
     for pod in items:
         name = pod.get("metadata", {}).get("name", "unknown")
         ready = next((c for c in pod.get("status", {}).get("conditions", []) if c.get("type") == "Ready"), {})
@@ -236,12 +248,12 @@ def _topology_attempt():
         members = status.get("members", [])
         p = sum(1 for m in members if m.get("stateStr") == "PRIMARY")
         s = sum(1 for m in members if m.get("stateStr") == "SECONDARY")
-        if len(members) != EXPECTED_REPLICAS:
-            errors.append(f"replica set members expected {EXPECTED_REPLICAS}, got {len(members)}")
+        if len(members) != expected_replicas():
+            errors.append(f"replica set members expected {expected_replicas()}, got {len(members)}")
         if p != 1:
             errors.append(f"expected 1 PRIMARY, got {p}")
-        if s != EXPECTED_REPLICAS - 1:
-            errors.append(f"expected {EXPECTED_REPLICAS - 1} SECONDARY, got {s}")
+        if s != expected_replicas() - 1:
+            errors.append(f"expected {expected_replicas() - 1} SECONDARY, got {s}")
     else:
         errors.append("unable to read replica set status")
     return errors
@@ -283,6 +295,22 @@ def _slow_ms(pod, uri, cmdline, errors):
     return None
 
 
+def _verbosity(pod, uri, cmdline, errors):
+    """Dual-source verbosity read (O38), mirroring _slow_ms's order exactly:
+    the start-up config (getCmdLineOpts) first, else the live runtime value
+    (getParameter logLevel) -- so a valid runtime `setParameter` solution is
+    graded the same way as a persisted mongod.conf one."""
+    parsed = cmdline.get("parsed", {}) if isinstance(cmdline, dict) else {}
+    val = parsed.get("systemLog", {}).get("verbosity")
+    if val is not None:
+        return _parse_int(val, "systemLog.verbosity", errors)
+    param = load_json(pod, uri, "JSON.stringify(db.adminCommand({getParameter:1, logLevel:1}))", "getParameter logLevel", errors)
+    if isinstance(param, dict) and "logLevel" in param:
+        return _parse_int(param.get("logLevel"), "systemLog.verbosity", errors)
+    errors.append("systemLog.verbosity missing")
+    return None
+
+
 def check_runtime():
     errors = []
     admin_pw = get_secret_value(ADMIN_SECRET, "password", errors)
@@ -292,12 +320,12 @@ def check_runtime():
     # per-member getCmdLineOpts read below is a single-member localhost read.
     admin_uri = f"mongodb://{ADMIN_USER}:{admin_pw}@localhost:27017/admin?directConnection=true"
 
-    for i in range(EXPECTED_REPLICAS):
+    for i in range(expected_replicas()):
         pod = f"{POD_PREFIX}{i}"
         cmdline = load_json(pod, admin_uri, "JSON.stringify(db.adminCommand({getCmdLineOpts:1}))", "getCmdLineOpts", errors)
         if isinstance(cmdline, dict):
             parsed = cmdline.get("parsed", {})
-            cfg_level = _parse_int(parsed.get("systemLog", {}).get("verbosity"), "systemLog.verbosity", errors)
+            cfg_level = _verbosity(pod, admin_uri, cmdline, errors)
             if cfg_level is not None and cfg_level != TARGET_LOG_LEVEL:
                 errors.append(f"systemLog.verbosity on {pod} expected {TARGET_LOG_LEVEL}, got {cfg_level}")
             slow_ms = _slow_ms(pod, admin_uri, cmdline, errors)
@@ -349,7 +377,11 @@ def main():
     if args.check == "data":
         return check_data()
 
-    for fn in (check_runtime, check_workload, check_topology, check_data):
+    # O14: run the CONVERGED gates first. check_workload/check_topology poll the
+    # post-roll cluster to convergence; the single-pass check_runtime must only
+    # run once the roll has settled, else it reads a mid-roll member and
+    # false-fails a correct config application.
+    for fn in (check_workload, check_topology, check_runtime, check_data):
         rc = fn()
         if rc != 0:
             return rc

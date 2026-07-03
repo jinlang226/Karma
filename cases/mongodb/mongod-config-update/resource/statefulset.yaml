@@ -24,12 +24,6 @@ spec:
             - mongod
             - --config
             - /etc/mongo-config/mongod.conf
-          env:
-            - name: ADMIN_PASSWORD
-              valueFrom:
-                secretKeyRef:
-                  name: admin-user-password
-                  key: password
           ports:
             - containerPort: 27017
               name: mongodb
@@ -39,7 +33,10 @@ spec:
               command:
                 - /bin/sh
                 - -c
-                - mongosh --quiet "mongodb://admin-user:${ADMIN_PASSWORD}@localhost:27017/admin" --eval "db.adminCommand({ping:1})"
+                # P19: read the admin password LIVE from the mounted secret file
+                # (never an env var captured at pod start) so a later
+                # password-rotation stage cannot flip the pods NotReady.
+                - mongosh --quiet "mongodb://admin-user:$(cat /etc/admin-secret/password)@localhost:27017/admin" --eval "db.adminCommand({ping:1})"
             initialDelaySeconds: 30
             periodSeconds: 10
             timeoutSeconds: 5
@@ -49,7 +46,10 @@ spec:
               command:
                 - /bin/sh
                 - -c
-                - mongosh --quiet "mongodb://admin-user:${ADMIN_PASSWORD}@localhost:27017/admin" --eval "db.adminCommand({ping:1})"
+                # P19: read the admin password LIVE from the mounted secret file
+                # (never an env var captured at pod start) so a later
+                # password-rotation stage cannot flip the pods NotReady.
+                - mongosh --quiet "mongodb://admin-user:$(cat /etc/admin-secret/password)@localhost:27017/admin" --eval "db.adminCommand({ping:1})"
             initialDelaySeconds: 60
             periodSeconds: 15
             timeoutSeconds: 5
@@ -63,6 +63,9 @@ spec:
             - name: mongod-config
               mountPath: /etc/mongo-config/mongod.conf
               subPath: mongod.conf
+              readOnly: true
+            - name: admin-secret
+              mountPath: /etc/admin-secret
               readOnly: true
           resources:
             requests:
@@ -82,6 +85,12 @@ spec:
             items:
               - key: mongod.conf
                 path: mongod.conf
+        - name: admin-secret
+          secret:
+            secretName: admin-user-password
+            items:
+              - key: password
+                path: password
   volumeClaimTemplates:
     - metadata:
         name: data-volume
