@@ -7,7 +7,8 @@
 # Commands target the bench namespace explicitly (-n ${BENCH_NAMESPACE}) and
 # exec into <cluster_prefix>-0.
 #
-# Deploy: clear the ha-all policy on the vhost.
+# Deploy: clear the ha-all policy on the vhost (skipped cleanly when the
+#         policy does not exist -- there is nothing to clear, ADV5).
 # Lift:   no-op (the agent is expected to restore it; verify the cluster is up).
 
 params:
@@ -22,15 +23,24 @@ params:
     description: Name of the mirroring policy the adversary removes (the injected fault).
 
 deploy:
-  # The cluster pod must already exist (the case precondition stands it up).
-  on_probe_fail: error
+  # ADV5: inject only where the target exists -- probe the POLICY itself, not
+  # mere broker reachability. A reachability probe made the verify vacuous
+  # (ADV6): when ha-all never existed, clear_policy removed nothing yet the
+  # absence-verify "passed". Probe-pass (policy present) -> run the clear;
+  # probe-fail + skip -> the injection no-ops cleanly when there is nothing
+  # to clear (ADV1 polarity).
+  on_probe_fail: skip
   probe:
-    - command: "kubectl -n ${BENCH_NAMESPACE} exec {{params.cluster_prefix}}-0 -- rabbitmqctl cluster_status"
+    - command: |-
+        /bin/sh -c "kubectl -n ${BENCH_NAMESPACE} exec {{params.cluster_prefix}}-0 -- rabbitmqctl -q list_policies -p {{params.vhost}} 2>/dev/null | grep -qw {{params.policy_name}}"
       timeout_sec: 30
   apply:
     - command: "kubectl -n ${BENCH_NAMESPACE} exec {{params.cluster_prefix}}-0 -- rabbitmqctl clear_policy -p {{params.vhost}} {{params.policy_name}}"
       timeout_sec: 30
   verify:
+    # Meaningful removal check: the probe just confirmed the policy PRESENT,
+    # so asserting absence here proves the injection actually changed state
+    # (Law 5). Tolerant of an empty policy list (grep on the piped stream).
     - command: >-
         /bin/sh -c "! kubectl -n ${BENCH_NAMESPACE} exec {{params.cluster_prefix}}-0 -- rabbitmqctl list_policies -p {{params.vhost}}
         | grep -qw {{params.policy_name}}"
