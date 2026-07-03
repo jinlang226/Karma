@@ -17,8 +17,15 @@ APP_COLLECTION = os.environ.get("BENCH_PARAM_APP_COLLECTION", "test")
 SEED_DOCS = int(os.environ.get("BENCH_PARAM_SEED_DOCS", "3"))
 
 
-def run(cmd):
-    return subprocess.run(cmd, text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+def run(cmd, timeout=30):
+    """Run a command bounded (O17): a hung kubectl/mongosh exec becomes a
+    failed attempt instead of an uncaught TimeoutExpired that would crash the
+    whole oracle at its deadline."""
+    try:
+        return subprocess.run(cmd, text=True, stdout=subprocess.PIPE,
+                              stderr=subprocess.PIPE, timeout=timeout)
+    except subprocess.TimeoutExpired:
+        return subprocess.CompletedProcess(cmd, 124, "", "timed out")
 
 
 _ADMIN_PW = None
@@ -90,16 +97,12 @@ def _mongo_tls_flags(probe_pod=None):
     return list(flags)
 
 def _resolve_expected_replicas():
-    """Topology size to enforce.
+    """Topology size to enforce: param-first, defaulting to 3 (O2 exception).
 
-    The environment PERSISTS across workflow stages, so an earlier
-    replica-scaling stage may have grown the replica set past the standalone
-    default of 3. Resolve the expected count from (in priority order): an
-    explicit ``expected_replicas``/``target_replicas`` param override, else the
-    LIVE StatefulSet (ready, else spec'd replicas), else the standalone default
-    of 3. This adapts the topology/count check to whatever the workflow
-    accumulated without loosening it -- a non-solving agent that drops or fails
-    a member still mismatches the live ready/spec count.
+    The member count IS this case's graded outcome -- the prompt promises a
+    3-member replica set -- so it is never derived from the live cluster
+    (live-deriving would mask a failed or partial deployment). An explicit
+    ``expected_replicas``/``target_replicas`` param override wins, else 3.
     """
     for key in ("BENCH_PARAM_EXPECTED_REPLICAS", "BENCH_PARAM_TARGET_REPLICAS"):
         val = os.environ.get(key)
@@ -108,19 +111,6 @@ def _resolve_expected_replicas():
                 return int(val)
             except ValueError:
                 pass
-    res = run(["kubectl", "-n", NAMESPACE, "get", "sts", CLUSTER_PREFIX, "-o", "json"])
-    if res.returncode == 0:
-        try:
-            sts = json.loads(res.stdout)
-            status = sts.get("status", {}) or {}
-            spec = sts.get("spec", {}) or {}
-            live = status.get("readyReplicas")
-            if not isinstance(live, int) or live <= 0:
-                live = spec.get("replicas")
-            if isinstance(live, int) and live > 0:
-                return live
-        except (json.JSONDecodeError, AttributeError):
-            pass
     return 3
 
 
@@ -157,6 +147,35 @@ def mongo_eval(pod, script):
         if af:
             res = run(base + af + ["--eval", script])
     return res
+
+
+_PRIMARY_POD_CACHE = None
+
+
+def find_primary():
+    """Locate the replica-set PRIMARY replica-set pod, falling back to CLUSTER_PREFIX-0.
+
+    The environment PERSISTS across workflow stages, so an earlier stage (or
+    this case's own election) can move the PRIMARY off pod-0. countDocuments
+    requires the primary -- on a secondary it fails "not primary and
+    secondaryOk=false" (O8). Exec db.hello() into each replica-set member and route
+    the data read to the writable primary; standalone this resolves to pod-0
+    -> identical behaviour. Copied from decommission's oracle. Cached.
+    """
+    global _PRIMARY_POD_CACHE
+    if _PRIMARY_POD_CACHE is not None:
+        return _PRIMARY_POD_CACHE
+    for idx in range(9):
+        pod = f"{CLUSTER_PREFIX}-{idx}"
+        res = mongo_eval(pod, "db.hello().isWritablePrimary")
+        if res.returncode != 0:
+            if idx > 0 and "NotFound" in (res.stderr or ""):
+                break
+            continue
+        if "true" in (res.stdout or ""):
+            _PRIMARY_POD_CACHE = pod
+            return pod
+    return f"{CLUSTER_PREFIX}-0"
 
 
 def mongo_json(pod, script, label, errors):
@@ -257,7 +276,7 @@ def check_health():
 
 def check_data():
     errors = []
-    pod = f"{CLUSTER_PREFIX}-0"
+    pod = find_primary()
     res = mongo_eval(
         pod,
         f"db.getSiblingDB('{APP_DATABASE}').{APP_COLLECTION}.countDocuments({{}})",
