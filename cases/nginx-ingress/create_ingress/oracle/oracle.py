@@ -25,11 +25,18 @@ DEADLINE_SEC = 110
 INTERVAL_SEC = 3
 
 
-def run(cmd):
-    return subprocess.run(cmd, text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+def run(cmd, timeout=30):
+    """Run a command bounded (O17); a hang counts as a failed attempt."""
+    try:
+        return subprocess.run(cmd, text=True, stdout=subprocess.PIPE,
+                              stderr=subprocess.PIPE, timeout=timeout)
+    except subprocess.TimeoutExpired:
+        return subprocess.CompletedProcess(cmd, 124, "", "timed out")
 
 
 def main():
+    # curl is bounded too (O17): a hung connect/read against a reloading
+    # controller counts as a failed attempt the loop retries.
     cmd = [
         "kubectl",
         "-n",
@@ -39,6 +46,10 @@ def main():
         "--",
         "curl",
         "-sS",
+        "--connect-timeout",
+        "5",
+        "--max-time",
+        "15",
         "-H",
         f"Host: {HOST}",
         f"http://ingress-nginx-controller.ingress-nginx.svc{PATH}",
