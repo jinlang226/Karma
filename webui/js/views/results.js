@@ -191,6 +191,7 @@
             if (b && !judgeCancelling) b.textContent = judgeProgressLabel(0, ev.to_judge);
             KARMA.toast(
               `Judging ${ev.to_judge} unjudged run${ev.to_judge === 1 ? "" : "s"}` +
+              (ev.llm_count ? ` — ${ev.static_count} scored instantly, ${ev.llm_count} need LLM adjudication` : "") +
               ` (${ev.already_scored || 0} already scored).`, "info");
           }
         } else if (ev.type === "judge_progress" && ev.index && ev.total) {
