@@ -126,7 +126,7 @@ version mismatch).
 
 > **Quick reference.** *Probe semantics:* P1–P5, P28. *Verify post-state:* P6,
 > P7, P8, P27. *Cluster reuse & timing:* P9–P14. *Manifests, literals, identity:*
-> P15, P16, P18–P26, P34, P35, P36, P37.
+> P15, P16, P18–P26, P34, P35, P36, P37. *Primary-aware & parallel-safe:* P38, P39.
 
 ### Probe semantics & specificity
 - **P1 — Skip-probe success is exit-code based; never `|| true`.** The port that
@@ -348,7 +348,15 @@ version mismatch).
   `*_version` param. **Sub-trap:** whitelist the variable *name* in single quotes
   (`envsubst '${BENCH_PARAM_CRDB_VERSION}'`) — an unquoted name is expanded by the
   inner `/bin/sh -c` to `envsubst "23.2.0"` *before* envsubst runs, leaving the
-  literal `${…}`. Preserve downward-API refs (`$(POD_NAME)`). [PRECONDITION/COMPOSITION]
+  literal `${…}`. Preserve downward-API refs (`$(POD_NAME)`). **Thread the param
+  through *every* consumer, not just the oracle:** if the manifest is applied
+  **raw** (no envsubst) with a hardcoded tag while the oracle reads the param, a
+  workflow override is unsolvable — the agent can only produce the hardcoded value.
+  Render the manifest through envsubst *and* derive any version-coupled sibling (a
+  jar/artifact path, a checksum) from the same param. *Example: a Spark deploy case
+  whose oracle reads `spark_image` but whose raw-applied Job manifest hardcodes both
+  the image and the `spark-examples_…-3.5.3.jar` path — a `3.5.1` override can never
+  pass.* [PRECONDITION/COMPOSITION]
 - **P19 — Never bake a mutable secret into a readiness probe** (e.g.
   `${ELASTIC_PASSWORD}`); a later rotate stage breaks it, the pod goes NotReady,
   and the Service loses endpoints. Read the secret live from the mounted file.
@@ -420,6 +428,37 @@ version mismatch).
   the admin-user fixture is declared before the seed fixture so seeding can
   authenticate, and a get-or-apply openssl-toolbox precedes any unit that execs
   openssl.* [PRECONDITION]
+- **P38 — A precondition write that needs the primary must target the *detected*
+  primary, not a hardcoded pod ordinal — and its verify must confirm the write
+  landed.** A fixture that execs a primary-only mutation (`createUser`,
+  `rs.reconfig`, a config write, an auth-gated seed) into a hardcoded `…-0`
+  silently no-ops when composition has moved the primary elsewhere: the exec fails
+  `NotWritablePrimary`, a `|| true` swallows it, and a verify that only checks a
+  *companion* artifact (the secret it also created) still passes — so the graded
+  dependency (the user / row) never exists and the oracle false-fails a flawless
+  agent. Detect the live primary (`db.hello().isWritablePrimary` across members,
+  cached) and run the write there, and make the unit's `verify` *authenticate or
+  read back the thing it wrote* (polling to tolerate election lag), never merely
+  assert a sibling secret exists. The precondition mirror of O8 (+O32's
+  prove-don't-assume). *Example: a MongoDB `health_user_fixture` that `createUser`s
+  into `mongodb-replica-0` — a secondary after an earlier scaling stage — so the
+  health user is never created and every `readiness-probe-tuning` health-auth check
+  fails on a correctly-tuned cluster.* [PRECONDITION]
+- **P39 — Stage per-run artifacts on a run-scoped path, never a fixed host
+  scratch dir.** A precondition (or oracle) that records a baseline or stages
+  certs/keys on a hardcoded orchestrator-host path (`/tmp/crdb-old-certs`,
+  `/tmp/ingress_env`) is parallel-unsafe: when the suite runs several instances of
+  the case concurrently on one dispatcher host (the normal multi-cluster mode),
+  their `rm -rf`+`cp` races clobber each other, so the recorded baseline diverges
+  from the live per-cluster artifact and the oracle false-fails (e.g. "CA
+  fingerprint changed" though the agent kept the CA). Prefer recording baselines
+  **in-cluster** (read the live secret, or a pod-local `kubectl exec` read) over any
+  host path; if a host path is unavoidable, scope it by run-id/namespace
+  (`mktemp -d`, or `/tmp/${BENCH_NAMESPACE}/…`) and keep producer and consumer on
+  the *same* scoped path (Law 4). *Example: a CockroachDB cert-rotation family that
+  records the "old CA" baseline from a shared `/tmp/crdb-old-certs`; three
+  concurrent cert runs corrupt it — sweep the whole family (Law 8).*
+  [PRECONDITION/FRAMEWORK]
 
 ---
 
@@ -432,14 +471,22 @@ version mismatch).
 > O21, O22, O23. *Scripting hygiene:* O24, O25, O26,
 > O27. *Assertion completeness & structure:* O28, O29,
 > O30, O31, O32, O33, O34, O35, O36,
-> O42, O43, O44, O45.
+> O42, O43, O44, O45, O46.
 
 ### Grade the contract, from live state, scoped to the target
 - **O1 — Grade only what the prompt promised.** Any exact filename, count, label,
   version, role/object name, magic probe value, or `replSetName` the oracle checks
   must appear in the prompt or be planted by the precondition — never left for the
   agent to guess. Prefer grading the **effective outcome** (can read reports;
-  denied writes) over an undisclosed identifier. [ORACLE/PROMPT]
+  denied writes) over an undisclosed identifier. **An identifier disclosed only by
+  a skip-gated artifact is unobservable under composition — grade the effective
+  outcome.** A key/client name/path the case "discloses" by planting a
+  secret/ConfigMap becomes invisible when that artifact is skip-gated away on an
+  inherited cluster (or deliberately omitted per P33); a valid solve that picks an
+  equally-correct name then false-fails. *Example: an ES snapshot oracle hardcoding
+  `s3.client.default.*` keystore keys while the agent used a working
+  `s3.client.minio.*` and the snapshot completed SUCCESS — grade the successful
+  snapshot (client-agnostic), not the key name.* [ORACLE/PROMPT]
 - **O2 — Resolve expectations from live state, scoped to the target object.**
   Never sum a global topology a namespace legitimately accumulates; never hardcode
   a standalone count/name/scheme. Count only StatefulSets backing live
@@ -448,7 +495,13 @@ version mismatch).
   from the live cluster; read `BENCH_PARAM_*` with the old value as default.
   **Exception:** where the count/mode *is* the graded outcome (downscale,
   decommission, generate-cert), stay param-first — deriving from live would mask a
-  failed operation. [ORACLE]
+  failed operation. **A cross-topology tally sums over the live members, never
+  matches a scalar against one object:** an "original replicas" / "nodes before
+  scale-up" assertion on a base that is *several* StatefulSets must sum
+  `spec.replicas` over the non-new STSs, not assert a single STS equals a scalar
+  param (a two-STS 3+2 base has no STS at 5). *Example: an ES scale-up-new-nodeset
+  oracle asserting `es-transport.replicas == 5` when the composed base is
+  es-transport(3)+es-data(2).* [ORACLE]
 - **O3 — Don't contradict the prompt or your own precondition.** Wrong
   scheme (`http://` vs required HTTPS), wrong hardcoded path, demanding both
   sidecars when the prompt named one, accepting only `--advertise-host` not
@@ -769,6 +822,21 @@ version mismatch).
   immediate read false-fails one still running. *Example: a compute job whose oracle
   checks `Job.status.succeeded` only, passing a driver that finished but logged a wrong
   numeric answer; the fix also greps the log for the in-range result.* [ORACLE]
+- **O46 — Grade an elastic/autoscaling outcome from the durable end-state or the
+  resource's own scale history, never from a lossy sampled side-channel.** When the
+  deliverable is "the workload scaled through phases N→M→K" (an HPA, a manual scale
+  sequence, a burst-driven autoscale), do not grade it by counting events in a
+  helper pod's polling watch-loop log: a fixed-interval `kubectl get` sampler misses
+  transitions under load / pod-churn (and a hardcoded `>=2 events` threshold is
+  weaker than the phase targets anyway), so a flawless agent that verifiably scaled
+  5→10→20→5 can score zero events. Grade the durable signals — the Deployment's own
+  `.status` / ReplicaSet rollout history, the observed max/target replica counts, or
+  the agent's kubectl trace (≥N scale ops on the target) — and bound any helper exec
+  (O17). Distinct from O23 (async signals need traffic+re-poll) and O45 (one-shot
+  batch payload): here the resource *records its own history*, so read that.
+  *Example: a Spark autoscale case graded solely by `SCALING EVENT` lines from a
+  metrics-server watch pod that missed the transitions during an adversary's
+  pod-churn.* [ORACLE]
 
 ---
 
@@ -790,7 +858,16 @@ version mismatch).
   an `initialize` stage hardcodes `-l app.kubernetes.io/name=cockroachdb` → "Expected 3,
   found 0" against a healthy cluster. Fix both: mandate the canonical labels in the
   creating stage's prompt+oracle, *and* have downstream oracles resolve by the live
-  STS selector → canonical label → name prefix. [COMPOSITION]
+  STS selector → canonical label → name prefix. **Identity is the resource *name*,
+  not only its labels:** if stage A lets the agent create a secret/volume under an
+  *undisclosed* name (an agent-chosen `crdb-certs`) and stage B targets a fixed name
+  (`crdb-cluster-certs`), B grades a resource the pods don't mount. Mandate a
+  canonical name in A's prompt/oracle, override B's `*_secret_name` param to match,
+  or have B introspect the name the workload actually mounts
+  (`sts …volumes[].secret.secretName`). *Example: a CockroachDB campaign chaining
+  `generate-cert` (agent mounts `crdb-certs`) before `certificate-rotation` (targets
+  `crdb-cluster-certs`); the served-cert check correctly fails because the rotated
+  secret isn't the one the pods serve.* [COMPOSITION]
 - **C3 — Authoritative skip-probe for the case's own shape.** A lax probe ("6 pods
   Running") skips the build on an *incompatible* inherited topology, leaving the
   oracle's required objects (`es-http`) absent → unresolvable. Probe the exact
