@@ -148,6 +148,12 @@
     }
   }
 
+  // Search is scoped to the folder currently being browsed (like "Judge all"):
+  // the placeholder states the scope so it's clear the query is folder-limited.
+  function searchPlaceholder() {
+    return runsFolder ? `Search runs in ${runsFolder}…` : "Search runs…";
+  }
+
   function subtabs() {
     const tabs = el("div", { class: "subtabs" },
       el("button", { class: "tab" + (sub === "runs" ? " active" : ""), onClick: () => { sub = "runs"; render(); } }, "Runs"),
@@ -376,6 +382,8 @@
     // (button disabled), where its progress text must not be clobbered.
     const jb = document.getElementById("judge-all-btn");
     if (jb && !jb.disabled && !activeJudgeJob) setJudgeAllLabel(jb);
+    const sb = document.getElementById("runs-search");
+    if (sb) sb.placeholder = searchPlaceholder();
     const body = document.getElementById("runs-body");
     if (body) {
       renderRunRows(body);
@@ -450,7 +458,8 @@
     if (tokens.length) {
       const bar = document.getElementById("runs-crumb-bar");
       if (bar) { clear(bar); bar.style.display = "none"; }
-      const hits = allRuns.filter((r) => runMatches(r, tokens));
+      // Scope the search to the browsed folder (recursively); top level = all.
+      const hits = runsUnder(runsFolder).filter((r) => runMatches(r, tokens));
       if (!hits.length) {
         body.appendChild(el("tr", {}, el("td", { colspan: "5", class: "muted" }, "No runs match your search.")));
         return;
@@ -488,7 +497,7 @@
       clear(host);
       const panel = el("div", { class: "panel" });
       const search = el("input", {
-        type: "search", id: "runs-search", placeholder: "Search runs…",
+        type: "search", id: "runs-search", placeholder: searchPlaceholder(),
         value: runsFilter, autocomplete: "off",
         onInput: (e) => {
           runsFilter = e.target.value.trim().toLowerCase();
