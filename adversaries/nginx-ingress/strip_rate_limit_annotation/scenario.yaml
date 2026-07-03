@@ -31,19 +31,26 @@ deploy:
         --overwrite
       timeout_sec: 20
   verify:
-    - command: >-
-        /bin/sh -c "kubectl -n {{params.namespace}} get ingress {{params.ingress_name}}
-        -o jsonpath='{.metadata.annotations.nginx\\.ingress\\.kubernetes\\.io/limit-rps}'
-        | grep -v ."
+    # ADV6: positively assert the fault planted -- the annotation is ABSENT.
+    # The old `... | grep -v .` form could NEVER exit 0 (an empty jsonpath
+    # output has no lines to select; a present value line is dropped by -v);
+    # use the empty-test form instead (the documented fixed pattern in
+    # adversaries/demo/stale_configmap_value). The jsonpath key is derived
+    # from params.annotation_key (dots escaped) so probe/verify always read
+    # the same key the apply strips (no hardcoded drift).
+    - command: |
+        /bin/sh -c 'key=$(printf "%s" "{{params.annotation_key}}" | sed "s/\./\\\\./g"); [ -z "$(kubectl -n {{params.namespace}} get ingress {{params.ingress_name}} -o jsonpath="{.metadata.annotations.$key}")" ]'
       timeout_sec: 10
 
 lift:
   on_probe_fail: skip
   probe:
-    - command: >-
-        /bin/sh -c "kubectl -n {{params.namespace}} get ingress {{params.ingress_name}}
-        -o jsonpath='{.metadata.annotations.nginx\\.ingress\\.kubernetes\\.io/limit-rps}'
-        | grep -v ."
+    # ADV1: probe-pass => fault still present (annotation absent) => run the
+    # restore apply; if the agent already re-applied the annotation the probe
+    # fails and on_probe_fail=skip exits cleanly. Same empty-test form as
+    # deploy.verify, key derived from params.annotation_key.
+    - command: |
+        /bin/sh -c 'key=$(printf "%s" "{{params.annotation_key}}" | sed "s/\./\\\\./g"); [ -z "$(kubectl -n {{params.namespace}} get ingress {{params.ingress_name}} -o jsonpath="{.metadata.annotations.$key}")" ]'
       timeout_sec: 10
   apply:
     - command: >-
@@ -52,10 +59,10 @@ lift:
         --overwrite
       timeout_sec: 20
   verify:
-    - command: >-
-        /bin/sh -c "test \"$(kubectl -n {{params.namespace}} get ingress {{params.ingress_name}}
-        -o jsonpath='{.metadata.annotations.nginx\\.ingress\\.kubernetes\\.io/limit-rps}')\"
-        = '{{params.limit_rps}}'"
+    # Assert the restore landed: the annotation equals the configured value
+    # (key derived from params.annotation_key like probe/deploy.verify).
+    - command: |
+        /bin/sh -c 'key=$(printf "%s" "{{params.annotation_key}}" | sed "s/\./\\\\./g"); [ "$(kubectl -n {{params.namespace}} get ingress {{params.ingress_name}} -o jsonpath="{.metadata.annotations.$key}")" = "{{params.limit_rps}}" ]'
       timeout_sec: 10
 
 prompt_hints:
