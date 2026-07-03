@@ -156,10 +156,42 @@ preconditionUnits:
       - command: "/bin/sh -c 'kubectl -n demo get deploy rate-echo >/dev/null 2>&1; true'"
         timeout_sec: 10
 
+  # Drift re-plant (C8): scheduled more than once in a workflow, stages 2..N
+  # inherit the rate limit a prior instance's agent configured on the rate-api
+  # Ingress, so the fault ("{{params.api_path}} is not rate limited") is never
+  # re-planted and the stage passes with zero agent action. Probe the FAULT
+  # shape -- the rate-api Ingress carries no nginx rate-limit annotation; only
+  # when an inherited limit is present does the apply strip the rate-limit
+  # annotations (data-only, additive: no namespace delete, no controller or
+  # pod restart). Standalone the first run has no Ingress at all yet, so the
+  # probe passes (nothing to strip) and this unit skips; every step is
+  # best-effort (P8) so a hiccup degrades to a clean oracle verdict, never a
+  # framework precondition ERROR.
+  - name: rate_limit_drift_replant
+    on_probe_fail: skip
+    probe:
+      # Pass (skip apply) when the Ingress is absent OR carries no
+      # nginx.ingress.kubernetes.io/limit-* annotation; fail (run apply) only
+      # when an inherited rate limit exists on the rate-api Ingress.
+      - command: "/bin/sh -c 'kubectl -n demo get ingress rate-api -o jsonpath={.metadata.annotations} 2>/dev/null | grep -q \"nginx.ingress.kubernetes.io/limit-\" && exit 1 || exit 0'"
+        timeout_sec: 10
+    apply:
+      # kubectl annotate errors on removing an absent key, so strip each known
+      # rate-limit annotation individually, each best-effort (P8).
+      - command: "/bin/sh -c 'for k in limit-rps limit-rpm limit-connections limit-burst-multiplier; do kubectl -n demo annotate ingress rate-api nginx.ingress.kubernetes.io/$k- >/dev/null 2>&1 || true; done; true'"
+        sleep: 2
+    verify:
+      # Best-effort no-op (P8): a failed strip must never become a framework
+      # precondition ERROR; the probe re-fires on the next scheduling anyway.
+      - command: "/bin/sh -c 'true'"
+        timeout_sec: 10
+
 oracle:
   verify:
     commands:
-      # 150s: the oracle retries a transiently-failing burst exec for up to 120s
-      # (controller / curl-test warm-up); keep the command budget above that loop.
+      # 240s (O21): the oracle re-evaluates the full two-burst snapshot within a
+      # shared 110s window (O40 status-code convergence), and the final cycle
+      # can add up to 2 bounded 60s burst execs -- keep the command budget above
+      # window + one final cycle so the loop always prints a verdict.
       - command: "python3 cases/nginx-ingress/rate_limit_ingress_easy/oracle/oracle.py"
-        timeout_sec: 150
+        timeout_sec: 240
