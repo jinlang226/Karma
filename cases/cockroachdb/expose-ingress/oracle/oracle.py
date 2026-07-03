@@ -17,8 +17,17 @@ SQL_HOST = "ingress-nginx-controller.ingress-nginx.svc"
 SQL_PORT = os.environ.get("BENCH_PARAM_SQL_PORT", "26257")
 
 
-def run(cmd):
-    return subprocess.run(cmd, text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+def run(cmd, timeout=45):
+    """Run a command with a hard timeout (O17); a timeout becomes a failed result."""
+    try:
+        return subprocess.run(
+            cmd, text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+            timeout=timeout,
+        )
+    except subprocess.TimeoutExpired as exc:
+        return subprocess.CompletedProcess(
+            cmd, 124, exc.stdout or "", (exc.stderr or "") + "\n[command timed out]"
+        )
 
 
 _CONN_FLAG = None
@@ -60,6 +69,12 @@ def check_ui(errors):
         "curl",
         "-sS",
         "-k",
+        # Bound the probe (O17): a mid-reload controller can otherwise hold the
+        # connection open to the exec deadline.
+        "--connect-timeout",
+        "5",
+        "--max-time",
+        "20",
         "-o",
         "/dev/null",
         "-w",
@@ -101,11 +116,28 @@ def check_sql(errors):
         errors.append(msg or "SQL query through ingress failed")
 
 
-def main():
+def evaluate():
+    """One full snapshot of the ingress checks; returns the error list (O28)."""
     errors = []
-
     check_ui(errors)
     check_sql(errors)
+    return errors
+
+
+def main():
+    # Both checks route through ingress-nginx, which can be mid-reload (the
+    # agent just wrote the Ingress/ConfigMap; a controller replica is warming)
+    # at the instant a single-shot probe fires -- a transient 502/503/504 or a
+    # refused TCP connect then fails a correct solution (O13/O40; status codes
+    # are re-polled, not just exec errors). Re-evaluate for up to ~80s and pass
+    # on the first clean snapshot; a genuinely unrouted ingress keeps failing
+    # after the deadline. The loop fits under the oracle timeout_sec (O21).
+    import time
+    deadline = time.monotonic() + 80
+    errors = evaluate()
+    while errors and time.monotonic() < deadline:
+        time.sleep(7)
+        errors = evaluate()
 
     if errors:
         print("Expose ingress verification failed:", file=sys.stderr)
