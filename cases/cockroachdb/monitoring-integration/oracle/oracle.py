@@ -32,7 +32,8 @@ def fetch_metrics(host, port, path):
     for scheme, extra in (("https", ["-k", "-L"]), ("http", [])):
         cmd = [
             "kubectl", "-n", "cockroachdb", "exec", "curl-test", "--",
-            "curl", "-fsS", *extra, f"{scheme}://{host}:{port}{path}",
+            "curl", "-fsS", "--connect-timeout", "5", "--max-time", "20",
+            *extra, f"{scheme}://{host}:{port}{path}",
         ]
         result = run(cmd)
         if result.returncode == 0 and "sys_uptime" in result.stdout:
@@ -106,7 +107,8 @@ def load_pod_ips():
     return ips, ""
 
 
-def main():
+def evaluate():
+    """One full snapshot of the targets + metrics checks; returns error list (O28)."""
     errors = []
 
     pod_ips, pod_err = load_pod_ips()
@@ -123,6 +125,10 @@ def main():
         "--",
         "curl",
         "-fsS",
+        "--connect-timeout",
+        "5",
+        "--max-time",
+        "20",
         "http://prometheus.monitoring.svc:9090/api/v1/targets",
     ]
     result = run(cmd)
@@ -160,6 +166,24 @@ def main():
         errors.append(f"Metrics endpoint unreachable: {fetch_err}")
     elif "sys_uptime" not in result.stdout:
         errors.append("Metrics output missing sys_uptime")
+
+    return errors
+
+
+def main():
+    # Prometheus discovers and health-marks a just-configured scrape target
+    # ASYNCHRONOUSLY (its scrape interval + config reload lag), so a single-shot
+    # targets query can see the agent's correct config with the target not yet
+    # "up" -- an O23/O13 false fail. Re-evaluate the targets + metrics checks
+    # for up to ~90s and pass on the first clean snapshot; a target that never
+    # comes up keeps failing after the deadline. The loop fits under the raised
+    # oracle timeout_sec (O21).
+    import time
+    deadline = time.monotonic() + 90
+    errors = evaluate()
+    while errors and time.monotonic() < deadline:
+        time.sleep(8)
+        errors = evaluate()
 
     if errors:
         print("Monitoring integration verification failed:", file=sys.stderr)
