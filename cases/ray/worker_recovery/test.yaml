@@ -11,9 +11,16 @@ prompt: |
 
   Requirements:
   - Remove the invalid flag from the worker command.
-  - Ensure the worker deployment reaches 2 ready replicas.
+  - Ensure the worker deployment reaches {{params.expected_workers}} ready replicas.
 
-  Success criteria: ray-worker has 2 ready replicas and Ray reports 3 live nodes.
+  Success criteria: ray-worker has {{params.expected_workers}} ready replicas
+  and all {{params.expected_workers}} worker pods are registered as live nodes
+  with the Ray head.
+
+params:
+  expected_workers:
+    default: 2
+    description: Ready worker replicas the deployment must recover to
 
 namespace_contract:
   required_roles: []
@@ -46,14 +53,43 @@ preconditionUnits:
       - command: "kubectl -n ray wait --for=condition=Ready pod/ray-client --timeout=600s"
         timeout_sec: 660
         sleep: 1
-      - command: "kubectl -n ray exec ray-client -- ray start --address=ray-head:6379"
+      # P7: the client's GCS registration is race-prone and nothing the oracle
+      # depends on — never let it abort the whole precondition.
+      - command: "kubectl -n ray exec ray-client -- ray start --address=ray-head:6379 || true"
         sleep: 2
     verify:
       - command: "kubectl -n ray get pods 2>/dev/null | grep -c Running"
         timeout_sec: 10
 
+  # Fault re-plant (C8): ray_env_ready's "any pods Running" probe skips the
+  # whole build on an inherited healthy Ray cluster, so the crash-loop fault
+  # would never be (re)planted and the oracle would pass with zero agent work.
+  # This unit probes the FAULT SIGNATURE itself — the worker command carrying
+  # --bad-flag — and skips only when the fault is already present. Otherwise it
+  # re-plants additively: an existing ray-worker Deployment is PATCHED on just
+  # its container command (P16 — preserves an inherited image/replica count;
+  # the template change auto-rolls the pods so the fault takes effect, ADV7);
+  # only when no ray-worker Deployment exists at all (fresh/foreign namespace)
+  # is the case's own broken manifest applied. Verify reads the deployment
+  # spec, not the (deliberately broken) pods (P6/P27). Runs after
+  # ray_env_ready so the namespace/head exist (P37).
+  - name: worker_fault_replant
+    on_probe_fail: skip
+    probe:
+      - command: "/bin/sh -c 'kubectl -n ray get deploy ray-worker -o jsonpath=\"{.spec.template.spec.containers[0].command}\" 2>/dev/null | grep -q bad-flag'"
+        timeout_sec: 15
+    apply:
+      - command: "/bin/sh -c 'if kubectl -n ray get deploy ray-worker >/dev/null 2>&1; then kubectl -n ray patch deploy ray-worker --type=json --patch-file cases/ray/worker_recovery/resource/replant-bad-flag-patch.json; else kubectl -n ray apply -f cases/ray/worker_recovery/resource/ray-worker.yaml; fi'"
+        timeout_sec: 60
+        sleep: 3
+    verify:
+      - command: "/bin/sh -c 'kubectl -n ray get deploy ray-worker -o jsonpath=\"{.spec.template.spec.containers[0].command}\" 2>/dev/null | grep -q bad-flag'"
+        timeout_sec: 15
+
 oracle:
   verify:
     commands:
+      # O21/O14: the oracle runs two sequential 60s convergence polls
+      # (readyReplicas + scoped raylet tally); the budget must exceed their sum.
       - command: "python3 cases/ray/worker_recovery/oracle/oracle.py"
-        timeout_sec: 180
+        timeout_sec: 240

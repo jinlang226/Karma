@@ -1,11 +1,14 @@
 #!/usr/bin/env python3
 """Oracle for ray/worker_recovery.
 
-Verifies the head is ready, the worker deployment recovered to the expected
-ready replica count, and Ray reports the expected live node count.
+Verifies the head is ready, the worker deployment recovered to the promised
+ready replica count, and that EXPECTED_WORKERS raylets belonging to the worker
+pods (scoped by pod IP — O41, never the unscoped ray.nodes() tally the
+throwaway ray-client inflates) are alive in the cluster.
 """
 from __future__ import annotations
 
+import os
 import sys
 import time
 from pathlib import Path
@@ -14,18 +17,19 @@ sys.path.append(str(Path(__file__).resolve().parents[2]))
 
 from common.oracle_lib import (  # noqa: E402
     deployment_ready_replicas,
-    ray_node_count_from_head,
-    resolve_expected_workers,
+    ray_worker_raylet_count,
+    wait_ready_replicas,
 )
 
 NAMESPACE = "ray"
 HEAD = "ray-head"
 WORKER = "ray-worker"
-# Live/param-aware worker count: recovery restores the cluster to whatever worker
-# topology it inherits, it does not redefine it. Resolve param override -> live
-# worker spec -> the standalone default 2 so a cluster scaled to N workers must
-# recover all N (a dropped/unready worker still fails the check).
-EXPECTED_WORKERS = resolve_expected_workers(NAMESPACE, WORKER, default=2)
+# Param-first, never live-derived (O2 exception / O41): the worker count IS the
+# graded outcome here — the prompt promises the deployment recovers to this many
+# ready workers. Deriving it from the live spec.replicas would let an agent that
+# scales to 1 (instead of fixing the crash-looping command) "recover" trivially.
+# A workflow overrides via the expected_workers param; standalone default is 2.
+EXPECTED_WORKERS = int(os.environ.get("BENCH_PARAM_EXPECTED_WORKERS", "2") or "2")
 
 CONNECTIVITY_TOTAL_TIMEOUT_SEC = 60
 CONNECTIVITY_ATTEMPT_TIMEOUT_SEC = 12
@@ -41,73 +45,60 @@ def check_head() -> int:
     return 0
 
 
-def check_worker_ready() -> int:
-    """Confirm the workers functionally recovered to the expected count.
+def check_worker_ready_replicas() -> int:
+    """Confirm the worker Deployment recovers to EXPECTED_WORKERS ready replicas.
 
-    O-funcready: a recovered Ray worker registers as a live raylet (and serves
-    tasks) before its k8s Deployment readiness probe flips Ready, so a
-    single-snapshot ``readyReplicas < EXPECTED_WORKERS`` read false-fails a
-    cluster whose replacement workers have already rejoined the head. Grade the
-    functional signal -- Ray's own live-node count (``ray.nodes()`` Alive),
-    polled to convergence -- which proves every worker actually recovered into
-    the cluster. Not a loosening: a worker that never recovers leaves the count
-    short and still fails.
+    O41: the raylet tally alone can be inflated by non-worker raylets, so pair
+    it with the graded workload's own readyReplicas — polled to a bounded
+    deadline (O13/O14) so the post-fix rollout window can't false-fail.
     """
-    expected_nodes = 1 + EXPECTED_WORKERS
+    reached, last = wait_ready_replicas(
+        NAMESPACE, WORKER, EXPECTED_WORKERS, timeout_sec=CONNECTIVITY_TOTAL_TIMEOUT_SEC
+    )
+    if not reached:
+        print(f"deployment/{WORKER} ready replicas {last}, expected at least {EXPECTED_WORKERS}")
+        return 1
+    print(f"deployment/{WORKER} ready replicas {last}")
+    return 0
+
+
+def check_worker_raylets() -> int:
+    """Confirm EXPECTED_WORKERS raylets from the WORKER pods rejoined the head.
+
+    O41: ray.nodes() also lists the head raylet and the throwaway ray-client
+    raylet the precondition registers, so an unscoped `alive >= 1 + N` tally
+    passes one worker short (head+client+N-1). Count only alive raylets whose
+    NodeManagerAddress is one of the worker Deployment's own pod IPs, polled
+    to convergence (O13). Not a loosening: a worker that never recovers leaves
+    the scoped count short and still fails.
+    """
     deadline = time.time() + CONNECTIVITY_TOTAL_TIMEOUT_SEC
     last_count = 0
     last_error = ""
     while time.time() < deadline:
         try:
-            node_count = ray_node_count_from_head(
-                NAMESPACE, HEAD, timeout_sec=CONNECTIVITY_ATTEMPT_TIMEOUT_SEC
+            last_count = ray_worker_raylet_count(
+                NAMESPACE, HEAD, WORKER, timeout_sec=CONNECTIVITY_ATTEMPT_TIMEOUT_SEC
             )
         except Exception as exc:  # noqa: BLE001
             last_error = str(exc)
             time.sleep(3)
             continue
-        last_count = node_count
-        if node_count >= expected_nodes:
-            print(f"ray reports {node_count} live nodes ({EXPECTED_WORKERS} workers up)")
+        last_error = ""
+        if last_count >= EXPECTED_WORKERS:
+            print(f"ray reports {last_count} live worker raylets ({EXPECTED_WORKERS} required)")
             return 0
         time.sleep(3)
     if last_error:
-        print(f"ray worker liveness probe failed: {last_error}")
+        print(f"ray worker raylet probe failed: {last_error}")
         return 1
-    print(f"ray reports {last_count} live nodes, expected at least {expected_nodes}")
-    return 1
-
-
-def check_connectivity() -> int:
-    """Confirm Ray reports at least 1 head + EXPECTED_WORKERS live nodes."""
-    expected_nodes = 1 + EXPECTED_WORKERS
-    deadline = time.time() + CONNECTIVITY_TOTAL_TIMEOUT_SEC
-    last_count = 0
-    last_error = ""
-    while time.time() < deadline:
-        try:
-            node_count = ray_node_count_from_head(
-                NAMESPACE, HEAD, timeout_sec=CONNECTIVITY_ATTEMPT_TIMEOUT_SEC
-            )
-        except Exception as exc:  # noqa: BLE001
-            last_error = str(exc)
-            time.sleep(3)
-            continue
-        last_count = node_count
-        if node_count >= expected_nodes:
-            print(f"ray reports {node_count} nodes")
-            return 0
-        time.sleep(3)
-    if last_error:
-        print(f"ray connectivity probe failed: {last_error}")
-        return 1
-    print(f"ray reports {last_count} nodes, expected at least {expected_nodes}")
+    print(f"ray reports {last_count} live worker raylets, expected at least {EXPECTED_WORKERS}")
     return 1
 
 
 def main() -> int:
     """Run every worker_recovery verification check in order."""
-    for fn in (check_head, check_worker_ready, check_connectivity):
+    for fn in (check_head, check_worker_ready_replicas, check_worker_raylets):
         rc = fn()
         if rc != 0:
             return rc
