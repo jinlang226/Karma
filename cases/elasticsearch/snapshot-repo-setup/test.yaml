@@ -85,39 +85,35 @@ preconditionUnits:
       - command: "kubectl -n elasticsearch get pods 2>/dev/null | grep -c Running"
         timeout_sec: 10
 
-  # Additive MinIO + S3-keystore fixture (composition safety): standalone the
-  # build deploys MinIO and boots the ES nodes with the s3.client.default
-  # keystore creds. Chained on an INHERITED cluster the build is skipped, so the
-  # nodes have no S3 keystore and there is no MinIO backend -> the oracle fails
-  # "Missing keystore keys s3.client.default.*". Ensure both additively when
-  # absent: deploy ONLY MinIO (never the ES statefulset/configmap), then add the
-  # two keystore keys to each live ES node and reload_secure_settings -- no
-  # restart, no touch to inherited data. Probe skips when already present.
-  - name: s3_keystore_fixture
+  # Additive MinIO scaffolding fixture (P33/C1): the fresh build never pre-loads
+  # the ES keystore — configuring the s3.client.default.* secure settings IS the
+  # prompt's task #1, so this fixture must never install them (an earlier
+  # version did, pre-solving the graded deliverable on every run whose probe
+  # fired — even standalone). It re-establishes only the scenario INPUT the
+  # task and oracle depend on: the MinIO server, its credentials Secret, and
+  # the bucket-init Job, which vanish when the destructive build is skipped on
+  # an inherited cluster. The keystore creds + repository + snapshot stay the
+  # agent's deliverable.
+  - name: minio_scaffolding_fixture
     on_probe_fail: skip
+    # P3: probe THIS fixture's own deliverable (the MinIO pod), never the
+    # keystore key (the agent's artifact — gating on it would re-fire the
+    # fixture pointlessly and, worse, invite it to touch the deliverable).
     probe:
-      - command: |
-          /bin/sh -c 'p=$(kubectl -n elasticsearch get pods -l app={{params.cluster_prefix}} -o jsonpath="{.items[0].metadata.name}" 2>/dev/null); [ -n "$p" ] || exit 1; kubectl -n elasticsearch exec "$p" -- /usr/share/elasticsearch/bin/elasticsearch-keystore list 2>/dev/null | grep -q s3.client.default.access_key'
-        timeout_sec: 30
+      - command: "/bin/sh -c 'kubectl -n elasticsearch get pod -l {{params.minio_label_selector}} -o name 2>/dev/null | grep -q .'"
+        timeout_sec: 15
     apply:
       - command: "/bin/sh -c 'kubectl -n elasticsearch get pod -l {{params.minio_label_selector}} 2>/dev/null | grep -q . || { kubectl -n elasticsearch apply -f cases/elasticsearch/snapshot-repo-setup/resource/minio-secret.yaml; kubectl -n elasticsearch apply -f cases/elasticsearch/snapshot-repo-setup/resource/minio.yaml; kubectl -n elasticsearch apply -f cases/elasticsearch/snapshot-repo-setup/resource/minio-init-job.yaml; }'"
         sleep: 2
       - command: "/bin/sh -c 'kubectl -n elasticsearch wait --for=condition=ready pod -l {{params.minio_label_selector}} --timeout=300s || true'"
+        timeout_sec: 320
         sleep: 1
       - command: "/bin/sh -c 'kubectl -n elasticsearch wait --for=condition=complete job/{{params.minio_init_job_name}} --timeout=200s || true'"
+        timeout_sec: 220
         sleep: 1
-      - command: |
-          /bin/sh -c 'for p in $(kubectl -n elasticsearch get pods -l app={{params.cluster_prefix}} -o jsonpath="{.items[*].metadata.name}"); do kubectl -n elasticsearch exec "$p" -- /bin/sh -c "printf %s minioadmin | /usr/share/elasticsearch/bin/elasticsearch-keystore add -f -x s3.client.default.access_key; printf %s minioadmin | /usr/share/elasticsearch/bin/elasticsearch-keystore add -f -x s3.client.default.secret_key" >/dev/null 2>&1 || true; done'
-        sleep: 2
-      - command: |
-          /bin/sh -c 'pw=$(kubectl -n elasticsearch get secret elastic-password -o jsonpath="{.data.password}" 2>/dev/null | base64 -d 2>/dev/null); pw=${pw:-elasticpass}; kubectl -n elasticsearch exec {{params.curl_pod_name}} -- curl -s -k -u elastic:$pw -X POST "http://{{params.http_service_name}}.elasticsearch.svc:9200/_nodes/reload_secure_settings" >/dev/null 2>&1 || true'
-        sleep: 2
-    # Best-effort: this fixture is additive HELP for the inherited path (deploy
-    # MinIO; attempt the keystore add only when the keystore is writable). It must
-    # NEVER gate the stage — on a read-only keystore the add can't persist, and
-    # forcing a strict verify here would error the precondition (a framework bug)
-    # instead of letting the agent + oracle adjudicate as they do standalone. So
-    # verify always succeeds; the oracle remains the real check.
+    # Best-effort (P8): additive scaffolding must never error the precondition —
+    # a missing/slow MinIO degrades to a graded oracle fail, and the agent +
+    # oracle adjudicate the keystore work exactly as they do standalone.
     verify:
       - command: "/bin/sh -c 'true'"
         timeout_sec: 5
