@@ -27,12 +27,16 @@ def run_json(cmd):
     return json.loads(run(cmd, timeout_sec=30))
 
 
-def _resolve_expected_nodes(namespace, cluster_prefix):
-    """Cluster size to enforce: param override -> live StatefulSet -> default 3.
+def _resolve_expected_nodes():
+    """Cluster size to enforce: param override -> the case contract's 3.
 
-    The env PERSISTS across stages, so a prior scale stage may have grown the
-    cluster past the standalone default of 3. Only the count target adapts; the
-    per-pod version and cluster_status checks still fail for any unready node.
+    The prompt promises a 3-node cluster, so the node count IS a graded
+    outcome: param-first (BENCH_PARAM_EXPECTED_NODES / BENCH_PARAM_TARGET_NODES),
+    else the contract default 3 -- NEVER derived from readyReplicas or
+    spec.replicas (O2 exception: live derivation lets a downscaled/broken
+    cluster shrink its own expectation, masking e.g. a scale_down_cluster
+    adversary). A workflow that legitimately resizes the cluster must say so
+    via the param override.
     """
     for key in ("BENCH_PARAM_EXPECTED_NODES", "BENCH_PARAM_TARGET_NODES"):
         val = os.environ.get(key)
@@ -41,17 +45,6 @@ def _resolve_expected_nodes(namespace, cluster_prefix):
                 return int(val)
             except ValueError:
                 pass
-    try:
-        sts = run_json(["kubectl", "-n", namespace, "get", "sts", cluster_prefix, "-o", "json"])
-        status = sts.get("status", {}) or {}
-        spec = sts.get("spec", {}) or {}
-        live = status.get("readyReplicas")
-        if not isinstance(live, int) or live <= 0:
-            live = spec.get("replicas")
-        if isinstance(live, int) and live > 0:
-            return live
-    except Exception:
-        pass
     return 3
 
 
@@ -86,7 +79,7 @@ def main():
     NAMESPACE = args.namespace
     cluster_prefix = args.cluster_prefix
     errors = []
-    expected_nodes = _resolve_expected_nodes(NAMESPACE, cluster_prefix)
+    expected_nodes = _resolve_expected_nodes()
 
     try:
         pods = run_json([
