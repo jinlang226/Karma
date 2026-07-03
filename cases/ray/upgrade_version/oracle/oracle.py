@@ -2,7 +2,9 @@
 """Oracle for ray/upgrade_version.
 
 Verifies both the head and worker deployments run the target Ray image, remain
-ready, and that Ray still reports the expected live node count.
+ready, and that the inherited worker count is still fully live — counted from
+raylets belonging to the worker pods (scoped by pod IP — O41, never the
+unscoped ray.nodes() tally an auxiliary client raylet inflates).
 """
 from __future__ import annotations
 
@@ -16,8 +18,9 @@ sys.path.append(str(Path(__file__).resolve().parents[2]))
 from common.oracle_lib import (  # noqa: E402
     deployment_image,
     deployment_ready_replicas,
-    ray_node_count_from_head,
+    ray_worker_raylet_count,
     resolve_expected_workers,
+    wait_ready_replicas,
 )
 
 NAMESPACE = "ray"
@@ -67,67 +70,55 @@ def check_head_ready() -> int:
     return 0
 
 
-def check_worker_ready() -> int:
-    """Confirm the workers are functionally up at the expected count.
+def check_worker_ready_replicas() -> int:
+    """Confirm the worker Deployment returns to EXPECTED_WORKERS ready replicas.
 
-    O-funcready: after a rolling image upgrade a Ray worker registers as a live
-    raylet (and serves tasks) before its k8s Deployment readiness probe flips
-    Ready, so a single-snapshot ``readyReplicas < EXPECTED_WORKERS`` read
-    false-fails a cluster whose upgraded workers have already rejoined the head.
-    Grade the functional signal -- Ray's own live-node count (``ray.nodes()``
-    Alive), polled to convergence -- which proves every worker actually joined.
-    Not a loosening: a worker that never comes up leaves the count short and
-    still fails. check_worker_image keeps the upgraded-image assertion.
+    O41: the raylet tally alone can be inflated by non-worker raylets, so pair
+    it with the graded workload's own readyReplicas — polled to a bounded
+    deadline (O13/O14) so the post-upgrade rollout window can't false-fail.
     """
-    expected_nodes = 1 + EXPECTED_WORKERS
+    reached, last = wait_ready_replicas(
+        NAMESPACE, WORKER, EXPECTED_WORKERS, timeout_sec=CONNECTIVITY_TOTAL_TIMEOUT_SEC
+    )
+    if not reached:
+        print(f"deployment/{WORKER} ready replicas {last}, expected at least {EXPECTED_WORKERS}")
+        return 1
+    print(f"deployment/{WORKER} ready replicas {last}")
+    return 0
+
+
+def check_worker_raylets() -> int:
+    """Confirm EXPECTED_WORKERS raylets from the WORKER pods rejoined the head.
+
+    O41: ray.nodes() also lists the head raylet and any auxiliary client raylet,
+    so an unscoped `alive >= 1 + N` tally passes one worker short. Count only
+    alive raylets whose NodeManagerAddress is one of the worker Deployment's
+    own pod IPs, polled to convergence (O13) across the post-upgrade rejoin
+    window. Not a loosening: a worker that never rejoins leaves the scoped
+    count short and still fails. check_worker_image keeps the upgraded-image
+    assertion.
+    """
     deadline = time.time() + CONNECTIVITY_TOTAL_TIMEOUT_SEC
     last_count = 0
     last_error = ""
     while time.time() < deadline:
         try:
-            node_count = ray_node_count_from_head(
-                NAMESPACE, HEAD, timeout_sec=CONNECTIVITY_ATTEMPT_TIMEOUT_SEC
+            last_count = ray_worker_raylet_count(
+                NAMESPACE, HEAD, WORKER, timeout_sec=CONNECTIVITY_ATTEMPT_TIMEOUT_SEC
             )
         except Exception as exc:  # noqa: BLE001
             last_error = str(exc)
             time.sleep(3)
             continue
-        last_count = node_count
-        if node_count >= expected_nodes:
-            print(f"ray reports {node_count} live nodes ({EXPECTED_WORKERS} workers up)")
+        last_error = ""
+        if last_count >= EXPECTED_WORKERS:
+            print(f"ray reports {last_count} live worker raylets ({EXPECTED_WORKERS} required)")
             return 0
         time.sleep(3)
     if last_error:
-        print(f"ray worker liveness probe failed: {last_error}")
+        print(f"ray worker raylet probe failed: {last_error}")
         return 1
-    print(f"ray reports {last_count} live nodes, expected at least {expected_nodes}")
-    return 1
-
-
-def check_connectivity() -> int:
-    """Confirm Ray reports at least 1 head + EXPECTED_WORKERS live nodes."""
-    expected_nodes = 1 + EXPECTED_WORKERS
-    deadline = time.time() + CONNECTIVITY_TOTAL_TIMEOUT_SEC
-    last_count = 0
-    last_error = ""
-    while time.time() < deadline:
-        try:
-            node_count = ray_node_count_from_head(
-                NAMESPACE, HEAD, timeout_sec=CONNECTIVITY_ATTEMPT_TIMEOUT_SEC
-            )
-        except Exception as exc:  # noqa: BLE001
-            last_error = str(exc)
-            time.sleep(3)
-            continue
-        last_count = node_count
-        if node_count >= expected_nodes:
-            print(f"ray reports {node_count} nodes")
-            return 0
-        time.sleep(3)
-    if last_error:
-        print(f"ray connectivity probe failed: {last_error}")
-        return 1
-    print(f"ray reports {last_count} nodes, expected at least {expected_nodes}")
+    print(f"ray reports {last_count} live worker raylets, expected at least {EXPECTED_WORKERS}")
     return 1
 
 
@@ -137,8 +128,8 @@ def main() -> int:
         check_head_image,
         check_worker_image,
         check_head_ready,
-        check_worker_ready,
-        check_connectivity,
+        check_worker_ready_replicas,
+        check_worker_raylets,
     ):
         rc = fn()
         if rc != 0:
