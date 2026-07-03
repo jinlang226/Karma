@@ -113,6 +113,32 @@ def _run_has_score(run_dir: Path) -> bool:
     return bool(rj and isinstance(rj.get("score"), (int, float)))
 
 
+def _run_needs_llm(run_dir: Path) -> bool:
+    """Whether scoring this run will invoke the LLM adjudicator.
+
+    Mirrors ``judge.run_score.score_run``'s decision: the LLM runs only for a run
+    where every stage passed AND the regression sweep has failures to adjudicate.
+    Every other run -- failed/partial (objective stage-pass %) or all-passed with
+    a clean sweep (100) -- is scored statically with no LLM. Used to order the
+    "Judge all" worklist so the free/static runs are scored first and the costly
+    LLM ones last.
+    """
+    meta = (catalog._read_json(run_dir / "run.json")
+            or catalog._read_json(run_dir / "workflow_state.json"))
+    config = catalog._read_json(run_dir / "config.json")
+    stage_results = meta.get("stages") or meta.get("stage_results") or []
+    try:
+        declared = int(config.get("stage_total") or 0)
+    except Exception:
+        declared = 0
+    total = max(len(stage_results), declared)
+    passed = sum(1 for s in stage_results if s.get("status") == "pass")
+    if total == 0 or passed < total:
+        return False  # partial/failed run -> objective score, no LLM
+    sweep = meta.get("regression_sweep") or {}
+    return any((v or {}).get("verdict") != "pass" for v in sweep.values())
+
+
 def _judge_all_streaming(
     job_id: str, runs_dir: Path, judge_model: str | None, dry_run: bool
 ) -> dict[str, Any]:
@@ -156,17 +182,28 @@ def _judge_all_streaming(
         worklist.append(rd)
 
     total = len(worklist)
+    # Order the worklist so the free/static runs are scored first and the costly
+    # LLM-adjudicated runs last: fast bulk feedback (the many objective/clean runs
+    # fly by), cost transparency up front, and a cancel that keeps every cheap
+    # result while skipping only the expensive tail.
+    static_work: list[Path] = []
+    llm_work: list[Path] = []
+    for rd in worklist:
+        (llm_work if _run_needs_llm(rd) else static_work).append(rd)
+    ordered = static_work + llm_work
+
     # Announce the scan up front so the UI can frame the work ("Judging N of M;
     # K already scored") instead of inferring it from a crawling counter.
     hub.publish(job_id, {
         "type": "judge_scan", "job_id": job_id, "to_judge": total,
         "already_scored": already_scored, "not_judgeable": not_judgeable,
         "total_runs": len(run_dirs),
+        "static_count": len(static_work), "llm_count": len(llm_work),
     })
 
     results: dict[str, Any] = {}
     cancelled = False
-    for i, rd in enumerate(worklist, start=1):
+    for i, rd in enumerate(ordered, start=1):
         # Cooperative cancel: stop before starting the next run (the current run,
         # if any, has already finished) so a click halts the remaining worklist.
         if _cancel_requested(job_id):
