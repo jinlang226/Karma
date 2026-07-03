@@ -45,6 +45,28 @@ def _update(job_id: str, updates: dict[str, Any]) -> None:
             _judge_jobs[job_id].update(updates)
 
 
+def request_judge_cancel(job_id: str) -> bool:
+    """Flag a running judge job to stop after its current run finishes.
+
+    Returns True if a running job was flagged. Cancellation is cooperative --
+    the "Judge all" loop checks the flag between runs (the in-flight run is not
+    interrupted mid-scoring), so a click stops all *remaining* work promptly.
+    """
+    with _lock:
+        job = _judge_jobs.get(job_id)
+        if not job or job.get("status") != "running":
+            return False
+        job["cancel_requested"] = True
+        return True
+
+
+def _cancel_requested(job_id: str) -> bool:
+    """Return whether cancellation has been requested for *job_id*."""
+    with _lock:
+        job = _judge_jobs.get(job_id)
+        return bool(job and job.get("cancel_requested"))
+
+
 def get_judge_job(job_id: str) -> dict[str, Any] | None:
     """Return the status dict for *job_id*, or ``None`` when unknown."""
     with _lock:
@@ -143,7 +165,13 @@ def _judge_all_streaming(
     })
 
     results: dict[str, Any] = {}
+    cancelled = False
     for i, rd in enumerate(worklist, start=1):
+        # Cooperative cancel: stop before starting the next run (the current run,
+        # if any, has already finished) so a click halts the remaining worklist.
+        if _cancel_requested(job_id):
+            cancelled = True
+            break
         try:
             res = score_run(rd, judge_model=judge_model, dry_run=dry_run)
             results[rd.name] = {"score": res.get("score"), "summary": res.get("summary")}
@@ -160,7 +188,7 @@ def _judge_all_streaming(
     return {
         "target_type": "all", "count": len(results), "runs": results,
         "already_scored": already_scored, "not_judgeable": not_judgeable,
-        "total_runs": len(run_dirs),
+        "total_runs": len(run_dirs), "cancelled": cancelled,
     }
 
 
@@ -274,9 +302,12 @@ def start_judge_job(
                 result = _judge_all_streaming(job_id, path, judge_model, dry_run)
             else:
                 result = _judge_batch_streaming(job_id, path, judge_model, dry_run)
-            _update(job_id, {"status": "complete", "result": result})
+            final_status = ("cancelled"
+                            if isinstance(result, dict) and result.get("cancelled")
+                            else "complete")
+            _update(job_id, {"status": final_status, "result": result})
             hub.publish(job_id, {
-                "type": "judge_complete", "job_id": job_id, "status": "complete",
+                "type": "judge_complete", "job_id": job_id, "status": final_status,
             })
         except Exception as exc:
             _update(job_id, {"status": "error", "error": str(exc)})
