@@ -9,8 +9,14 @@
 # Targets the literal `mongodb` namespace (mongod-config-update uses -n mongodb).
 # The ConfigMap is named `mongod-config` as deployed by that case.
 #
-# Deploy: patch the ConfigMap to remove the mongod.conf key.
-# Lift:   if the agent has not already restored it, put back a minimal valid config.
+# Deploy: snapshot the live mongod.conf into a backup ConfigMap (ADV8), then
+#         patch the ConfigMap to remove the mongod.conf key.
+# Lift:   if the agent has not already restored it, restore the EXACT deploy-time
+#         snapshot; only when the snapshot is missing, fall back to the documented
+#         case baseline (cases/mongodb/mongod-config-update/resource/configmap.yaml).
+#         Never a hand-rolled minimal template (ADV10): the case's real mongod.conf
+#         carries replSetName/security.keyFile/authorization/bindIpAll and the zlib
+#         journalCompressor, all of which a minimal rewrite would silently drop.
 
 params:
   namespace:
@@ -19,16 +25,6 @@ params:
   configmap_name:
     default: mongod-config
     description: ConfigMap that holds the mongod configuration file.
-  restore_mongod_conf:
-    default: |
-      systemLog:
-        verbosity: 0
-        slowOpThresholdMs: 100
-      storage:
-        wiredTiger:
-          engineConfig:
-            journalCompressor: snappy
-    description: Minimal mongod.conf content restored by lift if the agent did not.
 
 deploy:
   on_probe_fail: error
@@ -36,6 +32,22 @@ deploy:
     - command: "kubectl -n {{params.namespace}} get configmap {{params.configmap_name}}"
       timeout_sec: 10
   apply:
+    # ADV8: snapshot the pre-injection mongod.conf into a -adv-backup ConfigMap
+    # BEFORE deleting the key, so lift restores exactly the config the workflow
+    # had (a prior stage may have legitimately changed verbosity / slowms /
+    # journalCompressor). Never overwrite an existing non-empty value with a
+    # template.
+    - command: |
+        /bin/sh -c '
+        conf=$(kubectl -n {{params.namespace}} get configmap {{params.configmap_name}} -o jsonpath="{.data.mongod\.conf}" 2>/dev/null)
+        if [ -n "$conf" ]; then
+          printf "%s" "$conf" > /tmp/adv-mongod-conf-snapshot
+          kubectl -n {{params.namespace}} create configmap {{params.configmap_name}}-adv-backup \
+            --from-file=mongod.conf=/tmp/adv-mongod-conf-snapshot \
+            --dry-run=client -o yaml | kubectl -n {{params.namespace}} apply -f -
+        fi
+        '
+      timeout_sec: 30
     - command: >-
         kubectl -n {{params.namespace}} patch configmap {{params.configmap_name}}
         --type=json -p='[{"op":"remove","path":"/data/mongod.conf"}]'
@@ -54,9 +66,25 @@ lift:
         -o jsonpath='{.data.mongod\.conf}' 2>/dev/null | grep -q systemLog"
       timeout_sec: 10
   apply:
-    - command: >-
-        kubectl -n {{params.namespace}} patch configmap {{params.configmap_name}}
-        --type=merge -p='{"data":{"mongod.conf":"systemLog:\n  verbosity: 0\n  slowOpThresholdMs: 100\nstorage:\n  wiredTiger:\n    engineConfig:\n      journalCompressor: snappy\n"}}'
+    # ADV8: restore the EXACT pre-injection snapshot taken at deploy. Only when
+    # the backup is missing/empty, fall back to the documented case baseline
+    # manifest (ADV10) -- never a hand-rolled minimal template, which would drop
+    # replSetName/security/net keys and flip the compressor, crash-looping the
+    # set on its next roll and failing prior stages' regression sweep.
+    - command: |
+        /bin/sh -c '
+        conf=$(kubectl -n {{params.namespace}} get configmap {{params.configmap_name}}-adv-backup -o jsonpath="{.data.mongod\.conf}" 2>/dev/null)
+        if [ -n "$conf" ]; then
+          printf "%s" "$conf" > /tmp/adv-mongod-conf-restore
+          kubectl -n {{params.namespace}} create configmap {{params.configmap_name}} \
+            --from-file=mongod.conf=/tmp/adv-mongod-conf-restore \
+            --dry-run=client -o yaml | kubectl -n {{params.namespace}} apply -f -
+        else
+          kubectl -n {{params.namespace}} apply -f cases/mongodb/mongod-config-update/resource/configmap.yaml
+        fi
+        '
+      timeout_sec: 30
+    - command: "kubectl -n {{params.namespace}} delete configmap {{params.configmap_name}}-adv-backup --ignore-not-found"
       timeout_sec: 20
   verify:
     - command: >-

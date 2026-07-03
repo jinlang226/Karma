@@ -42,8 +42,31 @@ deploy:
         EOF"
       timeout_sec: 20
   verify:
-    - command: "kubectl -n {{params.namespace}} get networkpolicy {{params.policy_name}}"
-      timeout_sec: 10
+    # ADV11(b): existence alone is doubly vacuous -- assert the policy actually
+    # SELECTS >=1 running pod (podSelector {} = every pod in the namespace, so
+    # any Running pod counts), and best-effort probe that a cross-member
+    # connect to 27017 now fails. CNI caveat: kind's default CNI (kindnetd)
+    # does NOT enforce NetworkPolicy, so the connect can still succeed there;
+    # the selector check is the accepted minimum and the connect probe is kept
+    # as evidence on stderr only, never a gate.
+    - command: |
+        /bin/sh -c '
+        NS={{params.namespace}}
+        kubectl -n "$NS" get networkpolicy {{params.policy_name}} >/dev/null 2>&1 || { echo "policy missing" >&2; exit 1; }
+        n=$(kubectl -n "$NS" get pods --field-selector=status.phase=Running -o name 2>/dev/null | wc -l)
+        [ "${n:-0}" -ge 1 ] || { echo "network_policy_block verify: policy selects zero running pods (vacuous fault)" >&2; exit 1; }
+        pod=$(kubectl -n "$NS" get pods --field-selector=status.phase=Running -o jsonpath="{.items[0].metadata.name}" 2>/dev/null)
+        peer_ip=$(kubectl -n "$NS" get pods --field-selector=status.phase=Running -o jsonpath="{.items[1].status.podIP}" 2>/dev/null)
+        if [ -n "$pod" ] && [ -n "$peer_ip" ]; then
+          if kubectl -n "$NS" exec "$pod" -- mongosh --quiet "mongodb://$peer_ip:27017/?directConnection=true&serverSelectionTimeoutMS=4000" --eval "db.hello().ok" >/dev/null 2>&1; then
+            echo "note: cross-member connect to 27017 still succeeds -- non-enforcing CNI (kind default); accepting on the selector check" >&2
+          else
+            echo "cross-member connect to 27017 blocked as expected" >&2
+          fi
+        fi
+        exit 0
+        '
+      timeout_sec: 60
 
 lift:
   on_probe_fail: skip
