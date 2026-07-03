@@ -1,0 +1,20 @@
+The exit code 1 means `grep -c` found 0 occurrences — the bootstrap setting is absent. Everything is clean.
+
+---
+
+**Summary of what was done and why:**
+
+**Root cause:** The `es-config` ConfigMap was missing `cluster.initial_master_nodes`. In Elasticsearch 7.x, this is a required bootstrap-only setting for a brand-new cluster — without it, nodes discover each other but cannot elect a master (hence "master not discovered yet").
+
+**Fix in 3 steps:**
+
+1. **Added `cluster.initial_master_nodes: [es-cluster-0, es-cluster-1, es-cluster-2]`** to the ConfigMap and deleted all 3 pods simultaneously (safe since the cluster hadn't formed yet; `podManagementPolicy: Parallel` means they restart together and immediately hold a bootstrap election).
+
+2. **Cluster formed** — green status, 3 nodes, master elected (`es-cluster-2`).
+
+3. **Removed `cluster.initial_master_nodes`** from the ConfigMap, then did `kubectl rollout restart statefulset/es-cluster` for a rolling restart. `cluster.initial_master_nodes` is a bootstrap-only setting: leaving it in place after cluster formation is dangerous because it can trigger an illegitimate second bootstrap if ever applied to a fresh node set. The cluster remembers its formation in the persistent data directory — `discovery.seed_hosts` handles future restarts from here on.
+
+**Final state:**
+- Cluster status: **green**, 3 nodes, 1 master elected
+- Rolling restart completed with cluster staying healthy throughout
+- ConfigMap contains only safe, restart-stable settings

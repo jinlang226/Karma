@@ -1,0 +1,16 @@
+All goals are met:
+
+**What was wrong:** The `es-config` ConfigMap was missing `cluster.initial_master_nodes`. In Elasticsearch 7.x, this setting is required for the very first cluster bootstrap — without it, nodes can never agree on an initial quorum and the master discovery loop never terminates.
+
+**What was done:**
+
+1. **Added `cluster.initial_master_nodes`** to the ConfigMap listing all three node names (`es-cluster-0/1/2`), enabling bootstrap quorum election.
+2. **Restarted all pods** simultaneously (via `kubectl delete pod`) so they picked up the updated config. The cluster formed and elected `es-cluster-0` as master within ~100 seconds.
+3. **Removed `cluster.initial_master_nodes`** from the ConfigMap immediately after the cluster turned green. This setting is bootstrap-only — leaving it in place after the cluster forms can cause split-brain or conflict with a stored cluster state on subsequent full restarts.
+4. **Rolling restart** (one pod at a time, waited for each to rejoin before proceeding) verified the cluster survives restarts using only `discovery.seed_hosts`, which is the correct steady-state config.
+
+**Final state:**
+- Cluster: **green**, 100% active shards, 0 pending tasks
+- Master: `es-cluster-1` (elected fresh after rolling restart)
+- All 3 pods: `1/1 Running`
+- ConfigMap: contains only `discovery.seed_hosts` (no bootstrap-only settings)

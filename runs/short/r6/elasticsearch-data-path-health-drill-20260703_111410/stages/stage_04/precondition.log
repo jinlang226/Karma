@@ -1,0 +1,20 @@
+[precondition:es_env_ready:preconditionUnits[0] 'es_env_ready':probe] $ kubectl -n elasticsearch get pods 2>/dev/null | grep -c Running
+8
+
+[precondition:seed_index_baseline:preconditionUnits[1] 'seed_index_baseline':probe] $ kubectl -n elasticsearch get configmap es-seed
+Error from server (NotFound): configmaps "es-seed" not found
+
+[precondition:seed_index_baseline:preconditionUnits[1] 'seed_index_baseline':apply] $ kubectl -n elasticsearch wait --for=condition=ready pod/curl-test --timeout=300s
+pod/curl-test condition met
+
+[precondition:seed_index_baseline:preconditionUnits[1] 'seed_index_baseline':apply] $ /bin/sh -c 'pw=$(kubectl -n elasticsearch get secret elastic-password -o jsonpath="{.data.password}" 2>/dev/null | base64 -d 2>/dev/null); A=""; [ -n "$pw" ] && A="-u elastic:$pw"; svc="es-http.elasticsearch.svc:9200"; for i in $(seq 1 60); do for S in https http; do kubectl -n elasticsearch exec curl-test -- curl -sk $A --max-time 5 "$S://$svc/_cluster/health?wait_for_status=yellow&timeout=5s" 2>/dev/null | grep -q "status" && exit 0; done; sleep 2; done; exit 1'
+
+[precondition:seed_index_baseline:preconditionUnits[1] 'seed_index_baseline':apply] $ /bin/sh -c 'pw=$(kubectl -n elasticsearch get secret elastic-password -o jsonpath="{.data.password}" 2>/dev/null | base64 -d 2>/dev/null); A=""; [ -n "$pw" ] && A="-u elastic:$pw"; svc="es-http.elasticsearch.svc:9200"; S=https; kubectl -n elasticsearch exec curl-test -- curl -sk $A --max-time 5 "https://$svc/" >/dev/null 2>&1 || S=http; kubectl -n elasticsearch exec curl-test -- curl -sk $A -X PUT "$S://$svc/app-data" >/dev/null; for n in 1 2 3; do kubectl -n elasticsearch exec curl-test -- curl -sk $A -X PUT "$S://$svc/app-data/_doc/seed-$n" -H "Content-Type: application/json" -d "{\"x\":$n}" >/dev/null; done; kubectl -n elasticsearch exec curl-test -- curl -sk $A -X POST "$S://$svc/app-data/_refresh" >/dev/null'
+
+[precondition:seed_index_baseline:preconditionUnits[1] 'seed_index_baseline':apply] $ /bin/sh -c 'kubectl -n elasticsearch create configmap es-seed --from-literal=index=app-data --from-literal=expected_count=3 --dry-run=client -o yaml | kubectl apply -f -'
+configmap/es-seed created
+
+[precondition:seed_index_baseline:preconditionUnits[1] 'seed_index_baseline':verify] $ kubectl -n elasticsearch get configmap es-seed
+NAME      DATA   AGE
+es-seed   2      1s
+

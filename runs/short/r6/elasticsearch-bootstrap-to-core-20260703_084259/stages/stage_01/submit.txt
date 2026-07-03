@@ -1,0 +1,14 @@
+All goals achieved. Here's a summary of what was done and why:
+
+---
+
+**Root cause:** `cluster.initial_master_nodes` was missing from `elasticsearch.yml`. In ES 7.x, this setting is required for the very first master election — without it, nodes discover each other via `discovery.seed_hosts` but can't form a quorum, causing the "master not discovered yet" loop.
+
+**What was done:**
+
+1. **Added `cluster.initial_master_nodes`** to the `es-config` ConfigMap listing all 3 node names (`es-cluster-0/1/2`).
+2. **Restarted all pods** simultaneously (StatefulSet's `podManagementPolicy: Parallel` is already set) so they picked up the new config and bootstrapped the cluster.
+3. **Removed `cluster.initial_master_nodes`** from the ConfigMap immediately after the cluster formed. This is critical — leaving it in is dangerous: if a node with a clean data directory ever starts, it could attempt to re-bootstrap a fresh single-node cluster, causing split-brain. The setting is only meaningful on the very first boot when there's no persisted cluster state.
+4. **Rolling restart (one pod at a time)** confirmed the cluster stays green through the entire restart cycle without the bootstrap setting — it now uses the persisted cluster state and `discovery.seed_hosts` to rejoin.
+
+**Final state:** `status: green`, 3 nodes, master elected (`es-cluster-2`), 0 unassigned shards. The ConfigMap is safe for future restarts.

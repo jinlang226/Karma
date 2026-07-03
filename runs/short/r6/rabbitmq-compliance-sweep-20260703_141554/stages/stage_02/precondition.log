@@ -1,0 +1,65 @@
+[precondition:rabbitmq_secrets_ready:preconditionUnits[0] 'rabbitmq_secrets_ready':probe] $ /bin/sh -c 'set -e; kubectl -n ${BENCH_NAMESPACE} get secret rabbitmq-erlang-cookie >/dev/null; kubectl -n ${BENCH_NAMESPACE} get secret rabbitmq-admin >/dev/null'
+
+[precondition:rbac_ready:preconditionUnits[1] 'rbac_ready':probe] $ kubectl -n ${BENCH_NAMESPACE} get sa rabbitmq
+NAME       SECRETS   AGE
+rabbitmq   0         4m21s
+
+[precondition:config_ready:preconditionUnits[2] 'config_ready':probe] $ kubectl -n ${BENCH_NAMESPACE} get configmap rabbitmq-config
+NAME              DATA   AGE
+rabbitmq-config   2      4m20s
+
+[precondition:services_ready:preconditionUnits[3] 'services_ready':probe] $ /bin/sh -c 'set -e; kubectl -n ${BENCH_NAMESPACE} get svc rabbitmq >/dev/null; kubectl -n ${BENCH_NAMESPACE} get svc rabbitmq-headless >/dev/null'
+
+[precondition:openssl_toolbox_ready:preconditionUnits[4] 'openssl_toolbox_ready':probe] $ kubectl -n ${BENCH_NAMESPACE} wait --for=condition=ready pod -l app=openssl-toolbox --timeout=3s
+error: no matching resources found
+
+[precondition:openssl_toolbox_ready:preconditionUnits[4] 'openssl_toolbox_ready':apply] $ envsubst '$BENCH_NAMESPACE $BENCH_NS_SOURCE $BENCH_NS_TARGET $BENCH_PARAM_CLUSTER_PREFIX $BENCH_PARAM_BLUE_CLUSTER_PREFIX $BENCH_PARAM_GREEN_CLUSTER_PREFIX $BENCH_PARAM_FROM_VERSION' < cases/rabbitmq/manual_tls_rotation/resource/openssl-toolbox.yaml | kubectl -n ${BENCH_NAMESPACE} apply -f -
+pod/openssl-toolbox created
+
+[precondition:openssl_toolbox_ready:preconditionUnits[4] 'openssl_toolbox_ready':apply] $ kubectl -n ${BENCH_NAMESPACE} wait --for=condition=ready pod -l app=openssl-toolbox --timeout=120s
+pod/openssl-toolbox condition met
+
+[precondition:openssl_toolbox_ready:preconditionUnits[4] 'openssl_toolbox_ready':verify] $ kubectl -n ${BENCH_NAMESPACE} wait --for=condition=ready pod -l app=openssl-toolbox --timeout=3s
+pod/openssl-toolbox condition met
+
+[precondition:tls_material_ready:preconditionUnits[5] 'tls_material_ready':probe] $ python3 cases/rabbitmq/manual_tls_rotation/setup_precondition_check.py --namespace ${BENCH_NAMESPACE} --baseline-max-leaf-validity-days 10 --tls-material-only
+setup-precondition-check: failed
+ - failed to read rabbitmq-tls secret: Command '['kubectl', '-n', 'karma-rabbitmq-compliance-sweep-20260-ceb861cd-cluster-a', 'get', 'secret', 'rabbitmq-tls', '-o', 'json']' returned non-zero exit status 1.
+ - failed to read rabbitmq-tls-old configmap: Command '['kubectl', '-n', 'karma-rabbitmq-compliance-sweep-20260-ceb861cd-cluster-a', 'get', 'configmap', 'rabbitmq-tls-old', '-o', 'json']' returned non-zero exit status 1.
+
+[precondition:tls_material_ready:preconditionUnits[5] 'tls_material_ready':apply] $ kubectl -n ${BENCH_NAMESPACE} exec -i openssl-toolbox -- sh -s rabbitmq ${BENCH_NAMESPACE} < cases/rabbitmq/manual_tls_rotation/resource/gen-tls-material.sh
+Certificate request self-signature ok
+subject=CN = rabbitmq
+
+[precondition:tls_material_ready:preconditionUnits[5] 'tls_material_ready':apply] $ /bin/sh -c 'rm -rf /tmp/rmq-tls-certs; kubectl -n ${BENCH_NAMESPACE} cp openssl-toolbox:/tmp/certs /tmp/rmq-tls-certs'
+tar: removing leading '/' from member names
+
+[precondition:tls_material_ready:preconditionUnits[5] 'tls_material_ready':apply] $ /bin/sh -c 'kubectl -n ${BENCH_NAMESPACE} create secret generic rabbitmq-tls --from-file=ca.crt=/tmp/rmq-tls-certs/ca.crt --from-file=tls.crt=/tmp/rmq-tls-certs/tls.crt --from-file=tls.key=/tmp/rmq-tls-certs/tls.key --dry-run=client -o yaml | kubectl -n ${BENCH_NAMESPACE} apply -f -'
+secret/rabbitmq-tls created
+
+[precondition:tls_material_ready:preconditionUnits[5] 'tls_material_ready':apply] $ /bin/sh -c 'kubectl -n ${BENCH_NAMESPACE} create secret generic rabbitmq-tls-ca --from-file=ca.key=/tmp/rmq-tls-certs/ca.key --dry-run=client -o yaml | kubectl -n ${BENCH_NAMESPACE} apply -f -'
+secret/rabbitmq-tls-ca created
+
+[precondition:tls_material_ready:preconditionUnits[5] 'tls_material_ready':apply] $ /bin/sh -c 'ca_fp=$(openssl x509 -noout -fingerprint -sha256 -in /tmp/rmq-tls-certs/ca.crt | sed "s/.*=//"); leaf_fp=$(openssl x509 -noout -fingerprint -sha256 -in /tmp/rmq-tls-certs/tls.crt | sed "s/.*=//"); kubectl -n ${BENCH_NAMESPACE} create configmap rabbitmq-tls-old --from-literal=ca_fingerprint_sha256="$ca_fp" --from-literal=leaf_fingerprint_sha256="$leaf_fp" --dry-run=client -o yaml | kubectl -n ${BENCH_NAMESPACE} apply -f -'
+configmap/rabbitmq-tls-old created
+
+[precondition:tls_material_ready:preconditionUnits[5] 'tls_material_ready':verify] $ python3 cases/rabbitmq/manual_tls_rotation/setup_precondition_check.py --namespace ${BENCH_NAMESPACE} --baseline-max-leaf-validity-days 10 --tls-material-only
+setup-precondition-check: ok
+/mydata/karma/cases/rabbitmq/manual_tls_rotation/setup_precondition_check.py:143: DeprecationWarning: datetime.datetime.utcnow() is deprecated and scheduled for removal in a future version. Use timezone-aware objects to represent datetimes in UTC: datetime.datetime.now(datetime.UTC).
+  days_left = (_not_after(leaf_pem) - dt.datetime.utcnow()).days
+
+[precondition:tls_ca_key_ready:preconditionUnits[6] 'tls_ca_key_ready':probe] $ kubectl -n ${BENCH_NAMESPACE} get secret rabbitmq-tls-ca
+NAME              TYPE     DATA   AGE
+rabbitmq-tls-ca   Opaque   1      3s
+
+[precondition:rabbitmq_statefulset_present:preconditionUnits[7] 'rabbitmq_statefulset_present':probe] $ kubectl -n ${BENCH_NAMESPACE} get sts rabbitmq
+NAME       READY   AGE
+rabbitmq   3/3     4m28s
+
+[precondition:rabbitmq_cluster_ready:preconditionUnits[8] 'rabbitmq_cluster_ready':probe] $ /bin/sh -c 'set -e; [ "$(kubectl -n ${BENCH_NAMESPACE} get sts rabbitmq -o jsonpath="{.status.readyReplicas}")" = "3" ]'
+
+[precondition:tls_rotation_baseline_ready:preconditionUnits[9] 'tls_rotation_baseline_ready':probe] $ python3 cases/rabbitmq/manual_tls_rotation/setup_precondition_check.py --namespace ${BENCH_NAMESPACE} --min-ready 3 --baseline-max-leaf-validity-days 10
+setup-precondition-check: ok
+/mydata/karma/cases/rabbitmq/manual_tls_rotation/setup_precondition_check.py:143: DeprecationWarning: datetime.datetime.utcnow() is deprecated and scheduled for removal in a future version. Use timezone-aware objects to represent datetimes in UTC: datetime.datetime.now(datetime.UTC).
+  days_left = (_not_after(leaf_pem) - dt.datetime.utcnow()).days
+

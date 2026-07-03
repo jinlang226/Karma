@@ -1,0 +1,24 @@
+Everything is working. The snapshot `snapshot-1` succeeded with state `SUCCESS`, 2 shards all successful, and the files are persisted in MinIO's `es-backups` bucket.
+
+Here's a summary of what was accomplished:
+
+**What was done:**
+
+1. **Created the MinIO Service** — `minio.elasticsearch.svc.cluster.local:9000` was missing; created a ClusterIP service so ES could reach MinIO.
+
+2. **Created `es-secure-settings` Secret** — Stored the MinIO credentials (`s3.client.default.access_key` / `s3.client.default.secret_key`) in this Kubernetes Secret.
+
+3. **Updated both elasticsearch.yml ConfigMaps** (`es-config` and `es-config-new`) with S3 client static settings:
+   ```yaml
+   s3.client.default.endpoint: "minio.elasticsearch.svc.cluster.local:9000"
+   s3.client.default.protocol: http
+   s3.client.default.path_style_access: true
+   ```
+
+4. **Patched both StatefulSets** to mount `es-secure-settings` as a volume at `/run/secrets/es-secure/`, then performed rolling restarts so the new elasticsearch.yml took effect.
+
+5. **Populated the Elasticsearch keystore** on all 5 nodes by exec-ing `elasticsearch-keystore add --stdin` reading from the mounted secret files (no credentials in env vars).
+
+6. **Reloaded secure settings** via `POST /_nodes/reload_secure_settings` — all 5 nodes confirmed successful.
+
+7. **Registered `minio-repo`** and created **`snapshot-1`** — state `SUCCESS`, indices `test-index` + `app-data`, 2/2 shards succeeded, stored in MinIO.

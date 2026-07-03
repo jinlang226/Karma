@@ -1,0 +1,13 @@
+Everything is working. Here's a summary of what was done:
+
+**Root cause:** The `es-secure-settings` Secret (containing `s3.client.default.access_key` and `s3.client.default.secret_key`) was already mounted at `/run/secrets/es-secure` on every pod, but the credentials had never been imported into the Elasticsearch keystore. Elasticsearch reads S3 credentials from its encrypted keystore, not from mounted files or env vars.
+
+**Steps taken:**
+
+1. **Populated the keystore on all 3 nodes** — Exec'd into `elasticsearch-0`, `es-data-new-0`, and `es-data-new-1` and ran `elasticsearch-keystore add -f` piping the values from the mounted secret files. This keeps credentials out of `elasticsearch.yml` and env vars as required.
+
+2. **Reloaded secure settings without restarting** — Called `POST /_nodes/reload_secure_settings`, which returned `successful: 3 / failed: 0` across all nodes. No pod restarts needed.
+
+3. **Registered the `minio-repo` snapshot repository** — PUT to `/_snapshot/minio-repo` with type `s3`, bucket `es-backups`, client `default`. The S3 endpoint (`minio.elasticsearch.svc.cluster.local:9000`), protocol (`http`), and path-style access were already configured in `elasticsearch.yml`.
+
+4. **Verified with a successful snapshot** — `snapshot-2` completed in 1 second with `state: SUCCESS`, 2 shards, 0 failures.

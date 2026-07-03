@@ -1,0 +1,54 @@
+ROOT CAUSE ANALYSIS
+===================
+
+Stage 3 (aggregate by user_id) fails with an OutOfMemoryError because:
+
+1. MEMORY MISCONFIGURATION: The ETL job was configured with only 256m of
+   driver/executor memory. In local[2] mode, the executor runs inside the
+   driver JVM. A 256m heap is below Spark's minimum reserved system memory
+   (~471MB), so spark-submit fails immediately with:
+   "must be at least ... increase heap size"
+
+2. DATA SKEW (compounding factor): user_id 999 holds ~50% of all records,
+   causing a single reduce task in Stage 3 to receive a disproportionate
+   data load, exhausting available heap even if memory were marginally
+   sufficient.
+
+   Data distribution:
+   - total_records:       100,000
+   - distinct_user_ids:   1,000
+   - hot_user_id:         999
+   - hot_user_records:    50,000  (50% of total)
+   - skew_ratio:          500x    (threshold: 10x)
+
+DIAGNOSIS SOURCE
+================
+- kubectl logs -n spark-etl -l app=diagnostic-server:
+    DIAGNOSTIC: hot key user_id=999 holds ~50% of records
+    DIAGNOSTIC: skew_ratio=500x (>> 10x threshold)
+    DIAGNOSTIC: Stage 3 GROUP BY user_id triggers OutOfMemoryError
+- /data/skew_info.txt (data-generator pod): confirmed above figures
+
+FIX APPLIED
+===========
+Raised driver and executor memory from 256m -> 1g in
+cases/spark/spark_etl_skew_oom/resource/etl-job.yaml:
+
+  --driver-memory 1g
+  --conf spark.executor.memory=1g
+
+Also enabled AQE skew-join handling to mitigate the data-skew factor:
+
+  --conf spark.sql.adaptive.enabled=true
+  --conf spark.sql.adaptive.skewJoin.enabled=true
+
+Re-applied the job:
+  kubectl delete job etl-job -n spark-etl
+  kubectl apply -f cases/spark/spark_etl_skew_oom/resource/etl-job.yaml
+
+VERIFICATION
+============
+- kubectl get job etl-job -n spark-etl  ->  STATUS: Complete  (1/1)
+- Job logs contain: "spark_etl_pipeline_verified"
+- All three pipeline stages (load, clean/transform, aggregate) completed
+  without OOM errors under the new 1g memory allocation

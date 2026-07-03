@@ -1,0 +1,31 @@
+[precondition:rabbitmq_secrets_ready:preconditionUnits[0] 'rabbitmq_secrets_ready':probe] $ /bin/sh -c 'set -e; kubectl -n ${BENCH_NAMESPACE} get secret rabbitmq-erlang-cookie >/dev/null; kubectl -n ${BENCH_NAMESPACE} get secret rabbitmq-admin >/dev/null; kubectl -n ${BENCH_NAMESPACE} get secret rabbitmq-app >/dev/null'
+
+[precondition:rbac_ready:preconditionUnits[1] 'rbac_ready':probe] $ kubectl -n ${BENCH_NAMESPACE} get sa rabbitmq
+NAME       SECRETS   AGE
+rabbitmq   0         54m
+
+[precondition:infra_ready:preconditionUnits[2] 'infra_ready':probe] $ /bin/sh -c 'set -e; kubectl -n ${BENCH_NAMESPACE} get svc rabbitmq >/dev/null; kubectl -n ${BENCH_NAMESPACE} get svc rabbitmq-headless >/dev/null'
+
+[precondition:rabbitmq_cluster_ready:preconditionUnits[3] 'rabbitmq_cluster_ready':probe] $ /bin/sh -c 'set -e; [ "$(kubectl -n ${BENCH_NAMESPACE} get sts rabbitmq -o jsonpath="{.status.readyReplicas}")" = "3" ]'
+
+[precondition:setup_job_completed:preconditionUnits[4] 'setup_job_completed':probe] $ python3 cases/rabbitmq/manual_policy_sync/setup_precondition_check.py --namespace ${BENCH_NAMESPACE} --bootstrap-only
+setup-precondition-check: failed
+ - app-queue expected classic, got quorum
+
+[precondition:setup_job_completed:preconditionUnits[4] 'setup_job_completed':apply] $ kubectl -n ${BENCH_NAMESPACE} delete job rabbitmq-setup --ignore-not-found=true
+job.batch "rabbitmq-setup" deleted
+
+[precondition:setup_job_completed:preconditionUnits[4] 'setup_job_completed':apply] $ envsubst '$BENCH_NAMESPACE $BENCH_NS_SOURCE $BENCH_NS_TARGET $BENCH_PARAM_CLUSTER_PREFIX $BENCH_PARAM_BLUE_CLUSTER_PREFIX $BENCH_PARAM_GREEN_CLUSTER_PREFIX $BENCH_PARAM_FROM_VERSION' < cases/rabbitmq/manual_policy_sync/resource/setup-job.yaml | kubectl -n ${BENCH_NAMESPACE} apply -f -
+job.batch/rabbitmq-setup created
+
+[precondition:setup_job_completed:preconditionUnits[4] 'setup_job_completed':apply] $ kubectl -n ${BENCH_NAMESPACE} wait --for=condition=complete job/rabbitmq-setup --timeout=300s
+job.batch/rabbitmq-setup condition met
+
+[precondition:setup_job_completed:preconditionUnits[4] 'setup_job_completed':verify] $ python3 cases/rabbitmq/manual_policy_sync/setup_precondition_check.py --namespace ${BENCH_NAMESPACE} --bootstrap-only
+setup-precondition-check: ok
+
+[precondition:curl_test_ready:preconditionUnits[5] 'curl_test_ready':probe] $ kubectl -n ${BENCH_NAMESPACE} wait --for=condition=ready pod -l app=curl-test --timeout=3s
+pod/curl-test condition met
+
+[precondition:policy_sync_baseline_ready:preconditionUnits[6] 'policy_sync_baseline_ready':probe] $ /bin/sh -c '! kubectl -n ${BENCH_NAMESPACE} exec rabbitmq-0 -- rabbitmqctl -q list_policies -p /app 2>/dev/null | grep -qw ha-all'
+

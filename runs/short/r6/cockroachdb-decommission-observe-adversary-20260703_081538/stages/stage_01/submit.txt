@@ -1,0 +1,18 @@
+All three verification checks pass:
+
+1. **Node status** — 3 live nodes (IDs 1, 3, 5), nodes 2 and 4 fully decommissioned and no longer appear.
+2. **StatefulSet** — `3/3 READY`, 17m old.
+3. **Data** — `bench.decom_data` returns 3 rows; cluster is SQL-ready.
+
+---
+
+**What happened and what was done:**
+
+The adversary process scaled the StatefulSet from 5 to 1, causing pods crdb-cluster-1 through crdb-cluster-4 to start terminating simultaneously — which would have dropped the cluster below quorum and made decommission impossible.
+
+Recovery sequence:
+1. **Immediately scaled to 3** to stop the runaway scale-down; pods 1 and 2 were recreated from their PVCs.
+2. **Attempted decommission of nodes 2 and 4** — failed because some system Raft ranges (NodeLiveness r3, Jobs r18) had lost quorum when they had replicas only on the now-dead nodes.
+3. **Scaled temporarily back to 5** to restore all PVCs and repair quorum on the affected ranges.
+4. **Properly decommissioned nodes 2 and 4** — the CLI drained all replicas off both nodes, confirmed 0 replicas, and marked both as `decommissioned`.
+5. **Scaled to 3** — terminated pods crdb-cluster-3 and crdb-cluster-4 (the decommissioned nodes). Cluster stabilized with nodes 1, 3, 5 on pods crdb-cluster-0, crdb-cluster-2, crdb-cluster-1.

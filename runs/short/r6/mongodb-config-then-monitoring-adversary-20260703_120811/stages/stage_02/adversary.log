@@ -1,0 +1,53 @@
+$ kubectl -n mongodb get pod mongodb-replica-0
+NAME                READY   STATUS    RESTARTS   AGE
+mongodb-replica-0   1/1     Running   0          3m37s
+
+$ /bin/sh -c '
+NS=mongodb
+P=$(kubectl -n "$NS" get secret admin-user-password -o jsonpath="{.data.password}" | base64 -d)
+pods=$(kubectl -n "$NS" get pods -l app=mongodb-replica --field-selector=status.phase=Running -o jsonpath="{.items[*].metadata.name}" 2>/dev/null)
+[ -n "$pods" ] || pods="mongodb-replica-0"
+PRIMARY=""
+for pod in $pods; do
+  T=""; for ca in /etc/tls/ca.crt /etc/mongo-ca/ca.crt /etc/mongodb/tls/ca.crt /etc/ssl/mongodb/ca.crt; do kubectl -n "$NS" exec "$pod" -- test -f "$ca" 2>/dev/null && { T="--tls --tlsAllowInvalidHostnames --tlsCAFile $ca"; break; }; done
+  kubectl -n "$NS" exec "$pod" -- mongosh --quiet $T -u "admin-user" -p "$P" --authenticationDatabase admin --eval "db.hello().isWritablePrimary" 2>/dev/null | grep -q true && { PRIMARY="$pod"; PT="$T"; break; }
+done
+[ -n "$PRIMARY" ] || { echo "primary_stepdown: no live primary found; cannot inject" >&2; exit 1; }
+kubectl -n "$NS" create configmap adversary-stepdown-marker --from-literal=stepped_pod="$PRIMARY" --dry-run=client -o yaml | kubectl -n "$NS" apply -f -
+kubectl -n "$NS" exec "$PRIMARY" -- mongosh --quiet $PT -u "admin-user" -p "$P" --authenticationDatabase admin --eval "rs.stepDown(60)"
+for i in $(seq 1 10); do
+  kubectl -n "$NS" exec "$PRIMARY" -- mongosh --quiet $PT -u "admin-user" -p "$P" --authenticationDatabase admin --eval "db.hello().isWritablePrimary" 2>/dev/null | grep -q false && exit 0
+  sleep 3
+done
+echo "primary_stepdown: $PRIMARY still reports isWritablePrimary=true after stepDown" >&2
+exit 1
+'
+
+configmap/adversary-stepdown-marker created
+{
+  ok: 1,
+  '$clusterTime': {
+    clusterTime: Timestamp({ t: 1783081100, i: 1 }),
+    signature: {
+      hash: Binary(Buffer.from("dba1ea2de1212ffdff1995ff7946534be9645208", "hex"), 0),
+      keyId: Long("7658272596844085254")
+    }
+  },
+  operationTime: Timestamp({ t: 1783081100, i: 1 })
+}
+
+$ /bin/sh -c '
+NS=mongodb
+P=$(kubectl -n "$NS" get secret admin-user-password -o jsonpath="{.data.password}" | base64 -d)
+POD=$(kubectl -n "$NS" get configmap adversary-stepdown-marker -o jsonpath="{.data.stepped_pod}" 2>/dev/null)
+[ -n "$POD" ] || { echo "primary_stepdown verify: stepdown marker missing" >&2; exit 1; }
+T=""; for ca in /etc/tls/ca.crt /etc/mongo-ca/ca.crt /etc/mongodb/tls/ca.crt /etc/ssl/mongodb/ca.crt; do kubectl -n "$NS" exec "$POD" -- test -f "$ca" 2>/dev/null && { T="--tls --tlsAllowInvalidHostnames --tlsCAFile $ca"; break; }; done
+for i in $(seq 1 12); do
+  kubectl -n "$NS" exec "$POD" -- mongosh --quiet $T -u "admin-user" -p "$P" --authenticationDatabase admin --eval "db.hello().isWritablePrimary" 2>/dev/null | grep -q false && exit 0
+  sleep 5
+done
+echo "primary_stepdown verify: stepped member $POD is still primary" >&2
+exit 1
+'
+
+

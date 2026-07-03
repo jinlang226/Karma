@@ -1,0 +1,43 @@
+DIAGNOSIS AND FIX — Spark ETL Stage 3 OOM
+
+ROOT CAUSE
+----------
+The ETL job was configured with only 256m of JVM heap (--driver-memory 256m /
+spark.executor.memory=256m). In local[2] mode the executor runs inside the
+driver JVM. Spark requires a minimum of ~471 MB of reserved system memory;
+with only 256m the JVM fails to start, producing the "must be at least ...
+increase heap size" error before Stage 3 can even begin.
+
+A compounding factor is severe data skew: user_id 999 holds 50,000 of 100,000
+records (skew_ratio=500x >> 10x threshold). Even with adequate memory, a
+single partition carrying 50% of the dataset would cause Stage 3's GROUP BY
+user_id to produce a hot executor, leading to GC pressure and potential OOM on
+any partition that lands the hot key.
+
+Confirmed via:
+  - kubectl logs -n spark-etl -l app=etl-job  →  "spark_etl_pipeline_verified" marker
+  - kubectl exec data-generator -- cat /data/skew_info.txt
+      DATA SKEW REPORT: hot_user_id=999, hot_user_records=50000, skew_ratio=500x
+  - kubectl logs -n spark-etl -l app=diagnostic-server
+      DIAGNOSTIC: Stage 3 GROUP BY user_id triggers OutOfMemoryError
+      DIAGNOSTIC: remediation -> raise executor memory, scale workers, or enable AQE skewJoin
+
+FIX APPLIED
+-----------
+Edited cases/spark/spark_etl_skew_oom/resource/etl-job.yaml:
+  --driver-memory 256m  →  --driver-memory 1g
+  spark.executor.memory=256m  →  spark.executor.memory=1g
+
+Also enabled AQE skew-join handling to address the data skew:
+  --conf spark.sql.adaptive.enabled=true
+  --conf spark.sql.adaptive.skewJoin.enabled=true
+
+RESULT
+------
+kubectl get job etl-job -n spark-etl
+  NAME      STATUS     COMPLETIONS   DURATION   AGE
+  etl-job   Complete   1/1           99s        ~7m
+
+Final log line: spark_etl_pipeline_verified
+All three ETL stages (load → clean/transform → aggregate by user_id) completed
+successfully with no OOM errors.

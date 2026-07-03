@@ -1,0 +1,52 @@
+DIAGNOSIS AND REMEDIATION REPORT
+=================================
+
+## Root Cause
+
+Stage 3 (GROUP BY user_id aggregation) triggers an OutOfMemoryError due to extreme
+data skew combined with insufficient JVM heap:
+
+  - total_records: 100,000 across 1,000 distinct user_ids
+  - hot_user_id: 999
+  - hot_user_records: 50,000 (50% of all records)
+  - skew_ratio: 500x (>> the 10x threshold)
+
+When Spark shuffles data for the aggregation, a single executor partition receives
+~50,000 rows for user_id 999. With the original 256m heap (below Spark's minimum
+~471MB reserved system memory), this causes a deterministic
+"Initial job has not accepted any resources" / "must be at least ... increase
+heap size" OOM failure during the shuffle/aggregate phase.
+
+## Diagnostic Commands Used
+
+  kubectl get job etl-job -n spark-etl
+  kubectl logs -n spark-etl -l app=etl-job --tail=100
+  kubectl exec -n spark-etl data-generator-7457c55c8b-xpphs -- cat /data/skew_info.txt
+  kubectl logs -n spark-etl -l app=diagnostic-server --tail=50
+
+## Fix Applied
+
+Raised both --driver-memory and spark.executor.memory from 256m to 1g in
+cases/spark/spark_etl_skew_oom/resource/etl-job.yaml, and enabled Adaptive
+Query Execution to handle the skew at the partition level:
+
+  --driver-memory 1g
+  --conf spark.executor.memory=1g
+  --conf spark.sql.adaptive.enabled=true
+  --conf spark.sql.adaptive.skewJoin.enabled=true
+
+The updated job was applied and the ETL pipeline completed successfully.
+
+## Verification
+
+  kubectl get job etl-job -n spark-etl
+  → COMPLETIONS: 1/1  (succeeded: 1, failed: 0)
+
+  kubectl logs -n spark-etl -l app=etl-job --tail=5
+  → "spark_etl_pipeline_verified"
+
+All success criteria met:
+  [x] Identified Stage 3 memory failure
+  [x] Diagnosed data skew: user_id 999 holds 50% of records (500x skew ratio)
+  [x] Applied fix: raised executor/driver memory to 1g, enabled AQE skewJoin
+  [x] ETL job completed successfully (spark_etl_pipeline_verified)

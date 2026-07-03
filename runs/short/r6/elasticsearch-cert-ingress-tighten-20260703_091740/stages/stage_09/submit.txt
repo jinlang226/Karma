@@ -1,0 +1,23 @@
+Everything is complete and verified. Here's a summary of what was done:
+
+**What was configured:**
+
+1. **MinIO Service** — The `minio` service was missing (the `minio-init` job had failed because of this). Created a ClusterIP service exposing port 9000 at `minio.elasticsearch.svc.cluster.local`.
+
+2. **MinIO `es-backups` bucket** — Created via `mc` inside the MinIO pod.
+
+3. **`es-secure-settings` Secret** — Created with `s3.client.minio.access_key` and `s3.client.minio.secret_key` (credentials never placed in elasticsearch.yml or env vars).
+
+4. **`es-config` ConfigMap updated** — Added three static S3 client settings (safe to put in YAML — these are not credentials):
+   - `s3.client.minio.endpoint: minio.elasticsearch.svc.cluster.local:9000`
+   - `s3.client.minio.protocol: http`
+   - `s3.client.minio.path_style_access: true`
+
+5. **StatefulSet patched** — Added a `keystore-setup` init container that runs on every pod start to:
+   - Copy `log4j2.properties`, `jvm.options`, and `jvm.options.d/` from the image into a shared emptyDir
+   - Create a fresh keystore in the emptyDir and populate it with the S3 credentials from the `es-secure-settings` secret
+   - The emptyDir is mounted at `/usr/share/elasticsearch/config/` in the main container (with subPath mounts for elasticsearch.yml, certs, and file-realm layering on top)
+
+6. **Snapshot repository registered** — `minio-repo` of type `s3` targeting the `es-backups` bucket using the `minio` client — all 3 nodes verified connectivity.
+
+7. **Snapshot created** — `snapshot-1` completed with `state: SUCCESS`, 3/3 shards successful, data confirmed written to MinIO.

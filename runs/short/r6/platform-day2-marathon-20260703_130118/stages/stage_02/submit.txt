@@ -1,0 +1,14 @@
+The cluster is fully operational. Here's what was done and why:
+
+**Root cause:** A `block-crdb-sql` NetworkPolicy was applied to all CockroachDB pods, only allowing ingress on port 8080 (HTTP/admin UI) while blocking port 26257 (SQL + inter-node RPC/gossip).
+
+**Fix:** Patched the NetworkPolicy to also allow port 26257 TCP ingress:
+```
+kubectl -n cockroachdb patch networkpolicy block-crdb-sql --type=json \
+  -p='[{"op":"replace","path":"/spec/ingress","value":[{"ports":[{"port":8080},{"port":26257}]}]}]'
+```
+
+**Result:**
+- All 3 nodes (`crdb-cluster-0/1/2`) are `is_available=true`, `is_live=true`
+- Cluster shares a single clusterID (`b308b84b-ebb5-4290-bd8c-ad21067dbbba`) — nodes had actually already self-initialized before the NetworkPolicy landed, but the policy would have broken ongoing inter-node gossip/RPC
+- SQL connections now work: `SELECT 1` and `SHOW DATABASES` return results as expected

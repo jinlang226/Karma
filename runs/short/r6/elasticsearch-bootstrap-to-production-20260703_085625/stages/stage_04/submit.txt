@@ -1,0 +1,23 @@
+Everything is working. Here's a summary of what was done:
+
+**Summary**
+
+The root cause of snapshot failures was a missing MinIO service (DNS resolution failed) and the `repository-s3` plugin not being installed.
+
+**Steps taken:**
+
+1. **Created MinIO Service** (`minio` in the `elasticsearch` namespace) — the `minio.elasticsearch.svc.cluster.local` DNS name was unresolvable because no service existed.
+
+2. **Created `es-secure-settings` Secret** — stored MinIO credentials (`s3.client.default.access_key` / `s3.client.default.secret_key`) in a Kubernetes Secret, not in `elasticsearch.yml` or environment variables.
+
+3. **Created `es-backups` bucket** in MinIO via a Job (the original `minio-init` job failed because the service didn't exist).
+
+4. **Updated `elasticsearch.yml` ConfigMap** with non-sensitive S3 client settings: endpoint URL, HTTP protocol, and path-style access (required for MinIO).
+
+5. **Patched the StatefulSet** with two init containers:
+   - `install-s3-plugin`: downloads and installs the `repository-s3` plugin into a shared emptyDir, which the main container sees mounted at `plugins/repository-s3/`
+   - `setup-keystore`: creates a fresh keystore, reads credentials from the `es-secure-settings` Secret via env vars, and also pre-populates `bootstrap.password` (to prevent the ES entrypoint from trying to write to the read-only bind-mounted keystore file)
+
+6. **Registered `minio-repo`** snapshot repository (type: s3, bucket: es-backups).
+
+7. **Created `snapshot-1`** — completed in 4.2 seconds with all 4 shards successful, state: `SUCCESS`.

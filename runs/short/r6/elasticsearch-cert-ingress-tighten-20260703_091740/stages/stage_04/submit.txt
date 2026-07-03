@@ -1,0 +1,11 @@
+All checks pass. Here's what was done:
+
+**Root cause:** The `report-user` was in a separate secret (`user-provided-file-realm`) that was never included in the Elasticsearch file realm, and the StatefulSet had no file realm configured at all.
+
+**Fix applied:**
+1. **Merged secrets** — copied `report-user`'s credentials from `user-provided-file-realm` into `es-file-realm-aggregate` (which now contains both `ops-user` and `report-user`)
+2. **Updated ConfigMap** — added `xpack.security.authc.realms.file.file1.order: 0` and `xpack.security.authc.realms.native.native1.order: 1` to `elasticsearch.yml`
+3. **Patched StatefulSet** — added `file-realm` volume (pointing to `es-file-realm-aggregate`) and mounted `users`, `users_roles`, and `roles.yml` into `/usr/share/elasticsearch/config/` — this triggered a rolling restart
+4. **Seeded `app-data` index** — the precondition's seed step had silently failed because the file realm didn't exist yet; created the index with `ops-user` after the realm was active
+
+**Result:** `report-user:reportpass` authenticates and can read `app-data` (count=1); `ops-user:opspass` still works (cluster health=green); wrong passwords are rejected (HTTP 401).

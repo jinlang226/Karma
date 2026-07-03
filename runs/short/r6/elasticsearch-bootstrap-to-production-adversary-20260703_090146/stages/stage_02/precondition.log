@@ -1,0 +1,55 @@
+[precondition:es_env_ready:preconditionUnits[0] 'es_env_ready':probe] $ kubectl -n elasticsearch get pods 2>/dev/null | grep -c Running
+4
+
+[precondition:file_realm_secrets_fixture:preconditionUnits[1] 'file_realm_secrets_fixture':probe] $ kubectl -n elasticsearch get secret es-file-realm-aggregate
+Error from server (NotFound): secrets "es-file-realm-aggregate" not found
+
+[precondition:file_realm_secrets_fixture:preconditionUnits[1] 'file_realm_secrets_fixture':apply] $ /bin/sh -c 'kubectl -n elasticsearch get pod file-realm-gen >/dev/null 2>&1 || kubectl -n elasticsearch apply -f cases/elasticsearch/file-realm-user-roles-merge/resource/file-realm-gen.yaml'
+pod/file-realm-gen created
+
+[precondition:file_realm_secrets_fixture:preconditionUnits[1] 'file_realm_secrets_fixture':apply] $ /bin/sh -c 'kubectl -n elasticsearch wait --for=condition=ready pod/file-realm-gen --timeout=300s || true'
+pod/file-realm-gen condition met
+
+[precondition:file_realm_secrets_fixture:preconditionUnits[1] 'file_realm_secrets_fixture':apply] $ /bin/sh -c '
+set -e
+TMP_DIR=$(mktemp -d)
+kubectl -n elasticsearch exec file-realm-gen -- /bin/sh -c '\''
+set -e
+mkdir -p /tmp/ops /tmp/report
+: > /tmp/ops/users; : > /tmp/ops/users_roles; : > /tmp/report/users; : > /tmp/report/users_roles
+ES_PATH_CONF=/tmp/ops /usr/share/elasticsearch/bin/elasticsearch-users useradd ops-user -p opspass -r superuser
+ES_PATH_CONF=/tmp/report /usr/share/elasticsearch/bin/elasticsearch-users useradd report-user -p reportpass -r viewer
+: > /tmp/ops/roles.yml; : > /tmp/report/roles.yml
+'\''
+kubectl -n elasticsearch cp file-realm-gen:/tmp/ops "${TMP_DIR}/ops"
+kubectl -n elasticsearch cp file-realm-gen:/tmp/report "${TMP_DIR}/report"
+kubectl -n elasticsearch create secret generic es-file-realm-aggregate --from-file=users="${TMP_DIR}/ops/users" --from-file=users_roles="${TMP_DIR}/ops/users_roles" --from-file=roles.yml="${TMP_DIR}/ops/roles.yml" --dry-run=client -o yaml | kubectl apply -f -
+kubectl -n elasticsearch create secret generic user-provided-file-realm --from-file=users="${TMP_DIR}/report/users" --from-file=users_roles="${TMP_DIR}/report/users_roles" --from-file=roles.yml="${TMP_DIR}/report/roles.yml" --dry-run=client -o yaml | kubectl apply -f - || true
+'
+
+tar: Removing leading `/' from member names
+tar: Removing leading `/' from member names
+secret/es-file-realm-aggregate created
+secret/user-provided-file-realm created
+
+[precondition:file_realm_secrets_fixture:preconditionUnits[1] 'file_realm_secrets_fixture':apply] $ /bin/sh -c 'kubectl -n elasticsearch get pod curl-test >/dev/null 2>&1 || kubectl -n elasticsearch apply -f cases/elasticsearch/file-realm-user-roles-merge/resource/curl-test.yaml'
+
+[precondition:file_realm_secrets_fixture:preconditionUnits[1] 'file_realm_secrets_fixture':apply] $ /bin/sh -c 'kubectl -n elasticsearch wait --for=condition=ready pod/curl-test --timeout=300s || true'
+pod/curl-test condition met
+
+[precondition:file_realm_secrets_fixture:preconditionUnits[1] 'file_realm_secrets_fixture':apply] $ /bin/sh -c '
+for i in $(seq 1 40); do
+  code=$(kubectl -n elasticsearch exec curl-test -- curl -s -k -o /dev/null -w "%{http_code}" -u ops-user:opspass --max-time 5 "https://es-http.elasticsearch.svc:9200/_cluster/health" 2>/dev/null || echo 000)
+  if [ "$code" = "200" ]; then
+    kubectl -n elasticsearch exec curl-test -- curl -s -k -u ops-user:opspass -XPUT "https://es-http.elasticsearch.svc:9200/app-data" -H "Content-Type: application/json" -d "{\"settings\":{\"number_of_shards\":1,\"number_of_replicas\":1}}" || true
+    kubectl -n elasticsearch exec curl-test -- curl -s -k -u ops-user:opspass -XPOST "https://es-http.elasticsearch.svc:9200/app-data/_doc?refresh=true" -H "Content-Type: application/json" -d "{\"msg\":\"seed\"}" || true
+    exit 0
+  fi
+  sleep 2
+done
+exit 0
+'
+
+
+[precondition:file_realm_secrets_fixture:preconditionUnits[1] 'file_realm_secrets_fixture':verify] $ /bin/sh -c 'kubectl -n elasticsearch get secret es-file-realm-aggregate >/dev/null 2>&1 || true; true'
+

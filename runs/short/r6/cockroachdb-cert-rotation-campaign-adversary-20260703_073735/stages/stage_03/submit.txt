@@ -1,0 +1,19 @@
+Both goals are met. Here's a summary of what was done:
+
+**What was done:**
+
+1. **Generated TLS certificates** using `cockroach cert` inside the existing pod:
+   - CA certificate (`ca.crt` / `ca.key`)
+   - Node certificate covering all pod FQDNs and service names (`node.crt` / `node.key`)
+   - Root client certificate (`client.root.crt` / `client.root.key`)
+
+2. **Created Kubernetes secrets** from the certificates:
+   - `crdb-certs` — mounted into each pod at `/cockroach/cockroach-certs` (initially node certs, then patched to include client root certs)
+
+3. **Patched the StatefulSet** to replace `--insecure` with `--certs-dir=/cockroach/cockroach-certs`, update health probes from `HTTP` to `HTTPS`, and mount the cert secret as a volume.
+
+4. **Resolved the bootstrap deadlock** — the original `OrderedReady` policy caused a deadlock (pod-0 needs quorum to be Ready, but pods 1/2 won't start until pod-0 is Ready). Fixed by deleting and recreating the StatefulSet with `podManagementPolicy: Parallel`, which starts all 3 pods simultaneously.
+
+**Verification:**
+- Insecure: `ERROR: node is running secure mode, SSL connection required` ✓
+- Secure: `?column? → 1` ✓

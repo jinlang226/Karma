@@ -1,0 +1,14 @@
+Oracle passes. Here's what was done:
+
+**Root cause**: The cluster was inherited from stage_01 (4 pods already running), so the precondition's full setup path was skipped. This left two problems:
+1. The `es-file-realm-aggregate` secret had only `ops-user` — `report-user` lived in a separate `user-provided-file-realm` secret and was never merged in
+2. The StatefulSet had no xpack.security config, no TLS secret mounted, and no file realm secret mounted — so authentication was not enforced at all
+
+**Fix**:
+1. Generated TLS certs (CA + server with all relevant SANs) and created the `es-http-tls` secret
+2. Merged `report-user`'s hash+role from `user-provided-file-realm` into `es-file-realm-aggregate`
+3. Applied the case's `configmap.yaml` (adds `xpack.security.enabled: true` + HTTP/transport TLS settings)
+4. Applied the case's `statefulset.yaml` (adds `http-certs` and `file-realm` volume mounts)
+5. Waited for the rolling restart, then seeded the `app-data` index
+
+Result: `ops-user` and `report-user` both authenticate correctly via HTTPS; wrong passwords return 401; cluster health is green.

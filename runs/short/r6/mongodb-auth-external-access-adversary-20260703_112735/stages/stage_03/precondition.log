@@ -1,0 +1,41 @@
+[precondition:mongo_env_ready:preconditionUnits[0] 'mongo_env_ready':probe] $ /bin/sh -c 'kubectl -n mongodb get statefulset mongo-rs >/dev/null 2>&1 || kubectl -n mongodb get pods 2>/dev/null | grep -q Running'
+
+[precondition:external_access_fixture:preconditionUnits[1] 'external_access_fixture':probe] $ kubectl -n mongodb get svc mongo-external-1
+Error from server (NotFound): services "mongo-external-1" not found
+
+[precondition:external_access_fixture:preconditionUnits[1] 'external_access_fixture':apply] $ kubectl -n mongodb apply -f cases/mongodb/external-access-horizons/resource/services.yaml
+service/mongo created
+service/mongo-external-0 created
+service/mongo-external-1 created
+service/mongo-external-2 created
+
+[precondition:external_access_fixture:preconditionUnits[1] 'external_access_fixture':apply] $ node_ip=$(kubectl get nodes -o jsonpath='{range .items[*]}{.metadata.name}{" "}{range .status.addresses[?(@.type=="InternalIP")]}{.address}{"\n"}{end}{end}' | awk '$1 !~ /control-plane|master/ {print $2; exit}')
+if [ -z "$node_ip" ]; then
+  node_ip=$(kubectl get nodes -o jsonpath='{.items[0].status.addresses[?(@.type=="InternalIP")].address}')
+fi
+if [ -z "$node_ip" ]; then
+  exit 0
+fi
+kubectl -n mongodb get pod mongo-client >/dev/null 2>&1 || cat <<EOF | kubectl -n mongodb apply -f -
+apiVersion: v1
+kind: Pod
+metadata:
+  name: mongo-client
+spec:
+  restartPolicy: Never
+  hostAliases:
+  - ip: "$node_ip"
+    hostnames:
+    - domain-rs-1
+    - domain-rs-2
+    - domain-rs-3
+  containers:
+  - name: mongosh
+    image: mongo:6.0
+    command: ["sleep", "3600"]
+EOF
+
+pod/mongo-client created
+
+[precondition:external_access_fixture:preconditionUnits[1] 'external_access_fixture':verify] $ /bin/sh -c 'kubectl -n mongodb get svc mongo-external-1 >/dev/null 2>&1; true'
+
