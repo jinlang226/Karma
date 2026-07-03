@@ -98,6 +98,43 @@ def resolve_original_sts():
     return _ORIGINAL_STS
 
 
+def _password_from_sts():
+    """Fall back to a live ES StatefulSet's ELASTIC_PASSWORD env when the
+    elastic-password secret is absent (skip-gated on an inherited cluster), so
+    the oracle authenticates instead of 401-ing (C1). Reads the literal env
+    value, or resolves its secretKeyRef; returns the password or None."""
+    import base64
+    res = run(["kubectl", "-n", NAMESPACE, "get", "sts", "-o", "json"])
+    if res.returncode != 0:
+        return None
+    try:
+        items = json.loads(res.stdout).get("items", [])
+    except (json.JSONDecodeError, AttributeError):
+        return None
+    for sts in items:
+        spec = sts.get("spec", {}) or {}
+        containers = spec.get("template", {}).get("spec", {}).get("containers", []) or []
+        if "elasticsearch" not in " ".join(c.get("image", "") for c in containers):
+            continue
+        for c in containers:
+            for e in c.get("env", []) or []:
+                if e.get("name") != "ELASTIC_PASSWORD":
+                    continue
+                if e.get("value"):
+                    return e["value"]
+                ref = (e.get("valueFrom", {}) or {}).get("secretKeyRef", {}) or {}
+                name = ref.get("name")
+                if name:
+                    rs = run(["kubectl", "-n", NAMESPACE, "get", "secret", name,
+                              "-o", "jsonpath={.data." + (ref.get("key") or "password") + "}"])
+                    if rs.returncode == 0 and rs.stdout.strip():
+                        try:
+                            return base64.b64decode(rs.stdout.strip()).decode()
+                        except Exception:
+                            pass
+    return None
+
+
 def _detect_creds():
     """Return '-u elastic:<password>' flag string if auth is needed, else ''."""
     global _CREDS
@@ -119,6 +156,10 @@ def _detect_creds():
                     break
                 except Exception:
                     pass
+    if not pw:
+        # Secret skip-gated away on an inherited secured cluster -> read the
+        # live StatefulSet's ELASTIC_PASSWORD env so the queries don't 401 (C1).
+        pw = _password_from_sts() or ""
     _CREDS = f"-u elastic:{pw}" if pw else ""
     return _CREDS
 
@@ -308,18 +349,50 @@ def get_original_nodes(errors):
     return names
 
 
-def get_sts_replicas(errors):
-    original_sts = resolve_original_sts()
-    result = run(["kubectl", "-n", NAMESPACE, "get", "sts", original_sts, "-o", "json"])
-    if result.returncode != 0:
-        errors.append(f"Failed to read StatefulSet {original_sts}: {result.stderr.strip()}")
+def sum_original_replicas(node_names):
+    """Sum spec.replicas over the ORIGINAL (pre-scale-up) ES StatefulSets.
+
+    The "original" topology is a cross-topology tally, not a single object (O2):
+    the base cluster can itself be SEVERAL StatefulSets (a composed
+    es-transport(3)+es-data(2)=5 base has no single STS at 5), so match the
+    summed total, never a scalar param against one STS. Sums spec.replicas over
+    the not-being-deleted live ES StatefulSets EXCEPT the agent's newly-created
+    nodeset (the newest by creationTimestamp — the base predates this stage).
+    Returns the summed int, or None when it can't be resolved. Works for the
+    standalone single-STS case too: base=es-cluster(3), new nodeset excluded ->
+    sum 3.
+    """
+    res = run(["kubectl", "-n", NAMESPACE, "get", "sts", "-o", "json"])
+    if res.returncode != 0:
         return None
     try:
-        payload = json.loads(result.stdout)
-    except json.JSONDecodeError:
-        errors.append("Failed to parse StatefulSet JSON")
+        items = json.loads(res.stdout).get("items", [])
+    except (json.JSONDecodeError, AttributeError):
         return None
-    return payload.get("spec", {}).get("replicas")
+    live = _live_sts_names(node_names)
+    es = []
+    for sts in items:
+        meta = sts.get("metadata", {}) or {}
+        spec = sts.get("spec", {}) or {}
+        name = meta.get("name")
+        containers = spec.get("template", {}).get("spec", {}).get("containers", []) or []
+        if "elasticsearch" not in " ".join(c.get("image", "") for c in containers):
+            continue
+        if live and name not in live:
+            continue
+        if meta.get("deletionTimestamp") is not None:
+            continue
+        replicas = spec.get("replicas")
+        if not isinstance(replicas, int):
+            continue
+        es.append((name, replicas, meta.get("creationTimestamp", "")))
+    if not es:
+        return None
+    # Exclude the agent's new nodeset: the newest live ES StatefulSet. The base
+    # cluster's StatefulSets predate this stage; the agent created the new nodeset
+    # during it, so it carries the latest creationTimestamp.
+    newest = max(es, key=lambda s: (s[2] or ""))
+    return sum(r for (n, r, _c) in es if n != newest[0])
 
 
 # ES system/built-in node attributes (not operator-set allocation attributes).
@@ -419,9 +492,17 @@ def evaluate():
         if not on_new:
             errors.append(f"No {INDEX_NAME} shards found on new nodes")
 
-    replicas = get_sts_replicas(errors)
-    if replicas is not None and replicas != ORIGINAL_REPLICAS:
-        errors.append(f"StatefulSet {resolve_original_sts()} replicas expected {ORIGINAL_REPLICAS}, got {replicas}")
+    # The original-topology replica total is a SUM over the non-new base
+    # StatefulSets (O2), not a single STS matched against a scalar param: a
+    # composed 3+2 base has no STS at 5, so the old single-STS assertion
+    # false-failed a perfect scale-up. Keep the new-nodeset checks (zone attr,
+    # green, shard placement) above as-is; this only re-grades the base tally.
+    original_total = sum_original_replicas(node_names)
+    if original_total is not None and original_total != ORIGINAL_REPLICAS:
+        errors.append(
+            f"Original nodeset replicas expected {ORIGINAL_REPLICAS}, "
+            f"got {original_total} (summed over the non-new base StatefulSets)"
+        )
 
     return errors
 

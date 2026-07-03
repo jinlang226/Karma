@@ -14,10 +14,15 @@ SERVICE = "es-http"
 # StatefulSet name/label than this case's standalone default of 'es-cluster'.
 CLUSTER_PREFIX_HINT = os.environ.get("BENCH_PARAM_CLUSTER_PREFIX", "es-cluster")
 REPO_NAME = "minio-repo"
-KEYS = {
-    "s3.client.default.access_key",
-    "s3.client.default.secret_key",
-}
+# The S3 *client name* an agent registers the repo under (`s3.client.<name>.*`)
+# is a free ES choice the prompt never discloses; the disclosing artifact
+# (es-secure-settings) is skip-gated away on an inherited cluster (P33). So the
+# keystore key names are NOT hardcoded to `default` (O1) — a valid solve using
+# `s3.client.minio.*` false-fails. Instead the effective outcome is graded (repo
+# registered + a snapshot reaches SUCCESS, see check_snapshots), and any keystore
+# sanity check derives the client name from the live registered repo. Template
+# with the resolved client name substituted at check time.
+_KEY_TEMPLATE = ("s3.client.{client}.access_key", "s3.client.{client}.secret_key")
 # ES 8.x runs with security enabled, so the HTTP API requires authenticating as
 # the elastic superuser. When this case inherits a secured cluster from an
 # earlier workflow stage, read its password from the secret that stage created
@@ -44,6 +49,41 @@ def _elastic_password():
         return base64.b64decode(r.stdout.strip()).decode()
     except Exception:
         return None
+
+
+def _password_from_sts():
+    """Fall back to the live ES StatefulSet's ELASTIC_PASSWORD env when the
+    elastic-password secret is absent.
+
+    That secret is created only by a skip-gated predecessor; on an inherited
+    secured cluster it does not exist, so `_elastic_password()` returns None and
+    the oracle's curls 401 (C1). The live cluster's password is carried in the ES
+    StatefulSet container env `ELASTIC_PASSWORD` — read it (literal value, or via
+    its secretKeyRef) so an inherited cluster still authenticates.
+    """
+    sts = resolve_es_sts()[0]
+    if not sts:
+        return None
+    base = ["kubectl", "-n", NAMESPACE, "get", "sts", sts, "-o"]
+    env = ".spec.template.spec.containers[*].env[?(@.name=='ELASTIC_PASSWORD')]"
+    r = run(base + ["jsonpath={" + env + ".value}"])
+    if r.returncode == 0 and r.stdout.strip():
+        return r.stdout.strip()
+    # env sourced from a secretKeyRef -> read that secret.
+    rn = run(base + ["jsonpath={" + env + ".valueFrom.secretKeyRef.name}"])
+    rk = run(base + ["jsonpath={" + env + ".valueFrom.secretKeyRef.key}"])
+    name = (rn.stdout or "").strip()
+    key = (rk.stdout or "").strip() or "password"
+    if name:
+        import base64
+        rs = run(["kubectl", "-n", NAMESPACE, "get", "secret", name,
+                  "-o", "jsonpath={.data." + key + "}"])
+        if rs.returncode == 0 and rs.stdout.strip():
+            try:
+                return base64.b64decode(rs.stdout.strip()).decode()
+            except Exception:
+                return None
+    return None
 
 
 ELASTIC_PASSWORD = None  # set in main() once kubectl is reachable
@@ -342,7 +382,33 @@ def get_pods(errors):
     return [item.get("metadata", {}).get("name") for item in payload.get("items", [])]
 
 
+def _repo_client_name(errors):
+    """Client name the registered snapshot repo uses (`settings.client`).
+
+    Derived from the live registered repo (`GET /_snapshot/<repo>`) rather than
+    hardcoded to `default` (O1): the client name is a free, undisclosed agent
+    choice. Defaults to `default` (ES's implicit client) when the repo omits it.
+    Returns None if the repo cannot be resolved (check_snapshots already grades
+    the repo's presence, so this stays silent to avoid a duplicate error).
+    """
+    repo = curl(f"/_snapshot/{REPO_NAME}", errors=[])
+    if not isinstance(repo, dict):
+        return None
+    settings = (repo.get(REPO_NAME, {}) or {}).get("settings", {}) or {}
+    client = settings.get("client")
+    return client or "default"
+
+
 def check_keystore(pod, errors):
+    # Grade the keystore against the client name the LIVE repo actually uses
+    # (O1) — never a hardcoded `default`. A valid solve may register the repo
+    # under `s3.client.minio.*`; asserting `default` false-fails it. The
+    # effective outcome (repo registered + a SUCCESS snapshot) is already graded
+    # in check_snapshots; this is a client-derived sanity check on top of it.
+    client = _repo_client_name(errors)
+    if not client:
+        return
+    expected = {tpl.format(client=client) for tpl in _KEY_TEMPLATE}
     result = run(
         [
             "kubectl",
@@ -360,7 +426,7 @@ def check_keystore(pod, errors):
         errors.append(f"Failed to list keystore on {pod}: {detail}")
         return
     keys = {line.strip() for line in result.stdout.splitlines() if line.strip()}
-    missing = sorted(KEYS - keys)
+    missing = sorted(expected - keys)
     if missing:
         errors.append(f"Missing keystore keys on {pod}: {', '.join(missing)}")
 
@@ -466,7 +532,10 @@ def evaluate():
 
 def main():
     global ELASTIC_PASSWORD
-    ELASTIC_PASSWORD = _elastic_password()
+    # Prefer the elastic-password secret; when it is absent (skip-gated on an
+    # inherited cluster) fall back to the live StatefulSet's ELASTIC_PASSWORD env
+    # so the oracle authenticates instead of 401-ing (C1).
+    ELASTIC_PASSWORD = _elastic_password() or _password_from_sts()
 
     # A multi-node ES cluster can flap at the edge of readiness under load: a
     # node briefly fails its HTTP readiness probe / drops from the cluster during
