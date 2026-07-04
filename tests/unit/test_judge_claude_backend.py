@@ -33,10 +33,20 @@ class TestClaudeCli:
         fake = subprocess.CompletedProcess(
             args=[], returncode=0, stdout='[{"id":"a","score":1.0}]', stderr=""
         )
-        with patch("subprocess.run", return_value=fake):
-            out = _call_claude_cli("prompt", "sonnet", 30)
+        with patch("subprocess.run", return_value=fake) as m:
+            out = _call_claude_cli("PROMPT-TEXT", "sonnet", 30)
         assert out["content"] == '[{"id":"a","score":1.0}]'
         assert out["model"] == "sonnet" and out["finish_reason"] == "stop"
+        # Security (C1): the judge prompt embeds agent-authored text, so the judge
+        # must never auto-approve tool calls. Assert it does NOT skip permissions,
+        # disallows the executing tools, and passes the prompt on stdin (not as a
+        # positional arg the variadic --disallowedTools could swallow).
+        argv = m.call_args[0][0]
+        assert "--dangerously-skip-permissions" not in argv
+        assert "--disallowedTools" in argv
+        assert "Bash" in argv[argv.index("--disallowedTools") + 1]
+        assert "PROMPT-TEXT" not in argv
+        assert m.call_args[1].get("input") == "PROMPT-TEXT"
 
     def test_raises_on_nonzero(self):
         fake = subprocess.CompletedProcess(args=[], returncode=1, stdout="", stderr="boom")

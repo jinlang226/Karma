@@ -60,15 +60,25 @@ def _call_claude_cli(
 ) -> dict[str, Any]:
     """Run the judge prompt through the ``claude`` CLI and return a response.
 
-    Uses ``claude --print`` (the same mechanism the claude_code agent uses),
-    which authenticates via the ambient Claude login and needs no API key.
+    Uses ``claude --print`` (ambient Claude login, no API key). The judge only
+    needs text generation, so it runs with the executing tools disallowed and
+    **without** ``--dangerously-skip-permissions``. That flag would auto-approve
+    every tool call, and the judge prompt embeds agent-authored artifacts
+    (submit.txt, agent.log, oracle output) -- so a benchmarked agent could inject
+    a Bash tool call the judge runs with the operator's host credentials
+    (arbitrary command execution). Without skip-permissions, any tool that needs
+    approval is denied in non-interactive ``--print`` mode; disallowing the
+    executing tools removes them outright. The prompt goes on stdin because
+    ``--disallowedTools`` is variadic and would otherwise swallow a trailing
+    positional prompt as a tool name.
     Returns the same shape as the OpenAI path so scoring is backend-agnostic.
     """
     import subprocess
 
     proc = subprocess.run(
         ["claude", "--print", "--model", model,
-         "--dangerously-skip-permissions", prompt],
+         "--disallowedTools", "Bash,Edit,Write,NotebookEdit,WebFetch,WebSearch,Task"],
+        input=prompt,
         capture_output=True, text=True, timeout=timeout_sec,
     )
     if proc.returncode != 0:
