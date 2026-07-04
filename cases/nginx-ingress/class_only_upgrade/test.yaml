@@ -123,13 +123,18 @@ preconditionUnits:
       - command: "/bin/sh -c 'kubectl apply -f cases/nginx-ingress/class_only_upgrade/resource/controller-1.yaml || true'"
         timeout_sec: 60
         sleep: 2
-      - command: "kubectl -n class-ingress-nginx rollout status deploy/ingress-nginx-controller --timeout=180s"
+      # P36 fresh-install rule: on a cold cluster a slow image-pull can overrun
+      # the rollout --timeout; keep it best-effort (|| true) so a slow pull does
+      # not ERROR the precondition. The unit's verify (a generously-sized
+      # `wait --for=condition=Available`) is the real gate — a never-Available
+      # controller still fails there.
+      - command: "/bin/sh -c 'kubectl -n class-ingress-nginx rollout status deploy/ingress-nginx-controller --timeout=180s || true'"
         timeout_sec: 200
         sleep: 2
       - command: "/bin/sh -c 'kubectl apply -f cases/nginx-ingress/class_only_upgrade/resource/controller-2.yaml || true'"
         timeout_sec: 60
         sleep: 2
-      - command: "kubectl -n class-ingress-nginx-2 rollout status deploy/ingress-nginx-controller --timeout=180s"
+      - command: "/bin/sh -c 'kubectl -n class-ingress-nginx-2 rollout status deploy/ingress-nginx-controller --timeout=180s || true'"
         timeout_sec: 200
         sleep: 2
       # Cluster-scoped case-owned IngressClasses; tolerant per P26, verified in
@@ -146,7 +151,10 @@ preconditionUnits:
       - command: "kubectl -n class-demo apply -f cases/nginx-ingress/class_only_upgrade/resource/demo-app.yaml"
         timeout_sec: 30
         sleep: 2
-      - command: "kubectl -n class-demo rollout status deploy/demo-app --timeout=120s"
+      # P36 fresh-install rule: best-effort so a slow image-pull does not ERROR
+      # the precondition; the unit verify's `wait --for=condition=Available
+      # deploy/demo-app` is the real gate.
+      - command: "/bin/sh -c 'kubectl -n class-demo rollout status deploy/demo-app --timeout=120s || true'"
         timeout_sec: 150
         sleep: 1
       # The planted fault: a classless demo Ingress (fresh apply after the
@@ -164,10 +172,16 @@ preconditionUnits:
     verify:
       - command: "kubectl get ingressclass ingress-1 ingress-2"
         timeout_sec: 15
-      - command: "kubectl -n class-ingress-nginx wait --for=condition=Available deploy/ingress-nginx-controller --timeout=15s"
-        timeout_sec: 30
-      - command: "kubectl -n class-ingress-nginx-2 wait --for=condition=Available deploy/ingress-nginx-controller --timeout=15s"
-        timeout_sec: 30
+      # These Available waits are now the REAL gate behind the best-effort
+      # rollout status above: sized generously for a cold-cluster image-pull
+      # (P13: --timeout paired with a larger timeout_sec). A genuinely-failed
+      # install (a controller/app that never becomes Available) still fails here.
+      - command: "kubectl -n class-ingress-nginx wait --for=condition=Available deploy/ingress-nginx-controller --timeout=240s"
+        timeout_sec: 260
+      - command: "kubectl -n class-ingress-nginx-2 wait --for=condition=Available deploy/ingress-nginx-controller --timeout=240s"
+        timeout_sec: 260
+      - command: "kubectl -n class-demo wait --for=condition=Available deploy/demo-app --timeout=240s"
+        timeout_sec: 260
       - command: "kubectl -n class-demo wait --for=condition=ready pod/{{params.curl_pod_name}} --timeout=15s"
         timeout_sec: 30
 
