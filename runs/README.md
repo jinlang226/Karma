@@ -21,6 +21,11 @@ runs/<suite>/<iteration>/<run_id>/
   `rN` style — record "what it was" here, not in the folder name.
 - Archive/scratch folders are prefixed with `_` (e.g. `runs/_archive/`); the web-UI
   catalog skips `_`-prefixed dirs.
+- **Fix-run folders (`*_fix`, e.g. `short/r6_fix`) ACCUMULATE — a rerun ADDS a new
+  timestamped dir alongside the stale one, never replaces it.** Rerun with the
+  dispatcher's `_force: true` and do **not** delete the prior (failed) run — the
+  fix folder is the audit trail of successive fix attempts. (Contrast a normal
+  `rN` sweep, where an infra-failed run may be overwritten by its rerun.)
 
 ## Iteration log
 | Suite/iter | What it was |
