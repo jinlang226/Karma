@@ -1242,7 +1242,6 @@ is `verify_once + interval*retries`.
 verb): `wait`/`rollout` 900s; `apply`/`create`/`patch`/`scale`/`set` 120s;
 `delete` 180s; `exec` 300s; `get`/`logs`/`describe` 120s; `python` 600s in verify.
 
-
 **Idle agent timeout.** `agent_timeout_sec` is an *idle* budget that resets when
 `agent.log` grows, with an absolute `KARMA_AGENT_HARD_CAP_SEC` (default 3600).
 Long cases (rabbitmq multi-hop upgrade ~47 min) need a generous dispatcher
@@ -1295,7 +1294,6 @@ Exception: the manual operator-run path (`runtime/manual.py`) still uses the for
 `or ["default"]` fallback, so an explicit `required_roles: []` (a literal-namespace
 case) mis-binds a default namespace there — a live Law-3 violation, not yet fixed.
 
-
 **kubectl-proxy** (the largest agent-timeout cause). Two distinct ports (data
 `--port` the agent uses + `--control-port`); launch retries 4× re-picking both
 ports on `EADDRINUSE`, fails fast via `is_alive()`, gates readiness on a TCP
@@ -1316,11 +1314,9 @@ substitution; validate/coerce params by declared `type`/`values`/`min`/`max`/
 `required` (coerce only when a `type` is declared); decoys come from explicit
 `decoys:` *and* auto-discovered `decoy/*.yaml`. Sweep for unresolved `{{…}}`.
 
-
 **Guards.** Reject stage-less workflows (`Field(min_length=1)`); a no-agent run
 still runs setup+oracle; best-effort steps route through `warn()` (visible, not
 silent `except: pass`); cross-stage agent memory via `agent_session: persistent`.
-
 
 ---
 
