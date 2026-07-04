@@ -14,16 +14,17 @@ ADMIN_SECRET = os.environ.get("BENCH_PARAM_ADMIN_SECRET_NAME", "admin-user-passw
 ADMIN_USER = os.environ.get("BENCH_PARAM_ADMIN_USERNAME", "admin-user")
 SEED_DB = os.environ.get("BENCH_PARAM_SEED_DATABASE", "testdb")
 SEED_COLLECTION = os.environ.get("BENCH_PARAM_SEED_COLLECTION", "data")
-# Prompt is RELATIVE to the seeded config (verbosity 1, slowOpThresholdMs 200):
-# "increase verbosity by one level" -> 2; "2x the current value" -> 400. The
-# targets are derived from the SEEDED baseline params (kept in lockstep with the
-# precondition's mongo_config_baseline_ready replant) so the absolute post-change
-# values follow the baseline rather than a bare hardcode. An explicit
-# TARGET_LOG_LEVEL/TARGET_SLOW_MS override still wins when provided.
-BASELINE_VERBOSITY = int(os.environ.get("BENCH_PARAM_BASELINE_VERBOSITY", "1"))
-BASELINE_SLOW_MS = int(os.environ.get("BENCH_PARAM_BASELINE_SLOW_MS", "200"))
-TARGET_LOG_LEVEL = int(os.environ.get("BENCH_PARAM_TARGET_LOG_LEVEL", str(BASELINE_VERBOSITY + 1)))
-TARGET_SLOW_MS = int(os.environ.get("BENCH_PARAM_TARGET_SLOW_MS", str(BASELINE_SLOW_MS * 2)))
+# Prompt asks for a change RELATIVE to the CURRENT (pre-agent) setting:
+# "increase verbosity by one level" -> pre_verbosity + 1; "set the slow-operation
+# threshold to 2x the current value" -> pre_slowms * 2. The pre-agent values are
+# RECORDED per stage by the mongo_config_prevalue_record precondition into the
+# ConfigMap below, so the oracle grades the RELATIVE delta against THIS stage's
+# actual starting value (O5) -- NOT a fixed seeded baseline. A relative-change
+# case scheduled more than once in a sweep legitimately advances the value again
+# each run; grading against the recorded pre-value keeps the check correct on
+# every instance with no compounding. journalCompressor is an ABSOLUTE per-stage
+# target from the prompt/param and is graded unchanged.
+PREVALUE_CONFIGMAP = os.environ.get("BENCH_PARAM_PREVALUE_CONFIGMAP", "mongod-config-prevalue")
 TARGET_COMPRESSOR = os.environ.get("BENCH_PARAM_TARGET_JOURNAL_COMPRESSOR", "zlib")
 POD_PREFIX = f"{CLUSTER_PREFIX}-"
 
@@ -283,6 +284,31 @@ def _parse_int(value, label, errors):
         return None
 
 
+def _read_prevalue(errors):
+    """Read the pre-agent verbosity + slowms recorded by the
+    mongo_config_prevalue_record precondition (O5) from the mongod-config-prevalue
+    ConfigMap. The oracle grades the RELATIVE change against THIS stage's recorded
+    starting value: expected verbosity == pre_verbosity + 1 and expected
+    slowOpThresholdMs == pre_slowms * 2. Returns (pre_verbosity, pre_slowms);
+    either is None (with an error appended) when the record is missing/unreadable.
+    """
+    def _cfg(key):
+        res = run(["kubectl", "-n", NAMESPACE, "get", "configmap", PREVALUE_CONFIGMAP,
+                   "-o", f"jsonpath={{.data.{key}}}"])
+        if res.returncode != 0:
+            errors.append(
+                f"failed to read recorded pre-value {PREVALUE_CONFIGMAP}.{key}: "
+                f"{res.stderr.strip() or res.stdout.strip()}")
+            return None
+        raw = (res.stdout or "").strip()
+        if not raw:
+            errors.append(f"recorded pre-value {PREVALUE_CONFIGMAP}.{key} empty")
+            return None
+        return _parse_int(raw, f"pre-value {key}", errors)
+
+    return _cfg("verbosity"), _cfg("slowms")
+
+
 def _slow_ms(pod, uri, cmdline, errors):
     parsed = cmdline.get("parsed", {}) if isinstance(cmdline, dict) else {}
     val = parsed.get("operationProfiling", {}).get("slowOpThresholdMs")
@@ -316,6 +342,14 @@ def check_runtime():
     admin_pw = get_secret_value(ADMIN_SECRET, "password", errors)
     if errors:
         return fail("Mongod config update runtime check failed:", errors)
+    # O5: grade the RELATIVE delta against THIS stage's recorded pre-agent value
+    # (verbosity + 1, slowOpThresholdMs * 2), read from the mongod-config-prevalue
+    # ConfigMap the precondition wrote before the agent ran -- not a fixed baseline.
+    pre_verbosity, pre_slow_ms = _read_prevalue(errors)
+    if errors or pre_verbosity is None or pre_slow_ms is None:
+        return fail("Mongod config update runtime check failed:", errors)
+    target_log_level = pre_verbosity + 1
+    target_slow_ms = pre_slow_ms * 2
     # directConnection skips SDAM topology monitoring (see check_topology); the
     # per-member getCmdLineOpts read below is a single-member localhost read.
     admin_uri = f"mongodb://{ADMIN_USER}:{admin_pw}@localhost:27017/admin?directConnection=true"
@@ -326,11 +360,11 @@ def check_runtime():
         if isinstance(cmdline, dict):
             parsed = cmdline.get("parsed", {})
             cfg_level = _verbosity(pod, admin_uri, cmdline, errors)
-            if cfg_level is not None and cfg_level != TARGET_LOG_LEVEL:
-                errors.append(f"systemLog.verbosity on {pod} expected {TARGET_LOG_LEVEL}, got {cfg_level}")
+            if cfg_level is not None and cfg_level != target_log_level:
+                errors.append(f"systemLog.verbosity on {pod} expected {target_log_level} (recorded pre-value {pre_verbosity} + 1), got {cfg_level}")
             slow_ms = _slow_ms(pod, admin_uri, cmdline, errors)
-            if slow_ms is not None and slow_ms != TARGET_SLOW_MS:
-                errors.append(f"slowOpThresholdMs on {pod} expected {TARGET_SLOW_MS}, got {slow_ms}")
+            if slow_ms is not None and slow_ms != target_slow_ms:
+                errors.append(f"slowOpThresholdMs on {pod} expected {target_slow_ms} (recorded pre-value {pre_slow_ms} x 2), got {slow_ms}")
             compressor = (
                 parsed
                 .get("storage", {})
