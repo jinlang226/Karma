@@ -210,16 +210,23 @@ preconditionUnits:
       # and deleting an in-use PVC hangs on the pvc-protection finalizer. Scale
       # to 0 and wait the pods out first (idempotent no-op on the fresh path,
       # where the snapshot unit already scaled down).
+      # Every destructive step is `|| true`-tolerant and explicitly bounded so a
+      # slow terminationGrace or pvc-protection finalizer degrades to a
+      # retryable state (the verify below is the real gate) rather than
+      # exhausting the fixed-mode 600s phase budget -> precondition ERROR. Grace
+      # period is the default 30s, so a 90s delete-wait is ample; the four steps
+      # sum to ~255s (see verify), leaving comfortable headroom under 600s.
       - command: "/bin/sh -c 'kubectl -n ${BENCH_NAMESPACE} scale statefulset/{{params.cluster_prefix}} --replicas=0 2>/dev/null || true'"
-        timeout_sec: 60
+        timeout_sec: 30
         sleep: 1
-      - command: "/bin/sh -c 'kubectl -n ${BENCH_NAMESPACE} wait --for=delete pod/{{params.cluster_prefix}}-0 pod/{{params.cluster_prefix}}-1 pod/{{params.cluster_prefix}}-2 --timeout=300s 2>/dev/null || true'"
-        timeout_sec: 320
+      - command: "/bin/sh -c 'kubectl -n ${BENCH_NAMESPACE} wait --for=delete pod/{{params.cluster_prefix}}-0 pod/{{params.cluster_prefix}}-1 pod/{{params.cluster_prefix}}-2 --timeout=90s 2>/dev/null || true'"
+        timeout_sec: 100
         sleep: 1
-      - command: "kubectl -n ${BENCH_NAMESPACE} delete pvc data-{{params.cluster_prefix}}-0 data-{{params.cluster_prefix}}-1 data-{{params.cluster_prefix}}-2 --ignore-not-found=true"
-        timeout_sec: 180
+      - command: "/bin/sh -c 'kubectl -n ${BENCH_NAMESPACE} delete pvc data-{{params.cluster_prefix}}-0 data-{{params.cluster_prefix}}-1 data-{{params.cluster_prefix}}-2 --ignore-not-found=true --timeout=60s 2>/dev/null || true'"
+        timeout_sec: 75
         sleep: 1
       - command: "envsubst '$BENCH_NAMESPACE $BENCH_NS_SOURCE $BENCH_NS_TARGET $BENCH_PARAM_CLUSTER_PREFIX $BENCH_PARAM_BLUE_CLUSTER_PREFIX $BENCH_PARAM_GREEN_CLUSTER_PREFIX $BENCH_PARAM_FROM_VERSION' < cases/rabbitmq/manual_backup_restore/resource/data-pvc-0.yaml | kubectl -n ${BENCH_NAMESPACE} apply -f -"
+        timeout_sec: 45
         sleep: 1
     verify:
       - command: "python3 cases/rabbitmq/manual_backup_restore/setup_precondition_check.py --namespace ${BENCH_NAMESPACE} --mode restore-pvc"
