@@ -700,9 +700,11 @@ version mismatch).
   [ORACLE]
 - **O27 — Grade in-pod mutations in the oracle; metrics can't see them.**
   Every scoring metric (blast_radius, destructive_ops, decoy_integrity, residual_drift…)
-  reads only the kubectl-proxy snapshot's `verb`. A change made via `kubectl exec`
-  into a pod (`mongosh`, `rabbitmqctl`, `cockroach sql`, `curl localhost`) records
-  `verb=exec`, so a destructive in-pod operation scores a *perfect* blast_radius.
+  reads only the kubectl-proxy snapshot's `verb`/`resource`. A change made via
+  `kubectl exec` into a pod (`mongosh`, `rabbitmqctl`, `cockroach sql`, `curl
+  localhost`) is logged only as the exec API call itself (a `create` on `pods`); the
+  *command run inside* the pod is data-plane and never hits the k8s API, so a
+  destructive in-pod operation is invisible to blast_radius/destructive_ops.
   Never rely on a metric to police an agent whose mutations happen inside a pod —
   assert that contract in the oracle. [ORACLE/METRICS]
 
@@ -1209,15 +1211,18 @@ wall-timeout or they're killed mid-run.
 session — ending the turn exits the process, with **no scheduled wakeup**. A model
 that offloads a long wait (a rolling restart, a rollout) to a "background task" and
 returns abandons the rest of the task, so the mutation lands **half-applied** and the
-oracle correctly fails a would-be-correct solve. The runtime appends an agent-scoped
-system prompt telling the model to poll async ops to completion synchronously (cases
-untouched). **Triage tell:** a multi-step mutation consistently left *half*-done (one
+oracle correctly fails a would-be-correct solve. The **claude_code agent's** entrypoint
+bakes in a system prompt telling the model to poll async ops to completion synchronously
+(cases untouched) — but this is **agent-specific**: codex/copilot/api carry no such
+instruction, so under those agents a backgrounded rolling restart is still abandoned
+half-applied. **Triage tell:** a multi-step mutation consistently left *half*-done (one
 pod un-restarted, a rollout mid-flight) is this, not the case.
 
 **Metrics read the proxy snapshot's `verb`/`resource`** (lowercase kubectl verb,
 plural resource name) — never HTTP `method`/`kind` (a plugin matching those silently
-scores 1.0 forever), and never anything inside a `kubectl exec` (verb=`exec` → metric
-sees zero mutations; grade in-pod work in the oracle — O27).
+scores 1.0 forever), and never the *command run inside* a `kubectl exec` (the exec API
+call is logged as a `create` on `pods`, but its in-pod effect is data-plane and
+invisible to the metrics; grade in-pod work in the oracle — O27).
 
 **Late-error result integrity (F-late).** A stage that already ran the agent and the
 oracle MUST NOT be turned into a failure by a *transient error raised afterwards*
@@ -1243,8 +1248,11 @@ post-binding baseline (guarding system namespaces), deferred to workflow end;
 run-id keeps an 8-char hash so retries don't collide; `create namespace` retries
 twice on non-`AlreadyExists`.
 
-**`required_roles`/`namespace_roles`: explicit `[]` vs `None`** — respected across
-every consumer (resolve, single-case, run_stage, sweep binding, cleanup, alias).
+**`required_roles`/`namespace_roles`: explicit `[]` vs `None`** — respected across the
+run/workflow consumers (resolve, single-case, run_stage, sweep binding, cleanup, alias).
+Exception: the manual operator-run path (`runtime/manual.py`) still uses the forbidden
+`or ["default"]` fallback, so an explicit `required_roles: []` (a literal-namespace
+case) mis-binds a default namespace there — a live Law-3 violation, not yet fixed.
 
 
 **kubectl-proxy** (the largest agent-timeout cause). Two distinct ports (data
