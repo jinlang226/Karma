@@ -159,6 +159,34 @@ def load_json(uri, eval_str, label, errors):
         return None
 
 
+_AUTH_SRC_CACHE = {}
+
+
+def _auth_source(user, pw):
+    """Resolve the authSource a user actually authenticates under (O2/C4).
+
+    The environment PERSISTS across workflow stages, so a user the operator
+    created at deploy may live in the application DB (authSource=<APP_DB>) -- an
+    equally valid, common choice -- rather than in admin. Rotating that user's
+    password in place does NOT move its auth home, so a hardcoded
+    authSource=admin would reject the correct new credential ("Authentication
+    failed") through no agent fault. Probe APP_DB then admin with the given
+    password; cache and return the first that authenticates. Only a CONFIRMED
+    source is cached, so a transient/mid-election probe cannot poison later
+    calls; the "admin" fallback (unresolved) preserves the original standalone
+    behaviour where the build creates the user in admin.
+    """
+    if user in _AUTH_SRC_CACHE:
+        return _AUTH_SRC_CACHE[user]
+    for src in (APP_DB, "admin"):
+        uri = f"mongodb://{user}:{pw}@localhost:27017/{APP_DB}?authSource={src}&directConnection=true"
+        res = run_mongo(uri, "db.runCommand({connectionStatus:1}).ok")
+        if res.returncode == 0 and "1" in (res.stdout or ""):
+            _AUTH_SRC_CACHE[user] = src
+            return src
+    return "admin"
+
+
 def credentials(errors):
     admin_pw = get_secret(ADMIN_SECRET, errors)
     app_pw = get_secret(APP_SECRET, errors)
@@ -167,6 +195,10 @@ def credentials(errors):
     rep_pw = get_secret(REPORTING_SECRET, errors)
     if errors:
         return None
+    # Resolve each user's live auth home (admin vs the app DB) so a rotated
+    # user that legitimately lives in APP_DB still authenticates (O2/C4).
+    app_src = _auth_source(APP_USER, app_next_pw)
+    rep_src = _auth_source(REPORTING_USER, rep_pw)
     return {
         "admin_pw": admin_pw,
         "app_pw": app_pw,
@@ -177,9 +209,9 @@ def credentials(errors):
         # db.hello), which a localhost connection would start and which fails
         # under a persisted requireTLS mode.
         "admin_uri": f"mongodb://{ADMIN_USER}:{admin_pw}@localhost:27017/admin?directConnection=true",
-        "app_new_uri": f"mongodb://{APP_USER}:{app_next_pw}@localhost:27017/{APP_DB}?authSource=admin&directConnection=true",
-        "app_old_uri": f"mongodb://{APP_USER}:{app_old_pw}@localhost:27017/{APP_DB}?authSource=admin&directConnection=true",
-        "rep_uri": f"mongodb://{REPORTING_USER}:{rep_pw}@localhost:27017/{APP_DB}?authSource=admin&directConnection=true",
+        "app_new_uri": f"mongodb://{APP_USER}:{app_next_pw}@localhost:27017/{APP_DB}?authSource={app_src}&directConnection=true",
+        "app_old_uri": f"mongodb://{APP_USER}:{app_old_pw}@localhost:27017/{APP_DB}?authSource={app_src}&directConnection=true",
+        "rep_uri": f"mongodb://{REPORTING_USER}:{rep_pw}@localhost:27017/{APP_DB}?authSource={rep_src}&directConnection=true",
     }
 
 
