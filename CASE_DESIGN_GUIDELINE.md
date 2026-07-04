@@ -13,7 +13,10 @@ nginx, Ray, Spark), **never tied to a single case**. Use it both ways: as the
 **category** — PRECONDITION · ORACLE · COMPOSITION · PROMPT · ADVERSARY ·
 FRAMEWORK · TRIAGE — with a stable id (e.g. `P3`, `O13`, `C2`) for
 cross-reference, and each carries a short **Example** at the application level to
-make the pattern recognizable.
+make the pattern recognizable. **Ids are permanent: assigned in discovery order
+and grouped by theme, so within a section they read out of numeric sequence by
+design (e.g. `C6` is followed by `C13`). Never renumber — use the per-section
+Quick reference to navigate.**
 
 **How to use it.** Start at the **Governing Laws** (§I) — every specific rule is
 an instance of one. Before "fixing" a failure, run the **Triage** (§II). When
@@ -124,9 +127,9 @@ version mismatch).
 
 ## III. Precondition rules
 
-> **Quick reference.** *Probe semantics:* P1–P5, P28. *Verify post-state:* P6,
-> P7, P8, P27. *Cluster reuse & timing:* P9–P14. *Manifests, literals, identity:*
-> P15, P16, P18–P26, P34, P35, P36, P37. *Primary-aware & parallel-safe:* P38, P39.
+> **Quick reference.** *Probe semantics:* P1–P5, P28, P32, P33. *Verify post-state:* P6,
+> P7, P8, P27. *Cluster reuse & timing:* P9–P14, P29, P30, P31. *Manifests, literals, identity:*
+> P15, P16, P17, P18–P26, P34, P35, P36, P37. *Primary-aware & parallel-safe:* P38, P39.
 
 ### Probe semantics & specificity
 - **P1 — Skip-probe success is exit-code based; never `|| true`.** The port that
@@ -490,7 +493,7 @@ version mismatch).
 > O21, O22, O23. *Scripting hygiene:* O24, O25, O26,
 > O27. *Assertion completeness & structure:* O28, O29,
 > O30, O31, O32, O33, O34, O35, O36,
-> O42, O43, O44, O45, O46.
+> O37, O38, O39, O40, O41, O42, O43, O44, O45, O46.
 
 ### Grade the contract, from live state, scoped to the target
 - **O1 — Grade only what the prompt promised.** Any exact filename, count, label,
@@ -874,9 +877,11 @@ version mismatch).
 
 ## V. Composition & workflow rules
 
-> **Quick reference.** *Additive composition:* C1, C3, C4, C7, C8, C19. *Identity &
-> ordering:* C2, C10, C11, C12. *What can / can't chain:* C5, C6, C9. *Regression
-> sweep:* C18.
+> **Quick reference.** *Additive composition:* C1, C3, C4, C7, C8, C13, C14.
+> *Identity & ordering:* C2, C10, C11, C12. *What can / can't chain:* C5, C6, C9,
+> C15, C16, C17, C19. *Regression sweep:* C18.
+
+### Additive composition — bring dependencies, reconcile, restore
 
 - **C1 — Bring every oracle dependency additively.** Anything the oracle reads
   (secrets, ConfigMaps, baselines, seed data, users/roles, a `monitoring`
@@ -884,26 +889,12 @@ version mismatch).
   artifact-gated** precondition unit — never only inside the destructive build that
   the skip-gate bypasses on an inherited cluster. The unit must be data-only and
   never delete a namespace or restart a pod. [COMPOSITION]
-- **C2 — Identity contract across stages.** If stage A lets the **agent build** a
-  resource and a later stage must find it, both ends must share the identity. The
-  CockroachDB deploy→initialize seam: a `deploy` stage graded by the STS's *own* selector while
-  an `initialize` stage hardcodes `-l app.kubernetes.io/name=cockroachdb` → "Expected 3,
-  found 0" against a healthy cluster. Fix both: mandate the canonical labels in the
-  creating stage's prompt+oracle, *and* have downstream oracles resolve by the live
-  STS selector → canonical label → name prefix. **Identity is the resource *name*,
-  not only its labels:** if stage A lets the agent create a secret/volume under an
-  *undisclosed* name (an agent-chosen `crdb-certs`) and stage B targets a fixed name
-  (`crdb-cluster-certs`), B grades a resource the pods don't mount. Mandate a
-  canonical name in A's prompt/oracle, override B's `*_secret_name` param to match,
-  or have B introspect the name the workload actually mounts
-  (`sts …volumes[].secret.secretName`). *Example: a CockroachDB campaign chaining
-  `generate-cert` (agent mounts `crdb-certs`) before `certificate-rotation` (targets
-  `crdb-cluster-certs`); the served-cert check correctly fails because the rotated
-  secret isn't the one the pods serve.* [COMPOSITION]
+
 - **C3 — Authoritative skip-probe for the case's own shape.** A lax probe ("6 pods
   Running") skips the build on an *incompatible* inherited topology, leaving the
   oracle's required objects (`es-http`) absent → unresolvable. Probe the exact
   resources the case needs. [COMPOSITION]
+
 - **C4 — Adapt to live mode (auth/TLS/insecure); never assume the cluster's mode.**
   A plain probe against an inherited *secured* cluster fails → flips a unit to its
   *destructive* apply → wipes accumulated state and races the async delete. Detect
@@ -911,23 +902,22 @@ version mismatch).
   empty/plain fallback keeps standalone byte-identical. Gate presence on a
   **durable** signal, not a volatile one (`SELECT 1 || get pods | grep -q
   Running`). [COMPOSITION]
-- **C5 — Don't chain contradictory stages.** A successor's oracle preconditions
-  must be satisfiable by the predecessor's end-state (a snapshot stage expecting ≥2
-  nodes after a downscale-to-1; a seed-hosts-repair with `es-http` after a
-  `search-*` topology). A workflow linter should reject these. [COMPOSITION]
-- **C6 — Order-sensitive / un-recoverable-input cases: bring your own, or curate
-  out.** When a case needs an input the running cluster legitimately doesn't retain
-  (a CA **private key**, an original password, an old version/FCV, an admin user),
-  it must **establish its own** additively when absent — or, if that's physically
-  impossible (FCV downgrade; a base older than the chain leaves), be **curated out**
-  of incompatible workflows. Don't fake it destructively. A frequent instance is a
-  **version-baseline** case: an upgrade case whose precondition asserts a *starting*
-  version (a `from_version: 3.9` skip-upgrade) cannot be chained after a stage that
-  stood the cluster up at a *different* version (a `classic_queue` deploy pinned to
-  `rabbitmq:3.12`) — the persistence invariant forbids a downgrade-reset, so the
-  baseline probe correctly errors and the agent never runs. Fix at authoring time:
-  deploy the chain's lead stage at the required baseline, override the case's
-  `from_version` to match the inherited version, or curate the case out. [COMPOSITION]
+
+- **C7 — Restore a runtime feature additively when its baked-in config is skipped.**
+  A scenario property baked into the case's own StatefulSet/ConfigMap (the
+  `rabbitmq_prometheus` plugin on :15692) silently drops when the apply is skipped
+  on a cluster inherited from a stage that omits it. Re-enable at **runtime**
+  (`rabbitmqctl eval 'application:ensure_all_started(...)'`) probed on the running
+  app set — never restart an `emptyDir` pod or rewrite a read-only file. [COMPOSITION]
+
+- **C8 — Replant the exact drift a break-then-fix case checks.** A bootstrap-
+  existence probe ("queue exists") passes on a cluster a prior identical stage
+  already healed, so the fault is never re-planted and the oracle passes with zero
+  agent action. Probe the *specific faulted state* and re-plant it idempotently.
+  The same trap sinks an additive **re-plant fixture** whose probe checks a proxy
+  instead of its own deliverable — it skips on the inherited cluster and the
+  oracle's baseline/fault is never (re)created (see **P3**). [COMPOSITION]
+
 - **C13 — Stages that re-apply a shared workload's StatefulSet must use a
   consistent volume backing.** If an early stage deploys a workload with `emptyDir`
   and a later stage re-applies the *same-named* StatefulSet (orphan-delete + apply, or
@@ -939,6 +929,7 @@ version mismatch).
   don't chain the mismatched pair. *Example: a RabbitMQ workflow leads with
   `classic_queue` (emptyDir) then runs `manual_backup_restore` (PVC-backed STS) → the
   re-apply adopts the emptyDir pods and the rollout never converges.* [COMPOSITION]
+
 - **C14 — A setup that requires a specific resource *sub-type* must
   declare it explicitly AND reconcile an inherited wrong sub-type, not assume the
   default.** Some resources have an immutable sub-type chosen at creation — a RabbitMQ
@@ -956,58 +947,26 @@ version mismatch).
   ha-all baseline) scheduled after `manual_skip_upgrade` to 4.1 found app-queue left as
   quorum; the fix deletes a non-classic app-queue and recreates it with an explicit
   `x-queue-type: classic`.* [COMPOSITION]
-- **C15 — Workflow `param_overrides` must keep the *resolved* config internally
-  valid, including against the parameters they leave at default.** When a stage overrides
-  one member of a constrained pair — a `min`/`max`, a floor/ceiling, a `from`/`to` — it
-  must keep the pair consistent. Overriding only one side can push it past an invariant
-  the engine enforces, or past the **default** value of the side left untouched. The
-  workflow author sees only the value they changed; the engine validates the *whole*
-  resolved config and rejects the violation — so the stage becomes impossible for **any**
-  agent, however competent (a workflow-definition bug, never an agent fault). When a sweep
-  walks one bound across stages, walk or pin the other bound too so the invariant holds at
-  every step. Statically checkable: resolve each stage's overrides against the case
-  defaults and assert the pairwise constraint. *Example: a CockroachDB `zone-config`
-  range-size sweep drove `range_max_bytes` down to 64 MiB while `range_min_bytes` stayed at
-  its 128 MiB default; CockroachDB enforces `range_min_bytes < range_max_bytes`, so those
-  stages could never apply.* [COMPOSITION]
-- **C7 — Restore a runtime feature additively when its baked-in config is skipped.**
-  A scenario property baked into the case's own StatefulSet/ConfigMap (the
-  `rabbitmq_prometheus` plugin on :15692) silently drops when the apply is skipped
-  on a cluster inherited from a stage that omits it. Re-enable at **runtime**
-  (`rabbitmqctl eval 'application:ensure_all_started(...)'`) probed on the running
-  app set — never restart an `emptyDir` pod or rewrite a read-only file. [COMPOSITION]
-- **C16 — A case whose premise mutates a cluster-shared control-plane
-  component is not additively composable.** Flipping a shared ingress/gateway
-  controller's class or watch-scope, a shared admission webhook, or a cluster-wide proxy
-  config changes how the component treats the *default* traffic class for every
-  co-resident case; the premise *is* the shared mutation, so it can't be made additive,
-  and a probe keyed on a generic shared artifact (a `curl-test` pod, an Active namespace)
-  is not authoritative for it. Curate to a `stage_01`-only dedicated workflow, or give it
-  a private controller instance. *Example: nginx/class_only_upgrade sets
-  `--watch-ingress-without-class=false` on the shared ingress-nginx-controller, breaking
-  classless-Ingress siblings both before and after it.* [COMPOSITION]
-- **C17 — A migration/promotion case whose premise requires an
-  empty/absent target only chains where each instance's target is genuinely re-emptied or
-  re-provisioned first.** Because env (PVC data) persists and the oracle typically grades
-  only the target end-state, alternating source↔target reuse leaves a target populated by
-  the prior stage's source → the "empty target" premise is unsatisfiable additively and
-  the oracle passes with zero migration work (fault never re-planted). Re-empty the target
-  in an additive precondition, assert the pre-migration empty baseline in the oracle, or
-  curate the case out of alternating/marathon chains. *Example: rabbitmq/blue_green_migration
-  in a 30-stage alternating workflow inherits a PVC-populated green and passes trivially.*
-  [COMPOSITION]
-- **C8 — Replant the exact drift a break-then-fix case checks.** A bootstrap-
-  existence probe ("queue exists") passes on a cluster a prior identical stage
-  already healed, so the fault is never re-planted and the oracle passes with zero
-  agent action. Probe the *specific faulted state* and re-plant it idempotently.
-  The same trap sinks an additive **re-plant fixture** whose probe checks a proxy
-  instead of its own deliverable — it skips on the inherited cluster and the
-  oracle's baseline/fault is never (re)created (see **P3**). [COMPOSITION]
-- **C9 — Don't retry stages whose precondition plants non-reentrant state.** A
-  break-then-fix case can't re-break what attempt-1 fixed; a genuine agent miss
-  then masquerades as "precondition units failed." Default the suite to
-  `retries: 0`; keep retry as a workflow-level `max_attempts` only where setup is
-  idempotent. [COMPOSITION]
+
+### Identity & ordering across stages
+
+- **C2 — Identity contract across stages.** If stage A lets the **agent build** a
+  resource and a later stage must find it, both ends must share the identity. The
+  CockroachDB deploy→initialize seam: a `deploy` stage graded by the STS's *own* selector while
+  an `initialize` stage hardcodes `-l app.kubernetes.io/name=cockroachdb` → "Expected 3,
+  found 0" against a healthy cluster. Fix both: mandate the canonical labels in the
+  creating stage's prompt+oracle, *and* have downstream oracles resolve by the live
+  STS selector → canonical label → name prefix. **Identity is the resource *name*,
+  not only its labels:** if stage A lets the agent create a secret/volume under an
+  *undisclosed* name (an agent-chosen `crdb-certs`) and stage B targets a fixed name
+  (`crdb-cluster-certs`), B grades a resource the pods don't mount. Mandate a
+  canonical name in A's prompt/oracle, override B's `*_secret_name` param to match,
+  or have B introspect the name the workload actually mounts
+  (`sts …volumes[].secret.secretName`). *Example: a CockroachDB campaign chaining
+  `generate-cert` (agent mounts `crdb-certs`) before `certificate-rotation` (targets
+  `crdb-cluster-certs`); the served-cert check correctly fails because the rotated
+  secret isn't the one the pods serve.* [COMPOSITION]
+
 - **C10 — Pin a downstream verification stage's target to the *last* upstream stage
   that mutates the checked attribute** — not the first stage to reach the target
   value. A later same-attribute stage can re-mutate it: a `version-check` pinned to a
@@ -1024,14 +983,83 @@ version mismatch).
   stages with conflicting param values, and sweep *all* workflows for the mismatch.
   Drop SETUP assertions an upstream stage can legitimately invalidate; keep only the
   agent's-task assertions. [COMPOSITION]
-- **C18 — A stage composed *before* a legitimate shared-state mutator trips the
-  regression sweep; design it to be adjudicable.** The final sweep re-runs every
-  passed stage's oracle against end-of-run state, so an early oracle that asserts an
-  exact value a later stage is *meant* to overwrite (a rotated secret, a re-scaled
-  topology, a capstone ConfigMap) shows as a sweep "failure" the LLM must rule a
-  false positive — and it can only do so if the later stage's prompt makes the
-  overwrite clear. Either say so in the prompt or drop the brittle SETUP assertion
-  (cf. C10); a real regression should still fail the sweep. [COMPOSITION]
+
+- **C11 — Probe/verify the namespace the workload actually runs in.** Multi-namespace
+  cases (e.g. a Spark per-team workload) must check the core-workload namespace, not the bare
+  umbrella one. [COMPOSITION]
+
+- **C12 — Multi-namespace cases bind logical roles per stage via `namespace_binding`.**
+  A case declares logical roles (`source`/`target`/`default`); the workflow declares
+  physical identities (`cluster_a`/`cluster_b`) and a per-stage `namespace_binding`
+  maps role→identity, so `${BENCH_NS_SOURCE}`/`${BENCH_NS_TARGET}` resolve (and a
+  migration can swap direction stage-to-stage). Omit it and those vars expand
+  **empty** (`kubectl -n ''`); dedupe aliased roles to the physical identities at
+  teardown. [COMPOSITION]
+
+### What can / can't chain — order-sensitive & non-composable premises
+
+- **C5 — Don't chain contradictory stages.** A successor's oracle preconditions
+  must be satisfiable by the predecessor's end-state (a snapshot stage expecting ≥2
+  nodes after a downscale-to-1; a seed-hosts-repair with `es-http` after a
+  `search-*` topology). A workflow linter should reject these. [COMPOSITION]
+
+- **C6 — Order-sensitive / un-recoverable-input cases: bring your own, or curate
+  out.** When a case needs an input the running cluster legitimately doesn't retain
+  (a CA **private key**, an original password, an old version/FCV, an admin user),
+  it must **establish its own** additively when absent — or, if that's physically
+  impossible (FCV downgrade; a base older than the chain leaves), be **curated out**
+  of incompatible workflows. Don't fake it destructively. A frequent instance is a
+  **version-baseline** case: an upgrade case whose precondition asserts a *starting*
+  version (a `from_version: 3.9` skip-upgrade) cannot be chained after a stage that
+  stood the cluster up at a *different* version (a `classic_queue` deploy pinned to
+  `rabbitmq:3.12`) — the persistence invariant forbids a downgrade-reset, so the
+  baseline probe correctly errors and the agent never runs. Fix at authoring time:
+  deploy the chain's lead stage at the required baseline, override the case's
+  `from_version` to match the inherited version, or curate the case out. [COMPOSITION]
+
+- **C9 — Don't retry stages whose precondition plants non-reentrant state.** A
+  break-then-fix case can't re-break what attempt-1 fixed; a genuine agent miss
+  then masquerades as "precondition units failed." Default the suite to
+  `retries: 0`; keep retry as a workflow-level `max_attempts` only where setup is
+  idempotent. [COMPOSITION]
+
+- **C15 — Workflow `param_overrides` must keep the *resolved* config internally
+  valid, including against the parameters they leave at default.** When a stage overrides
+  one member of a constrained pair — a `min`/`max`, a floor/ceiling, a `from`/`to` — it
+  must keep the pair consistent. Overriding only one side can push it past an invariant
+  the engine enforces, or past the **default** value of the side left untouched. The
+  workflow author sees only the value they changed; the engine validates the *whole*
+  resolved config and rejects the violation — so the stage becomes impossible for **any**
+  agent, however competent (a workflow-definition bug, never an agent fault). When a sweep
+  walks one bound across stages, walk or pin the other bound too so the invariant holds at
+  every step. Statically checkable: resolve each stage's overrides against the case
+  defaults and assert the pairwise constraint. *Example: a CockroachDB `zone-config`
+  range-size sweep drove `range_max_bytes` down to 64 MiB while `range_min_bytes` stayed at
+  its 128 MiB default; CockroachDB enforces `range_min_bytes < range_max_bytes`, so those
+  stages could never apply.* [COMPOSITION]
+
+- **C16 — A case whose premise mutates a cluster-shared control-plane
+  component is not additively composable.** Flipping a shared ingress/gateway
+  controller's class or watch-scope, a shared admission webhook, or a cluster-wide proxy
+  config changes how the component treats the *default* traffic class for every
+  co-resident case; the premise *is* the shared mutation, so it can't be made additive,
+  and a probe keyed on a generic shared artifact (a `curl-test` pod, an Active namespace)
+  is not authoritative for it. Curate to a `stage_01`-only dedicated workflow, or give it
+  a private controller instance. *Example: nginx/class_only_upgrade sets
+  `--watch-ingress-without-class=false` on the shared ingress-nginx-controller, breaking
+  classless-Ingress siblings both before and after it.* [COMPOSITION]
+
+- **C17 — A migration/promotion case whose premise requires an
+  empty/absent target only chains where each instance's target is genuinely re-emptied or
+  re-provisioned first.** Because env (PVC data) persists and the oracle typically grades
+  only the target end-state, alternating source↔target reuse leaves a target populated by
+  the prior stage's source → the "empty target" premise is unsatisfiable additively and
+  the oracle passes with zero migration work (fault never re-planted). Re-empty the target
+  in an additive precondition, assert the pre-migration empty baseline in the oracle, or
+  curate the case out of alternating/marathon chains. *Example: rabbitmq/blue_green_migration
+  in a 30-stage alternating workflow inherits a PVC-populated green and passes trivially.*
+  [COMPOSITION]
+
 - **C19 — A fault baked into the workload's own StatefulSet cert/volume
   topology cannot be additively re-planted onto a foreign inherited cluster; it is
   non-composable, so it must run only where its own build does.** When a
@@ -1053,17 +1081,17 @@ version mismatch).
   bootstrap-recovery-harden: the replant no-ops on the inherited cluster and a
   healthy 3-node cluster false-fails "bundle should contain 2 certs, found 1".*
   [COMPOSITION]
-- **C11 — Probe/verify the namespace the workload actually runs in.** Multi-namespace
-  cases (e.g. a Spark per-team workload) must check the core-workload namespace, not the bare
-  umbrella one. [COMPOSITION]
-- **C12 — Multi-namespace cases bind logical roles per stage via `namespace_binding`.**
-  A case declares logical roles (`source`/`target`/`default`); the workflow declares
-  physical identities (`cluster_a`/`cluster_b`) and a per-stage `namespace_binding`
-  maps role→identity, so `${BENCH_NS_SOURCE}`/`${BENCH_NS_TARGET}` resolve (and a
-  migration can swap direction stage-to-stage). Omit it and those vars expand
-  **empty** (`kubectl -n ''`); dedupe aliased roles to the physical identities at
-  teardown. [COMPOSITION]
 
+### Regression sweep
+
+- **C18 — A stage composed *before* a legitimate shared-state mutator trips the
+  regression sweep; design it to be adjudicable.** The final sweep re-runs every
+  passed stage's oracle against end-of-run state, so an early oracle that asserts an
+  exact value a later stage is *meant* to overwrite (a rotated secret, a re-scaled
+  topology, a capstone ConfigMap) shows as a sweep "failure" the LLM must rule a
+  false positive — and it can only do so if the later stage's prompt makes the
+  overwrite clear. Either say so in the prompt or drop the brittle SETUP assertion
+  (cf. C10); a real regression should still fail the sweep. [COMPOSITION]
 ---
 
 ## VI. Prompt rules
