@@ -175,7 +175,17 @@ preconditionUnits:
         sleep: 1
       - command: "kubectl -n ${BENCH_NAMESPACE} rollout restart deploy/prometheus"
         sleep: 2
-      - command: "kubectl -n ${BENCH_NAMESPACE} rollout status deploy/prometheus --timeout=120s"
+      # O5 budget & tolerance: this is a RESET fixture (it re-plants the broken
+      # baseline prometheus config and restarts it), not a readiness gate on an
+      # inherited/critical workload. A slow-but-healthy prometheus roll on a
+      # contended cluster must NOT ERROR the precondition and fail a correct
+      # agent, so the restart wait is best-effort (|| true) with an internal
+      # timeout below the command wrapper's cap. The REAL gate is the verify
+      # below: setup_precondition_check asserts prometheus is Ready (app=prometheus,
+      # 1) AND rabbitmq has >=3 pods ready, so a prometheus that never comes up
+      # still hard-fails here -- only the exact-timing race is swallowed.
+      - command: "kubectl -n ${BENCH_NAMESPACE} rollout status deploy/prometheus --timeout=90s || true"
+        timeout_sec: 110
         sleep: 1
     verify:
       - command: "python3 cases/rabbitmq/manual_monitoring/setup_precondition_check.py --namespace ${BENCH_NAMESPACE} --min-ready 3"
