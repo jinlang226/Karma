@@ -216,7 +216,8 @@ version mismatch).
   [PRECONDITION]
 - **P10 — Namespace teardown must be non-blocking with a real budget.** A bare
   `kubectl delete namespace` blocks until PVC finalizers release (minutes under
-  load); with the default 120s command cap it dies mid-wait. Use `--wait=false` +
+  load); the harness delete default (180s, or 300s inside a `/bin/sh -c` wrapper)
+  can still be exceeded under load and die mid-wait. Use `--wait=false` +
   a tolerant `wait --for=delete … --timeout=400s || true` + `timeout_sec` ≥460s.
   [PRECONDITION]
 - **P11 — Don't issue the first DB call the instant the pod is Ready.** Gate the
@@ -357,9 +358,10 @@ version mismatch).
   with no explicit `namespace:` lands in the proxy default, not the role-bound one.
   Validate every decoy path exists, render-resolves, and carries the intended
   namespace — a broken decoy is a silent "stage error," not a graded fail. [PRECONDITION]
-  (`viewer`, not the non-existent `read`), image tags, memory units (`512Mi`, not
-  bare `512`), service-account names, settings names — a wrong value fails (often
-  silently). [PRECONDITION]
+- **P17 — Use the correct literals.** Correct role names (`viewer`, not the
+  non-existent `read`), image tags, memory units (`512Mi`, not bare `512`),
+  service-account names, settings names — a wrong value fails (often silently).
+  [PRECONDITION]
 - **P18 — Parameterize versions/images; don't hardcode.** A skip-gated destructive
   apply pinned to a fixed image clobbers a workflow's version baseline. Use a
   `*_version` param. **Sub-trap:** whitelist the variable *name* in single quotes
@@ -1419,7 +1421,7 @@ resources the deploy actually creates. **Trap-teeth:** the case's OWN oracle mus
 re-verify that non-default state is unmutated (teeth *standalone*), never relying
 solely on the workflow regression sweep — and the prompt must not assert state the
 precondition never planted (a stock default baseline described as "non-default
-configuration applied" is toothless standalone, as in the six ray/spark trap cases). — And if a case relies on the
+configuration applied" is toothless standalone). — And if a case relies on the
 `decoy_integrity` metric to catch a careless mutation, the decoy must live in its
 **own namespace**: the metric keys on the decoy's `namespace`, so a decoy planted
 into the graded/role-bound namespace scores nothing.
