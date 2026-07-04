@@ -41,20 +41,27 @@ lift:
       timeout_sec: 10
   apply:
     # Recreate with self-signed placeholder certs so pods can at least start.
-    - command: >-
-        /bin/sh -c "
-        openssl req -x509 -newkey rsa:2048 -keyout /tmp/lift-node.key -out /tmp/lift-node.crt
-        -days 365 -nodes -subj '/CN=node' -extensions san
-        -config <(printf '[req]\ndistinguished_name=dn\n[dn]\n[san]\nsubjectAltName=IP:127.0.0.1')
-        2>/dev/null;
-        cp /tmp/lift-node.crt /tmp/lift-ca.crt;
-        kubectl -n {{params.namespace}} create secret generic {{params.secret_name}}
-        --from-file=ca.crt=/tmp/lift-ca.crt
-        --from-file=node.crt=/tmp/lift-node.crt
-        --from-file=node.key=/tmp/lift-node.key
-        --from-file=client.root.crt=/tmp/lift-node.crt
-        --from-file=client.root.key=/tmp/lift-node.key
-        --dry-run=client -o yaml | kubectl apply -f -"
+    # P39: stage the generated key/cert under a per-invocation mktemp dir (never a
+    # fixed host /tmp path) so concurrent multi-cluster runs of this case cannot
+    # clobber each other's cert files; producer (openssl) and consumer (kubectl
+    # create) share the same scoped dir (Law 4). Write the openssl SAN config to a
+    # file rather than a bash <() process substitution, so it is POSIX /bin/sh-safe.
+    - command: |
+        /bin/sh -c '
+        d=$(mktemp -d)
+        printf "[req]\ndistinguished_name=dn\n[dn]\n[san]\nsubjectAltName=IP:127.0.0.1\n" > "$d/openssl.cnf"
+        openssl req -x509 -newkey rsa:2048 -keyout "$d/node.key" -out "$d/node.crt" \
+          -days 365 -nodes -subj /CN=node -extensions san -config "$d/openssl.cnf" 2>/dev/null
+        cp "$d/node.crt" "$d/ca.crt"
+        kubectl -n {{params.namespace}} create secret generic {{params.secret_name}} \
+          --from-file=ca.crt="$d/ca.crt" \
+          --from-file=node.crt="$d/node.crt" \
+          --from-file=node.key="$d/node.key" \
+          --from-file=client.root.crt="$d/node.crt" \
+          --from-file=client.root.key="$d/node.key" \
+          --dry-run=client -o yaml | kubectl -n {{params.namespace}} apply -f -
+        rm -rf "$d"
+        '
       timeout_sec: 30
   verify:
     - command: "kubectl -n {{params.namespace}} get secret {{params.secret_name}}"
