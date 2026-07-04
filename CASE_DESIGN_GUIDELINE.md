@@ -561,9 +561,20 @@ version mismatch).
   always sees "already at baseline" and skips the reset — the relative change then
   compounds across sweep instances (`baseline+2`, `+3`) and the oracle false-fails.
   Probe the live *runtime* value (`getParameter`/`getProfilingStatus`). Corollary of
-  P3 (probe by intent) and P31 (reset to convergence). *Example: mongod-config-update's
+  P3 (probe by intent) and P31 (reset to convergence). **Budget & tolerance: when the
+  graded source is the *start-up* config (only re-read on restart), the reset must
+  restart — but make the `rollout restart`/`rollout status` *best-effort* (`|| true`)
+  and let a bounded *read-back verify* be the real gate, sized so the whole
+  restart+settle+verify fits under the precondition phase budget. A `rollout status`
+  that hard-fails (no `|| true`) on a slow-but-healthy rolling restart turns the reset
+  into a precondition ERROR that fails a correct agent — the opposite of a reset. This
+  is the narrow exception to the "readiness gates should hard-fail" default: only a
+  reset whose real gate is a downstream read-back verify may swallow the restart's
+  exit.** *Example: mongod-config-update's
   `mongo_config_baseline_ready` reset probed `getCmdLineOpts.verbosity` (start-up) →
-  skipped on every repeat → stage 2 read verbosity 3 vs an expected 2.* [ORACLE]
+  skipped on every repeat → stage 2 read verbosity 3 vs an expected 2; then its hardened
+  reset's `rollout status … --timeout=300s` (no `|| true`) ERRORed the precondition on a
+  contended cluster.* [ORACLE]
 
 ### Connection & client identity
 - **O6 — Connect exactly as the agent's proven command does** (ground truth
