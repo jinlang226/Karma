@@ -293,13 +293,75 @@ def curl_health(errors):
     errors.extend(health_errors)
 
 
+def _live_client_ca_bundle():
+    """Resolve the CA trust bundle the LIVE client actually mounts.
+
+    O1: the hardcoded es-http-ca is the client trust anchor only on the
+    STANDALONE path, where this case's curl-test pod mounts it. Under composition
+    es_env_ready.apply is skip-gated (an ES cluster is inherited), so that
+    curl-test is never deployed and the inherited client is a bare pod mounting NO
+    CA bundle -- es-http-ca is then an oracle-only identifier the prompt never
+    disclosed, and a valid solve that publishes the new CA under an equally-correct
+    name (e.g. es-http-new) false-fails. So grade the client's REAL anchor: read
+    the ca.crt of whatever ConfigMap curl-test mounts. Returns (pem, name), or
+    (None, None) when the client mounts no CA bundle so main() can fall back to the
+    client-agnostic effective outcome.
+    """
+    r = run(["kubectl", "-n", NAMESPACE, "get", "pod", CURL_POD, "-o", "json"])
+    if r.returncode != 0:
+        # Client pod unreadable -> fall back to the case-default bundle name.
+        pem = get_configmap_text(CLIENT_CA_CM, "ca.crt", [])
+        return (pem, CLIENT_CA_CM) if pem and "BEGIN CERTIFICATE" in pem else (None, None)
+    try:
+        pod = json.loads(r.stdout)
+    except json.JSONDecodeError:
+        return None, None
+    for vol in (pod.get("spec", {}) or {}).get("volumes", []) or []:
+        cm = vol.get("configMap") or {}
+        name = cm.get("name")
+        if not name:
+            continue
+        pem = get_configmap_text(name, "ca.crt", [])
+        if pem and "BEGIN CERTIFICATE" in pem:
+            return pem, name
+    return None, None
+
+
+def _published_ca_fingerprints():
+    """Fingerprints of every CA cert published in any namespace ConfigMap's ca.crt.
+
+    Client-agnostic effective-outcome fallback (O1) for when the live client mounts
+    no CA bundle: 'ensure clients can trust the new CA' is satisfied if the new CA
+    has been published to SOME trust ConfigMap under a name the agent legitimately
+    chose, not only the case's es-http-ca. Read-only; a genuine no-op (rotated the
+    served cert but published the new CA nowhere) still yields an empty match.
+    """
+    fps = set()
+    r = run(["kubectl", "-n", NAMESPACE, "get", "configmap", "-o", "json"])
+    if r.returncode != 0:
+        return fps
+    try:
+        items = json.loads(r.stdout).get("items", [])
+    except (json.JSONDecodeError, AttributeError):
+        return fps
+    with tempfile.TemporaryDirectory() as td:
+        for idx, cm in enumerate(items):
+            pem = (cm.get("data") or {}).get("ca.crt")
+            if not pem or "BEGIN CERTIFICATE" not in pem:
+                continue
+            path = f"{td}/cm-{idx}.crt"
+            with open(path, "w", encoding="utf-8") as f:
+                f.write(pem)
+            fps |= (openssl_fingerprints_all(path, [], "published CA") or set())
+    return fps
+
+
 def main():
     errors = []
 
     old_ca_fp = get_configmap_text(OLD_CM, "ca_fingerprint_sha256", errors)
     old_leaf_fp = get_configmap_text(OLD_CM, "leaf_fingerprint_sha256", errors)
     old_ca_pem = get_configmap_text(OLD_CM, "ca.crt", errors)
-    client_ca_pem = get_configmap_text(CLIENT_CA_CM, "ca.crt", errors)
 
     if errors:
         print("HTTP cert rotation verification failed:", file=sys.stderr)
@@ -325,9 +387,6 @@ def main():
         if old_ca_pem is not None:
             with open(old_ca_path, "w", encoding="utf-8") as f:
                 f.write(old_ca_pem)
-        if client_ca_pem is not None:
-            with open(client_ca_path, "w", encoding="utf-8") as f:
-                f.write(client_ca_pem)
 
         if new_ca is None or new_leaf is None:
             errors.append("Missing TLS data from es-http-tls secret")
@@ -352,14 +411,29 @@ def main():
             if new_leaf_fp and old_leaf_fp and new_leaf_fp == old_leaf_fp:
                 errors.append("Leaf fingerprint did not change")
 
-            # O-multi: the client trust ConfigMap is also legitimately a BUNDLE
-            # (old + new CA). Assert the new CA is PRESENT among its certs, not
-            # that its single/first cert equals the new CA.
-            if new_ca_fp and client_ca_pem:
-                client_fps = openssl_fingerprints_all(client_ca_path, errors, "client CA")
-                client_fps = client_fps or set()
-                if client_fps and new_ca_fp not in client_fps:
-                    errors.append("Client CA bundle does not contain the new CA")
+            # O1 + O-multi: grade the client's REAL trust anchor. Standalone,
+            # curl-test mounts es-http-ca (legitimately a BUNDLE: old + new CA) --
+            # assert the new CA is PRESENT among its certs. Under composition the
+            # anchor is skip-gated away (bare inherited client), so es-http-ca is
+            # an undisclosed oracle-only name; grade the client-agnostic effective
+            # outcome instead -- the new CA must be published to SOME trust
+            # ConfigMap (the agent may pick an equally-correct name, e.g.
+            # es-http-new).
+            if new_ca_fp:
+                client_pem, client_cm_name = _live_client_ca_bundle()
+                if client_pem:
+                    with open(client_ca_path, "w", encoding="utf-8") as f:
+                        f.write(client_pem)
+                    client_fps = openssl_fingerprints_all(
+                        client_ca_path, errors, f"client CA ({client_cm_name})"
+                    )
+                    client_fps = client_fps or set()
+                    if client_fps and new_ca_fp not in client_fps:
+                        errors.append(
+                            f"Client CA bundle ({client_cm_name}) does not contain the new CA"
+                        )
+                elif new_ca_fp not in _published_ca_fingerprints():
+                    errors.append("New CA is not published in any client-trust ConfigMap")
 
             not_after = openssl_not_after(leaf_path, errors)
             if not_after:
