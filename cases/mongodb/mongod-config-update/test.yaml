@@ -249,7 +249,12 @@ preconditionUnits:
     on_probe_fail: skip
     probe:
       # True (skip) ONLY when every member is ALREADY at the seeded baseline
-      # (verbosity == baseline, slowms == baseline). The post-solve target
+      # (verbosity == baseline, slowms == baseline). Reads the LIVE RUNTIME value
+      # -- getParameter:logLevel + getProfilingStatus().slowms -- the SAME source
+      # the agent mutates (setParameter/setProfilingLevel) and the oracle grades
+      # (O38 runtime-first). Reading the start-up getCmdLineOpts here would never
+      # observe the agent's runtime change, so the reset would wrongly skip and the
+      # relative +1/2x would compound across sweep instances (O5). The post-solve target
       # (baseline+1 / 2x) is deliberately NOT a skip condition: a workflow may
       # schedule this relative-change case more than once (see the config-sweep
       # workflows), leaving the cluster at the previous run's target. Treating
@@ -265,7 +270,7 @@ preconditionUnits:
           base_v={{params.baseline_verbosity}}; base_s={{params.baseline_slow_ms}}
           ok=1
           for i in 0 1 2; do
-            out=$(kubectl -n mongodb exec {{params.cluster_prefix}}-$i -- mongosh --quiet $t "mongodb://{{params.admin_username}}:$pw@localhost:27017/admin?directConnection=true" --eval "var o=db.adminCommand({getCmdLineOpts:1}).parsed||{}; var v=(o.systemLog||{}).verbosity; var s=(o.operationProfiling||{}).slowOpThresholdMs; if(s===undefined){s=db.getProfilingStatus().slowms;} print(v+\"|\"+s)" 2>/dev/null)
+            out=$(kubectl -n mongodb exec {{params.cluster_prefix}}-$i -- mongosh --quiet $t "mongodb://{{params.admin_username}}:$pw@localhost:27017/admin?directConnection=true" --eval "var v=db.adminCommand({getParameter:1,logLevel:1}).logLevel; var s=db.getProfilingStatus().slowms; print(v+\"|\"+s)" 2>/dev/null)
             v=$(echo "$out" | cut -d"|" -f1); s=$(echo "$out" | cut -d"|" -f2)
             if [ "$v" = "$base_v" ] && [ "$s" = "$base_s" ]; then :; else ok=0; fi
           done

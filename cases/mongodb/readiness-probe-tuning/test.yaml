@@ -240,6 +240,11 @@ preconditionUnits:
   # without replanting, the oracle would pass with zero agent action (O1).
   # Probe the faulty values' ABSENCE and patch them back in + bounce the pods
   # (a template patch alone never takes effect -- ADV7's rollout discipline).
+  # The replant uses op:add (NOT op:replace) on every probe field: an inherited
+  # STS whose livenessProbe never set timeoutSeconds/failureThreshold leaves those
+  # paths absent, and op:replace on an absent path aborts the WHOLE atomic patch ->
+  # nothing plants and the oracle grades an unfaulted probe ("timeoutSeconds None")
+  # (P28). op:add creates-or-replaces, working whether or not the field pre-exists.
   # Additive (no namespace/STS delete, PVC data preserved) and best-effort
   # (P8): a patch that cannot apply degrades to an oracle fail of the
   # fault-shape, never a precondition ERROR. Declared last so the admin/health
@@ -259,7 +264,7 @@ preconditionUnits:
         timeout_sec: 15
     apply:
       - command: |
-          /bin/sh -c 'kubectl -n mongodb patch sts {{params.cluster_prefix}} --type=json -p='\''[{"op":"replace","path":"/spec/template/spec/containers/0/readinessProbe/initialDelaySeconds","value":{{params.faulty_readiness_initial_delay}}},{"op":"replace","path":"/spec/template/spec/containers/0/readinessProbe/timeoutSeconds","value":{{params.faulty_readiness_timeout}}},{"op":"replace","path":"/spec/template/spec/containers/0/readinessProbe/failureThreshold","value":{{params.faulty_readiness_failure_threshold}}},{"op":"replace","path":"/spec/template/spec/containers/0/livenessProbe/initialDelaySeconds","value":{{params.faulty_liveness_initial_delay}}},{"op":"replace","path":"/spec/template/spec/containers/0/livenessProbe/timeoutSeconds","value":{{params.faulty_liveness_timeout}}},{"op":"replace","path":"/spec/template/spec/containers/0/livenessProbe/failureThreshold","value":{{params.faulty_liveness_failure_threshold}}}]'\'' || true'
+          /bin/sh -c 'kubectl -n mongodb patch sts {{params.cluster_prefix}} --type=json -p='\''[{"op":"add","path":"/spec/template/spec/containers/0/readinessProbe/initialDelaySeconds","value":{{params.faulty_readiness_initial_delay}}},{"op":"add","path":"/spec/template/spec/containers/0/readinessProbe/timeoutSeconds","value":{{params.faulty_readiness_timeout}}},{"op":"add","path":"/spec/template/spec/containers/0/readinessProbe/failureThreshold","value":{{params.faulty_readiness_failure_threshold}}},{"op":"add","path":"/spec/template/spec/containers/0/livenessProbe/initialDelaySeconds","value":{{params.faulty_liveness_initial_delay}}},{"op":"add","path":"/spec/template/spec/containers/0/livenessProbe/timeoutSeconds","value":{{params.faulty_liveness_timeout}}},{"op":"add","path":"/spec/template/spec/containers/0/livenessProbe/failureThreshold","value":{{params.faulty_liveness_failure_threshold}}}]'\'' || true'
         sleep: 2
       - command: "/bin/sh -c 'kubectl -n mongodb delete pod -l app={{params.cluster_prefix}} --ignore-not-found=true || true'"
         sleep: 2
