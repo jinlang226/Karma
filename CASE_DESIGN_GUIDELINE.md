@@ -1016,8 +1016,8 @@ version mismatch).
   reference a prior stage's resolved param (`target_version:
   ${stages.stage_03.params.crdb_version}`) so it can't drift; the resolver rejects
   self/forward refs and unknown ids, requires the **exact zero-padded** id (like
-  ADV4), and only *warns* (resolving to `null`) when an intervening
-  overlapping-namespace stage may have invalidated the source (treat that warning as
+  ADV4), and only *warns* (resolving to `null`) when the referenced param name is not
+  present in the referenced stage's resolved `param_overrides` (treat that warning as
   a chaining bug). Audit any pin whose justifying comment names multiple upstream
   stages with conflicting param values, and sweep *all* workflows for the mismatch.
   Drop SETUP assertions an upstream stage can legitimately invalidate; keep only the
