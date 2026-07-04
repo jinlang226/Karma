@@ -67,7 +67,7 @@ preconditionUnits:
       # change/break the manifest between runs.
       - command: "/bin/sh -c 'kubectl apply -f https://raw.githubusercontent.com/kubernetes/ingress-nginx/controller-v1.10.1/deploy/static/provider/kind/deploy.yaml || true'"
         sleep: 5
-      - command: "kubectl -n {{params.ingress_namespace}} rollout status deploy/{{params.ingress_controller_deployment}} --timeout=120s"
+      - command: "/bin/sh -c 'kubectl -n {{params.ingress_namespace}} rollout status deploy/{{params.ingress_controller_deployment}} --timeout=120s || true'"
         sleep: 2
       # C16 CAUTION: this patches the cluster-SHARED ingress-nginx controller's
       # watch scope, changing how it treats classless Ingresses for every
@@ -75,7 +75,7 @@ preconditionUnits:
       # elsewhere) must keep this case in stage_01/dedicated chains.
       - command: "kubectl -n {{params.ingress_namespace}} patch deployment {{params.ingress_controller_deployment}} --type=json -p '[{\"op\":\"add\",\"path\":\"/spec/template/spec/containers/0/args/-\",\"value\":\"--watch-ingress-without-class=false\"}]'"
         sleep: 1
-      - command: "kubectl -n {{params.ingress_namespace}} rollout status deploy/{{params.ingress_controller_deployment}} --timeout=120s"
+      - command: "/bin/sh -c 'kubectl -n {{params.ingress_namespace}} rollout status deploy/{{params.ingress_controller_deployment}} --timeout=120s || true'"
         sleep: 2
       - command: "kubectl create namespace elasticsearch"
         sleep: 1
@@ -97,6 +97,12 @@ preconditionUnits:
           '
         sleep: 1
     verify:
+      # P26 fresh-install gate: the controller rollout statuses above are
+      # best-effort (|| true) so a cold-cluster image-pull can't ERROR the
+      # precondition; this generously-timed Available wait is the real gate -- a
+      # controller that never becomes ready still fails here.
+      - command: "kubectl -n {{params.ingress_namespace}} wait --for=condition=Available deploy/{{params.ingress_controller_deployment}} --timeout=240s"
+        timeout_sec: 260
       - command: "kubectl -n elasticsearch get pods 2>/dev/null | grep -c Running"
         timeout_sec: 10
 
