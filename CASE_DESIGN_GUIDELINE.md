@@ -161,7 +161,16 @@ version mismatch).
 - **P28 — Verify the fault actually planted.** An atomic JSON-patch with one
   bad pointer (`/.../cases/requests/memory` where `cases` should be `resources`)
   silently no-ops the *whole* patch → the StatefulSet stays healthy → trivial
-  pass. [PRECONDITION]
+  pass. **Use `op:add`, not `op:replace`, for any field the inherited workload may
+  not already have.** A JSON-patch `op:replace` on a path that doesn't exist
+  *fails*, aborting the whole atomic patch — so a fault-replant that `replace`s an
+  *optional* field (a `livenessProbe.timeoutSeconds` a foreign inherited STS never
+  set → `None`) plants nothing, and the oracle then grades an unfaulted workload
+  (`None` vs the expected faulty value). `op:add` creates-or-replaces, so it works
+  whether or not the field pre-exists. *Example: readiness-probe-tuning's
+  probe_fault_replant `op:replace`d liveness probe fields absent on the composed
+  cluster → the fault never planted → "timeoutSeconds (None) must exceed the faulty
+  baseline".* [PRECONDITION]
 
 ### Verify must assert the right post-state
 - **P6 — Verify what is true *after setup, before the agent acts*.** A case that
@@ -304,7 +313,15 @@ version mismatch).
   clusters) — **or patch only the field you need** (`kubectl patch` the readiness
   probe / image) instead of re-applying the whole manifest. *Example: a MongoDB
   case that re-applies the full manifest after an earlier stage
-  customized the STS → immutable-field Forbidden.* [COMPOSITION]
+  customized the STS → immutable-field Forbidden.* **A create-once resource
+  (a `Job`, a completed `Pod`) is *fully* immutable — its pod template cannot be
+  patched at all, so a case re-scheduled with a different value (a per-stage image
+  override) MUST `delete --ignore-not-found` the old object before re-applying, or
+  the second instance silently inherits the first's spec and the oracle false-fails
+  against the new expectation.** *Example: spark/deploy_spark_pi scheduled twice
+  (`spark_image: 3.5.1` then `3.5.3`); the re-apply fixture never deleted the Job, so
+  stage 2 kept stage 1's 3.5.1 image and the oracle "expected 3.5.3, got 3.5.1".*
+  [COMPOSITION]
 - **P32 — Gate a destructive fresh-build (namespace/StatefulSet delete) on
   the workload's EXISTENCE, never on the case's fault signature.** With
   `on_probe_fail: skip`, a probe-fail *runs* the apply. If the skip-probe tests the
@@ -530,7 +547,18 @@ version mismatch).
   agent. Either read the live pre-change value in the oracle, or don't schedule a
   relative-change case more than once per workflow. *Example: a MongoDB
   `mongod-config-update` ("+1 verbosity") run at two stages; the agent correctly moves
-  2→3 but the oracle expects the baseline-derived 2.* [ORACLE]
+  2→3 but the oracle expects the baseline-derived 2.* **If you take the
+  reset-the-baseline-before-each-instance escape hatch, the reset fixture's *probe
+  and write* must operate on the *same source* the agent mutates and the oracle
+  grades.** A reset that writes the runtime value (`setParameter`/`setProfilingLevel`)
+  but *probes* the start-up config (`getCmdLineOpts`) to decide whether to run is
+  broken: the agent's runtime change never touches start-up config, so the probe
+  always sees "already at baseline" and skips the reset — the relative change then
+  compounds across sweep instances (`baseline+2`, `+3`) and the oracle false-fails.
+  Probe the live *runtime* value (`getParameter`/`getProfilingStatus`). Corollary of
+  P3 (probe by intent) and P31 (reset to convergence). *Example: mongod-config-update's
+  `mongo_config_baseline_ready` reset probed `getCmdLineOpts.verbosity` (start-up) →
+  skipped on every repeat → stage 2 read verbosity 3 vs an expected 2.* [ORACLE]
 
 ### Connection & client identity
 - **O6 — Connect exactly as the agent's proven command does** (ground truth
