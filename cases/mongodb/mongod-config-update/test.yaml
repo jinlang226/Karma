@@ -20,12 +20,6 @@ params:
   target_journal_compressor:
     default: zlib
     description: Approved WiredTiger journal compression algorithm.
-  baseline_verbosity:
-    default: 1
-    description: Seeded systemLog.verbosity baseline the prompt is relative to.
-  baseline_slow_ms:
-    default: 200
-    description: Seeded operationProfiling.slowOpThresholdMs baseline the prompt is relative to.
 
 prompt: |
   A 3-member MongoDB replica set is running in the mongodb namespace with auth enabled.
@@ -229,135 +223,67 @@ preconditionUnits:
           '
         timeout_sec: 60
 
-  # Problem-shape replant (composition safety, Pattern 1): the oracle grades the
-  # ABSOLUTE post-change targets (verbosity {{params.baseline_verbosity}}+1,
-  # slowOpThresholdMs 2x{{params.baseline_slow_ms}}, journalCompressor
-  # {{params.target_journal_compressor}}) that the prompt expresses RELATIVE to a
-  # SEEDED baseline (verbosity {{params.baseline_verbosity}},
-  # slowOpThresholdMs {{params.baseline_slow_ms}}). That baseline is established
-  # only inside the destructive mongo_env_ready.apply, which is SKIPPED on an
-  # inherited cluster -> a prior config stage may have left a different live
-  # baseline, so the agent's correct +1/2x computation lands on the wrong absolute
-  # value and the hardcoded oracle is "off by one step". This unit reconciles ONLY
-  # the live mongod config baseline (verbosity + slowms) back to the seeded values
-  # the prompt assumes, when the cluster is NOT already at the post-solve target.
-  # Probe gates on the EXACT pre-change baseline being live across all members;
-  # standalone (apply already seeded it) the probe passes and this skips ->
-  # identical behaviour. Applied at runtime via setParameter/profile (no restart,
-  # no data touched); never resets the cluster or other config.
-  - name: mongo_config_baseline_ready
+  # O5 relative-change grading (PREFERRED option): the prompt asks for a change
+  # RELATIVE to the current setting (verbosity +1, slowOpThresholdMs x2). Grade
+  # that delta against a RECORDED pre-agent value -- NO reset, NO restart. This
+  # unit RECORDS the live pre-agent verbosity + slowms into a durable in-cluster
+  # store (ConfigMap mongod-config-prevalue) the oracle reads. A fixed
+  # baseline+1/baseline*2 oracle is only correct on a case's FIRST application;
+  # when a sweep schedules this relative-change case more than once (see the
+  # config-tune-sweep workflows) the 2nd+ run legitimately advances the value
+  # again, and a fixed oracle false-fails the correct agent (O5). Recording the
+  # actual starting value per stage makes the delta grade correctly however many
+  # times the case runs, with NO compounding and NO restart budget -- the old
+  # reset-the-baseline strategy (rollout-restart + configmap sed-patch + a
+  # restart-settle read-back poll) consumed the whole precondition phase budget
+  # on a fresh cluster and timed the first mongod stage out; this replaces it.
+  # Runs LAST (after the cluster is up and admin_user_fixture authenticates), so
+  # it captures exactly the value the agent starts from. OVERWRITES every run so
+  # the store is never stale from a prior stage.
+  - name: mongo_config_prevalue_record
     on_probe_fail: skip
     probe:
-      # True (skip) ONLY when every member is ALREADY at the seeded baseline
-      # (verbosity == baseline, slowms == baseline). Reads the SAME dual source the
-      # oracle grades (O5/O38): the START-UP config getCmdLineOpts.parsed FIRST
-      # (systemLog.verbosity / operationProfiling.slowOpThresholdMs), falling back
-      # to the live runtime (getParameter:logLevel / getProfilingStatus().slowms)
-      # only when the config lacks the key -- mirroring _verbosity()/_slow_ms()
-      # exactly. The agent's canonical solution is a config-file edit + rollout
-      # restart, which the oracle reads via getCmdLineOpts.parsed; probing the
-      # runtime alone would miss that a member is still RUNNING the drifted start-up
-      # config (the just-restarted mongod re-inits runtime from that config), so the
-      # reset must key off the SAME start-up source it will restore. The post-solve
-      # target (baseline+1 / 2x) is deliberately NOT a skip condition: a workflow may
-      # schedule this relative-change case more than once (see the config-sweep
-      # workflows), leaving the cluster at the previous run's target. Treating
-      # that as "well-posed" would let the agent legitimately advance again
-      # (baseline+2 / 4x) while the fixed oracle still expects baseline+1 / 2x,
-      # false-failing the correct agent (O-relative). Reconciling to the seeded
-      # baseline before EVERY run keeps the fixed oracle target valid however many
-      # times the case runs.
-      - command: |
-          /bin/sh -c '
-          t=""; for cca in /etc/tls/ca.crt /etc/mongo-ca/ca.crt; do kubectl -n mongodb exec {{params.cluster_prefix}}-0 -- ls $cca >/dev/null 2>&1 && { t="--tls --tlsAllowInvalidHostnames --tlsAllowInvalidCertificates --tlsCAFile $cca"; break; }; done
-          pw=$(kubectl -n mongodb get secret admin-user-password -o jsonpath="{.data.password}" 2>/dev/null | base64 -d 2>/dev/null); pw=${pw:-admin123password}
-          base_v={{params.baseline_verbosity}}; base_s={{params.baseline_slow_ms}}
-          ok=1
-          for i in 0 1 2; do
-            out=$(kubectl -n mongodb exec {{params.cluster_prefix}}-$i -- mongosh --quiet $t "mongodb://{{params.admin_username}}:$pw@localhost:27017/admin?directConnection=true" --eval "var o=db.adminCommand({getCmdLineOpts:1}).parsed||{}; var v=(o.systemLog&&o.systemLog.verbosity!=null)?o.systemLog.verbosity:db.adminCommand({getParameter:1,logLevel:1}).logLevel; var s=(o.operationProfiling&&o.operationProfiling.slowOpThresholdMs!=null)?o.operationProfiling.slowOpThresholdMs:db.getProfilingStatus().slowms; print(v+\"|\"+s)" 2>/dev/null)
-            v=$(echo "$out" | cut -d"|" -f1); s=$(echo "$out" | cut -d"|" -f2)
-            if [ "$v" = "$base_v" ] && [ "$s" = "$base_s" ]; then :; else ok=0; fi
-          done
-          [ "$ok" = "1" ]
-          '
-        timeout_sec: 60
+      # Deliberately ALWAYS "not present" -> apply always re-records. The live
+      # starting value differs per stage (each inherits the prior stage's
+      # result), so the record must be refreshed every run; never skip it.
+      - command: "/bin/sh -c 'exit 1'"
+        timeout_sec: 5
     apply:
-      # Reset the START-UP config source the running mongod reads -- the mounted
-      # mongod.conf surfaced by getCmdLineOpts.parsed, the SAME source the oracle
-      # grades first (O38) and the agent reads as the "current" value it advances
-      # from -- NOT just the runtime. A runtime-only setParameter reset is undone
-      # the instant the agent's canonical config-file + rollout-restart solution
-      # re-reads the STALE start-up config (verbosity/slowms still drifted from the
-      # prior sweep instance), so the agent computes +1/2x off the drifted base and
-      # the fixed oracle false-fails the correct agent (O5). Do it in two steps:
-      # (1) surgically rewrite ONLY verbosity + slowOpThresholdMs in the LIVE
-      # `mongod-config` configmap, preserving keyFile / journalCompressor / config
-      # path (an inherited cluster may have reshaped the mount -- keyFile /keyfile
-      # vs /etc/mongo-keyfile -- so re-applying the pristine configmap.yaml here and
-      # then restarting would boot mongod against a keyfile path it can't find and
-      # break the cluster); (2) rollout-restart so every member re-reads the patched
-      # baseline into getCmdLineOpts. O5 Budget & tolerance: the restart IS required
-      # (the graded start-up source is only re-read on restart), but the
-      # `rollout restart`/`rollout status` steps are BEST-EFFORT (`|| true`) -- a
-      # slow-but-healthy roll on a contended cluster must NEVER hard-fail this
-      # precondition (that turns a reset into an ERROR that fails a correct agent).
-      # The downstream read-back verify is the REAL gate: it polls until every
-      # member reports the baseline through the same dual source the oracle reads
-      # and fails loudly only if the reset genuinely did not take. A fresh restart
-      # re-inits the live runtime (logLevel/slowms) from the patched configmap too,
-      # so no separate runtime-alignment step is needed. Idempotent; other config
-      # and all data preserved. On a pristine standalone the probe already reads
-      # baseline -> this whole unit is skipped.
-      - command: |
-          /bin/sh -c '
-          cm=mongod-config
-          cur=$(kubectl -n mongodb get configmap $cm -o jsonpath="{.data.mongod\.conf}" 2>/dev/null)
-          [ -n "$cur" ] || exit 0
-          new=$(printf "%s" "$cur" | sed -E "s/(verbosity:[[:space:]]*)[0-9]+/\1{{params.baseline_verbosity}}/; s/(slowOpThresholdMs:[[:space:]]*)[0-9]+/\1{{params.baseline_slow_ms}}/")
-          kubectl -n mongodb create configmap $cm --from-literal=mongod.conf="$new" --dry-run=client -o yaml | kubectl -n mongodb apply -f - >/dev/null 2>&1 || true
-          '
-        timeout_sec: 30
-        sleep: 1
-      # Best-effort restart (O5 Budget & tolerance): never hard-fail the
-      # precondition on the roll itself -- the read-back verify below is the gate.
-      - command: "kubectl -n mongodb rollout restart statefulset {{params.cluster_prefix}} || true"
-        timeout_sec: 30
-        sleep: 2
-      # Best-effort settle wait: a slow-but-healthy 3-member secure rolling restart
-      # on a contended cluster can exceed this window (or exit non-zero mid-roll);
-      # `|| true` swallows that so the verify -- not `rollout status` -- decides.
-      - command: "kubectl -n mongodb rollout status statefulset {{params.cluster_prefix}} --timeout=180s || true"
-        timeout_sec: 200
-        sleep: 2
-    verify:
-      # P38 read-back -- THE REAL GATE (O5 Budget & tolerance). Confirm every member
-      # now reports the seeded baseline through the SAME dual source the oracle
-      # grades (getCmdLineOpts.parsed first, else runtime) -- not merely that mongosh
-      # connects. Because the best-effort restart above may still be rolling, this is
-      # a WIDE bounded poll (~40 x 5s, sized so a 3-member secure rolling restart can
-      # settle on a contended cluster -- the old 90s was too short and ERRORed the
-      # precondition). A mongosh exec into a still-restarting member just fails its
-      # per-member check and the poll retries; only if the baseline never
-      # materializes within the window does this fail loudly, rather than let the
-      # agent compound off a drifted base.
+      # Read verbosity + slowms from the SAME dual source the oracle grades
+      # (O5/O38): start-up config getCmdLineOpts.parsed FIRST
+      # (systemLog.verbosity / operationProfiling.slowOpThresholdMs), else the
+      # live runtime (getParameter:logLevel / getProfilingStatus().slowms). Read
+      # from member 0 -- members agree at rest. Write both into the durable
+      # ConfigMap mongod-config-prevalue (create|apply fully overwrites the data
+      # map, so no stale key survives). Poll the read briefly to tolerate
+      # election/exec lag; if no valid numeric value can be read, exit non-zero
+      # so this precondition fails LOUDLY rather than let the oracle grade
+      # against a stale record. This is a fast read+write -- NO restart.
       - command: |
           /bin/sh -c '
           t=""; for cca in /etc/tls/ca.crt /etc/mongo-ca/ca.crt; do kubectl -n mongodb exec {{params.cluster_prefix}}-0 -- ls $cca >/dev/null 2>&1 && { t="--tls --tlsAllowInvalidHostnames --tlsAllowInvalidCertificates --tlsCAFile $cca"; break; }; done
           pw=$(kubectl -n mongodb get secret admin-user-password -o jsonpath="{.data.password}" 2>/dev/null | base64 -d 2>/dev/null); pw=${pw:-admin123password}
-          base_v={{params.baseline_verbosity}}; base_s={{params.baseline_slow_ms}}
-          for _vi in $(seq 1 40); do
-            ok=1
-            for i in 0 1 2; do
-              out=$(kubectl -n mongodb exec {{params.cluster_prefix}}-$i -- mongosh --quiet $t "mongodb://{{params.admin_username}}:$pw@localhost:27017/admin?directConnection=true" --eval "var o=db.adminCommand({getCmdLineOpts:1}).parsed||{}; var v=(o.systemLog&&o.systemLog.verbosity!=null)?o.systemLog.verbosity:db.adminCommand({getParameter:1,logLevel:1}).logLevel; var s=(o.operationProfiling&&o.operationProfiling.slowOpThresholdMs!=null)?o.operationProfiling.slowOpThresholdMs:db.getProfilingStatus().slowms; print(v+\"|\"+s)" 2>/dev/null)
-              v=$(echo "$out" | cut -d"|" -f1); s=$(echo "$out" | cut -d"|" -f2)
-              if [ "$v" = "$base_v" ] && [ "$s" = "$base_s" ]; then :; else ok=0; fi
-            done
-            [ "$ok" = "1" ] && exit 0
-            sleep 5
+          v=""; s=""
+          for _pi in $(seq 1 30); do
+            out=$(kubectl -n mongodb exec {{params.cluster_prefix}}-0 -- mongosh --quiet $t "mongodb://{{params.admin_username}}:$pw@localhost:27017/admin?directConnection=true" --eval "var o=db.adminCommand({getCmdLineOpts:1}).parsed||{}; var v=(o.systemLog&&o.systemLog.verbosity!=null)?o.systemLog.verbosity:db.adminCommand({getParameter:1,logLevel:1}).logLevel; var s=(o.operationProfiling&&o.operationProfiling.slowOpThresholdMs!=null)?o.operationProfiling.slowOpThresholdMs:db.getProfilingStatus().slowms; print(v+\"|\"+s)" 2>/dev/null)
+            v=$(echo "$out" | cut -d"|" -f1 | tr -dc 0-9); s=$(echo "$out" | cut -d"|" -f2 | tr -dc 0-9)
+            [ -n "$v" ] && [ -n "$s" ] && break
+            sleep 2
           done
-          exit 1
+          [ -n "$v" ] && [ -n "$s" ] || exit 1
+          kubectl -n mongodb create configmap mongod-config-prevalue --from-literal=verbosity="$v" --from-literal=slowms="$s" --dry-run=client -o yaml | kubectl -n mongodb apply -f -
           '
-        timeout_sec: 260
+        timeout_sec: 120
+        sleep: 1
+    verify:
+      # P38 read-back: confirm THIS stage's record is durably present and numeric.
+      - command: |
+          /bin/sh -c '
+          v=$(kubectl -n mongodb get configmap mongod-config-prevalue -o jsonpath="{.data.verbosity}" 2>/dev/null | tr -dc 0-9)
+          s=$(kubectl -n mongodb get configmap mongod-config-prevalue -o jsonpath="{.data.slowms}" 2>/dev/null | tr -dc 0-9)
+          [ -n "$v" ] && [ -n "$s" ]
+          '
+        timeout_sec: 15
 
 oracle:
   verify:
