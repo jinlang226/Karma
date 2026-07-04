@@ -69,7 +69,7 @@ preconditionUnits:
       # rollout below is the real gate.
       - command: "/bin/sh -c 'kubectl apply -f cases/nginx-ingress/create_ingress/resource/deploy.yaml || true'"
         sleep: 90
-      - command: "kubectl -n ingress-nginx rollout status deploy/ingress-nginx-controller --timeout=120s"
+      - command: "/bin/sh -c 'kubectl -n ingress-nginx rollout status deploy/ingress-nginx-controller --timeout=120s || true'"
         sleep: 2
       # The old `--watch-ingress-without-class=false` arg patch is gone: it
       # posed as planted non-default state but only toggled the SHARED
@@ -80,13 +80,21 @@ preconditionUnits:
         sleep: 0
       - command: "kubectl -n demo apply -f cases/nginx-ingress/create_ingress/resource/demo-app.yaml"
         sleep: 2
-      - command: "kubectl -n demo rollout status deploy/demo-app --timeout=60s"
+      - command: "/bin/sh -c 'kubectl -n demo rollout status deploy/demo-app --timeout=60s || true'"
         sleep: 1
       - command: "/bin/sh -c 'kubectl -n demo get pod curl-test >/dev/null 2>&1 || kubectl -n demo apply -f cases/nginx-ingress/create_ingress/resource/curl-test.yaml'"
         sleep: 1
       - command: "kubectl -n demo wait --for=condition=Ready pod/curl-test --timeout=180s"
         sleep: 1
     verify:
+      # P26 fresh-install gate: the apply-block rollout statuses are best-effort
+      # (|| true) so a cold-cluster image-pull can't ERROR the precondition; these
+      # generously-timed Available waits are the real gate -- a controller or
+      # backend that never becomes ready still fails here.
+      - command: "kubectl -n ingress-nginx wait --for=condition=Available deploy/ingress-nginx-controller --timeout=240s"
+        timeout_sec: 260
+      - command: "kubectl -n demo wait --for=condition=Available deploy/demo-app --timeout=240s"
+        timeout_sec: 260
       - command: "kubectl -n demo wait --for=condition=ready pod/curl-test --timeout=5s"
         timeout_sec: 30
 

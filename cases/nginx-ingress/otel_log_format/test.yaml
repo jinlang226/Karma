@@ -97,7 +97,7 @@ preconditionUnits:
         sleep: 0
       - command: "kubectl -n demo apply -f cases/nginx-ingress/otel_log_format/resource/otel-echo.yaml"
         sleep: 2
-      - command: "kubectl -n demo rollout status deploy/otel-echo --timeout=60s"
+      - command: "/bin/sh -c 'kubectl -n demo rollout status deploy/otel-echo --timeout=60s || true'"
         sleep: 1
       - command: "kubectl -n demo apply -f cases/nginx-ingress/otel_log_format/resource/otel-ingress.yaml"
         sleep: 1
@@ -109,9 +109,17 @@ preconditionUnits:
         sleep: 0
       - command: "kubectl -n otel apply -f cases/nginx-ingress/otel_log_format/resource/otel-collector.yaml"
         sleep: 2
-      - command: "kubectl -n otel rollout status deploy/otel-collector --timeout=60s"
+      - command: "/bin/sh -c 'kubectl -n otel rollout status deploy/otel-collector --timeout=60s || true'"
         sleep: 1
     verify:
+      # P26 fresh-install gate: the apply-block rollout statuses are best-effort
+      # (|| true) so a cold-cluster image-pull can't ERROR the precondition; these
+      # generously-timed Available waits are the real gate -- a backend or collector
+      # that never becomes ready still fails here.
+      - command: "kubectl -n demo wait --for=condition=Available deploy/otel-echo --timeout=240s"
+        timeout_sec: 260
+      - command: "kubectl -n otel wait --for=condition=Available deploy/otel-collector --timeout=240s"
+        timeout_sec: 260
       - command: "kubectl -n demo wait --for=condition=ready pod/{{params.curl_pod_name}} --timeout=5s"
         timeout_sec: 30
 
