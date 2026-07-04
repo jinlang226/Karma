@@ -77,6 +77,12 @@ metrics:
   - spark_job_fix_efficiency
 
 preconditionUnits:
+  # Unit 1 -- destructive FRESH-BUILD of the shared spark-pi environment
+  # (namespace + RBAC + the local-mode spark-cluster scaffolding). Gated on
+  # workload EXISTENCE (P32): when an inherited environment already has Running
+  # pods this whole unit is SKIPPED, so a prior stage's cluster is preserved.
+  # The SparkPi Job itself is planted by unit 2 (below), never here, so the
+  # per-stage image override is always honored even on an inherited cluster.
   - name: spark_env_ready
     on_probe_fail: skip
     probe:
@@ -93,15 +99,38 @@ preconditionUnits:
         sleep: 1
       - command: "kubectl apply -f cases/spark/deploy_spark_pi/resource/spark-cluster.yaml"
         sleep: 15
-      # P18: render the Job manifest from the spark_image param via envsubst so
-      # a workflow override (e.g. apache/spark:3.5.1) is solvable. Derive the jar
-      # version from the same tag; whitelist ONLY the two var names in single
-      # quotes so envsubst leaves the in-container $SPARK_LOCAL_IP/$(hostname -i)/
-      # $EXIT_CODE runtime refs intact. The "-nonexistent" fault stays on the tag.
+    verify:
+      - command: "kubectl -n spark-pi get pods 2>/dev/null | grep -c Running"
+        timeout_sec: 10
+  # Unit 2 -- (re)plant the SparkPi Job fault carrying THIS scheduling's image.
+  # P16: a Job's pod template is IMMUTABLE, so re-applying the manifest onto an
+  # inherited Job from an earlier scheduling cannot change its image
+  # (deploy_spark_pi is scheduled twice in spark-ci-cd-pipeline-smoke:
+  # spark_image 3.5.1 then 3.5.3). The probe keys on the DESIRED image, not on
+  # "any Job present": a Job whose image already matches this stage's tag is
+  # left untouched (idempotent), but a stale-image Job from a prior scheduling
+  # FAILS the probe -> the apply delete+recreates a fresh Job with the correct
+  # image, which the agent then fixes. Without the delete-first the second
+  # scheduling silently inherits the first's spec and the oracle false-fails
+  # ("expected 3.5.3, got 3.5.1").
+  #
+  # P18: render the Job manifest from the spark_image param via envsubst so a
+  # workflow override is solvable. Derive the jar version from the same tag;
+  # whitelist ONLY the two var names in single quotes so envsubst leaves the
+  # in-container $SPARK_LOCAL_IP/$(hostname -i)/$EXIT_CODE runtime refs intact.
+  # The "-nonexistent" fault stays on the tag.
+  - name: spark_pi_job
+    on_probe_fail: skip
+    probe:
+      - command: "/bin/sh -c 'kubectl -n spark-pi get job spark-pi -o jsonpath=\"{.spec.template.spec.containers[0].image}\" 2>/dev/null | grep -qF \"${BENCH_PARAM_SPARK_IMAGE:-apache/spark:3.5.3}\"'"
+        timeout_sec: 10
+    apply:
+      - command: "/bin/sh -c 'kubectl -n spark-pi delete job spark-pi --ignore-not-found=true --wait=true 2>/dev/null; kubectl -n spark-pi wait --for=delete job/spark-pi --timeout=60s 2>/dev/null || true'"
+        sleep: 2
       - command: "/bin/sh -c 'export BENCH_PARAM_SPARK_IMAGE=${BENCH_PARAM_SPARK_IMAGE:-apache/spark:3.5.3}; export BENCH_PARAM_SPARK_VERSION=${BENCH_PARAM_SPARK_IMAGE##*:}; envsubst '\\''${BENCH_PARAM_SPARK_IMAGE} ${BENCH_PARAM_SPARK_VERSION}'\\'' < cases/spark/deploy_spark_pi/resource/spark-pi-job.yaml | kubectl apply -f -'"
         sleep: 5
     verify:
-      - command: "kubectl -n spark-pi get pods 2>/dev/null | grep -c Running"
+      - command: "kubectl -n spark-pi get job spark-pi"
         timeout_sec: 10
 
 oracle:
