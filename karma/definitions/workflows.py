@@ -128,8 +128,8 @@ def _resolve_stage_param_overrides(
     """Resolve ``${stages.<id>.params.<n>}`` references in a stage's ``param_overrides``.
 
     References to the current or a future stage raise :class:`ValueError`.
-    References to a stage whose params may have been invalidated by an
-    intermediate stage with overlapping namespace aliases produce a warning.
+    A reference to a param name that is absent from the referenced stage's
+    resolved ``param_overrides`` produces a warning and resolves to ``None``.
 
     Parameters
     ----------
