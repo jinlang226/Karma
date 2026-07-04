@@ -1,0 +1,18 @@
+The `rollback-rehearsal` ConfigMap is live in the `mongodb` namespace. Here's what was found and what the script does:
+
+**Non-default settings identified:**
+
+| Setting | Current | MongoDB Default |
+|---|---|---|
+| `systemLog.verbosity` | `1` | `0` |
+| `operationProfiling.mode` | `slowOp` | `off` |
+| `operationProfiling.slowOpThresholdMs` | `200 ms` | `100 ms` |
+| `wiredTiger.engineConfig.journalCompressor` | `zlib` | `snappy` |
+| admin account | `admin-user` provisioned | none |
+
+**Script structure (four steps, nothing executed now):**
+
+1. **Runtime reset (no restart)** — `setParameter` to drop verbosity back to `0`, `slowOpThresholdMs` to `100`, and `setProfilingLevel(0)` on each of the three pods. Immediate effect.
+2. **ConfigMap patch** — rewrites `mongod-config` to remove the `journalCompressor`, `verbosity`, and `operationProfiling` blocks, leaving only the required replica set / auth / storage config. WiredTiger will use `snappy` for new journal writes after restart.
+3. **Rolling restart** — `kubectl rollout restart statefulset/mongodb-replica` with a 5-minute wait for completion.
+4. **admin-user drop** — **gated/commented out** by default. The pod liveness and readiness probes authenticate as `admin-user`; dropping the account without first updating those probes and provisioning a replacement admin would make all pods unready. The block is present for review but must be manually uncommented after those prerequisites are satisfied.

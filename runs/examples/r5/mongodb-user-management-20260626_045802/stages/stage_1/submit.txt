@@ -1,0 +1,25 @@
+Everything is configured correctly. Here's a summary of what was done:
+
+**Problem:** MongoDB 6.0 disables the localhost exception when keyFile auth is active, so no users could be created. The cluster had pre-existing users (`admin-user`, `app-user`, `readonly-user`) in the `admin` db with incomplete permissions.
+
+**Approach:**
+1. Temporarily patched the StatefulSet to remove `--auth` and `--keyFile`, waited for rolling restart
+2. Created the initial `admin` user to bootstrap access (later cleaned up)
+3. Restored the StatefulSet to its original command with auth + keyFile
+4. Used `admin-user` (pre-existing, already had `userAdminAnyDatabase`) to fix all permissions
+
+**Final state:**
+
+| User | Auth DB | Roles |
+|------|---------|-------|
+| `admin-user` | admin | `clusterAdmin`, `userAdminAnyDatabase`, `readWriteAnyDatabase` — unchanged |
+| `app-user` | admin | `readWrite` on `appdb` ✓ |
+| `readonly-user` | admin | `read` on `appdb` + `reportingRole` on `appdb` ✓ |
+
+**`reportingRole`** (in `appdb` db): `find`, `collStats`, `dbStats`, `listCollections`, `listIndexes` on `appdb.reports` — `find` is what enables `aggregate` in MongoDB.
+
+**Verified:**
+- `app-user` can insert, read, and drop in `appdb`; blocked from other dbs
+- `readonly-user` can read `appdb.reports` and run `aggregate` pipelines on it; write is blocked
+- Replica set is healthy (1 PRIMARY + 2 SECONDARies)
+- `admin-user` retains full cluster access

@@ -1,0 +1,99 @@
+[precondition:crdb_env_ready:preconditionUnits[0] 'crdb_env_ready':probe] $ /bin/sh -c 'kubectl -n cockroachdb get statefulset crdb-cluster >/dev/null 2>&1 || kubectl -n cockroachdb get pods 2>/dev/null | grep -q Running'
+
+[precondition:crdb_env_ready:preconditionUnits[0] 'crdb_env_ready':apply] $ /bin/sh -c 'kubectl delete namespace cockroachdb --ignore-not-found=true --wait=false; kubectl wait --for=delete namespace/cockroachdb --timeout=400s || true; kubectl delete namespace monitoring --ignore-not-found=true --wait=false; kubectl wait --for=delete namespace/monitoring --timeout=400s || true'
+
+[precondition:crdb_env_ready:preconditionUnits[0] 'crdb_env_ready':apply] $ kubectl create namespace monitoring
+namespace/monitoring created
+
+[precondition:crdb_env_ready:preconditionUnits[0] 'crdb_env_ready':apply] $ /bin/sh -c 'kubectl apply -f cases/cockroachdb/monitoring-integration/resource/monitoring-crds.yaml || true'
+customresourcedefinition.apiextensions.k8s.io/servicemonitors.monitoring.coreos.com unchanged
+customresourcedefinition.apiextensions.k8s.io/podmonitors.monitoring.coreos.com unchanged
+customresourcedefinition.apiextensions.k8s.io/prometheuses.monitoring.coreos.com unchanged
+customresourcedefinition.apiextensions.k8s.io/prometheusrules.monitoring.coreos.com unchanged
+customresourcedefinition.apiextensions.k8s.io/probes.monitoring.coreos.com unchanged
+
+[precondition:crdb_env_ready:preconditionUnits[0] 'crdb_env_ready':apply] $ kubectl create namespace cockroachdb
+namespace/cockroachdb created
+
+[precondition:crdb_env_ready:preconditionUnits[0] 'crdb_env_ready':apply] $ /bin/sh -c 'kubectl -n monitoring apply -f cases/cockroachdb/monitoring-integration/resource/prometheus-operator.yaml || true'
+serviceaccount/prometheus-operator created
+clusterrole.rbac.authorization.k8s.io/prometheus-operator unchanged
+clusterrolebinding.rbac.authorization.k8s.io/prometheus-operator unchanged
+deployment.apps/prometheus-operator created
+
+[precondition:crdb_env_ready:preconditionUnits[0] 'crdb_env_ready':apply] $ /bin/sh -c 'kubectl -n monitoring apply -f cases/cockroachdb/monitoring-integration/resource/prometheus-rbac.yaml || true'
+serviceaccount/prometheus created
+clusterrole.rbac.authorization.k8s.io/prometheus unchanged
+clusterrolebinding.rbac.authorization.k8s.io/prometheus unchanged
+
+[precondition:crdb_env_ready:preconditionUnits[0] 'crdb_env_ready':apply] $ kubectl -n monitoring apply -f cases/cockroachdb/monitoring-integration/resource/prometheus.yaml
+prometheus.monitoring.coreos.com/crdb created
+service/prometheus created
+
+[precondition:crdb_env_ready:preconditionUnits[0] 'crdb_env_ready':apply] $ kubectl -n monitoring wait --for=condition=ready pod -l app=prometheus-operator --timeout=300s
+pod/prometheus-operator-586788fdf6-fjlzg condition met
+
+[precondition:crdb_env_ready:preconditionUnits[0] 'crdb_env_ready':apply] $ /bin/sh -c 'for i in $(seq 1 60); do count=$(kubectl -n monitoring get pod -l prometheus=crdb --no-headers 2>/dev/null | wc -l | tr -d " "); if [ "${count}" -ge 1 ]; then kubectl -n monitoring wait --for=condition=ready pod -l prometheus=crdb --timeout=300s && exit 0; fi; sleep 2; done; exit 1'
+pod/prometheus-crdb-0 condition met
+
+[precondition:crdb_env_ready:preconditionUnits[0] 'crdb_env_ready':apply] $ kubectl -n cockroachdb apply -f cases/cockroachdb/monitoring-integration/resource/rbac.yaml
+serviceaccount/crdb-cluster-sa created
+role.rbac.authorization.k8s.io/crdb-cluster-role created
+rolebinding.rbac.authorization.k8s.io/crdb-cluster-rolebinding created
+
+[precondition:crdb_env_ready:preconditionUnits[0] 'crdb_env_ready':apply] $ kubectl -n cockroachdb apply -f cases/cockroachdb/monitoring-integration/resource/services.yaml
+service/crdb-cluster created
+service/crdb-cluster-public created
+
+[precondition:crdb_env_ready:preconditionUnits[0] 'crdb_env_ready':apply] $ kubectl -n cockroachdb apply -f cases/cockroachdb/monitoring-integration/resource/statefulset.yaml
+statefulset.apps/crdb-cluster created
+
+[precondition:crdb_env_ready:preconditionUnits[0] 'crdb_env_ready':apply] $ kubectl -n cockroachdb wait --for=jsonpath={.status.phase}=Running pod -l app.kubernetes.io/name=cockroachdb --timeout=300s
+pod/crdb-cluster-0 condition met
+pod/crdb-cluster-1 condition met
+pod/crdb-cluster-2 condition met
+
+[precondition:crdb_env_ready:preconditionUnits[0] 'crdb_env_ready':apply] $ /bin/sh -c 'for i in $(seq 1 30); do kubectl -n cockroachdb exec crdb-cluster-0 -- ./cockroach init --insecure --host=crdb-cluster-0.crdb-cluster.cockroachdb.svc.cluster.local && exit 0; sleep 3; done; exit 1'
+Cluster successfully initialized
+E260626 03:49:33.238992 32 2@rpc/peer.go:598  [rnode=?,raddr=crdb-cluster-0.crdb-cluster.cockroachdb.svc.cluster.local:26257,class=system,rpc] 1  failed connection attempt (last connected 0s ago): grpc: connection error: desc = "transport: error while dialing: dial tcp 10.244.0.160:26257: connect: connection refused" [code 14/Unavailable]
+warning: node not ready to perform cluster initialization: initial connection heartbeat failed: grpc: connection error: desc = "transport: error while dialing: dial tcp 10.244.0.160:26257: connect: connection refused" [code 14/Unavailable] (retrying)
+E260626 03:49:34.300592 85 2@rpc/peer.go:598  [rnode=?,raddr=crdb-cluster-0.crdb-cluster.cockroachdb.svc.cluster.local:26257,class=system,rpc] 2  failed connection attempt (last connected 0s ago): grpc: connection error: desc = "transport: error while dialing: dial tcp 10.244.0.160:26257: connect: connection refused" [code 14/Unavailable]
+warning: node not ready to perform cluster initialization: initial connection heartbeat failed: grpc: connection error: desc = "transport: error while dialing: dial tcp 10.244.0.160:26257: connect: connection refused" [code 14/Unavailable] (retrying)
+E260626 03:49:35.202793 114 2@rpc/peer.go:598  [rnode=?,raddr=crdb-cluster-0.crdb-cluster.cockroachdb.svc.cluster.local:26257,class=system,rpc] 3  failed connection attempt (last connected 0s ago): grpc: connection error: desc = "transport: error while dialing: dial tcp 10.244.0.160:26257: connect: connection refused" [code 14/Unavailable]
+warning: node not ready to perform cluster initialization: initial connection heartbeat failed: grpc: connection error: desc = "transport: error while dialing: dial tcp 10.244.0.160:26257: connect: connection refused" [code 14/Unavailable] (retrying)
+E260626 03:49:36.122024 102 2@rpc/peer.go:598  [rnode=?,raddr=crdb-cluster-0.crdb-cluster.cockroachdb.svc.cluster.local:26257,class=system,rpc] 4  failed connection attempt (last connected 0s ago): grpc: connection error: desc = "transport: error while dialing: dial tcp 10.244.0.160:26257: connect: connection refused" [code 14/Unavailable]
+warning: node not ready to perform cluster initialization: initial connection heartbeat failed: grpc: connection error: desc = "transport: error while dialing: dial tcp 10.244.0.160:26257: connect: connection refused" [code 14/Unavailable] (retrying)
+E260626 03:49:37.216656 93 2@rpc/peer.go:598  [rnode=?,raddr=crdb-cluster-0.crdb-cluster.cockroachdb.svc.cluster.local:26257,class=system,rpc] 5  failed connection attempt (last connected 0s ago): grpc: connection error: desc = "transport: error while dialing: dial tcp 10.244.0.160:26257: connect: connection refused" [code 14/Unavailable]
+warning: node not ready to perform cluster initialization: initial connection heartbeat failed: grpc: connection error: desc = "transport: error while dialing: dial tcp 10.244.0.160:26257: connect: connection refused" [code 14/Unavailable] (retrying)
+E260626 03:49:38.312271 109 2@rpc/peer.go:598  [rnode=?,raddr=crdb-cluster-0.crdb-cluster.cockroachdb.svc.cluster.local:26257,class=system,rpc] 6  failed connection attempt (last connected 0s ago): grpc: connection error: desc = "transport: error while dialing: dial tcp 10.244.0.160:26257: connect: connection refused" [code 14/Unavailable]
+warning: node not ready to perform cluster initialization: initial connection heartbeat failed: grpc: connection error: desc = "transport: error while dialing: dial tcp 10.244.0.160:26257: connect: connection refused" [code 14/Unavailable] (retrying)
+E260626 03:49:39.389431 132 2@rpc/peer.go:598  [rnode=?,raddr=crdb-cluster-0.crdb-cluster.cockroachdb.svc.cluster.local:26257,class=system,rpc] 7  failed connection attempt (last connected 0s ago): grpc: connection error: desc = "transport: error while dialing: dial tcp 10.244.0.160:26257: connect: connection refused" [code 14/Unavailable]
+warning: node not ready to perform cluster initialization: initial connection heartbeat failed: grpc: connection error: desc = "transport: error while dialing: dial tcp 10.244.0.160:26257: connect: connection refused" [code 14/Unavailable] (retrying)
+E260626 03:49:40.318463 127 2@rpc/peer.go:598  [rnode=?,raddr=crdb-cluster-0.crdb-cluster.cockroachdb.svc.cluster.local:26257,class=system,rpc] 8  failed connection attempt (last connected 0s ago): grpc: connection error: desc = "transport: error while dialing: dial tcp 10.244.0.160:26257: connect: connection refused" [code 14/Unavailable]
+warning: node not ready to perform cluster initialization: initial connection heartbeat failed: grpc: connection error: desc = "transport: error while dialing: dial tcp 10.244.0.160:26257: connect: connection refused" [code 14/Unavailable] (retrying)
+E260626 03:49:41.229757 141 2@rpc/peer.go:598  [rnode=?,raddr=crdb-cluster-0.crdb-cluster.cockroachdb.svc.cluster.local:26257,class=system,rpc] 9  failed connection attempt (last connected 0s ago): grpc: connection error: desc = "transport: error while dialing: dial tcp 10.244.0.160:26257: connect: connection refused" [code 14/Unavailable]
+warning: node not ready to perform cluster initialization: initial connection heartbeat failed: grpc: connection error: desc = "transport: error while dialing: dial tcp 10.244.0.160:26257: connect: connection refused" [code 14/Unavailable] (retrying)
+E260626 03:49:42.274094 148 2@rpc/peer.go:598  [rnode=?,raddr=crdb-cluster-0.crdb-cluster.cockroachdb.svc.cluster.local:26257,class=system,rpc] 10  failed connection attempt (last connected 0s ago): grpc: connection error: desc = "transport: error while dialing: dial tcp 10.244.0.160:26257: connect: connection refused" [code 14/Unavailable]
+warning: node not ready to perform cluster initialization: initial connection heartbeat failed: grpc: connection error: desc = "transport: error while dialing: dial tcp 10.244.0.160:26257: connect: connection refused" [code 14/Unavailable] (retrying)
+E260626 03:49:43.347565 167 2@rpc/peer.go:598  [rnode=?,raddr=crdb-cluster-0.crdb-cluster.cockroachdb.svc.cluster.local:26257,class=system,rpc] 11  failed connection attempt (last connected 0s ago): grpc: connection error: desc = "transport: error while dialing: dial tcp 10.244.0.160:26257: connect: connection refused" [code 14/Unavailable]
+warning: node not ready to perform cluster initialization: initial connection heartbeat failed: grpc: connection error: desc = "transport: error while dialing: dial tcp 10.244.0.160:26257: connect: connection refused" [code 14/Unavailable] (retrying)
+E260626 03:49:44.296484 171 2@rpc/peer.go:598  [rnode=?,raddr=crdb-cluster-0.crdb-cluster.cockroachdb.svc.cluster.local:26257,class=system,rpc] 12  failed connection attempt (last connected 0s ago): grpc: connection error: desc = "transport: error while dialing: dial tcp 10.244.0.160:26257: connect: connection refused" [code 14/Unavailable]
+warning: node not ready to perform cluster initialization: initial connection heartbeat failed: grpc: connection error: desc = "transport: error while dialing: dial tcp 10.244.0.160:26257: connect: connection refused" [code 14/Unavailable] (retrying)
+
+[precondition:crdb_env_ready:preconditionUnits[0] 'crdb_env_ready':apply] $ kubectl -n cockroachdb wait --for=condition=ready pod -l app.kubernetes.io/name=cockroachdb --timeout=600s
+pod/crdb-cluster-0 condition met
+pod/crdb-cluster-1 condition met
+pod/crdb-cluster-2 condition met
+
+[precondition:crdb_env_ready:preconditionUnits[0] 'crdb_env_ready':apply] $ /bin/sh -c 'kubectl -n cockroachdb get pod curl-test >/dev/null 2>&1 || kubectl -n cockroachdb apply -f cases/cockroachdb/monitoring-integration/resource/curl-test.yaml'
+pod/curl-test created
+
+[precondition:crdb_env_ready:preconditionUnits[0] 'crdb_env_ready':apply] $ kubectl -n cockroachdb wait --for=condition=ready pod/curl-test --timeout=120s
+pod/curl-test condition met
+
+[precondition:crdb_env_ready:preconditionUnits[0] 'crdb_env_ready':verify] $ /bin/sh -c 'flag=--insecure; kubectl -n cockroachdb exec crdb-cluster-0 -- ls /cockroach/cockroach-certs/ca.crt >/dev/null 2>&1 && flag=--certs-dir=/cockroach/cockroach-certs; kubectl -n cockroachdb exec crdb-cluster-0 -- ./cockroach sql $flag -e "SELECT 1;" 2>/dev/null'
+?column?
+1
+
+[precondition:crdb_monitoring_stack:preconditionUnits[1] 'crdb_monitoring_stack':probe] $ kubectl -n cockroachdb get pod curl-test -o jsonpath='{.status.conditions[?(@.type=="Ready")].status}' 2>/dev/null | grep -q True
+

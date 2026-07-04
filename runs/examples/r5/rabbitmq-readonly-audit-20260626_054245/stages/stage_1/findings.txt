@@ -1,0 +1,269 @@
+RabbitMQ Compliance Audit Report
+Namespace: karma-rabbitmq-readonly-audit-20260626-054245
+Audit Date: 2026-06-26
+Auditor: Automated read-only inspection (no changes made)
+
+================================================================================
+1. CLUSTER HEALTH
+================================================================================
+
+Cluster Name: rabbit@rabbitmq-0.rabbitmq-headless.karma-rabbitmq-readonly-audit-20260626-054245.svc.cluster.local
+Total Nodes: 3 (all disk nodes)
+All Nodes Running: YES
+  - rabbit@rabbitmq-0  [Running, not under maintenance]
+  - rabbit@rabbitmq-1  [Running, not under maintenance]
+  - rabbit@rabbitmq-2  [Running, not under maintenance]
+
+Active Alarms: NONE
+Network Partitions: NONE
+Partition Handling Strategy: pause_minority
+
+Pods:
+  rabbitmq-0  Ready 1/1  (4m21s uptime at audit time)
+  rabbitmq-1  Ready 1/1
+  rabbitmq-2  Ready 1/1
+  rabbitmq-setup-nv9mm  Completed (setup job)
+
+Memory Watermark: 40% of available RAM (~67.5 GB computed)
+Free Disk Space: 679.1 GB
+Total Connections: 0
+Total Queues: 1
+
+--------------------------------------------------------------------------------
+FINDING [H-1]: VERSION OUT OF SUPPORT
+Severity: HIGH
+RabbitMQ 3.12.14 on Erlang 25.3.2.15 is running. RabbitMQ 3.12 release series
+is marked "out of support" by the status output itself. No security patches will
+be issued for this release line. Upgrade to a supported release series (3.13+)
+is recommended.
+
+================================================================================
+2. SOFTWARE VERSION & IMAGE
+================================================================================
+
+RabbitMQ Version: 3.12.14 (out of support — see H-1)
+Erlang/OTP:       25.3.2.15 [erts-13.2.2.11]
+Container Image:  rabbitmq:3.12-management
+Crypto Library:   OpenSSL 3.1.7 (2024-09-03)
+
+================================================================================
+3. TLS / TRANSPORT SECURITY
+================================================================================
+
+AMQP Listener (5672):   PLAINTEXT — no TLS
+Management API (15672):  PLAINTEXT HTTP — no TLS
+Clustering Port (25672): not externally exposed
+
+TLS listeners configured: NONE (ssl_listeners: [])
+TLS handshake timeout:    5000 ms (default)
+Supported TLS protocols:  tlsv1.3, tlsv1.2 (configured in ssl app but unused)
+SSL options:              [] (empty — no cert/key paths defined)
+
+--------------------------------------------------------------------------------
+FINDING [C-1]: NO TLS ON AMQP OR MANAGEMENT API
+Severity: CRITICAL
+All client connections to AMQP (5672) and the Management HTTP API (15672) are
+unencrypted. Credentials and message payloads are transmitted in plaintext.
+TLS should be configured on both listeners with certificates signed by a trusted
+CA, and plaintext listeners should be disabled.
+
+================================================================================
+4. USERS
+================================================================================
+
+Username   Tags             Notes
+---------  ---------------  -----------------------------------------------
+admin      [administrator]  Full cluster administrator
+app-user   []               No management tags — application service account
+
+No "guest" default user present: CONFIRMED (guest user removed, which is correct)
+
+loopback_users.guest = false  [NOTE: guest user does not exist, but if it were
+                               re-created it would be network-accessible, not
+                               loopback-only. Consider setting to true as defense
+                               in depth.]
+
+Password hashing: SHA-256 (rabbit_password_hashing_sha256)
+
+--------------------------------------------------------------------------------
+FINDING [M-1]: app-user HAS NO CONNECTION OR CHANNEL LIMITS
+Severity: MEDIUM
+No per-user connection or channel limits are configured for app-user (or admin).
+An unbounded application or compromised credential could exhaust broker resources.
+Consider setting max-connections and max-channels limits via set_user_limits.
+
+================================================================================
+5. VIRTUAL HOSTS
+================================================================================
+
+Name  Description
+----  -----------
+/     Default virtual host
+/app  Application virtual host
+
+Total: 2 vhosts
+
+No vhost-level connection or queue limits are configured on either vhost.
+
+================================================================================
+6. PERMISSIONS
+================================================================================
+
+Vhost "/":
+  User     Configure  Write  Read
+  -------  ---------  -----  ----
+  admin    .*         .*     .*
+
+Vhost "/app":
+  User      Configure  Write  Read
+  --------  ---------  -----  ----
+  admin     .*         .*     .*
+  app-user  .*         .*     .*
+
+--------------------------------------------------------------------------------
+FINDING [M-2]: app-user HAS FULL CONFIGURE PERMISSIONS ON /app
+Severity: MEDIUM
+app-user is granted configure=.* on /app, allowing it to declare, delete, or
+modify any exchange, queue, or binding in that vhost. A least-privilege posture
+would restrict configure access to only the resources the application needs
+(e.g., configure="" or a specific pattern). Write and read access appear
+appropriate for an application account.
+
+FINDING [L-1]: DEFAULT VHOST "/" NOT ISOLATED FROM ADMIN
+Severity: LOW
+The default vhost "/" is accessible only to admin, which is acceptable. However,
+retaining the default vhost with no application queues increases attack surface.
+If "/" is not in use, removing it reduces scope.
+
+================================================================================
+7. POLICIES
+================================================================================
+
+Vhost "/"    — no policies defined
+Vhost "/app" — no policies defined
+
+--------------------------------------------------------------------------------
+FINDING [H-2]: NO HIGH-AVAILABILITY OR QUORUM QUEUE POLICIES
+Severity: HIGH
+No policies are defined on any vhost. The single queue "app-queue" is a CLASSIC
+(non-replicated) durable queue. A node failure will make this queue unavailable
+and may cause message loss. Quorum queues (which replicate across nodes) are
+supported and enabled via feature flag, but not used. Recommended remediation:
+  - Convert app-queue to a quorum queue, OR
+  - Apply a policy with ha-mode=exactly/ha-params=2 or 3 for mirroring.
+
+FINDING [M-3]: NO TTL, DLX, OR OVERFLOW POLICIES
+Severity: MEDIUM
+No message TTL, dead-letter exchange, or overflow (reject-publish) policies are
+configured on /app. Without TTL or overflow policy, a slow consumer or producer
+surge can fill the queue unboundedly. Without a DLX, unprocessable messages
+are silently discarded on nack/reject.
+
+================================================================================
+8. QUEUES
+================================================================================
+
+Vhost "/"   — no queues
+
+Vhost "/app":
+  Name       Type     Durable  Auto-delete  Arguments
+  ---------  -------  -------  -----------  ---------
+  app-queue  classic  true     false         (none)
+
+Notes:
+  - app-queue is DURABLE: messages survive broker restart (good)
+  - app-queue is CLASSIC type: not replicated across nodes (see H-2)
+  - No per-queue arguments (x-max-length, x-message-ttl, x-dead-letter-exchange, etc.)
+
+================================================================================
+9. EXCHANGES
+================================================================================
+
+Both vhosts contain only the default AMQP built-in exchanges:
+  (default direct), amq.direct, amq.fanout, amq.headers, amq.match,
+  amq.topic, amq.rabbitmq.trace
+
+No custom exchanges declared on either vhost.
+
+================================================================================
+10. PLUGINS
+================================================================================
+
+Enabled plugins:
+  rabbitmq_peer_discovery_k8s       — Kubernetes peer discovery (appropriate)
+  rabbitmq_peer_discovery_common    — dependency of above
+  rabbitmq_management               — HTTP Management API (see C-1)
+  rabbitmq_management_agent         — dependency of above
+  rabbitmq_web_dispatch             — HTTP server for management
+  amqp_client, cowboy, cowlib       — HTTP/AMQP libraries
+
+No shovel, federation, or MQTT plugins enabled.
+
+--------------------------------------------------------------------------------
+FINDING [L-2]: MANAGEMENT PLUGIN EXPOSED ON ALL INTERFACES WITHOUT TLS
+Severity: LOW (elevated by C-1)
+The management API listens on [::]:15672 (all interfaces) over plaintext HTTP.
+If network policies do not restrict access, any pod or node in the cluster could
+reach the management UI/API with admin credentials. Restrict with a NetworkPolicy
+and/or enable TLS (see C-1).
+
+================================================================================
+11. CONFIGURATION FILE REVIEW
+================================================================================
+
+/etc/rabbitmq/rabbitmq.conf:
+  cluster_formation.peer_discovery_backend = rabbit_peer_discovery_k8s
+  cluster_formation.k8s.host               = kubernetes.default.svc.cluster.local
+  cluster_formation.k8s.service_name       = rabbitmq-headless
+  cluster_formation.k8s.address_type       = hostname
+  cluster_partition_handling               = pause_minority
+  queue_master_locator                     = min-masters
+  loopback_users.guest                     = false
+  listeners.tcp.default                    = 5672
+  management.tcp.port                      = 15672
+
+/etc/rabbitmq/conf.d/10-defaults.conf:
+  loopback_users.guest = false
+  log.console          = true
+
+Observations:
+  - loopback_users.guest=false appears in BOTH config files; no conflict, but
+    redundant. The guest user does not exist so this is inert.
+  - No TLS stanza present anywhere in configuration (confirms C-1).
+  - pause_minority partition handling is appropriate for a 3-node cluster.
+  - queue_master_locator=min-masters provides basic load distribution.
+
+================================================================================
+12. KUBERNETES SECRETS
+================================================================================
+
+Secret Name              Type    Data Keys
+-----------------------  ------  ---------
+rabbitmq-admin           Opaque  2  (username + password for admin account)
+rabbitmq-app             Opaque  2  (username + password for app-user account)
+rabbitmq-erlang-cookie   Opaque  1  (Erlang cluster cookie)
+
+Credentials are stored as Kubernetes Secrets (opaque). Secret values were NOT
+read during this audit (read-only; decoding credentials is out of scope).
+Recommended controls:
+  - Ensure Secrets are backed by an external secrets manager or encrypted at rest
+  - Restrict RBAC to only the service accounts that need each secret
+  - Rotate credentials periodically
+
+================================================================================
+13. SUMMARY OF FINDINGS
+================================================================================
+
+ID   Severity  Title
+---  --------  ----------------------------------------------------------------
+C-1  CRITICAL  No TLS on AMQP (5672) or Management API (15672) — plaintext
+H-1  HIGH      RabbitMQ 3.12.x is out of support — no future security patches
+H-2  HIGH      app-queue is a classic (non-replicated) queue — no HA policy
+M-1  MEDIUM    No per-user connection/channel limits on admin or app-user
+M-2  MEDIUM    app-user has full configure (.*) permission on /app vhost
+M-3  MEDIUM    No TTL, dead-letter, or overflow policy on any queue
+L-1  LOW       Default vhost "/" retained but unused by application
+L-2  LOW       Management API exposed on all interfaces without network policy
+
+No changes were made to the cluster. All findings require security team review
+before remediation.

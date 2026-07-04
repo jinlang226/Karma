@@ -1,0 +1,11 @@
+The cluster is fully restored. Here's a summary of what was wrong and what was done:
+
+**Root cause:** The `rabbitmq-cookie-perpod` Secret had `rabbitmq-2` set to `driftedcookie` while `rabbitmq-0`/`rabbitmq-1` used `supersecretcookie`. RabbitMQ nodes must share an identical Erlang cookie to form a cluster — `rabbitmq-2` booted standalone and formed its own isolated single-node cluster.
+
+**Fix (4 steps, no CRDs/operators):**
+1. **Patched the Secret** — updated `rabbitmq-2`'s key in `rabbitmq-cookie-perpod` to `supersecretcookie` (base64: `c3VwZXJzZWNyZXRjb29raWU=`)
+2. **Deleted the pod** — the `copy-cookie` initContainer re-ran and wrote the correct `.erlang.cookie` from the updated Secret
+3. **Reset Mnesia** — `rabbitmqctl stop_app && rabbitmqctl reset` cleared the stale standalone cluster state from `rabbitmq-2`'s PVC
+4. **Rejoined** — `rabbitmqctl join_cluster rabbit@rabbitmq-0...` + `rabbitmqctl start_app` connected it to the existing cluster
+
+**Result:** All 3 disk nodes are Running, no alarms, no network partitions.

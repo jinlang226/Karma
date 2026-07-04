@@ -1,0 +1,67 @@
+[precondition:mongo_env_ready:preconditionUnits[0] 'mongo_env_ready':probe] $ kubectl -n mongodb get pod mongo-rs-0 2>/dev/null | grep -c Running
+0
+
+[precondition:mongo_env_ready:preconditionUnits[0] 'mongo_env_ready':apply] $ /bin/sh -c '
+kubectl delete namespace mongodb --ignore-not-found=true; kubectl wait --for=delete namespace/mongodb --timeout=120s || true
+'
+
+
+[precondition:mongo_env_ready:preconditionUnits[0] 'mongo_env_ready':apply] $ kubectl create namespace mongodb
+namespace/mongodb created
+
+[precondition:mongo_env_ready:preconditionUnits[0] 'mongo_env_ready':apply] $ kubectl -n mongodb apply -f cases/mongodb/arbiters/resource/services.yaml
+service/mongo created
+service/mongo-arb created
+
+[precondition:mongo_env_ready:preconditionUnits[0] 'mongo_env_ready':apply] $ kubectl -n mongodb apply -f cases/mongodb/arbiters/resource/statefulset-data.yaml
+statefulset.apps/mongo-rs created
+
+[precondition:mongo_env_ready:preconditionUnits[0] 'mongo_env_ready':apply] $ kubectl -n mongodb apply -f cases/mongodb/arbiters/resource/statefulset-arbiter.yaml
+statefulset.apps/mongo-arb created
+
+[precondition:mongo_env_ready:preconditionUnits[0] 'mongo_env_ready':apply] $ for i in $(seq 1 60); do
+  ready=$(kubectl -n mongodb get sts mongo-rs -o jsonpath='{.status.readyReplicas}' 2>/dev/null)
+  if [ "${ready:-0}" -ge 2 ]; then
+    exit 0
+  fi
+  sleep 5
+done
+exit 1
+
+
+[precondition:mongo_env_ready:preconditionUnits[0] 'mongo_env_ready':apply] $ kubectl -n mongodb wait --for=condition=ready pod -l app=mongo-arb --timeout=300s
+pod/mongo-arb-0 condition met
+
+[precondition:mongo_env_ready:preconditionUnits[0] 'mongo_env_ready':apply] $ for i in $(seq 1 30); do
+  kubectl -n mongodb exec mongo-rs-0 -- mongosh --quiet --eval 'db.runCommand({ping:1}).ok' 2>/dev/null | grep -q 1 && exit 0
+  sleep 3
+done
+exit 1
+
+
+[precondition:mongo_env_ready:preconditionUnits[0] 'mongo_env_ready':apply] $ kubectl -n mongodb exec mongo-rs-0 -- mongosh --quiet --eval '
+rs.initiate({_id:"rs0",members:[
+  {_id:0,host:"mongo-rs-0.mongo.mongodb.svc.cluster.local:27017"},
+  {_id:1,host:"mongo-rs-1.mongo.mongodb.svc.cluster.local:27017"}
+]})'
+
+{ ok: 1 }
+
+[precondition:mongo_env_ready:preconditionUnits[0] 'mongo_env_ready':apply] $ for i in $(seq 1 20); do
+  kubectl -n mongodb exec mongo-rs-0 -- mongosh --quiet --eval 'db.hello().isWritablePrimary' | grep true && exit 0
+  sleep 3
+done
+exit 1
+
+true
+
+[precondition:mongo_env_ready:preconditionUnits[0] 'mongo_env_ready':apply] $ kubectl -n mongodb exec mongo-rs-0 -- mongosh --quiet --eval 'db.getSiblingDB("app").test.insertMany([{x:1},{x:2},{x:3}], {writeConcern:{w:1}}); db.getSiblingDB("app").test.countDocuments({});'
+3
+
+[precondition:mongo_env_ready:preconditionUnits[0] 'mongo_env_ready':verify] $ kubectl -n mongodb get pods 2>/dev/null | grep -c Running
+3
+
+[precondition:mongo_seed_fixture:preconditionUnits[1] 'mongo_seed_fixture':probe] $ /bin/sh -c 't=""; for cca in /etc/tls/ca.crt /etc/mongo-ca/ca.crt; do kubectl -n mongodb exec mongo-rs-0 -- ls $cca >/dev/null 2>&1 && { t="--tls --tlsAllowInvalidHostnames --tlsAllowInvalidCertificates --tlsCAFile $cca"; break; }; done; au=""; pw=$(kubectl -n mongodb get secret admin-user-password -o jsonpath="{.data.password}" 2>/dev/null | base64 -d 2>/dev/null); [ -n "$pw" ] && au="-u admin-user -p $pw --authenticationDatabase admin"; n=$(P=""; for _pi in $(seq 1 30); do P=$(kubectl -n mongodb exec mongo-rs-0 -- mongosh --quiet $t $au --eval '\''rs.hello().primary'\'' 2>/dev/null | cut -d. -f1); [ -n "$P" ] && break; sleep 2; done; P=${P:-mongo-rs-0}; kubectl -n mongodb exec "$P" -- mongosh --quiet $t $au --eval '\''db.getSiblingDB("app").test.countDocuments({})'\'' 2>/dev/null | tr -dc 0-9); [ "${n:-0}" -ge 3 ] && echo ok | grep -c ok'
+
+1
+

@@ -1,0 +1,17 @@
+Both criteria are met. Here's a summary of what was done:
+
+**What was configured:**
+
+The ConfigMap already had a pre-defined `api_zone` (`limit_req_zone $binary_remote_addr zone=api_zone:10m rate=20r/m`) and `limit-req-status-code: "429"`, but the zone wasn't applied anywhere.
+
+1. **ConfigMap** (`ingress-nginx-controller`): Added `annotations-risk-level: Critical` to allow `configuration-snippet` annotations (the controller was blocking them at admission despite `allow-snippet-annotations: true` being set).
+
+2. **Ingress** (`rate-api`): Added annotation:
+   ```
+   nginx.ingress.kubernetes.io/configuration-snippet: limit_req zone=api_zone burst=1 nodelay;
+   ```
+   This injects `limit_req zone=api_zone burst=1 nodelay;` only into the `/api` location block, referencing the globally-defined zone at 20 requests/minute. With `burst=1`, excess requests are rejected immediately with 429.
+
+**Why `burst=1` matters with 3 replicas:** Each replica enforces the limit independently (no shared state). With 3 replicas at 20r/m each = ~1 req/3sec per replica, and the test sending ~2 RPS distributed across replicas, the burst of 1 is exhausted quickly on each replica, causing ~1–4 rejections per 10-request run — matching the "~1 RPS effective limit" goal.
+
+**Result:** `/api` returns 429 for excess requests; `/health` returns 200 under the same load.

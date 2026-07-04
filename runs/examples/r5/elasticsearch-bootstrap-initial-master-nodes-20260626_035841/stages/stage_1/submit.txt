@@ -1,0 +1,14 @@
+Everything is complete and verified. Here's a summary of what was done and why:
+
+**Root cause:** The `elasticsearch.yml` configmap was missing `cluster.initial_master_nodes`. In Elasticsearch 7.x Zen2 discovery, a fresh cluster cannot elect a master without this setting — nodes found each other via `discovery.seed_hosts` but had no quorum anchor to bootstrap from.
+
+**Fix (two phases):**
+
+1. **Bootstrap phase:** Added `cluster.initial_master_nodes: [es-cluster-0, es-cluster-1, es-cluster-2]` to the configmap, then simultaneously restarted all 3 pods (parallel is correct here — a sequential restart would fail because any single pod can't form quorum alone). The cluster elected `es-cluster-1` as master and came up green.
+
+2. **Cleanup phase:** Removed `cluster.initial_master_nodes` from the configmap (it's a bootstrap-only setting — leaving it in place risks re-bootstrapping on full-cluster restarts, potentially splitting the cluster). Performed a rolling restart one pod at a time, verifying `green` health after each deletion.
+
+**Final state:**
+- Cluster: **green**, 3/3 nodes, master on `es-cluster-1`
+- All 3 pods: `1/1 Running`
+- ConfigMap: `cluster.initial_master_nodes` **absent** — safe for future restarts
