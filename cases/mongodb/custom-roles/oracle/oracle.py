@@ -183,17 +183,42 @@ def user_has_role(user, role_name, role_db=None):
     return False
 
 
+_AUTH_SRC_CACHE = {}
+
+
+def _auth_source(user, pw):
+    """Resolve the authSource a user actually authenticates under (O2/C4).
+
+    The environment PERSISTS across workflow stages, so a user may live in the
+    application DB (authSource=<APP_DB>) rather than in admin -- both are valid
+    operator choices. Probe APP_DB then admin with the given password; cache and
+    return the first that authenticates. Only a CONFIRMED source is cached (a
+    transient probe cannot poison later calls); the "admin" fallback preserves
+    the original standalone behaviour where the build creates the user in admin.
+    """
+    if user in _AUTH_SRC_CACHE:
+        return _AUTH_SRC_CACHE[user]
+    for src in (APP_DB, "admin"):
+        uri = f"mongodb://{user}:{pw}@localhost:27017/{APP_DB}?authSource={src}&directConnection=true"
+        res = run_mongo(uri, "db.runCommand({connectionStatus:1}).ok")
+        if res.returncode == 0 and "1" in (res.stdout or ""):
+            _AUTH_SRC_CACHE[user] = src
+            return src
+    return "admin"
+
+
 def credentials(errors):
     admin_pw = get_secret(ADMIN_SECRET, errors)
     reporting_pw = get_secret(REPORTING_SECRET, errors)
     if errors:
         return None
+    rep_src = _auth_source(REPORTING_USER, reporting_pw)
     return {
         # directConnection skips SDAM topology monitoring (via find_primary's
         # db.hello), which a localhost connection would start and which fails
         # under a persisted requireTLS mode.
         "admin_uri": f"mongodb://{ADMIN_USER}:{admin_pw}@localhost:27017/admin?directConnection=true",
-        "reporting_uri": f"mongodb://{REPORTING_USER}:{reporting_pw}@localhost:27017/{APP_DB}?authSource=admin&directConnection=true",
+        "reporting_uri": f"mongodb://{REPORTING_USER}:{reporting_pw}@localhost:27017/{APP_DB}?authSource={rep_src}&directConnection=true",
     }
 
 
