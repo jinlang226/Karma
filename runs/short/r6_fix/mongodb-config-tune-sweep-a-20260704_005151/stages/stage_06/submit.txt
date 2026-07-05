@@ -1,0 +1,17 @@
+All tasks are complete. Here's a summary of what was done and why:
+
+**Root causes identified:**
+1. The readiness probe ran `mongosh --eval "db.adminCommand('ping')"` **without credentials** — while `ping` doesn't require auth, this doesn't verify authentication is working and can fail intermittently
+2. The `health-user-password` secret (`healthpass123`) existed but no corresponding `health` user was in MongoDB, and the probe wasn't using it
+3. No liveness probe was configured
+4. `initialDelaySeconds: 10` was too short; `failureThreshold: 3` at `periodSeconds: 5` means 3 failures in 15s could mark a pod Not Ready during startup
+
+**Fixes applied:**
+1. **Created `health` MongoDB user** on the PRIMARY with `clusterMonitor` role using the credential from the `health-user-password` secret
+2. **Updated readiness probe** — now authenticates as `health` and checks `db.hello()` to verify the node is in a valid replica set state (PRIMARY or SECONDARY); set `initialDelaySeconds: 20`, `periodSeconds: 10`, `failureThreshold: 6`
+3. **Added liveness probe** — authenticates as `health` and pings; set `initialDelaySeconds: 60` (gives mongod full startup time before Kubernetes would kill it), `failureThreshold: 6`
+
+**Final state:**
+- All 3 pods: `1/1 Running`, `Ready: True`
+- Replica set: 1 PRIMARY + 2 SECONDARY, all members `health: 1`
+- Authentication remains enabled throughout

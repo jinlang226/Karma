@@ -1,0 +1,20 @@
+Everything is working. Here's a summary of what was done:
+
+**Root cause**: The ES pods had no monitoring sidecars, and ES was configured to log only to stdout (no log files for Filebeat to read).
+
+**Changes made:**
+
+1. **`es-log4j2-config` ConfigMap** — Extended the default `log4j2.properties` to add a `RollingFile` appender alongside the existing `Console` appender. ES now writes `es-cluster_server.json` to the shared logs volume that Filebeat can read.
+
+2. **`es-metricbeat-config` ConfigMap** — Metricbeat configured to use the `elasticsearch` module with `xpack.enabled: true`, connecting to `https://localhost:9200` (using the CA cert from `es-http-tls`), and shipping to the monitoring cluster.
+
+3. **`es-filebeat-config` ConfigMap** — Filebeat configured with the `elasticsearch` module reading `*_server.json` and `gc.log*` from the shared log volume, shipping to the monitoring cluster.
+
+4. **StatefulSet patch** — Added 5 volumes (`es-logs` emptyDir, `log4j2-config`, `metricbeat-config`, `filebeat-config`, `es-ca`) and two new sidecar containers (`metricbeat`, `filebeat`) to every pod.
+
+**Verified results:**
+- All 3 ES pods show `3/3` with containers `elasticsearch`, `metricbeat`, `filebeat`
+- ES cluster health is **green** (3 nodes, 0 unassigned shards)
+- Monitoring cluster now contains:
+  - `.monitoring-es-7-mb-2026.07.03` — 58 docs of xpack stack monitoring metrics (Metricbeat path)
+  - `filebeat-7.17.9-2026.07.03` — 2733 docs of ES logs (Filebeat path)

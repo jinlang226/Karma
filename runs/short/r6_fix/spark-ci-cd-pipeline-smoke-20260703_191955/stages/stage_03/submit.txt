@@ -1,0 +1,27 @@
+ROOT CAUSE:
+Stage 3 fails with an OutOfMemoryError due to two compounding issues:
+1. The ETL job was configured with only 256m of JVM heap (--driver-memory 256m,
+   spark.executor.memory=256m), which is below Spark's minimum reserved system
+   memory (~471 MB), causing the submit to fail deterministically.
+2. Severe data skew: user_id 999 holds ~50% of all records (skew ratio 500x),
+   so the Stage 3 GROUP BY user_id aggregation concentrates all that data into
+   a single executor partition, overwhelming it.
+
+DIAGNOSIS:
+- Diagnostic server confirmed: "hot key user_id=999 holds ~50% of records",
+  "skew_ratio=500x (>> 10x threshold)", "Stage 3 GROUP BY user_id triggers
+  OutOfMemoryError".
+- ETL job YAML comment confirms broken baseline: 256m heap below Spark's
+  minimum, deterministic OOM.
+
+FIX APPLIED:
+Raised driver and executor memory from 256m to 1g in etl-job.yaml:
+  --driver-memory 1g
+  --conf spark.executor.memory=1g
+Also enabled Adaptive Query Execution (AQE) with skew join handling:
+  --conf spark.sql.adaptive.enabled=true
+  --conf spark.sql.adaptive.skewJoin.enabled=true
+
+RESULT:
+ETL job (etl-job) completed successfully (1/1, Duration: 82s).
+All three stages ran to completion. Final log line: "spark_etl_pipeline_verified".

@@ -1,0 +1,94 @@
+[precondition:mongo_env_ready:preconditionUnits[0] 'mongo_env_ready':probe] $ /bin/sh -c 'kubectl -n mongodb get statefulset mongodb-replica >/dev/null 2>&1 || kubectl -n mongodb get pods 2>/dev/null | grep -q Running'
+
+[precondition:admin_user_fixture:preconditionUnits[1] 'admin_user_fixture':probe] $ /bin/sh -c '
+t=""; for cca in /etc/tls/ca.crt /etc/mongo-ca/ca.crt; do kubectl -n mongodb exec mongodb-replica-0 -- ls $cca >/dev/null 2>&1 && { t="--tls --tlsAllowInvalidHostnames --tlsAllowInvalidCertificates --tlsCAFile $cca"; break; }; done
+pw=$(kubectl -n mongodb get secret admin-user-password -o jsonpath="{.data.password}" 2>/dev/null | base64 -d 2>/dev/null)
+[ -n "$pw" ] || exit 1
+kubectl -n mongodb exec mongodb-replica-0 -- mongosh --quiet $t "mongodb://admin-user:$pw@localhost:27017/admin" --eval "db.runCommand({ping:1}).ok" 2>/dev/null | grep -q 1
+'
+
+
+[precondition:mongo_seed_fixture:preconditionUnits[2] 'mongo_seed_fixture':probe] $ /bin/sh -c '
+t=""; for cca in /etc/tls/ca.crt /etc/mongo-ca/ca.crt; do kubectl -n mongodb exec mongodb-replica-0 -- ls $cca >/dev/null 2>&1 && { t="--tls --tlsAllowInvalidHostnames --tlsAllowInvalidCertificates --tlsCAFile $cca"; break; }; done
+pw=$(kubectl -n mongodb get secret admin-user-password -o jsonpath="{.data.password}" 2>/dev/null | base64 -d 2>/dev/null); pw=${pw:-admin123password}
+P=""; for _pi in $(seq 1 30); do P=$(kubectl -n mongodb exec mongodb-replica-0 -- mongosh --quiet $t "mongodb://admin-user:$pw@localhost:27017/admin?directConnection=true" --eval "rs.hello().primary" 2>/dev/null | cut -d. -f1); [ -n "$P" ] && break; sleep 2; done; P=${P:-mongodb-replica-0}
+n=$(kubectl -n mongodb exec "$P" -- mongosh --quiet $t "mongodb://admin-user:$pw@localhost:27017/admin" --eval "db.getSiblingDB(\"testdb\").data.countDocuments({})" 2>/dev/null | tr -dc 0-9)
+[ "${n:-0}" -ge 1 ]
+'
+
+
+[precondition:mongo_config_baseline_ready:preconditionUnits[3] 'mongo_config_baseline_ready':probe] $ /bin/sh -c '
+t=""; for cca in /etc/tls/ca.crt /etc/mongo-ca/ca.crt; do kubectl -n mongodb exec mongodb-replica-0 -- ls $cca >/dev/null 2>&1 && { t="--tls --tlsAllowInvalidHostnames --tlsAllowInvalidCertificates --tlsCAFile $cca"; break; }; done
+pw=$(kubectl -n mongodb get secret admin-user-password -o jsonpath="{.data.password}" 2>/dev/null | base64 -d 2>/dev/null); pw=${pw:-admin123password}
+base_v=1; base_s=200
+ok=1
+for i in 0 1 2; do
+  out=$(kubectl -n mongodb exec mongodb-replica-$i -- mongosh --quiet $t "mongodb://admin-user:$pw@localhost:27017/admin?directConnection=true" --eval "var v=db.adminCommand({getParameter:1,logLevel:1}).logLevel; var s=db.getProfilingStatus().slowms; print(v+\"|\"+s)" 2>/dev/null)
+  v=$(echo "$out" | cut -d"|" -f1); s=$(echo "$out" | cut -d"|" -f2)
+  if [ "$v" = "$base_v" ] && [ "$s" = "$base_s" ]; then :; else ok=0; fi
+done
+[ "$ok" = "1" ]
+'
+
+
+[precondition:mongo_config_baseline_ready:preconditionUnits[3] 'mongo_config_baseline_ready':apply] $ kubectl -n mongodb apply -f cases/mongodb/mongod-config-update/resource/configmap.yaml
+configmap/mongod-config configured
+
+[precondition:mongo_config_baseline_ready:preconditionUnits[3] 'mongo_config_baseline_ready':apply] $ /bin/sh -c '
+t=""; for cca in /etc/tls/ca.crt /etc/mongo-ca/ca.crt; do kubectl -n mongodb exec mongodb-replica-0 -- ls $cca >/dev/null 2>&1 && { t="--tls --tlsAllowInvalidHostnames --tlsAllowInvalidCertificates --tlsCAFile $cca"; break; }; done
+pw=$(kubectl -n mongodb get secret admin-user-password -o jsonpath="{.data.password}" 2>/dev/null | base64 -d 2>/dev/null); pw=${pw:-admin123password}
+for i in 0 1 2; do
+  kubectl -n mongodb exec mongodb-replica-$i -- mongosh --quiet $t "mongodb://admin-user:$pw@localhost:27017/admin?directConnection=true" --eval "db.adminCommand({setParameter:1,logLevel:1}); db.setProfilingLevel(db.getProfilingStatus().was, {slowms: 200 })" 2>/dev/null || true
+done
+'
+
+{
+  was: 1,
+  slowms: 400,
+  sampleRate: 1,
+  ok: 1,
+  '$clusterTime': {
+    clusterTime: Timestamp({ t: 1783127200, i: 1 }),
+    signature: {
+      hash: Binary.createFromBase64('T6pLh4ijjpkcHUl1toWmh/D6ejE=', 0),
+      keyId: Long('7658469748727873541')
+    }
+  },
+  operationTime: Timestamp({ t: 1783127200, i: 1 })
+}
+{
+  was: 1,
+  slowms: 400,
+  sampleRate: 1,
+  ok: 1,
+  '$clusterTime': {
+    clusterTime: Timestamp({ t: 1783127200, i: 1 }),
+    signature: {
+      hash: Binary.createFromBase64('T6pLh4ijjpkcHUl1toWmh/D6ejE=', 0),
+      keyId: Long('7658469748727873541')
+    }
+  },
+  operationTime: Timestamp({ t: 1783127200, i: 1 })
+}
+{
+  was: 1,
+  slowms: 400,
+  sampleRate: 1,
+  ok: 1,
+  '$clusterTime': {
+    clusterTime: Timestamp({ t: 1783127200, i: 1 }),
+    signature: {
+      hash: Binary.createFromBase64('T6pLh4ijjpkcHUl1toWmh/D6ejE=', 0),
+      keyId: Long('7658469748727873541')
+    }
+  },
+  operationTime: Timestamp({ t: 1783127200, i: 1 })
+}
+
+[precondition:mongo_config_baseline_ready:preconditionUnits[3] 'mongo_config_baseline_ready':verify] $ /bin/sh -c '
+t=""; for cca in /etc/tls/ca.crt /etc/mongo-ca/ca.crt; do kubectl -n mongodb exec mongodb-replica-0 -- ls $cca >/dev/null 2>&1 && { t="--tls --tlsAllowInvalidHostnames --tlsAllowInvalidCertificates --tlsCAFile $cca"; break; }; done
+pw=$(kubectl -n mongodb get secret admin-user-password -o jsonpath="{.data.password}" 2>/dev/null | base64 -d 2>/dev/null); pw=${pw:-admin123password}
+kubectl -n mongodb exec mongodb-replica-0 -- mongosh --quiet $t "mongodb://admin-user:$pw@localhost:27017/admin?directConnection=true" --eval "quit(0)" >/dev/null 2>&1; true
+'
+
+

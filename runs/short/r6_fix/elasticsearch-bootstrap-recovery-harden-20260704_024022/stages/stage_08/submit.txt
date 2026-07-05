@@ -1,0 +1,21 @@
+Everything is working. Here's a summary of what was done:
+
+**Problem:** No sidecars existed on the Elasticsearch pods, so no monitoring data was being shipped to the monitoring cluster.
+
+**Solution:** Added Metricbeat and Filebeat sidecars to all 3 Elasticsearch pods via a StatefulSet strategic merge patch.
+
+**Resources created:**
+- `ConfigMap/metricbeat-config` — Metricbeat 7.17.9 config: `elasticsearch` module with `xpack.enabled: true` + `scope: node` collecting from `http://localhost:9200`, outputting to `http://monitoring-es-http.monitoring:9200`
+- `ConfigMap/filebeat-config` — Filebeat 7.17.9 config: reads `/usr/share/elasticsearch/logs/*.log|*.json`, outputs to `.monitoring-es-7-filebeat-*` index in monitoring cluster
+
+**StatefulSet changes:**
+- Added `es-logs` emptyDir volume mounted at `/usr/share/elasticsearch/logs` in both the ES container and the Filebeat sidecar (ES writes logs there; Filebeat reads them)
+- Added `metricbeat` sidecar (reads ES credentials from the existing `elastic-password` secret)
+- Added `filebeat` sidecar (runs as root to read log files)
+
+**Final state:**
+- All 3 ES pods: `3/3 Running` (elasticsearch + metricbeat + filebeat)
+- ES cluster: `green`, 3 nodes
+- Monitoring cluster now has:
+  - `.monitoring-es-7-mb-2026.07.04` — 346 metric documents (growing continuously)
+  - `.monitoring-es-7-filebeat-2026.07.04` — 662 log documents (growing continuously)

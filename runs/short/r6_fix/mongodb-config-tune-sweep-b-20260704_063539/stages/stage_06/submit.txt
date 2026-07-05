@@ -1,0 +1,18 @@
+All 3 pods are healthy and no new Unhealthy events have been generated since the new pods started. The most recent events (all older than the pod ages) are from the old pods during the rolling update.
+
+**Summary of what was done and why:**
+
+**Root cause:** The readiness probe used `timeoutSeconds: 1`, but `mongosh` needs ~0.63s in ideal conditions to start, connect, and return. Any system jitter (GC pause, scheduler delay, load spike) pushed it over 1 second, causing repeated `command timed out` failures. With `OrderedReady` pod management, this prevented pods 1 and 2 from ever starting when pod 0 was unstable.
+
+**Fixes applied:**
+
+1. **Readiness probe tuned** (`timeoutSeconds` 1→5, `periodSeconds` 5→10, `initialDelaySeconds` 10→15, `failureThreshold` 12→6): gives mongosh sufficient time to complete while still detecting genuine failures within 75 seconds.
+
+2. **Liveness probe added** (`initialDelaySeconds: 30`, `periodSeconds: 20`, `timeoutSeconds: 10`, `failureThreshold: 3`): allows MongoDB to fully start before liveness checks begin; kills pods that are truly hung (not just slow to respond).
+
+3. **ConfigMap verbosity reduced** from `verbosity: 2` → `1` and `slowOpThresholdMs` 400→200: reduces excessive log output that contributed to slower probe response times.
+
+**Final state:**
+- All 3 pods: `1/1 Ready`
+- Replica set: 1 PRIMARY (replica-1) + 2 SECONDARY (replica-0, replica-2)
+- No new probe failures since the updated pods started

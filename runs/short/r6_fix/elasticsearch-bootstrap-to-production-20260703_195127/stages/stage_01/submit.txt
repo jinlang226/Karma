@@ -1,0 +1,13 @@
+All goals achieved. Here's a summary of what was done:
+
+**Root cause:** The ConfigMap `es-config` was missing `cluster.initial_master_nodes`, which Elasticsearch 7.x requires to bootstrap a brand-new cluster. Without it, nodes discover each other via `discovery.seed_hosts` but have no quorum anchor — they loop forever on "master not discovered yet".
+
+**Fix sequence:**
+
+1. **Added `cluster.initial_master_nodes`** to the ConfigMap listing all 3 nodes, enabling ES to form the initial quorum and elect a master.
+
+2. **Rolling restart (round 1)** — deleted pods one at a time, each waited to be Ready before the next was touched. Cluster formed, reached yellow (3 nodes, master elected, 0 unassigned shards).
+
+3. **Removed `cluster.initial_master_nodes`** from the ConfigMap. Once the cluster state is persisted to disk, this setting is no longer needed — and leaving it in is dangerous (it can cause split-brain if a node subset tries to re-bootstrap after a full cluster wipe).
+
+4. **Rolling restart (round 2)** — verified the cluster stays **green** through every pod restart without the bootstrap setting. Result: `status=green`, 3 nodes, 0 unassigned shards, 100% active shards, master elected at `es-cluster-0`.

@@ -1,0 +1,46 @@
+{
+  "score": 66.7,
+  "score_max": 100.0,
+  "method": "stage-pass + regression-adjudication",
+  "total_stages": 9,
+  "passed_stages": 9,
+  "base_score": 100.0,
+  "all_passed": true,
+  "regression_sweep_run": true,
+  "regression_failures": 5,
+  "legitimate_regressions": 3,
+  "regressions": [
+    {
+      "stage_id": "stage_01",
+      "legitimate": true,
+      "reasoning": "Every later stage (02-09) assumes a running, healthy Elasticsearch cluster with pods present -- none of them call for scaling to zero nodes or deleting the deployment. Finding 0 pods (not even a reduced count) means the agent's actions in a later stage (likely the stage_06 PVC cleanup or a mishandled restart/degradation fix) destroyed the cluster entirely, which is a genuine regression rather than an expected state transition.",
+      "output": "$ python3 cases/elasticsearch/deploy-core-cluster/oracle/oracle.py\nDeploy core cluster verification failed:\n  - Expected 3 Elasticsearch pods, found 0\n"
+    },
+    {
+      "stage_id": "stage_02",
+      "legitimate": false,
+      "reasoning": "Stage_03 explicitly starts from a 5-node cluster and requires es-cluster StatefulSet to remain at 5 replicas, meaning the agent legitimately consolidated the original 3 nodes + stage_02's 2 new nodes into a single 5-replica es-cluster StatefulSet. Stage_02's stale oracle still expects a separate 3-replica 'original' StatefulSet, which no longer exists by design \u2014 hence the false-positive failure.",
+      "output": "$ python3 cases/elasticsearch/scale-up-new-nodeset/oracle/oracle.py\nScale-up nodeset verification failed:\n  - Expected at least 2 new nodes outside original StatefulSet\n  - Original nodeset replicas expected 3, got 0 (summed over the non-new base StatefulSets)\n"
+    },
+    {
+      "stage_id": "stage_03",
+      "legitimate": false,
+      "reasoning": "Stage 5 explicitly describes the cluster as degraded and 'running below the expected 3 nodes' and directs the agent to restore a 3-node state, and stage 6 confirms/cleans up a final 3-node cluster \u2014 this deliberately undoes the stage_02/stage_03 scale-ups (3\u21925\u21927 nodes) as part of the intended workflow narrative, not carelessness. The stale stage_03 oracle (expecting 5 base + 2 new = 7 nodes) is checking state that later stages were designed to legitimately change.",
+      "output": "$ python3 cases/elasticsearch/scale-up-new-nodeset/oracle/oracle.py\nScale-up nodeset verification failed:\n  - Expected at least 2 new nodes outside original StatefulSet\n  - Original nodeset replicas expected 5, got 0 (summed over the non-new base StatefulSets)\n"
+    },
+    {
+      "stage_id": "stage_05",
+      "legitimate": true,
+      "reasoning": "No later stage task references touching a transport CA trust ConfigMap; stage_05's own recovery work (restoring the degraded cluster, likely recreating/reapplying manifests while troubleshooting the NetworkPolicy/transport issue) is the most plausible cause of losing es-transport-ca-bundle, so this is a real regression rather than a later stage legitimately superseding it.",
+      "output": "$ python3 cases/elasticsearch/transport-additional-ca-trust/oracle/oracle.py\nTransport CA trust verification failed:\n  - Failed to read es-transport-ca-bundle ConfigMap: Error from server (NotFound): configmaps \"es-transport-ca-bundle\" not found\n"
+    },
+    {
+      "stage_id": "stage_06",
+      "legitimate": true,
+      "reasoning": "No later stage's task calls for deleting or recreating the surviving node's PVC/pod-data volume; the marker file lives on that persistent volume, so routine actions in later stages (sidecar injection in stage_09, node rejoin in stage_07) should preserve it via normal PVC reattachment. Its disappearance indicates the agent actually blew away/recreated that PVC or pod data at some point, which is a genuine regression against stage_06's explicit no-data-loss goal, not an expected consequence of any subsequent stage's stated task.",
+      "output": "$ python3 cases/elasticsearch/safe-downscale-with-shard-migration/oracle/oracle.py\nSafe downscale verification failed:\n  - Marker file missing on remaining pod\n"
+    }
+  ],
+  "model": "sonnet",
+  "summary": "all 9 stages passed; 5 regression-sweep failure(s): 3 real regression(s), 2 false positive(s) -> score 66.7."
+}

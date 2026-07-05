@@ -1,0 +1,23 @@
+Everything is working correctly. Here's a summary of what was done:
+
+**Root cause**: The Elasticsearch pods had no Metricbeat or Filebeat sidecars, so no monitoring data was shipped to the monitoring cluster.
+
+**Solution applied**:
+
+1. **ConfigMap `es-log4j2`** — Extended the ES logging config to write a `es-cluster_server.json` file via a `RollingFile` appender (in addition to the existing console output), giving Filebeat a file to harvest.
+
+2. **ConfigMap `metricbeat-monitoring-config`** — Configures Metricbeat with the `elasticsearch-xpack` module (`xpack.enabled: true`, `period: 10s`, `hosts: localhost:9200`) pointing output to `monitoring-es-http.monitoring.svc.cluster.local:9200`. This produces `.monitoring-es-7-mb-*` indices.
+
+3. **ConfigMap `filebeat-monitoring-config`** — Configures Filebeat to harvest all ES log files from the shared `es-logs` volume with multiline handling for stacktraces, shipping to the monitoring cluster under `monitoring-es-logs-*`.
+
+4. **StatefulSet patch** — Added to each ES pod:
+   - `emptyDir` volume `es-logs` shared between `elasticsearch` (write) and `filebeat` (read-only) at `/usr/share/elasticsearch/logs`
+   - `es-log4j2` ConfigMap mounted as `log4j2.properties` (subPath)
+   - `metricbeat` sidecar container
+   - `filebeat` sidecar container
+
+**Final state**:
+- All 3 ES pods: `elasticsearch, metricbeat, filebeat` — all `true,true,true` ready
+- ES cluster health: **green**, 3 nodes
+- `.monitoring-es-7-mb-2026.07.03`: **702+ docs** and growing (Metricbeat metrics)
+- `monitoring-es-logs-2026.07.03`: **7470+ docs** and growing (Filebeat logs)

@@ -1,0 +1,17 @@
+Oracle passes. Here's what was done:
+
+**Root cause:** The running Elasticsearch StatefulSet (deployed by prior stages) had no file realm configured — no volume mount for file-realm credentials and no `xpack.security.authc.realms.file` setting in `elasticsearch.yml`. The `user-provided-file-realm` secret holding `report-user` was never visible to Elasticsearch.
+
+**Fix applied:**
+
+1. **Merged `user-provided-file-realm` into `es-file-realm-aggregate`** — concatenated `users` and `users_roles` from both secrets, keeping both `ops-user` (superuser) and `report-user` (viewer) in the aggregate secret.
+
+2. **Enabled file realm in the ConfigMap** — added `xpack.security.authc.realms.file.file1.order: 0` and `xpack.security.authc.realms.native.native1.order: 1` to `es-config`.
+
+3. **Patched the StatefulSet** — added the `file-realm` volume (sourced from `es-file-realm-aggregate`) and three `subPath` mounts for `users`, `users_roles`, and `roles.yml` into the Elasticsearch container.
+
+4. **Rolling restart** — applied changes without downtime; all 3 pods cycled one at a time.
+
+5. **Seeded `app-data` index** — the precondition's seed step hadn't run on this inherited cluster, so the index was missing; created it so `report-user` (viewer role) can read it.
+
+Oracle confirms: file realm merge verified, `ops-user` and `report-user` both authenticate, cluster is green.

@@ -1,0 +1,12 @@
+All three goals are met:
+
+1. **Insecure access rejected** — `./cockroach sql --insecure` returns `ERROR: node is running secure mode, SSL connection required`
+2. **Secure access succeeds** — `./cockroach sql --certs-dir=/cockroach/cockroach-certs -e "SELECT 1;"` returns `1` with exit code 0
+3. **Secret mounted on all pods** — all three nodes have `ca.crt`, `node.crt`, `node.key`, `client.root.crt`, `client.root.key` mounted at `/cockroach/cockroach-certs` from the `crdb-cluster-certs` Secret
+
+Here's what was done:
+
+- Created an `openssl-toolbox` pod (alpine/openssl) to generate the PKI material: a self-signed CA, a node cert/key (with SANs covering all pod FQDNs, the headless service, the public service, and localhost), and a root client cert/key.
+- Stored all five files in the `crdb-cluster-certs` Secret in the `cockroachdb` namespace.
+- Patched the StatefulSet to replace `--insecure` with `--certs-dir=/cockroach/cockroach-certs`, mount the Secret at that path, and switch the liveness/readiness probes from `HTTP` to `HTTPS`.
+- Deleted all three pods simultaneously (required because CockroachDB can't form a mixed-mode cluster; rolling restarts would leave nodes unable to communicate during transition). The `podManagementPolicy: Parallel` StatefulSet brought them all up in TLS mode at once and they formed quorum successfully.

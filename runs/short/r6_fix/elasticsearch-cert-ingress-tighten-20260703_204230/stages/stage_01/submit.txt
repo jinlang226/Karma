@@ -1,0 +1,14 @@
+All goals are met. Here's a summary of what was deployed and the two issues that had to be resolved:
+
+**Deployed resources:**
+- `es-headless` — headless Service for StatefulSet pod-to-pod discovery (transport + HTTP ports)
+- `es-http` — ClusterIP Service exposing HTTPS on port 9200
+- `es-config` — ConfigMap with `elasticsearch.yml` (TLS on both HTTP and transport layers, discovery via seed hosts)
+- `es-pdb` — PodDisruptionBudget requiring minAvailable=2
+- `elasticsearch` — 3-replica StatefulSet with PVCs, init container for data dir permissions, certs from `es-http-tls`, password from `elastic-password`
+
+**Two bootstrap deadlocks resolved:**
+1. **DNS deadlock** — the headless Service needed `publishNotReadyAddresses: true` so pods get DNS entries before passing their readiness check (otherwise `elasticsearch-0.es-headless` couldn't resolve during startup).
+2. **Quorum deadlock** — the readiness probe checking `/_cluster/health` (which requires master election) prevented pods 1 and 2 from starting, but master election requires a quorum of 2/3 nodes. Changed the probe to accept an HTTP 401 response (node is up but unauthenticated), allowing all 3 pods to start and form quorum.
+
+**Final state:** cluster status `green`, 3 nodes, reads and writes succeed over HTTPS through `es-http`.

@@ -1,0 +1,11 @@
+Oracle passes. Here's what was done:
+
+**Root cause:** The `report-user` credentials existed only in the `user-provided-file-realm` secret, separate from the `es-file-realm-aggregate` secret. Elasticsearch was running without security enabled, so the file realm wasn't active and no auth was enforced — making it impossible for report-user to have verifiable access.
+
+**Fix applied:**
+1. **Merged secrets** — combined `report-user` (from `user-provided-file-realm`) with `ops-user` (from `es-file-realm-aggregate`) into the aggregate secret, preserving both entries in `users` and `users_roles`
+2. **Generated TLS certs** — used the `openssl-toolbox` pod to create a CA + server cert covering all ES node SANs, stored in `es-http-tls` secret
+3. **Applied updated ConfigMap** — enabled `xpack.security` with file realm (`file1`) + HTTPS/transport TLS pointing at the mounted certs
+4. **Applied updated StatefulSet** — added volume mounts for the TLS cert secret and the merged file-realm secret (mounting `users`, `users_roles`, `roles.yml` files at the default ES config paths)
+5. **Rolling restart** completed — all 3 nodes came back healthy (green cluster)
+6. **Seeded `app-data` index** — the precondition's seed step had failed silently (it was probing HTTPS before security was enabled), so seeded it post-restart with `ops-user`

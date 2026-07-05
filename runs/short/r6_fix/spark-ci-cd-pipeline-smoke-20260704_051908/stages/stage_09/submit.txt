@@ -1,0 +1,41 @@
+ROOT CAUSE:
+Stage 3 (aggregation by user_id) fails with OutOfMemoryError because:
+1. The Spark job was configured with only 256m driver/executor memory — below
+   Spark's ~471MB reserved system memory minimum — causing the JVM to abort
+   with "must be at least X, please increase heap size."
+2. Data is severely skewed: user_id=999 holds 50,000 of 100,000 records
+   (skew_ratio=500x >> 10x threshold). The groupBy(user_id) in Stage 3
+   collapses all 50k records onto one partition, exhausting the 256m heap.
+
+DIAGNOSIS:
+- kubectl get job etl-job -n spark-etl → STATUS: Failed (OOM in Stage 3)
+- kubectl logs -n spark-etl -l app=etl-job → OutOfMemoryError / "must be at
+  least ... increase heap size" in driver log
+- kubectl exec data-generator -- cat /data/skew_info.txt:
+    hot_user_id=999, hot_user_records=50000/100000, skew_ratio=500x
+- diagnostic-server: "Stage 3 GROUP BY user_id triggers OutOfMemoryError"
+
+FIX APPLIED (cases/spark/spark_etl_skew_oom/resource/etl-job.yaml):
+- Raised --driver-memory from 256m → 1g
+- Raised spark.executor.memory from 256m → 1g  (executor runs in driver JVM
+  under local[2] mode, so both must be raised)
+- Added --conf spark.sql.adaptive.enabled=true
+- Added --conf spark.sql.adaptive.skewJoin.enabled=true  (splits the
+  user_id=999 skewed partition automatically)
+
+VERIFICATION:
+- kubectl delete job etl-job -n spark-etl
+- kubectl apply -f cases/spark/spark_etl_skew_oom/resource/etl-job.yaml
+- kubectl get job etl-job -n spark-etl → COMPLETIONS: 1/1 (Complete)
+- kubectl logs -n spark-etl -l app=etl-job --tail=5:
+    Stage 1: load raw data
+    Stage 2: clean and transform
+    Stage 3: aggregate by user_id (skewed on user_id 999)
+    ...
+    spark_etl_pipeline_verified
+
+All success criteria met:
+[x] Identified memory failure in Stage 3 (256m < Spark minimum heap)
+[x] Diagnosed data skew: user_id 999 with 500x ratio (>>10x threshold)
+[x] Applied fix: raised driver+executor memory to 1g; enabled AQE skewJoin
+[x] ETL job completed successfully (exit 0, spark_etl_pipeline_verified)

@@ -1,0 +1,23 @@
+All checks pass. Here's what was done:
+
+**Root cause:** The Elasticsearch cluster (inherited from stage_01) had no security enabled. The `report-user` credentials existed in `user-provided-file-realm` but were never merged into the `es-file-realm-aggregate` secret that the pods mount, and the `viewer` role was undefined.
+
+**Fix applied:**
+
+1. **Generated TLS certificates** and created the `es-http-tls` secret — required for ES 7.x security.
+
+2. **Merged both file realm secrets** — appended `report-user`'s hashed password and `viewer:report-user` role mapping into `es-file-realm-aggregate`, which now contains both `ops-user` and `report-user`.
+
+3. **Defined the `viewer` role** in `roles.yml` within the aggregate secret, granting `read` + `view_index_metadata` privileges on all indices.
+
+4. **Updated the ConfigMap** with `xpack.security.enabled: true`, file realm config, and TLS settings for both HTTP and transport layers.
+
+5. **Patched the StatefulSet** to add `http-certs` (TLS) and `file-realm` volume mounts, triggering a rolling restart.
+
+6. **Seeded the `app-data` index** (was absent since stage_01's standalone setup was skipped).
+
+**Verified:**
+- `ops-user:opspass` → 200 (cluster health green)
+- `report-user:reportpass` → can read `app-data/_count` (count: 1)
+- `report-user:wrong-password` → 401 (auth enforced)
+- All 3 pods healthy

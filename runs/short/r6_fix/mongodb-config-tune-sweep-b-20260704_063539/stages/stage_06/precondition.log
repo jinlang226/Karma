@@ -1,0 +1,65 @@
+[precondition:mongo_env_ready:preconditionUnits[0] 'mongo_env_ready':probe] $ /bin/sh -c 'kubectl -n mongodb get statefulset mongodb-replica >/dev/null 2>&1 || kubectl -n mongodb get pods 2>/dev/null | grep -q Running'
+
+[precondition:admin_user_fixture:preconditionUnits[1] 'admin_user_fixture':probe] $ /bin/sh -c '
+t=""; for cca in /etc/tls/ca.crt /etc/mongo-ca/ca.crt; do kubectl -n mongodb exec mongodb-replica-0 -- ls $cca >/dev/null 2>&1 && { t="--tls --tlsAllowInvalidHostnames --tlsAllowInvalidCertificates --tlsCAFile $cca"; break; }; done
+pw=$(kubectl -n mongodb get secret admin-user-password -o jsonpath="{.data.password}" 2>/dev/null | base64 -d 2>/dev/null)
+[ -n "$pw" ] || exit 1
+kubectl -n mongodb exec mongodb-replica-0 -- mongosh --quiet $t "mongodb://admin-user:$pw@localhost:27017/admin" --eval "db.runCommand({ping:1}).ok" 2>/dev/null | grep -q 1
+'
+
+
+[precondition:health_user_fixture:preconditionUnits[2] 'health_user_fixture':probe] $ /bin/sh -c '
+kubectl -n mongodb get secret health-user-password >/dev/null 2>&1 || exit 1
+kubectl -n mongodb get pod mongodb-replica-0 >/dev/null 2>&1 || exit 1
+admin_pw=$(kubectl -n mongodb get secret admin-user-password -o jsonpath="{.data.password}" 2>/dev/null | base64 -d 2>/dev/null)
+[ -n "$admin_pw" ] || exit 1
+t=""; for cca in /etc/tls/ca.crt /etc/mongo-ca/ca.crt; do kubectl -n mongodb exec mongodb-replica-0 -- ls $cca >/dev/null 2>&1 && { t="--tls --tlsAllowInvalidHostnames --tlsAllowInvalidCertificates --tlsCAFile $cca"; break; }; done
+kubectl -n mongodb exec mongodb-replica-0 -- mongosh --quiet $t "mongodb://admin-user:${admin_pw}@localhost:27017/admin" --eval "db.getUser(\"health-user\") ? quit(0) : quit(1)" >/dev/null 2>&1
+'
+
+
+[precondition:health_user_fixture:preconditionUnits[2] 'health_user_fixture':apply] $ /bin/sh -c '
+kubectl -n mongodb get secret health-user-password >/dev/null 2>&1 || \
+  kubectl -n mongodb create secret generic health-user-password --from-literal=password=healthpass123
+'
+
+secret/health-user-password created
+
+[precondition:health_user_fixture:preconditionUnits[2] 'health_user_fixture':apply] $ /bin/sh -c '
+admin_pw=$(kubectl -n mongodb get secret admin-user-password -o jsonpath="{.data.password}" 2>/dev/null | base64 -d 2>/dev/null)
+[ -n "$admin_pw" ] || { echo "admin-user-password secret unavailable; cannot ensure health-user"; exit 0; }
+P=""; for _pi in $(seq 1 30); do P=$(kubectl -n mongodb exec mongodb-replica-0 -- mongosh --quiet "mongodb://admin-user:${admin_pw}@localhost:27017/admin?directConnection=true" --eval "rs.hello().primary" 2>/dev/null | cut -d. -f1); [ -n "$P" ] && break; sleep 2; done; P=${P:-mongodb-replica-0}
+kubectl -n mongodb exec "$P" -- mongosh --quiet "mongodb://admin-user:${admin_pw}@localhost:27017/admin" --eval "
+  if (!db.getUser(\"health-user\")) {
+    db.getSiblingDB(\"admin\").createUser({user:\"health-user\",pwd:\"healthpass123\",roles:[{role:\"clusterMonitor\",db:\"admin\"}]});
+  }" >/dev/null 2>&1 || true
+'
+
+
+[precondition:health_user_fixture:preconditionUnits[2] 'health_user_fixture':verify] $ /bin/sh -c '
+for _vi in $(seq 1 20); do
+  kubectl -n mongodb exec mongodb-replica-0 -- mongosh --quiet "mongodb://health-user:healthpass123@localhost:27017/admin?directConnection=true" --eval "db.runCommand({ping:1}).ok" 2>/dev/null | grep -q 1 && exit 0
+  sleep 3
+done
+exit 1
+'
+
+
+[precondition:probe_fault_replant:preconditionUnits[3] 'probe_fault_replant':probe] $ /bin/sh -c '
+rt=$(kubectl -n mongodb get sts mongodb-replica -o jsonpath="{.spec.template.spec.containers[0].readinessProbe.timeoutSeconds}" 2>/dev/null)
+rf=$(kubectl -n mongodb get sts mongodb-replica -o jsonpath="{.spec.template.spec.containers[0].readinessProbe.failureThreshold}" 2>/dev/null)
+[ "$rt" = "1" ] && [ "$rf" = "2" ]
+'
+
+
+[precondition:probe_fault_replant:preconditionUnits[3] 'probe_fault_replant':apply] $ /bin/sh -c 'kubectl -n mongodb patch sts mongodb-replica --type=json -p='\''[{"op":"add","path":"/spec/template/spec/containers/0/readinessProbe/initialDelaySeconds","value":5},{"op":"add","path":"/spec/template/spec/containers/0/readinessProbe/timeoutSeconds","value":1},{"op":"add","path":"/spec/template/spec/containers/0/readinessProbe/failureThreshold","value":2},{"op":"add","path":"/spec/template/spec/containers/0/livenessProbe/initialDelaySeconds","value":15},{"op":"add","path":"/spec/template/spec/containers/0/livenessProbe/timeoutSeconds","value":1},{"op":"add","path":"/spec/template/spec/containers/0/livenessProbe/failureThreshold","value":2}]'\'' || true'
+
+The request is invalid: the server rejected our request due to an error in our request
+
+[precondition:probe_fault_replant:preconditionUnits[3] 'probe_fault_replant':apply] $ /bin/sh -c 'kubectl -n mongodb delete pod -l app=mongodb-replica --ignore-not-found=true || true'
+pod "mongodb-replica-0" deleted
+pod "mongodb-replica-1" deleted
+pod "mongodb-replica-2" deleted
+
+[precondition:probe_fault_replant:preconditionUnits[3] 'probe_fault_replant':verify] $ /bin/sh -c 'true'
+

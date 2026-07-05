@@ -1,0 +1,18 @@
+All goals achieved. Here's a summary of what was deployed:
+
+**Resources created:**
+- `ConfigMap/es-config` — `elasticsearch.yml` with cluster settings, TLS config (HTTP + transport), seed hosts pointing to the headless service DNS names
+- `Service/es-headless` (ClusterIP: None, `publishNotReadyAddresses: true`) — internal pod DNS for cluster formation
+- `Service/es-http` — ClusterIP service on port 9200 for client HTTPS access
+- `PodDisruptionBudget/es-pdb` — minAvailable: 2
+- `StatefulSet/es` (3 replicas, `podManagementPolicy: Parallel`) — using `docker.elastic.co/elasticsearch/elasticsearch:8.11.1`, mounting `es-http-tls` for both HTTP and transport TLS (`verification_mode: certificate`), `ELASTIC_PASSWORD` from the existing secret
+
+**Key design decisions:**
+- `Parallel` pod management: required because all 3 nodes must connect simultaneously to elect a master (sequential `OrderedReady` would deadlock)
+- `publishNotReadyAddresses: true`: required so pod DNS resolves before pods are Ready (prevents the second deadlock — ES can't form the cluster without DNS, but DNS only publishes Ready pods)
+- Transport SSL uses the same `es-http-tls` cert with `verification_mode: certificate` (validates CA signature, skips hostname check)
+
+**Verified:**
+- Cluster status: **green**, 3/3 nodes, 3/3 data nodes
+- Write: document indexed successfully
+- Read: document retrieved via `es-http` service over HTTPS

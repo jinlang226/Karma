@@ -1,0 +1,45 @@
+[precondition:es_env_ready:preconditionUnits[0] 'es_env_ready':probe] $ kubectl -n elasticsearch get pods 2>/dev/null | grep -c Running
+7
+
+[precondition:transport_ca_fault_replant:preconditionUnits[1] 'transport_ca_fault_replant':probe] $ /bin/sh -c 'kubectl -n elasticsearch get secret es-transport-ca2 >/dev/null 2>&1 || exit 1; n=$(kubectl -n elasticsearch get configmap es-transport-ca-bundle -o jsonpath="{.data.ca\\.crt}" 2>/dev/null | grep -c "BEGIN CERTIFICATE"); [ "$n" = "1" ]'
+
+[precondition:transport_ca_fault_replant:preconditionUnits[1] 'transport_ca_fault_replant':apply] $ /bin/sh -c 'kubectl -n elasticsearch get pod openssl-toolbox >/dev/null 2>&1 || kubectl -n elasticsearch apply -f cases/elasticsearch/transport-additional-ca-trust/resource/openssl-toolbox.yaml'
+
+[precondition:transport_ca_fault_replant:preconditionUnits[1] 'transport_ca_fault_replant':apply] $ /bin/sh -c 'kubectl -n elasticsearch wait --for=condition=ready pod/openssl-toolbox --timeout=300s || true'
+pod/openssl-toolbox condition met
+
+[precondition:transport_ca_fault_replant:preconditionUnits[1] 'transport_ca_fault_replant':apply] $ /bin/sh -c '
+kubectl -n elasticsearch get secret es-transport-ca1 >/dev/null 2>&1 && kubectl -n elasticsearch get secret es-transport-ca2 >/dev/null 2>&1 && exit 0
+TMP_DIR=$(mktemp -d)
+kubectl -n elasticsearch exec openssl-toolbox -- /bin/sh -c '\''
+set -e
+mkdir -p /tmp/cab
+openssl genrsa -out /tmp/cab/ca1.key 2048
+openssl req -x509 -new -nodes -key /tmp/cab/ca1.key -sha256 -days 3650 -subj "/CN=es-ca-1" -out /tmp/cab/ca1.crt
+openssl genrsa -out /tmp/cab/ca2.key 2048
+openssl req -x509 -new -nodes -key /tmp/cab/ca2.key -sha256 -days 3650 -subj "/CN=es-ca-2" -out /tmp/cab/ca2.crt
+'\'' || exit 0
+kubectl -n elasticsearch cp openssl-toolbox:/tmp/cab "${TMP_DIR}/cab" || exit 0
+kubectl -n elasticsearch get secret es-transport-ca1 >/dev/null 2>&1 || kubectl -n elasticsearch create secret generic es-transport-ca1 --from-file=ca.crt="${TMP_DIR}/cab/ca1.crt" || true
+kubectl -n elasticsearch get secret es-transport-ca2 >/dev/null 2>&1 || kubectl -n elasticsearch create secret generic es-transport-ca2 --from-file=ca.crt="${TMP_DIR}/cab/ca2.crt" || true
+exit 0
+'
+
+tar: removing leading '/' from member names
+secret/es-transport-ca1 created
+secret/es-transport-ca2 created
+
+[precondition:transport_ca_fault_replant:preconditionUnits[1] 'transport_ca_fault_replant':apply] $ /bin/sh -c '
+TMP_DIR=$(mktemp -d)
+kubectl -n elasticsearch get secret es-transport-ca1 -o jsonpath="{.data.ca\.crt}" 2>/dev/null | base64 -d > "${TMP_DIR}/ca1.crt" || exit 0
+grep -q "BEGIN CERTIFICATE" "${TMP_DIR}/ca1.crt" || exit 0
+kubectl -n elasticsearch create configmap es-transport-ca-bundle --from-file=ca.crt="${TMP_DIR}/ca1.crt" --dry-run=client -o yaml | kubectl apply -f - || true
+exit 0
+'
+
+configmap/es-transport-ca-bundle created
+
+[precondition:transport_ca_fault_replant:preconditionUnits[1] 'transport_ca_fault_replant':apply] $ /bin/sh -c 'kubectl -n elasticsearch get pod es-cluster-2 >/dev/null 2>&1 && kubectl -n elasticsearch delete pod es-cluster-2 --wait=false || true'
+
+[precondition:transport_ca_fault_replant:preconditionUnits[1] 'transport_ca_fault_replant':verify] $ /bin/sh -c 'true'
+
