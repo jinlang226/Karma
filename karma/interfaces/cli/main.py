@@ -256,6 +256,10 @@ def _build_parser() -> argparse.ArgumentParser:
                     help="Judge LLM retry attempts on transient errors.")
     jg.add_argument("--batch", action="store_true",
                     help="Treat run_dir as a batch dir and judge every run under it.")
+    jg.add_argument("--rubric", default=None,
+                    help="Path to a rubric file (YAML/JSON: weighted items summing "
+                         "to 1.0 + passing_threshold) used to LLM-score each "
+                         "oracle-passing stage 0-1 instead of flat full marks.")
     jg.add_argument("--fail-open", dest="fail_open", action="store_true", default=True,
                     help="Do not fail the command if the judge errors (default).")
     jg.add_argument("--fail-closed", dest="fail_open", action="store_false",
@@ -600,6 +604,10 @@ def _cmd_judge(args: argparse.Namespace) -> None:
         raise RuntimeError(f"run directory not found: {run_dir}")
 
     _load_env_file(getattr(args, "llm_env_file", None))
+    rubric = None
+    if getattr(args, "rubric", None):
+        from ...judge.rubric import load_rubric_file
+        rubric = load_rubric_file(args.rubric)
     judge_kwargs = {
         "judge_model": args.model,
         "judge_base_url": args.base_url,
@@ -608,20 +616,22 @@ def _cmd_judge(args: argparse.Namespace) -> None:
         "judge_max_retries": args.max_retries,
         "include_outcome": not getattr(args, "exclude_outcome", False),
     }
+    # score_run / judge_batch_dir take the run-level scorer's kwargs (no
+    # include_outcome, which is a rubric-judge-only knob).
+    score_kwargs = {k: v for k, v in judge_kwargs.items() if k != "include_outcome"}
     try:
         if args.batch:
-            # Cross-run batch: judge every run under run_dir (old `judge batch`).
+            # Cross-run batch: score every run under run_dir and average.
             from ...judge.batch import judge_batch_dir
-            result = judge_batch_dir(run_dir, dry_run=args.dry_run, **judge_kwargs)
+            result = judge_batch_dir(run_dir, rubric=rubric, dry_run=args.dry_run, **score_kwargs)
         elif args.stage:
             # Per-stage rubric judge (inspection of a single stage).
-            result = run_judge(run_dir, args.stage, dry_run=args.dry_run, **judge_kwargs)
+            result = run_judge(run_dir, args.stage, rubric=rubric, dry_run=args.dry_run, **judge_kwargs)
         else:
-            # Default: run-level score -- objective stage-pass fraction, with the
-            # LLM only adjudicating regression-sweep failures (false positives).
+            # Default: run-level score -- objective stage-pass fraction (or per-stage
+            # rubric scores when --rubric is given), plus regression adjudication.
             from ...judge.run_score import score_run
-            score_kwargs = {k: v for k, v in judge_kwargs.items() if k != "include_outcome"}
-            result = score_run(run_dir, dry_run=args.dry_run, **score_kwargs)
+            result = score_run(run_dir, rubric=rubric, dry_run=args.dry_run, **score_kwargs)
     except Exception as exc:
         if args.fail_open:
             print(f"judge error (continuing, --fail-open): {exc}", file=sys.stderr)
