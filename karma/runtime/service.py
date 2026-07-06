@@ -102,8 +102,10 @@ def run_workflow(
     Returns
     -------
     dict
-        Keys: ``run_id``, ``status`` (``"complete"``, ``"failed"``, or
-        ``"error"``), ``stages`` (list[dict]), ``summary`` (dict).
+        Keys: ``run_id``, ``status`` (``"complete"``, ``"failed"``,
+        ``"cancelled"``, or ``"error"``), ``stages`` (list[dict]),
+        ``summary`` (dict). ``"error"`` is returned only when this call
+        itself raises (row resolution, environment/agent setup).
     """
     effective_run_id = run_id or generate_run_id(str(workflow.get("id") or "workflow"))
     run_dir = runs_dir / effective_run_id

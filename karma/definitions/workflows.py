@@ -9,17 +9,19 @@ parameter references, and builds the row list consumed by ``runtime.workflow``.
 A *workflow row* is the unit of work for one stage::
 
     {
-        "stage_id":          str,
-        "service":           str,
-        "case_name":         str,
-        "case":              dict,        # normalized case descriptor
-        "namespace_roles":   list[str],
-        "adversary_deploy":  list[dict],
-        "adversary_lift":    list[dict],
-        "adversary_hint":    str | None,
-        "prompt_mode":       str,
-        "agent_timeout_sec": int,
-        "retries":           int,
+        "stage_id":            str,
+        "service":             str,
+        "case_name":           str,
+        "case":                dict,        # normalized case descriptor
+        "namespace_roles":     list[str],
+        "namespace_binding":   dict | None,
+        "adversary_deploy":    list[dict],
+        "adversary_lift":      list[dict],
+        "adversary_hint":      str | None,
+        "adversary_injections": list[dict],
+        "prompt_mode":         str,
+        "agent_timeout_sec":   int,
+        "retries":             int,
     }
 
 Single-case UI runs are normalized into a 1-stage workflow by
@@ -283,8 +285,8 @@ def normalize_workflow(
     -------
     dict
         Keys: ``id`` (str), ``label`` (str or ``None``),
-        ``prompt_mode`` (str), ``stages`` (list[dict]),
-        ``adversary`` (list[dict]).
+        ``prompt_mode`` (str), ``agent_session`` (str),
+        ``stages`` (list[dict]), ``adversary`` (list[dict]).
     """
     try:
         WorkflowSchema.model_validate(raw)
@@ -477,6 +479,8 @@ def single_case_to_workflow(
         Agent timeout in seconds for the single stage.
     namespace_roles:
         Explicit namespace roles; when ``None`` the case contract is used.
+    retries:
+        Number of retry attempts for the stage (clamped to ``>= 0``).
     """
     if prompt_mode not in _VALID_PROMPT_MODES:
         prompt_mode = _DEFAULT_PROMPT_MODE
