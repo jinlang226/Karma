@@ -5,7 +5,11 @@ sweep failures.
 The score is mostly objective and only calls the LLM to filter false positives
 out of the regression sweep:
 
-* ``score = passed_stages / total_stages * 100`` -- the objective base.
+* Each stage contributes 0.0-1.0 to the score. A stage whose oracle failed
+  contributes 0.0; an oracle-passing stage contributes 1.0 by default, or --
+  when an optional *rubric* is supplied -- the rubric judge's 0-1 score for that
+  stage. ``score = sum(contributions) / total_stages * 100``; with no rubric
+  this is exactly ``passed_stages / total_stages * 100`` -- the objective base.
 * The regression sweep runs only after every stage's oracle passed (KARMA's
   workflow loop re-runs each passed stage's oracle once the whole workflow
   finished). So:
