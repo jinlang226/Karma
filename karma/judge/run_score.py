@@ -115,6 +115,7 @@ def _parse_adjudication(content: str) -> dict[str, Any]:
 def score_run(
     run_dir: Path,
     *,
+    rubric: dict[str, Any] | None = None,
     judge_model: str | None = None,
     judge_base_url: str | None = None,
     judge_api_key: str | None = None,
@@ -140,12 +141,50 @@ def score_run(
         declared = 0
     total = max(len(stage_results), declared)
     passed = sum(1 for s in stage_results if s.get("status") == "pass")
-    base_score = round(passed / total * 100.0, 1) if total else 0.0
+
+    # Per-stage contribution to the run score (each 0.0-1.0):
+    #   oracle failed            -> 0.0  (the oracle is authoritative)
+    #   oracle passed, no rubric -> 1.0  (flat full marks -- the default)
+    #   oracle passed, w/ rubric -> the rubric judge's 0-1 score for that stage
+    # Without a rubric these are 1.0/0.0, so base_score is exactly the old
+    # passed/total fraction; a real regression later zeroes a stage (see sweep).
+    contributions: dict[str, float] = {}
+    rubric_log: list[str] = []
+    for s in stage_results:
+        sid = s.get("stage_id")
+        if not sid:
+            continue
+        if s.get("status") != "pass":
+            contributions[sid] = 0.0
+        elif rubric is None or dry_run:
+            contributions[sid] = 1.0
+        else:
+            from .engine import run_judge
+            try:
+                res = run_judge(
+                    run_dir, sid, rubric=rubric,
+                    judge_model=judge_model, judge_base_url=judge_base_url,
+                    judge_api_key=judge_api_key, judge_timeout_sec=judge_timeout_sec,
+                    judge_max_retries=judge_max_retries,
+                )
+                frac = max(0.0, min(1.0, float(res.get("score") or 0.0)))
+                contributions[sid] = frac
+                rubric_log.append(f"[judge]   rubric {sid} -> {round(frac, 3)}")
+            except Exception as exc:  # grading failed -> keep the oracle pass
+                contributions[sid] = 1.0
+                rubric_log.append(f"[judge]   rubric {sid} FAILED ({exc}) -> 1.0")
+
+    def _compose() -> float:
+        return round(sum(contributions.values()) / total * 100.0, 1) if total else 0.0
+
+    scored_with_rubric = rubric is not None and not dry_run
+    base_score = _compose()
 
     result: dict[str, Any] = {
         "score": base_score,
         "score_max": 100.0,
-        "method": "stage-pass + regression-adjudication",
+        "method": ("stage-rubric + regression-adjudication" if scored_with_rubric
+                   else "stage-pass + regression-adjudication"),
         "total_stages": total,
         "passed_stages": passed,
         "base_score": base_score,
@@ -159,8 +198,10 @@ def score_run(
     # Human-readable log, persisted to {run_dir}/judge.log alongside judge.json.
     log: list[str] = [
         f"[judge] run {run_dir.name}",
-        f"[judge] {passed}/{total} stages passed -> base score {base_score}",
+        f"[judge] {passed}/{total} stages passed -> base score {base_score}"
+        + (" (rubric-scored)" if scored_with_rubric else ""),
     ]
+    log.extend(rubric_log)
 
     # Only adjudicate when every stage passed -- otherwise the score is purely the
     # objective pass fraction and the LLM is not involved at all.
@@ -181,15 +222,16 @@ def score_run(
     result["regression_failures"] = len(failures)
 
     if not failures:
-        # All stages passed and nothing regressed (or no sweep was needed).
-        result["score"] = 100.0
+        # All oracles passed and nothing regressed -> the base score stands
+        # (100.0 without a rubric; the summed rubric fractions with one).
+        result["score"] = base_score
         result["summary"] = (
-            "all stages passed and the regression sweep is clean -> 100.0."
-            if sweep else "all stages passed (single-stage / no sweep) -> 100.0."
+            f"all stages passed and the regression sweep is clean -> {base_score}."
+            if sweep else f"all stages passed (single-stage / no sweep) -> {base_score}."
         )
         log.append(
-            "[judge] regression sweep clean -> 100.0" if sweep
-            else "[judge] all stages passed, no regression sweep -> 100.0"
+            f"[judge] regression sweep clean -> {base_score}" if sweep
+            else f"[judge] all stages passed, no regression sweep -> {base_score}"
         )
         if not dry_run:
             _write(run_dir, result, log)
@@ -255,6 +297,7 @@ def score_run(
         is_legit = bool(verdict.get("legitimate_regression"))
         if is_legit:
             legit += 1
+            contributions[sid] = 0.0  # a real regression zeroes this stage
         reasoning = verdict.get("reasoning") or ""
         regressions.append({
             "stage_id": sid,
@@ -267,7 +310,7 @@ def score_run(
             f"-- {reasoning}"
         )
 
-    score = round((total - legit) / total * 100.0, 1) if total else 0.0
+    score = _compose()  # regressed stages were zeroed in the loop above
     result["legitimate_regressions"] = legit
     result["regressions"] = regressions
     result["score"] = score
