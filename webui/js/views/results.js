@@ -24,6 +24,8 @@
   let runsFolder = "";     // current Runs folder being browsed ("" = top level)
   let activeJudgeJob = null; // job_id while a "Judge all" is running (else null)
   let judgeCancelling = false; // true between a cancel click and the job ending
+  let activeRubric = null;     // rubric file content (YAML/JSON text) sent with judge requests
+  let activeRubricName = null; // its filename, for the chip
   let runsFilter = "";     // loose search query across all runs
   let allRuns = [];        // last-fetched runs, used by the folder/search render
 
@@ -154,17 +156,41 @@
     return runsFolder ? `Search runs in ${runsFolder}…` : "Search runs…";
   }
 
+  // Load a rubric file (YAML/JSON) whose content is sent with judge requests so
+  // oracle-passing stages are LLM-scored 0-1 against it instead of flat full marks.
+  function onRubricFile(input) {
+    const f = input.files && input.files[0];
+    if (!f) return;
+    const reader = new FileReader();
+    reader.onload = () => {
+      activeRubric = String(reader.result || "");
+      activeRubricName = f.name;
+      render();
+      KARMA.toast(`Rubric "${f.name}" set — judging will score each passing stage against it.`, "info");
+    };
+    reader.onerror = () => KARMA.toastError("could not read rubric file");
+    reader.readAsText(f);
+  }
+
   function subtabs() {
     const tabs = el("div", { class: "subtabs" },
       el("button", { class: "tab" + (sub === "runs" ? " active" : ""), onClick: () => { sub = "runs"; render(); } }, "Runs"),
       el("button", { class: "tab" + (sub === "batches" ? " active" : ""), onClick: () => { sub = "batches"; render(); } }, "Batches"));
+    // Optional rubric picker: when set, judging scores each oracle-passing stage
+    // against it (0-1) rather than awarding flat full marks.
+    const rubricFile = el("input", { type: "file", accept: ".yaml,.yml,.json", style: "display:none", onChange: (e) => onRubricFile(e.target) });
+    const rubricCtl = activeRubricName
+      ? el("span", { class: "rubric-chip", title: "Rubric active — judging scores stages against it" },
+          "▤ " + activeRubricName,
+          el("button", { class: "rubric-clear", title: "clear rubric", onClick: () => { activeRubric = null; activeRubricName = null; render(); } }, "×"))
+      : el("button", { class: "btn secondary", title: "Score stages against a rubric file (YAML/JSON)", onClick: () => rubricFile.click() }, "+ Rubric");
     // "Judge all" sits at the far right of the same row -- scores every finished
     // run in the current folder scope (objective stage-pass + LLM adjudication of
-    // regression-sweep failures).
+    // regression-sweep failures, plus per-stage rubric scores when a rubric is set).
     const judgeAll = el("button", { id: "judge-all-btn", class: "btn secondary", onClick: () => onJudgeAllClick(judgeAll) });
     if (activeJudgeJob) judgeAll.textContent = judgeCancelling ? "Cancelling…" : "Cancel judging…";
     else setJudgeAllLabel(judgeAll);
-    return el("div", { class: "subtabs-row" }, tabs, judgeAll);
+    return el("div", { class: "subtabs-row" }, tabs, rubricCtl, rubricFile, judgeAll);
   }
 
   // One button, two modes: start a Judge all, or cancel the one in flight.
@@ -219,7 +245,7 @@
     btn.disabled = "disabled";
     btn.textContent = "Starting…";
     try {
-      const resp = await api.post("/api/judge/start", { target_type: "all", target_path: runsFolder });
+      const resp = await api.post("/api/judge/start", { target_type: "all", target_path: runsFolder, rubric: activeRubric || undefined });
       activeJudgeJob = resp.job_id;
       judgeCancelling = false;
       btn.disabled = null;                      // enabled so it can now cancel
@@ -766,6 +792,7 @@
     try {
       const { job_id } = await api.post("/api/judge/start", {
         target_type: targetType, target_path: targetPath, dry_run: dryRun,
+        rubric: activeRubric || undefined,
       });
       log.textContent += "job " + job_id + "\n";
       api.stream(`/api/judge/jobs/${job_id}/stream`, {
