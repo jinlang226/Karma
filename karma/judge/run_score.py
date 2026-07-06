@@ -153,15 +153,24 @@ def score_run(
     # Without a rubric these are 1.0/0.0, so base_score is exactly the old
     # passed/total fraction; a real regression later zeroes a stage (see sweep).
     contributions: dict[str, float] = {}
+    # Per-stage breakdown persisted into judge.json (symmetric with `regressions`):
+    # each entry has stage_id, oracle status, the 0-1 base score, and -- when a
+    # rubric was applied -- the per-rubric-item scores/reasoning. A later real
+    # regression flags its stage here too.
+    stage_scores: list[dict[str, Any]] = []
     rubric_log: list[str] = []
     for s in stage_results:
         sid = s.get("stage_id")
         if not sid:
             continue
-        if s.get("status") != "pass":
+        status = s.get("status")
+        entry: dict[str, Any] = {"stage_id": sid, "status": status}
+        if status != "pass":
             contributions[sid] = 0.0
+            entry["score"] = 0.0
         elif rubric is None or dry_run:
             contributions[sid] = 1.0
+            entry["score"] = 1.0
         else:
             from .engine import run_judge
             try:
@@ -173,10 +182,15 @@ def score_run(
                 )
                 frac = max(0.0, min(1.0, float(res.get("score") or 0.0)))
                 contributions[sid] = frac
+                entry["score"] = frac
+                entry["items"] = res.get("rubric_items") or []
                 rubric_log.append(f"[judge]   rubric {sid} -> {round(frac, 3)}")
             except Exception as exc:  # grading failed -> keep the oracle pass
                 contributions[sid] = 1.0
+                entry["score"] = 1.0
+                entry["rubric_error"] = str(exc)
                 rubric_log.append(f"[judge]   rubric {sid} FAILED ({exc}) -> 1.0")
+        stage_scores.append(entry)
 
     def _compose() -> float:
         return round(sum(contributions.values()) / total * 100.0, 1) if total else 0.0
@@ -193,6 +207,7 @@ def score_run(
         "passed_stages": passed,
         "base_score": base_score,
         "all_passed": total > 0 and passed == total,
+        "stage_scores": stage_scores,
         "regression_sweep_run": False,
         "regression_failures": 0,
         "legitimate_regressions": 0,
@@ -302,6 +317,9 @@ def score_run(
         if is_legit:
             legit += 1
             contributions[sid] = 0.0  # a real regression zeroes this stage
+            for e in stage_scores:
+                if e.get("stage_id") == sid:
+                    e["regressed"] = True
         reasoning = verdict.get("reasoning") or ""
         regressions.append({
             "stage_id": sid,
