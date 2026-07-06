@@ -671,7 +671,7 @@ def run_stage(
     -------
     dict
         Keys: ``stage_id``, ``status`` (``"pass"``, ``"fail"``,
-        ``"timeout"``, or ``"error"``), ``oracle_verdict``
+        ``"timeout"``, ``"cancelled"``, or ``"error"``), ``oracle_verdict``
         (``"pass"``, ``"fail"``, ``"error"``, or ``None``),
         ``submitted`` (bool), ``duration_sec`` (float),
         ``error`` (str or ``None``), ``evidence_path`` (str),

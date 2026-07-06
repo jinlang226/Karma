@@ -9,6 +9,7 @@ Run directory layout::
     runs/
     └── {run_id}/
         ├── run.json
+        ├── config.json
         ├── workflow_state.json
         ├── bundle/
         │   ├── kubeconfig

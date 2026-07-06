@@ -130,6 +130,10 @@ def launch_proxy(
         Maximum seconds to wait for the proxy to accept connections.
     env:
         Additional environment variables forwarded to the proxy process.
+    bind_host:
+        Address the proxy binds to (``0.0.0.0`` for docker-sandbox reach).
+    max_attempts:
+        How many times to retry with fresh ports on a transient bind race.
 
     Raises
     ------

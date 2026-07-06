@@ -116,8 +116,9 @@ class KubectlProxyServer:
     def start(self) -> None:
         """Start the proxy and block until :meth:`shutdown` is called.
 
-        Writes ``{"port": N}`` to stdout so that ``backend.launch_proxy``
-        can discover the allocated port before entering the request loop.
+        Writes ``{"port": N}`` to stdout as a startup marker, then serves
+        requests. The listening port is fixed by ``--port`` (chosen by
+        ``backend.launch_proxy``), not discovered from this line.
         """
         upstream = self._upstream_url
         log_path = self._log_path
@@ -351,7 +352,8 @@ class KubectlProxyServer:
         ----------
         entry:
             Dict with keys ``timestamp``, ``verb``, ``path``, ``status``,
-            and ``duration_ms``.
+            ``duration_ms``, and ``streamed`` (plus ``upgraded`` for
+            exec/attach/port-forward tunnels).
         """
         with self._log_lock, self._log_path.open("a") as fh:
             fh.write(json.dumps(entry) + "\n")
@@ -375,8 +377,9 @@ def start_control_server(proxy: KubectlProxyServer, *, control_port: int) -> Non
     ``POST /shutdown``
         Signals the proxy to shut down.
 
-    Used by ``backend.wait_for_readiness`` to poll for proxy startup
-    without issuing real kubectl calls.
+    Only ``/shutdown`` is currently used (by ``ProxyHandle.teardown``).
+    Readiness is gated on the data port (see ``ProxyHandle.is_ready``),
+    not on this ``/health`` endpoint.
     """
     class _ControlHandler(BaseHTTPRequestHandler):
         def do_GET(self) -> None:

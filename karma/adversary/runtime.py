@@ -162,9 +162,10 @@ def deploy(
 
     Called by ``runtime.case.run_stage`` after preconditions complete and
     before the agent is launched. Each unit follows the canonical
-    probe/apply/verify shape. When the probe passes the fault is already
-    active and apply is skipped; when the probe fails apply is run to
-    plant the fault, then verify confirms it is active.
+    probe/apply/verify shape: when the probe passes the target condition is
+    reachable, so apply runs to plant the fault and verify confirms it is
+    active. When the probe fails, ``on_probe_fail`` decides -- the deploy
+    default ``error`` fails the unit.
 
     Parameters
     ----------

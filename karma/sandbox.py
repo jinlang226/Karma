@@ -191,9 +191,11 @@ def launch_agent(
     In ``"local"`` mode the agent entrypoint is spawned as a subprocess
     with *env_vars* injected and *run_dir* as the working directory.
 
-    In ``"docker"`` mode the image is built or pulled as needed, then the
-    container is started with *env_vars* forwarded, *run_dir* mounted as
-    ``/workspace``, and *kubeconfig_path* mounted when provided.
+    In ``"docker"`` mode the image must already exist locally (build it
+    beforehand via :func:`build_agent_image` / ``--agent-build``); launch
+    errors if it is missing rather than pulling. The container is then started
+    with *env_vars* forwarded, *run_dir* mounted as ``/workspace``, and
+    *kubeconfig_path* mounted when provided.
     *extra_mounts* supplies additional ``(host_path, container_path)`` bind
     mounts.
 

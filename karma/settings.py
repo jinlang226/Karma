@@ -58,8 +58,7 @@ class Settings:
         """Construct a Settings instance by reading KARMA_* environment variables.
 
         Each field maps to an env var with the KARMA_ prefix and the field
-        name uppercased (e.g. ``runs_dir`` → ``KARMA_RUNS_DIR``).  Judge API
-        key also falls back to OPENAI_API_KEY for compatibility.
+        name uppercased (e.g. ``runs_dir`` → ``KARMA_RUNS_DIR``).
         """
         def _path(key: str, default: str) -> Path:
             return Path(os.environ.get(key, default))

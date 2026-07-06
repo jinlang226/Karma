@@ -277,8 +277,9 @@ def resolve_adversary_scenario(
 
     The service is derived from
     ``stage_service_map[entry["inject_at_stage"]]``, then the scenario
-    file is loaded from
-    ``cases/{service}/adversarial/{scenario}/scenario.yaml``.
+    file is loaded from ``adversaries/{service}/{scenario}/scenario.yaml``
+    (top-level, sibling of ``cases/``), falling back to the legacy
+    ``cases/{service}/adversarial/{scenario}/scenario.yaml`` location.
     Parameter substitution uses the same ``{{params.foo}}`` syntax as
     ``test.yaml`` files.
 
