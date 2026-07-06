@@ -283,12 +283,27 @@ def create_app(
     @app.route("/api/judge/start", methods=["POST"])
     def api_judge_start():
         payload = request.get_json(force=True, silent=True) or {}
+        # Optional rubric: the UI sends the file's content as a YAML/JSON string;
+        # an already-parsed mapping is also accepted. When present, oracle-passing
+        # stages are LLM-scored against it instead of flat full marks.
+        rubric = None
+        raw_rubric = payload.get("rubric")
+        try:
+            if isinstance(raw_rubric, str) and raw_rubric.strip():
+                from ...judge.rubric import load_rubric_text
+                rubric = load_rubric_text(raw_rubric)
+            elif isinstance(raw_rubric, dict):
+                from ...judge.rubric import normalize_rubric
+                rubric = normalize_rubric(raw_rubric)
+        except Exception as exc:
+            return jsonify({"error": f"invalid rubric: {exc}"}), 400
         try:
             job_id = judging.start_judge_job(
                 str(payload.get("target_type") or "run"),
                 str(payload.get("target_path") or ""),
                 runs_dir=Path(runs_dir),
                 judge_model=payload.get("model"),
+                rubric=rubric,
                 dry_run=bool(payload.get("dry_run")),
             )
         except ValueError as exc:
