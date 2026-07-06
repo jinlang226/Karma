@@ -197,6 +197,9 @@ def score_run(
 
     scored_with_rubric = rubric is not None and not dry_run
     base_score = _compose()
+    # Rubric and objective scores live in separate artifacts so a run can carry
+    # both without one clobbering the other (the UI shows a column for each).
+    judge_basename = "judge_rubric" if scored_with_rubric else "judge"
 
     result: dict[str, Any] = {
         "score": base_score,
@@ -232,7 +235,7 @@ def score_run(
         log.append(f"[judge] not all stages passed -> objective score {base_score} (no LLM)")
         log.append(f"[judge] done: {result['summary']}")
         if not dry_run:
-            _write(run_dir, result, log)
+            _write(run_dir, result, log, base_name=judge_basename)
         return result
 
     sweep = meta.get("regression_sweep") or {}
@@ -253,7 +256,7 @@ def score_run(
             else f"[judge] all stages passed, no regression sweep -> {base_score}"
         )
         if not dry_run:
-            _write(run_dir, result, log)
+            _write(run_dir, result, log, base_name=judge_basename)
         return result
 
     # Adjudicate each regression-sweep failure: real regression or false positive?
@@ -344,19 +347,26 @@ def score_run(
     )
     log.append(f"[judge] adjudicated by {model_used or 'judge'}")
     log.append(f"[judge] done: {result['summary']}")
-    _write(run_dir, result, log)
+    _write(run_dir, result, log, base_name=judge_basename)
     return result
 
 
-def _write(run_dir: Path, result: dict[str, Any], log: list[str] | None = None) -> None:
-    """Persist the run-level judge result to ``{run_dir}/judge.json`` and, when
-    provided, the human-readable judge log to ``{run_dir}/judge.log``."""
+def _write(
+    run_dir: Path, result: dict[str, Any], log: list[str] | None = None,
+    *, base_name: str = "judge",
+) -> None:
+    """Persist the run-level judge result to ``{run_dir}/{base_name}.json`` and,
+    when provided, the human-readable log to ``{run_dir}/{base_name}.log``.
+
+    *base_name* is ``"judge"`` for the objective score and ``"judge_rubric"``
+    for a rubric score, so the two are kept as separate artifacts.
+    """
     try:
-        (run_dir / "judge.json").write_text(json.dumps(result, indent=2))
+        (run_dir / f"{base_name}.json").write_text(json.dumps(result, indent=2))
     except Exception:
         pass
     if log is not None:
         try:
-            (run_dir / "judge.log").write_text("\n".join(log) + "\n")
+            (run_dir / f"{base_name}.log").write_text("\n".join(log) + "\n")
         except Exception:
             pass
