@@ -441,7 +441,8 @@
       el("td", {}, statusBadge(r.status)),
       el("td", {}, prog),
       el("td", {}, agent),
-      el("td", {}, scoreCell(r.judge_score)));
+      el("td", {}, scoreCell(r.judge_score)),
+      el("td", {}, scoreCell(r.judge_score_rubric)));
   }
 
   // One folder row: a clickable folder name that drills in + a run count.
@@ -449,7 +450,7 @@
     const open = () => openRunsFolder(folder);
     const name = folder.split("/").pop();
     return el("tr", { class: "wf-folder-row" },
-      el("td", { colspan: "4" },
+      el("td", { colspan: "5" },
         el("span", { class: "crumb-link wf-folder-link", onClick: open },
           el("span", { class: "wf-folder-icon" }, "📁"), name),
         el("span", { class: "muted wf-folder-count" }, `${runsUnder(folder).length} runs`)),
@@ -485,7 +486,7 @@
   function renderRunRows(body) {
     clear(body);
     if (!allRuns.length) {
-      body.appendChild(el("tr", {}, el("td", { colspan: "5", class: "muted" }, "No runs yet.")));
+      body.appendChild(el("tr", {}, el("td", { colspan: "6", class: "muted" }, "No runs yet.")));
       return;
     }
     const tokens = runsFilter.split(/\s+/).filter(Boolean);
@@ -495,7 +496,7 @@
       // Scope the search to the browsed folder (recursively); top level = all.
       const hits = runsUnder(runsFolder).filter((r) => runMatches(r, tokens));
       if (!hits.length) {
-        body.appendChild(el("tr", {}, el("td", { colspan: "5", class: "muted" }, "No runs match your search.")));
+        body.appendChild(el("tr", {}, el("td", { colspan: "6", class: "muted" }, "No runs match your search.")));
         return;
       }
       for (const r of hits) body.appendChild(runRow(r, true));
@@ -542,7 +543,8 @@
       panel.appendChild(el("div", { id: "runs-crumb-bar", class: "dir-bar", style: "display:none" }));
       const tbl = el("table", {}, el("thead", {}, el("tr", {},
         el("th", {}, "Run"), el("th", {}, "Status"), el("th", {}, "Stages"),
-        el("th", {}, "Agent"), el("th", {}, "Score"))));
+        el("th", {}, "Agent"), el("th", {}, "Score w/o Rubric"),
+        el("th", {}, "Score w/ Rubric"))));
       body = el("tbody", { id: "runs-body" });
       tbl.appendChild(body);
       panel.appendChild(tbl);
