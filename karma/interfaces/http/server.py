@@ -296,6 +296,11 @@ def create_app(
             elif isinstance(raw_rubric, dict):
                 from ...judge.rubric import normalize_rubric
                 rubric = normalize_rubric(raw_rubric)
+            elif payload.get("use_default_rubric"):
+                # "Judge w/ Rubric" with no custom file -> the bundled example.
+                from ...judge.rubric import load_rubric_file
+                default_path = Path(__file__).resolve().parents[3] / "docs" / "example-rubric.yaml"
+                rubric = load_rubric_file(default_path)
         except Exception as exc:
             return jsonify({"error": f"invalid rubric: {exc}"}), 400
         try:

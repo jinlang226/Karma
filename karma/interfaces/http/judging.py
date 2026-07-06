@@ -104,27 +104,26 @@ def _judge_run_streaming(
     return {"target_type": "run", "run_id": run_dir.name, "result": result}
 
 
-def _run_has_score(run_dir: Path) -> bool:
-    """True if *run_dir* already has a run-level score (``judge.json``).
+def _run_has_score(run_dir: Path, base_name: str = "judge") -> bool:
+    """True if *run_dir* already has a run-level score in ``{base_name}.json``.
 
-    Used by "Judge all" to skip runs that are already scored under the current
-    (run-level) model. Legacy per-stage ``judge.json`` from the old per-stage
-    rubric does NOT count, so the first "Judge all" upgrades every run to the
-    objective stage-pass + regression-adjudication score.
+    *base_name* is ``"judge"`` for the objective score and ``"judge_rubric"`` for
+    the rubric score, so "Judge all" skips only runs already scored in the mode
+    being requested (judging w/ rubric doesn't skip a run scored only w/o, and
+    vice versa).
     """
-    rj = catalog._read_json(run_dir / "judge.json")
+    rj = catalog._read_json(run_dir / f"{base_name}.json")
     return bool(rj and isinstance(rj.get("score"), (int, float)))
 
 
-def _run_needs_llm(run_dir: Path) -> bool:
-    """Whether scoring this run will invoke the LLM adjudicator.
+def _run_needs_llm(run_dir: Path, rubric: dict[str, Any] | None = None) -> bool:
+    """Whether scoring this run will invoke the LLM.
 
-    Mirrors ``judge.run_score.score_run``'s decision: the LLM runs only for a run
-    where every stage passed AND the regression sweep has failures to adjudicate.
-    Every other run -- failed/partial (objective stage-pass %) or all-passed with
-    a clean sweep (100) -- is scored statically with no LLM. Used to order the
-    "Judge all" worklist so the free/static runs are scored first and the costly
-    LLM ones last.
+    With a *rubric*, every oracle-passing stage gets an LLM grade, so any run with
+    a passing stage needs the LLM. Without a rubric, the LLM runs only when every
+    stage passed AND the regression sweep has failures to adjudicate; all other
+    runs are scored statically. Used to order the "Judge all" worklist so the
+    free/static runs are scored first and the costly LLM ones last.
     """
     meta = (catalog._read_json(run_dir / "run.json")
             or catalog._read_json(run_dir / "workflow_state.json"))
@@ -136,6 +135,8 @@ def _run_needs_llm(run_dir: Path) -> bool:
         declared = 0
     total = max(len(stage_results), declared)
     passed = sum(1 for s in stage_results if s.get("status") == "pass")
+    if rubric is not None:
+        return passed > 0  # every oracle-passing stage gets an LLM rubric grade
     if total == 0 or passed < total:
         return False  # partial/failed run -> objective score, no LLM
     sweep = meta.get("regression_sweep") or {}
@@ -168,6 +169,9 @@ def _judge_all_streaming(
     # majority: with e.g. 147/151 runs already scored, emitting per-run progress
     # for every skip made the button read "47/151" -- which looks like "47 judged
     # of 151" when only one run was being judged. Skips are tallied, not streamed.
+    # Skip runs already scored *in this mode* (objective vs rubric are separate
+    # artifacts), so "Judge all w/ Rubric" doesn't skip runs scored only w/o.
+    base_name = "judge_rubric" if rubric else "judge"
     worklist: list[Path] = []
     already_scored = 0
     not_judgeable = 0
@@ -180,7 +184,7 @@ def _judge_all_streaming(
         if status not in ("complete", "failed", "error", "passed", "cancelled"):
             not_judgeable += 1
             continue
-        if _run_has_score(rd):
+        if _run_has_score(rd, base_name):
             already_scored += 1
             continue
         worklist.append(rd)
@@ -193,7 +197,7 @@ def _judge_all_streaming(
     static_work: list[Path] = []
     llm_work: list[Path] = []
     for rd in worklist:
-        (llm_work if _run_needs_llm(rd) else static_work).append(rd)
+        (llm_work if _run_needs_llm(rd, rubric) else static_work).append(rd)
     ordered = static_work + llm_work
 
     # Announce the scan up front so the UI can frame the work ("Judging N of M;

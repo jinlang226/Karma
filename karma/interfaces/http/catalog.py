@@ -263,7 +263,8 @@ def list_runs(runs_dir: Path) -> list[dict[str, Any]]:
                 if d.is_dir() and not d.name.endswith("__regression")
             )
             entry["stage_count"] = len(stage_ids)
-        # Prefer the run-level judge.json; fall back to the per-stage mean.
+        # Two independent scores: objective (judge.json) and rubric
+        # (judge_rubric.json). Either may be absent.
         run_judge = _read_json(run_dir / "judge.json")
         if run_judge and isinstance(run_judge.get("score"), (int, float)):
             entry["judged"] = True
@@ -273,6 +274,10 @@ def list_runs(runs_dir: Path) -> list[dict[str, Any]]:
             if mean is not None:
                 entry["judged"] = True
                 entry["judge_score"] = mean
+        run_judge_rubric = _read_json(run_dir / "judge_rubric.json")
+        if run_judge_rubric and isinstance(run_judge_rubric.get("score"), (int, float)):
+            entry["judged"] = True
+            entry["judge_score_rubric"] = round(float(run_judge_rubric["score"]), 1)
         runs.append(entry)
     return runs
 
@@ -383,17 +388,16 @@ def get_run_detail(runs_dir: Path, run_id: str) -> dict[str, Any]:
             detail["judge_log"] = judge_log_path.read_text()
         except Exception:
             pass
+    _breakdown_keys = (
+        "summary", "method", "total_stages", "passed_stages", "base_score",
+        "stage_scores", "regression_failures", "legitimate_regressions",
+        "regressions",
+    )
     if run_judge and isinstance(run_judge.get("score"), (int, float)):
         detail["judged"] = True
         detail["judge_score"] = round(float(run_judge["score"]), 1)
         detail["score_max"] = float(run_judge.get("score_max") or 100.0)
-        detail["judge_breakdown"] = {
-            k: run_judge.get(k)
-            for k in (
-                "summary", "total_stages", "passed_stages", "base_score",
-                "regression_failures", "legitimate_regressions", "regressions",
-            )
-        }
+        detail["judge_breakdown"] = {k: run_judge.get(k) for k in _breakdown_keys}
     else:
         stages_dir = run_dir / "stages"
         if stages_dir.exists():
@@ -403,6 +407,21 @@ def get_run_detail(runs_dir: Path, run_id: str) -> dict[str, Any]:
                 detail["judged"] = True
                 detail["judge_score"] = mean
                 detail["score_max"] = 100.0
+
+    # Rubric score is a separate artifact (judge_rubric.json/.log).
+    run_judge_rubric = _read_json(run_dir / "judge_rubric.json")
+    rubric_log_path = run_dir / "judge_rubric.log"
+    if rubric_log_path.exists():
+        try:
+            detail["judge_rubric_log"] = rubric_log_path.read_text()
+        except Exception:
+            pass
+    if run_judge_rubric and isinstance(run_judge_rubric.get("score"), (int, float)):
+        detail["judged"] = True
+        detail["judge_score_rubric"] = round(float(run_judge_rubric["score"]), 1)
+        detail["judge_rubric_breakdown"] = {
+            k: run_judge_rubric.get(k) for k in _breakdown_keys
+        }
     return detail
 
 
