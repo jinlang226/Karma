@@ -2,7 +2,7 @@
 CLI parsing, request normalization, and result output.
 
 Defines all CLI subcommands and delegates execution to ``runtime.service``
-and ``judge.engine``. No orchestration logic lives here.
+and the ``judge`` package. No orchestration logic lives here.
 
 Entrypoint::
 
@@ -15,6 +15,8 @@ Subcommands:
     Run a workflow YAML file end to end.
 ``run-case``
     Run a single case directly without a workflow file.
+``run-batch``
+    Run many cases sequentially (selected by --all / --service / --case).
 ``manual``
     Set a case up, hand the namespace to a human operator to act on by
     hand, then verify on demand and tear down.
@@ -36,6 +38,11 @@ from .profiles import load_profile, merge_profile
 from ...runtime.service import run_workflow, run_case
 from ...agents.registry import list_agents
 from ...metrics import list_metrics
+
+# Bundled example rubric used when `--rubric` is given with no path.
+_DEFAULT_RUBRIC_PATH = str(
+    Path(__file__).resolve().parents[3] / "docs" / "example-rubric.yaml"
+)
 from ...definitions.workflows import load_workflow_file, normalize_workflow
 
 
@@ -256,10 +263,12 @@ def _build_parser() -> argparse.ArgumentParser:
                     help="Judge LLM retry attempts on transient errors.")
     jg.add_argument("--batch", action="store_true",
                     help="Treat run_dir as a batch dir and judge every run under it.")
-    jg.add_argument("--rubric", default=None,
-                    help="Path to a rubric file (YAML/JSON: weighted items summing "
-                         "to 1.0 + passing_threshold) used to LLM-score each "
-                         "oracle-passing stage 0-1 instead of flat full marks.")
+    jg.add_argument("--rubric", nargs="?", const=_DEFAULT_RUBRIC_PATH, default=None,
+                    metavar="FILE",
+                    help="Score each oracle-passing stage 0-1 against a rubric file "
+                         "(YAML/JSON: weighted items summing to 1.0 + passing_threshold) "
+                         "instead of flat full marks. Bare --rubric uses the bundled "
+                         "docs/example-rubric.yaml.")
     jg.add_argument("--fail-open", dest="fail_open", action="store_true", default=True,
                     help="Do not fail the command if the judge errors (default).")
     jg.add_argument("--fail-closed", dest="fail_open", action="store_false",
