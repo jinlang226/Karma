@@ -144,11 +144,23 @@ def load_rubric_file(path: str | Path) -> dict[str, Any]:
 
     p = Path(path)
     try:
-        raw = yaml.safe_load(p.read_text())  # YAML is a JSON superset
+        text = p.read_text()
     except FileNotFoundError:
         raise ValueError(f"rubric file not found: {p}")
+    return load_rubric_text(text)
+
+
+def load_rubric_text(text: str) -> dict[str, Any]:
+    """Load and normalize a rubric from a YAML/JSON string.
+
+    Used by the HTTP judge routes, which receive the rubric file's *content*
+    from the browser (so YAML and JSON both work) rather than a server path.
+    """
+    import yaml
+
+    raw = yaml.safe_load(text)  # YAML is a JSON superset
     if not isinstance(raw, dict):
-        raise ValueError(f"rubric file {p} must contain a mapping at the top level")
+        raise ValueError("rubric must be a mapping (items[] + passing_threshold)")
     return normalize_rubric(raw)
 
 

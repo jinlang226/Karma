@@ -81,7 +81,8 @@ def list_judge_jobs() -> list[dict[str, Any]]:
 
 
 def _judge_run_streaming(
-    job_id: str, run_dir: Path, judge_model: str | None, dry_run: bool
+    job_id: str, run_dir: Path, judge_model: str | None, dry_run: bool,
+    rubric: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Score the run: objective stage-pass score + LLM adjudication of any
     regression-sweep failures (false-positive filtering)."""
@@ -91,7 +92,7 @@ def _judge_run_streaming(
         "type": "judge_progress", "job_id": job_id, "run_id": run_dir.name,
         "message": "scoring stages and adjudicating regression sweep",
     })
-    result = score_run(run_dir, judge_model=judge_model, dry_run=dry_run)
+    result = score_run(run_dir, rubric=rubric, judge_model=judge_model, dry_run=dry_run)
     hub.publish(job_id, {
         "type": "judge_progress", "job_id": job_id, "run_id": run_dir.name,
         "score": result.get("score"),
@@ -140,7 +141,8 @@ def _run_needs_llm(run_dir: Path) -> bool:
 
 
 def _judge_all_streaming(
-    job_id: str, runs_dir: Path, judge_model: str | None, dry_run: bool
+    job_id: str, runs_dir: Path, judge_model: str | None, dry_run: bool,
+    rubric: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Score every UNSCORED finished run under *runs_dir* (the "Judge all" button).
 
@@ -210,7 +212,7 @@ def _judge_all_streaming(
             cancelled = True
             break
         try:
-            res = score_run(rd, judge_model=judge_model, dry_run=dry_run)
+            res = score_run(rd, rubric=rubric, judge_model=judge_model, dry_run=dry_run)
             results[rd.name] = {"score": res.get("score"), "summary": res.get("summary")}
             hub.publish(job_id, {
                 "type": "judge_progress", "job_id": job_id, "run_id": rd.name,
@@ -230,7 +232,8 @@ def _judge_all_streaming(
 
 
 def _judge_batch_streaming(
-    job_id: str, batch_dir: Path, judge_model: str | None, dry_run: bool
+    job_id: str, batch_dir: Path, judge_model: str | None, dry_run: bool,
+    rubric: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Judge each run under *batch_dir*, publishing per-run progress."""
     def _on_run(run_id: str, score: Any, index: int, total: int) -> None:
@@ -245,6 +248,7 @@ def _judge_batch_streaming(
 
     return judge_batch_dir(
         batch_dir,
+        rubric=rubric,
         judge_model=judge_model,
         dry_run=dry_run,
         on_run_complete=_on_run,
@@ -257,6 +261,7 @@ def start_judge_job(
     *,
     runs_dir: Path | None = None,
     judge_model: str | None = None,
+    rubric: dict[str, Any] | None = None,
     dry_run: bool = False,
 ) -> str:
     """Start an async judge job and return its id immediately.
@@ -334,11 +339,11 @@ def start_judge_job(
     def _run() -> None:
         try:
             if target_type == "run":
-                result = _judge_run_streaming(job_id, path, judge_model, dry_run)
+                result = _judge_run_streaming(job_id, path, judge_model, dry_run, rubric)
             elif target_type == "all":
-                result = _judge_all_streaming(job_id, path, judge_model, dry_run)
+                result = _judge_all_streaming(job_id, path, judge_model, dry_run, rubric)
             else:
-                result = _judge_batch_streaming(job_id, path, judge_model, dry_run)
+                result = _judge_batch_streaming(job_id, path, judge_model, dry_run, rubric)
             final_status = ("cancelled"
                             if isinstance(result, dict) and result.get("cancelled")
                             else "complete")
