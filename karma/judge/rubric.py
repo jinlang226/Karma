@@ -132,6 +132,26 @@ def normalize_rubric(raw: dict[str, Any]) -> dict[str, Any]:
     return {"items": normalized_items, "passing_threshold": threshold}
 
 
+def load_rubric_file(path: str | Path) -> dict[str, Any]:
+    """Load and normalize a rubric from a YAML or JSON file.
+
+    The file must match the rubric schema (a non-empty ``items`` list whose
+    weights sum to 1.0, plus ``passing_threshold``). Used by the judge's
+    ``--rubric`` option so oracle-passing stages are scored against custom
+    weighted criteria (0.0-1.0) instead of a flat full-marks pass.
+    """
+    import yaml
+
+    p = Path(path)
+    try:
+        raw = yaml.safe_load(p.read_text())  # YAML is a JSON superset
+    except FileNotFoundError:
+        raise ValueError(f"rubric file not found: {p}")
+    if not isinstance(raw, dict):
+        raise ValueError(f"rubric file {p} must contain a mapping at the top level")
+    return normalize_rubric(raw)
+
+
 def merge_rubric_overrides(
     base: dict[str, Any],
     overrides: dict[str, Any],
