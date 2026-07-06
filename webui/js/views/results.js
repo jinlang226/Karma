@@ -610,14 +610,21 @@
     // deep-linked run where the cached runs list was empty at first render).
     if (d.dir) buildCrumb(d.dir);
 
-    // Test score (mean judge score) top-right beside the heading, larger than it.
-    if (d.judge_score != null) {
-      const s = d.judge_score <= 1 ? d.judge_score * 100 : d.judge_score;
-      const cls = s >= 80 ? "ok" : s >= 50 ? "warn" : "bad";
-      scoreSlot.appendChild(el("span", { class: "score-value " + cls }, s.toFixed(1) + "/100.0"));
-    } else {
-      scoreSlot.appendChild(el("span", { class: "score-value none", title: "Not judged yet" }, "—/100.0"));
-    }
+    // Two test scores top-right beside the heading: objective (w/o rubric) and
+    // rubric (w/ rubric). Each shows "—" until the run is judged that way.
+    const scoreValue = (label, val) => {
+      const wrap = el("span", { class: "score-pair" }, el("span", { class: "score-pair-label" }, label));
+      if (val == null) {
+        wrap.appendChild(el("span", { class: "score-value none", title: label + " — not judged yet" }, "—/100.0"));
+      } else {
+        const s = val <= 1 ? val * 100 : val;
+        const cls = s >= 80 ? "ok" : s >= 50 ? "warn" : "bad";
+        wrap.appendChild(el("span", { class: "score-value " + cls }, s.toFixed(1) + "/100.0"));
+      }
+      return wrap;
+    };
+    scoreSlot.appendChild(scoreValue("w/o Rubric", d.judge_score));
+    scoreSlot.appendChild(scoreValue("w/ Rubric", d.judge_score_rubric));
 
     const badges = el("div", { class: "toolbar" });
     badges.appendChild(statusBadge(d.status));
@@ -644,8 +651,9 @@
         ? "This run was interrupted — there is no complete outcome to judge."
         : "This run has an unknown status — there is no recorded outcome to judge."));
     } else if (isTerminal(d.status)) {
-      actions.appendChild(el("button", { class: "btn", onClick: () => startJudge("run", runId, false, judgeLog) }, "Judge"));
-      actions.appendChild(el("button", { class: "btn secondary", onClick: () => startJudge("run", runId, true, judgeLog) }, "Dry run"));
+      actions.appendChild(el("button", { class: "btn", title: "Objective stage-pass score + regression adjudication", onClick: () => startJudge("run", runId, false, judgeLog, false) }, "Judge w/o Rubric"));
+      actions.appendChild(el("button", { class: "btn", title: "LLM-score each oracle-passing stage against the rubric (picker, else the bundled example)", onClick: () => startJudge("run", runId, false, judgeLog, true) }, "Judge w/ Rubric"));
+      actions.appendChild(el("button", { class: "btn secondary", title: "Assemble the judge without calling the LLM or writing results", onClick: () => startJudge("run", runId, true, judgeLog, false) }, "Dry run"));
     } else {
       const cancelBtn = el("button", { class: "btn secondary" }, "Cancel");
       cancelBtn.addEventListener("click", () => {
@@ -749,6 +757,40 @@
       root.appendChild(rp);
     }
 
+    // Rubric scores: when the run was judged w/ a rubric, show each oracle-passing
+    // stage's 0-1 score and the per-item breakdown with the judge's reasoning
+    // (like the regression sweep above).
+    const rb = d.judge_rubric_breakdown;
+    const rbStages = (rb && Array.isArray(rb.stage_scores)) ? rb.stage_scores : [];
+    if (rbStages.some((s) => Array.isArray(s.items) && s.items.length)) {
+      const rp = el("div", { class: "panel" });
+      rp.appendChild(el("h3", {}, "Rubric scores"));
+      rp.appendChild(el("p", { class: "field-help" },
+        "Each oracle-passing stage scored against the rubric. An oracle-failed stage contributes 0; a real regression zeroes its stage."));
+      const scorePct = (v) => (typeof v === "number") ? Math.round((v <= 1 ? v * 100 : v)) : null;
+      const list = el("div", { class: "stage-scroll" });
+      for (const s of rbStages) {
+        const pct = scorePct(s.score);
+        const badges = el("div", { class: "sweep-verdicts" });
+        if (s.regressed) badges.appendChild(el("span", { class: "badge bad" }, "regressed → 0"));
+        if (s.status && s.status !== "pass") badges.appendChild(el("span", { class: "badge bad" }, "oracle: " + s.status));
+        badges.appendChild(el("span", { class: "badge " + (pct == null ? "" : pct >= 80 ? "ok" : pct >= 50 ? "warn" : "bad") },
+          pct == null ? "—" : pct + "%"));
+        const row = el("div", { class: "builder-row" },
+          el("div", { class: "builder-row-head" }, el("span", {}, KARMA.humanize(s.stage_id)), badges));
+        (s.items || []).forEach((it) => {
+          const iscore = (typeof it.score === "number") ? Math.round(it.score * 100) + "%" : "—";
+          row.appendChild(el("div", { class: "rubric-item" },
+            el("span", { class: "rubric-item-id" }, `${it.id}: ${iscore}`),
+            it.reasoning ? el("span", { class: "muted rubric-item-reason" }, " — " + it.reasoning) : null));
+        });
+        list.appendChild(row);
+      }
+      rp.appendChild(list);
+      if (rb.summary) rp.appendChild(el("p", { class: "field-help sweep-summary" }, "Score: " + rb.summary));
+      root.appendChild(rp);
+    }
+
     // Stage definitions + adversary, always shown (every stage, regardless of how
     // many the agent reached). Prefer the spec stored with the run (works for
     // inline workflows with no saved file); fall back to the saved workflow file,
@@ -796,14 +838,17 @@
   }
 
   // --- Judge (job + stream) -- reused from the old Judge view ----------------
-  async function startJudge(targetType, targetPath, dryRun, log) {
+  async function startJudge(targetType, targetPath, dryRun, log, withRubric) {
     log.style.display = "";
-    log.textContent = `${dryRun ? "Dry-" : ""}judging ${targetPath}\n`;
+    log.textContent = `${dryRun ? "Dry-" : ""}judging ${targetPath}${withRubric ? " (w/ rubric)" : ""}\n`;
     try {
-      const { job_id } = await api.post("/api/judge/start", {
-        target_type: targetType, target_path: targetPath, dry_run: dryRun,
-        rubric: activeRubric || undefined,
-      });
+      const body = { target_type: targetType, target_path: targetPath, dry_run: dryRun };
+      if (withRubric) {
+        // custom rubric from the picker, else the bundled default
+        if (activeRubric) body.rubric = activeRubric;
+        else body.use_default_rubric = true;
+      }
+      const { job_id } = await api.post("/api/judge/start", body);
       log.textContent += "job " + job_id + "\n";
       api.stream(`/api/judge/jobs/${job_id}/stream`, {
         statusPath: `/api/judge/jobs/${job_id}`,
