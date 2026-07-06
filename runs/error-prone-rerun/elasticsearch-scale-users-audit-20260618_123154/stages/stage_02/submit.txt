@@ -1,0 +1,13 @@
+Done. All four verification criteria are satisfied:
+
+1. **Cluster health green, 5 nodes** — the original 3 (`es-0/1/2`) plus 2 new data nodes (`es-new-0/1`), `status: green`, 0 unassigned shards.
+2. **app-data shards on new nodes** — all 4 shard copies (2 primaries + 2 replicas) are now on `es-new-0`/`es-new-1`, outside the original 3.
+3. **Different allocation attribute** — new nodes carry `node.attr.zone=new`; the original 3 nodes have no `zone` attribute, so they differ.
+4. **es StatefulSet unchanged** — still at 3 replicas.
+
+What I did:
+- Created the `app-data` index (it didn't exist yet) with 2 shards / 1 replica, initially allocated across the original nodes.
+- Added a separate `es-new` StatefulSet (2 replicas) — **not** scaling the existing `es` StatefulSet — using a dedicated ConfigMap setting `node.attr.zone: new` and `node.roles: [data, ingest]`. The new pods share the `app=elasticsearch` label so the existing headless `es-transport` service handles discovery; they reuse the existing TLS secret (transport verification mode is `certificate`, so hostnames don't need to match).
+- Once all 5 nodes joined, set `index.routing.allocation.require.zone=new` on `app-data`, forcing all shards to relocate onto the new nodes while the cluster stayed green.
+
+No operators or CRDs were used — only plain ConfigMap/StatefulSet/Service primitives and ES allocation settings.

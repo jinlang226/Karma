@@ -1,0 +1,20 @@
+The oracle passes. Task complete.
+
+## Summary
+
+Snapshots were failing due to two missing pieces of infrastructure, not just unconfigured credentials. I diagnosed and fixed the full chain:
+
+**Root causes found**
+1. **No MinIO `Service`** — the precondition deployed the MinIO pod but never created its `Service`, so `minio.elasticsearch.svc.cluster.local` didn't resolve (`unknown_host_exception`).
+2. **No `es-backups` bucket** — the `minio-init` job had run *before* the Service existed, so its `mc mb` failed and the bucket was never created (`NoSuchBucket`).
+3. **Empty keystores** — the precondition tried to add S3 keys to pods labeled `app=es-cluster`, but the real ES pods are `app=elasticsearch`, so no node actually had credentials.
+
+**What I did**
+- Created the `es-secure-settings` Secret (credentials `minioadmin`/`minioadmin`).
+- Added `s3.client.default.access_key` and `s3.client.default.secret_key` to the keystore of all 5 ES pods (`es-0/1/2`, `es-data-b-0/1`) via `elasticsearch-keystore add`, then called `_nodes/reload_secure_settings` — **no pod restart needed**.
+- Created the missing `minio` Service (port 9000).
+- Re-ran the `minio-init` job to create the `es-backups` bucket.
+- Registered the `minio-repo` S3 repository (endpoint `minio...:9000`, `protocol: http`, `path_style_access: true`) — verification now passes on all 5 nodes.
+- Created snapshot `snap-1` → **state SUCCESS** (2/2 shards).
+
+Credentials live only in the keystore (secure settings) — none in `elasticsearch.yml`, env vars, or the ConfigMap. Oracle verification: **passed**.

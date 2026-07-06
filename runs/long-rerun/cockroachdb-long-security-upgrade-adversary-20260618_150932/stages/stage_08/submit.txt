@@ -1,0 +1,26 @@
+All five verification checks pass. The task is complete.
+
+## Summary
+
+The cluster turned out to be in a tampered state, not the clean "v23.2, ready to upgrade" starting point described. Investigation revealed:
+
+- The major upgrade had **already been finalized at v24.1** (cluster version `24.1`, `preserve_downgrade_option` empty), but an **adversary had altered the StatefulSet** in two ways that broke the verification:
+  1. Switched the cluster from **insecure → secure mode** (the verification and intended config use `--insecure`).
+  2. Bumped the image from **v24.1.0 → v24.1.1**.
+  3. Set probe schemes to **HTTPS**.
+
+The original intended config was preserved in the StatefulSet's `last-applied-configuration` annotation (insecure, v24.1.0, default HTTP probes).
+
+**Remediation:**
+1. Restored the StatefulSet template to the original insecure, image `v24.1.0` spec.
+2. Since secure and insecure nodes cannot form a cluster together, used an `OnDelete` strategy and restarted all 3 pods simultaneously to cross the secure→insecure boundary cleanly (rather than a rolling update that would stall in a broken mixed state).
+3. Diagnosed a crash-loop (exit 137) caused by the leftover **HTTPS probe scheme** hitting an HTTP endpoint, patched both probes back to **HTTP**, and restarted once more.
+
+**Final verification (all pass):**
+1. ✅ All pods on image `cockroachdb/cockroach:v24.1.0`
+2. ✅ Cluster version finalized: `24.1`
+3. ✅ `cluster.preserve_downgrade_option` empty
+4. ✅ All 3 nodes `is_available` / `is_live` = true, binary `v24.1.0`
+5. ✅ `version()` reports `CockroachDB CCL v24.1.0`
+
+The binaries are on v24.1.0, the major upgrade is finalized to 24.1, the downgrade option is cleared, and the cluster is healthy and serving (insecure mode as the verification expects).

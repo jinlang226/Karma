@@ -1,0 +1,17 @@
+The rotation is complete and verified.
+
+## Summary
+
+**Task:** Rotate only the leaf TLS certificate for the 3-node RabbitMQ cluster, keeping the CA unchanged, with the new leaf valid ≥300 days.
+
+**What I did:**
+1. **Inspected state** — 3-node StatefulSet (`rabbitmq-0/1/2`) with TLS mounted from secret `rabbitmq-tls` at `/etc/rabbitmq/tls`. The old leaf expired in ~1 day (notAfter Jun 19 2026).
+2. **Extracted the CA** — `ca.crt` from `rabbitmq-tls` and `ca.key` from `rabbitmq-tls-ca`; verified key/cert moduli match.
+3. **Generated a new leaf** — new 2048-bit key + CSR, re-signed under the **same CA**, **valid 365 days** (Jun 18 2026 → Jun 18 2027), with the **identical SAN list** (all service/headless/per-pod DNS names) and serverAuth/clientAuth EKU. Verified with `openssl verify -CAfile ca.crt` → OK.
+4. **Applied** — patched only `tls.crt` and `tls.key` in `rabbitmq-tls` via a merge patch; confirmed `ca.crt` in the secret is **unchanged** (CA still notAfter Jun 17 2028, CN=rabbitmq-ca). Used only native Kubernetes resources — no CRD/operator.
+5. **Rolled the StatefulSet** (`rollout restart` + `rollout status`) so all 3 nodes reload the new cert; waited synchronously to completion.
+
+**Verified end state:**
+- All 3 nodes Running and in one cluster (`cluster_status` shows all three as running disk nodes).
+- TLS endpoint (5671) serves the **new** leaf (expires 2027-06-18, issuer `CN=rabbitmq-ca`) and verifies against the unchanged CA with **`Verify return code: 0 (ok)`**.
+- New leaf validity is 365 days ≥ 300 days required.

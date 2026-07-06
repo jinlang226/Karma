@@ -1,0 +1,17 @@
+The rotation is complete and verified. Summary:
+
+## Done — MongoDB server certificates rotated without downtime
+
+**Scenario:** A 3-member MongoDB replica set (`mongo-rs` StatefulSet) on cluster `karma-1`, namespace `mongodb`, running `requireTLS` with `--tlsCertificateKeyFile /etc/mongo-cert/server.pem` (from secret `mongodb-tls-cert`) and `--tlsCAFile /etc/mongo-ca/ca.crt` (from secret `mongodb-tls-ca`).
+
+**Problem:** The current server cert (CN=`mongo-rs`) was expiring **Jun 20 2026** — ~2 days out.
+
+**What I did:**
+1. **Generated a new server cert** signed by the *existing* CA (from `mongodb-tls-ca`), preserving the subject (`CN=mongo-rs`), all 8 SANs (localhost, service DNS, and per-pod hostnames), `keyUsage` (digitalSignature, keyEncipherment), and `extendedKeyUsage` (serverAuth, clientAuth). New validity: **Jun 18 2026 → Jun 18 2027 (1 year)**. Verified the new cert chains to the CA and the key/cert moduli match.
+2. **Updated only** the `server.pem` key in secret `mongodb-tls-cert` — the CA secret `mongodb-tls-ca` was left untouched (confirmed by SHA-256: identical before/after).
+3. **Rolling restart, one pod at a time** to avoid downtime: restarted the two secondaries first, then stepped down the primary (`mongo-rs-1`) and restarted it. Each pod was waited on for `Ready` before moving to the next, so a writable majority stayed online throughout.
+
+**Verification:**
+- All 3 pods serve the new cert on the wire (`notAfter=Jun 18 ... 2027`).
+- Replica set healthy: `mongo-rs-0:PRIMARY mongo-rs-1:SECONDARY mongo-rs-2:SECONDARY`.
+- CA trust unchanged (matching hash); new certs verify against it.

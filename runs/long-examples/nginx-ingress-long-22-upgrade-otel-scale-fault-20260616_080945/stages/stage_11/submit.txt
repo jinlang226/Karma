@@ -1,0 +1,23 @@
+The rate limiting is correctly configured and working. Here's the summary:
+
+**Current state (already correct):**
+
+The `rate-api` Ingress in namespace `demo` has these annotations applied at creation:
+- `nginx.ingress.kubernetes.io/limit-rps: "1"` — 1 request/second rate limit
+- `nginx.ingress.kubernetes.io/limit-burst-multiplier: "1"` — burst of 1× the rate = 1 extra request
+
+The global ConfigMap sets `limit-req-status-code: "429"`, so excess requests return HTTP 429.
+
+**Verification results:**
+- `/api` rapid burst: `200, 200, 429, 429, 429` — rate limited after initial burst, excess gets 429 ✓
+- `/api` at 2 RPS (0.5s sleep): alternating 200/429 after initial burst, consistent with ~1 RPS limit ✓
+- `/health` (5 rapid requests): `200, 200, 200, 200, 200` — completely unlimited ✓
+
+The nginx config generated from these annotations (`nginx -T` confirmed):
+```
+limit_req_zone $limit ... rate=1r/s;
+limit_req zone=... burst=1 nodelay;
+limit_req_status 429;
+```
+
+Both success criteria are met: `/api` returns 429 for excess requests at rates above ~1 RPS, and `/health` continues returning HTTP 200 under load.

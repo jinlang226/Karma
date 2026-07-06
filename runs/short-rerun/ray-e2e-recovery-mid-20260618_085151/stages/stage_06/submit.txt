@@ -1,0 +1,20 @@
+Done. Both criteria are met.
+
+## What was wrong
+- The script in `/opt/job.py` used `ray.init(address="ray://ray-head:10001")` — the Ray Client endpoint, which **isn't exposed** by the `ray-head` service (it only publishes `gcs:6379` and `dashboard:8265`), so it timed out.
+- The file is mounted read-only from configmap `ray-job-script` (subPath mount), so it couldn't be edited in place.
+
+## What I did
+1. **Updated the configmap** `ray-job-script` so the script uses `ray.init(address="ray-head:6379")` (the GCS address, as required).
+2. **Recreated the `ray-client` pod** — subPath configmap mounts don't auto-update, so a restart was needed to pick up the new script.
+3. Connecting a *driver* to the cluster requires a local raylet on the client pod, so I had it **join the cluster** (`ray start --address=ray-head:6379`). With that, the driver connects to the local raylet and reaches the head's GCS.
+
+## Verification
+```
+$ kubectl -n ray exec ray-client -- python /opt/job.py
+Connecting to existing Ray cluster at address: ray-head:6379...
+Connected to Ray cluster. View the dashboard at http://10.244.0.246:8265
+pong          # EXIT=0  (repeated runs also pass)
+```
+
+The script now points at `ray-head:6379`, connects successfully, prints `pong`, and exits 0.

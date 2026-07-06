@@ -1,0 +1,15 @@
+Done. CockroachDB metrics are now being scraped by Prometheus.
+
+## What I did
+
+The cluster runs the **Prometheus Operator**, with a `Prometheus` CR named `crdb` in `monitoring` whose `serviceMonitorSelector: {}` and `serviceMonitorNamespaceSelector: {matchNames: [cockroachdb]}` mean it picks up any `ServiceMonitor` in the `cockroachdb` namespace.
+
+So I created a **ServiceMonitor** (`cockroachdb/cockroachdb`) targeting the `crdb-cluster` service, port `http` (8080), path `/_status/vars`, scheme `http` (the cluster is insecure — HTTPS returns nothing, HTTP returns 200). I added a `keep` relabeling on `__meta_kubernetes_service_name` so only the headless `crdb-cluster` service is scraped — without it, the identical labels on `crdb-cluster-public` caused every pod to be scraped twice.
+
+## Verification
+
+1. **Active targets** — Prometheus reports 3 active targets (one per CockroachDB pod), all `health: up`:
+   - `http://10.244.0.31:8080/_status/vars`, `.32`, `.33`
+2. **Endpoint reachable in-cluster** — `curl http://crdb-cluster:8080/_status/vars` from a pod returns `200`; `up{job="crdb-cluster"}` = `1` for all 3 instances, and real CockroachDB metrics (e.g. `sql_conns`) are being ingested.
+
+The ServiceMonitor manifest is at `/tmp/crdb-servicemonitor.yaml` and is applied to the cluster.

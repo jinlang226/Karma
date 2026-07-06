@@ -1,0 +1,12 @@
+Oracle exits 0 — both success criteria are met.
+
+**Summary of what was done and why:**
+
+1. **Root cause:** The precondition was skipped (curl-test was already running from a prior stage), so `stable-echo`, `canary-echo`, and both Ingresses for `canary.example.com` were never created. Additionally, the decoy Ingress (`canary-alt`) uses `stable-echo` as its backend with canary annotations, which poisoned `demo-stable-echo-80` with a `trafficShapingPolicy` (header `X-Canary: beta`). This caused the Lua balancer to route all `canary.example.com` traffic to the default backend (404) and prevented `canary-echo` from merging as an alternative backend.
+
+2. **Fix:**
+   - Created `stable-echo` and `canary-echo` Deployments and Services (missing prerequisites)
+   - Created `canary-stable` Ingress (primary, `canary.example.com → stable-echo`)
+   - Created `canary-canary` Ingress (canary, `X-Canary: always → canary-echo`)
+   - Since the decoy poisoned `stable-echo`, created alias Services `stable-proxy` and `canary-proxy` (same selectors, different names not touched by the decoy)
+   - Patched both Ingresses to use the alias services — the controller cleanly merged `canary-proxy` as the alternative backend to `stable-proxy` with `X-Canary: always`

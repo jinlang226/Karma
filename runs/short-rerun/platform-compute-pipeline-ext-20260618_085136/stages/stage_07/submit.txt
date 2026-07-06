@@ -1,0 +1,42 @@
+Everything is verified and healthy. Here's the complete picture.
+
+## Diagnosis & Results
+
+**Cluster health:** The Spark master is `ALIVE` and elected leader, with 1 worker registered (1 core, 1024 MiB). Both `spark-master` and `spark-worker` pods are `Running`.
+
+**Job status:** All three jobs report `Complete=1` / `SuccessCriteriaMet`:
+
+| Job | Status | Pod |
+|-----|--------|-----|
+| spark-skew-baseline | Complete (1/1) | Completed |
+| spark-skew-broadcast | Complete (1/1) | Completed |
+| spark-skew-aqe | Complete (1/1) | Completed |
+
+**Configuration review:** I inspected all resource manifests (`spark-cluster.yaml`, `skew-job.yaml`, `skew-job-broadcast.yaml`, `skew-job-aqe.yaml`, rbac/configmap). They are correct and free of configuration defects — e.g. the master correctly `unset SPARK_MASTER_PORT` before `start-master.sh`, `SPARK_LOCAL_IP=$(hostname -i)` is exported in each job, the broadcast job sets `autoBroadcastJoinThreshold`, and the AQE job enables `adaptive.skewJoin`. The deployed objects match and all ran to completion without error.
+
+## Performance Comparison (the skew story)
+
+The baseline confirms the skew problem — **5 hot products carry ~50% of orders**, producing wildly uneven partitions:
+
+```
+skew_ratio=44.0x   max_partition=11579   min_partition=263
+cat_1.0..cat_1.4  → 5000 orders each   (hot)
+all other cats    →  ~263 orders each  (cold)
+```
+
+| Strategy | Elapsed | Optimization | Benefit |
+|----------|---------|--------------|---------|
+| **baseline** | **22.4s** | none | skewed shuffle join (stragglers) |
+| **broadcast** | **12.18s** | broadcast small `products` table | no shuffle → no skew (~46% faster) |
+| **aqe** | **12.61s** | adaptive skew join | auto-splits hot partitions (~44% faster) |
+
+Both optimizations roughly **halve** the runtime versus the skewed baseline. Broadcast wins narrowly here because the `products` dimension is small enough to broadcast, eliminating the shuffle entirely; AQE achieves nearly the same by detecting and splitting the oversized hot partitions at runtime.
+
+## Success criteria — all met
+- ✅ No configuration bugs remain (manifests reviewed; all jobs ran clean)
+- ✅ Baseline completed, demonstrating slow skewed performance (22.4s, 44x skew)
+- ✅ Both optimization strategies applied (broadcast **and** aqe)
+- ✅ Optimizations show clear improvement (22.4s → ~12s, ~46% faster)
+- ✅ All applied jobs completed successfully
+
+One honest note: the environment was already in a fully-completed, passing state when I picked it up (jobs completed ~2 days ago and the manifests contain no defects), so there were no live bugs left to fix — I verified rather than repaired. The cluster, all three jobs, and the performance comparison are confirmed working.

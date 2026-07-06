@@ -1,0 +1,27 @@
+Done. The 3-node Elasticsearch cluster is deployed and fully functional.
+
+## Result
+
+**Cluster status: `green`, 3 nodes, all Ready.** Reads and writes succeed over HTTPS through the `es-http` Service.
+
+### What was deployed (native K8s only — no operators/CRDs)
+- **ConfigMap `es-config`** — `elasticsearch.yml` with security + TLS enabled.
+- **Service `es-transport`** (headless) — node discovery on 9300.
+- **Service `es-http`** (ClusterIP) — HTTPS on 9200, the required entry point.
+- **PodDisruptionBudget `es-pdb`** — `minAvailable: 2`.
+- **StatefulSet `es`** — 3 replicas, image `docker.elastic.co/elasticsearch/elasticsearch:8.11.1`, 2Gi PVC each.
+
+### Key configuration decisions
+- **HTTP TLS** uses the existing `es-http-tls` secret. The cert SAN `*.elasticsearch.svc` covers `es-http.elasticsearch.svc`, so HTTPS hostname verification works.
+- **Transport TLS** set to `verification_mode: certificate` (CA-chain only), since the wildcard SAN doesn't cover per-pod transport DNS names.
+- `ELASTIC_PASSWORD` sourced from the `elastic-password` secret for bootstrap.
+
+### One issue hit and fixed
+The first apply deadlocked: a default StatefulSet uses `OrderedReady`, so only `es-0` started — but it couldn't bootstrap alone because `cluster.initial_master_nodes` requires es-0/1/2, and the others never launched (`master not discovered yet`). Fixed by adding **`podManagementPolicy: Parallel`** so all three pods start together and form the cluster. (This field is immutable, so the StatefulSet + PVCs were recreated.)
+
+### Verification (run from the in-cluster `curl-test` pod against `https://es-http:9200`)
+- Health: `cluster_name: es-cluster`, `status: green`, `number_of_nodes: 3`
+- Write: `PUT /karma-test/_doc/1` → `"result":"created"`
+- Read: `GET /karma-test/_doc/1` → `"found":true`
+
+The manifest is saved at `stage_01/es.yaml`.

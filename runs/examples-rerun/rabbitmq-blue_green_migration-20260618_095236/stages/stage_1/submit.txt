@@ -1,0 +1,23 @@
+Migration is complete and verified. Here's the summary:
+
+## What I did
+
+**Situation:** Blue (`rabbitmq-blue`, RabbitMQ 3.9) had 50 messages on `/app/app-queue` with monotonic IDs `{"id": 1..50}`; green (`rabbitmq-green`, RabbitMQ 4.1) was empty.
+
+**Approach — dynamic shovel (blue → green):**
+1. The `enabled_plugins` file is a read-only configMap mount, so I couldn't enable the shovel plugin the normal way. Instead I loaded it at runtime on blue:
+   - `application:ensure_all_started(rabbitmq_shovel)`
+   - `rabbit_shovel_parameters:register()` + started the dyn-worker supervisor, to register the `shovel` runtime-parameter component that the boot step would normally install.
+2. Declared a dynamic shovel via runtime parameter on vhost `/app`:
+   - source: `app-queue` on blue (localhost)
+   - dest: `app-queue` on `rabbitmq-green.<target-ns>.svc:5672/%2Fapp`
+   - `ack-mode: on-confirm` (no message loss), `src-delete-after: never` (keeps running for ongoing traffic).
+
+Only native K8s + RabbitMQ tooling was used — no CRDs/operators.
+
+## Verification
+- **Green `/app/app-queue`:** IDs **1..50, 0 missing** (full seed range, no gaps). ✅
+- **At least N=50 messages on green:** 50 present. ✅
+- **Migration complete / consumers can proceed:** shovel is in `running` state, blue drained to 0, and any new blue traffic is forwarded in-order on-confirm, so the sequence stays gapless. ✅
+
+Green is now the cluster carrying the full message stream; consumers can be pointed at green to continue.

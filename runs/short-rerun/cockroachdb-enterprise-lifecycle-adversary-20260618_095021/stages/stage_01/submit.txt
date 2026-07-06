@@ -1,0 +1,28 @@
+The CockroachDB cluster is deployed and fully operational.
+
+## Summary
+
+A 3-node CockroachDB cluster is running in the `cockroachdb` namespace, built entirely from native Kubernetes resources (no operator, no CRDs).
+
+**Resources created:**
+| Resource | Name | Details |
+|---|---|---|
+| Headless Service | `crdb-cluster` | `clusterIP: None`, exposes grpc 26257 + http 8080, `publishNotReadyAddresses: true` for peer discovery |
+| Public Service | `crdb-cluster-public` | ClusterIP, grpc 26257 + http 8080 |
+| StatefulSet | `crdb-cluster` | 3 replicas, image `cockroachdb/cockroach:v24.1.0` |
+| PodDisruptionBudget | `crdb-cluster` | `maxUnavailable: 1` — preserves quorum during voluntary disruptions |
+| PVCs | `datadir-crdb-cluster-{0,1,2}` | 10Gi each, all Bound |
+
+**Key configuration:**
+- Each pod advertises by its stable DNS name (`$(hostname).crdb-cluster.cockroachdb.svc.cluster.local`) and `--join` lists all 3 nodes.
+- `--insecure` (no TLS) as required.
+- Uses the existing `crdb-cluster-sa` ServiceAccount / RBAC; no new RBAC created.
+- `podManagementPolicy: Parallel` so all 3 pods start together (the default `OrderedReady` deadlocks: pods aren't Ready until the cluster is initialized, but init needs all pods up).
+- Ran `cockroach init --insecure` once to bootstrap the cluster.
+
+**Verification:**
+- StatefulSet `3/3` ready; all pods `1/1 Running`.
+- `cockroach node status` shows all 3 nodes `is_available=true`, `is_live=true`.
+- PDB reports `ALLOWED DISRUPTIONS: 1`, guaranteeing ≥2 of 3 nodes stay available during voluntary disruptions (quorum preserved).
+
+The manifest is saved at `stages/stage_01/crdb.yaml`.

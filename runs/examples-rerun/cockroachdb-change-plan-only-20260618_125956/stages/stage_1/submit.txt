@@ -1,0 +1,17 @@
+Done.
+
+## Summary
+
+I inspected the live CockroachDB cluster, wrote a peer-reviewable migration plan, and stored it as the `change-plan` ConfigMap — **without modifying anything live**.
+
+**What I found (the baseline, captured in the plan):**
+- **Version:** binary `v24.1.0`, cluster `version` setting `24.1`, finalization auto (`cluster.preserve_downgrade_option` unset)
+- **Topology:** StatefulSet `crdb-cluster`, 3 nodes, `RollingUpdate`/`partition:0`, all `1/1 Running`
+- **Custom cluster setting:** `kv.snapshot_rebalance.max_rate = 1.0 MiB` (throttled well below default)
+- **Custom zone configs:** system ranges (`system` db, `meta`, `system`, `liveness`) at `num_replicas=5`; tightened GC TTLs on `meta`/`liveness` and many `system.public.*` tables; `RANGE default` tuned to 128 MiB/512 MiB, 4h GC
+
+**The plan covers:** target **24.1 → 24.2** (one minor at a time, pin latest `v24.2.x`), an explicit "what changes vs. what must stay identical" list, pre-flight checklist (backup, health, baseline diff, set `preserve_downgrade_option='24.1'` to keep a rollback path), the rolling `set image` procedure, post-upgrade verification that all custom settings/zone configs are unchanged, finalization/rollback steps, and risk notes (the 1 MiB rebalance throttle slows re-replication; never roll two pods at once on a 3-node cluster).
+
+**Verified:**
+- `configmap/change-plan` created in `cockroachdb` with the `plan.md` key ✅
+- Live cluster unchanged: still `replicas: 3`, image `cockroachdb/cockroach:v24.1.0` ✅ (no settings, image, or replica changes made)

@@ -1,0 +1,26 @@
+Done. The rollback capability is staged for review and the live cluster is untouched.
+
+## What I did
+
+**1. Inspected the live cluster** and identified the non-default configuration:
+
+| Type | Setting | Current | v24.1 default |
+|------|---------|---------|---------------|
+| Cluster setting | `diagnostics.reporting.enabled` | `true` | `false` |
+| Cluster setting | `kv.snapshot_rebalance.max_rate` | `1.0 MiB` | `32 MiB` |
+| Zone config | `gc.ttlseconds` on `RANGE default`, `RANGE system`, `DATABASE system` | `14400` | `90000` |
+
+`cluster.secret` and `version` are auto-managed (not operator rollback targets). All other zones (`RANGE meta`=3600, `RANGE liveness`=600, system-table subzones) and replica counts (`num_replicas` 3 for default / 5 for system ranges, statefulset=3) already match v24.1 defaults, so the script leaves them alone.
+
+**2. Wrote `rollback.sh`** — uses `RESET CLUSTER SETTING` for the two settings and `ALTER ... CONFIGURE ZONE USING gc.ttlseconds = 90000` for the three zones, with a header documenting scope and an explicit warning not to run it during review.
+
+**3. Stored it as a ConfigMap** (not executed):
+```
+configmap/rollback-rehearsal created
+```
+
+**4. Confirmed the live cluster is unchanged** — the post-check `SELECT ... WHERE value != default_value` still shows the same four rows (`cluster.secret`, `diagnostics.reporting.enabled=true`, `kv.snapshot_rebalance.max_rate=1.0 MiB`, `version`). No rollback SQL ran.
+
+**Note on the `90000` default:** CockroachDB's published default for `RANGE default` `gc.ttlseconds` is `90000`, and the live cluster shows `14400` uniformly on the three top-level zones — that delta is the zone-config customization the rollback reverts.
+
+Sources: [SHOW ZONE CONFIGURATIONS](https://www.cockroachlabs.com/docs/stable/show-zone-configurations), [Configure Replication Zones](https://www.cockroachlabs.com/docs/stable/configure-replication-zones)

@@ -1,0 +1,33 @@
+[precondition:es_env_ready:preconditionUnits[0] 'es_env_ready':probe] $ kubectl -n elasticsearch get pods 2>/dev/null | grep -c Running
+6
+
+[precondition:transport_ca_bundle_fixture:preconditionUnits[1] 'transport_ca_bundle_fixture':probe] $ kubectl -n elasticsearch get configmap es-transport-ca-bundle
+Error from server (NotFound): configmaps "es-transport-ca-bundle" not found
+
+[precondition:transport_ca_bundle_fixture:preconditionUnits[1] 'transport_ca_bundle_fixture':apply] $ /bin/sh -c 'kubectl -n elasticsearch get pod openssl-toolbox >/dev/null 2>&1 || kubectl -n elasticsearch apply -f cases/elasticsearch/transport-additional-ca-trust/resource/openssl-toolbox.yaml'
+pod/openssl-toolbox created
+
+[precondition:transport_ca_bundle_fixture:preconditionUnits[1] 'transport_ca_bundle_fixture':apply] $ kubectl -n elasticsearch wait --for=condition=ready pod/openssl-toolbox --timeout=300s
+pod/openssl-toolbox condition met
+
+[precondition:transport_ca_bundle_fixture:preconditionUnits[1] 'transport_ca_bundle_fixture':apply] $ /bin/sh -c '
+set -e
+TMP_DIR=$(mktemp -d)
+kubectl -n elasticsearch exec openssl-toolbox -- /bin/sh -c '\''
+set -e
+mkdir -p /tmp/cab
+openssl genrsa -out /tmp/cab/ca1.key 2048
+openssl req -x509 -new -nodes -key /tmp/cab/ca1.key -sha256 -days 3650 -subj "/CN=es-ca-1" -out /tmp/cab/ca1.crt
+openssl genrsa -out /tmp/cab/ca2.key 2048
+openssl req -x509 -new -nodes -key /tmp/cab/ca2.key -sha256 -days 3650 -subj "/CN=es-ca-2" -out /tmp/cab/ca2.crt
+cat /tmp/cab/ca1.crt /tmp/cab/ca2.crt > /tmp/cab/bundle.crt
+'\''
+kubectl -n elasticsearch cp openssl-toolbox:/tmp/cab "${TMP_DIR}/cab"
+kubectl -n elasticsearch create configmap es-transport-ca-bundle --from-file=ca.crt="${TMP_DIR}/cab/bundle.crt" --dry-run=client -o yaml | kubectl apply -f -
+'
+
+tar: removing leading '/' from member names
+configmap/es-transport-ca-bundle created
+
+[precondition:transport_ca_bundle_fixture:preconditionUnits[1] 'transport_ca_bundle_fixture':verify] $ /bin/sh -c 'kubectl -n elasticsearch get configmap es-transport-ca-bundle >/dev/null 2>&1; true'
+

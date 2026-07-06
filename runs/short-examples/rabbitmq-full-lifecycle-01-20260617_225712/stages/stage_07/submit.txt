@@ -1,0 +1,18 @@
+All requirements are met.
+
+## What was wrong
+The RabbitMQ side was already correct — the `rabbitmq_prometheus` plugin was enabled and metrics were live on port `15692/metrics` for all 3 pods. The break was purely in **Prometheus**: its `prometheus-config` ConfigMap only scraped itself (`localhost:9090`) and had no RabbitMQ scrape job.
+
+## Fix (native resources only — just a ConfigMap edit + restart)
+1. **Added a `rabbitmq` scrape job** to `prometheus-config` using `static_configs` pointing at the 3 stable pod DNS names via the existing headless service:
+   - `rabbitmq-{0,1,2}.rabbitmq-headless.<ns>.svc.cluster.local:15692`
+   - This avoids `kubernetes_sd_config`, so no RBAC/ServiceAccount changes were needed.
+2. **Added a recording rule** (`rules.yml`) `rabbitmq_up = up{job="rabbitmq"}`, because the RabbitMQ exporter does not natively emit a `rabbitmq_up` metric — this materializes one series per scraped pod.
+3. Restarted `deploy/prometheus` to reload the mounted config.
+
+## Verification
+- Prometheus targets: **3 rabbitmq targets, all UP**
+- `query=rabbitmq_up` → **3 samples**, value `1` for each of rabbitmq-0/1/2
+- RabbitMQ unchanged and healthy: **3/3 pods Running**
+
+No CRDs, operators, or third-party controllers were used.

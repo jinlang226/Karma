@@ -1,0 +1,32 @@
+HTTP CA and leaf certificate rotation completed with zero downtime.
+
+Initial state:
+- es-cluster StatefulSet (3 nodes) used secret es-http-tls (ca.crt/tls.crt/tls.key)
+  for BOTH http and transport SSL. Both the CA (CN=es-http-ca) and leaf (CN=es-http)
+  expired Jun 20 2026 (2 days out). Clients trust the CA via configmap es-http-ca.
+
+What I did (two-phase rolling rotation to avoid any transport/cluster split):
+1. Generated a NEW CA (CN=es-http-ca, RSA-2048, 365 days) and a NEW leaf
+   (CN=es-http, 365 days) signed by it, reproducing the exact SAN list
+   (localhost, es-http[.elasticsearch[.svc[.cluster.local]]], es-cluster*,
+   and es-cluster-0/1/2 pod DNS) with serverAuth+clientAuth EKU.
+2. Phase 1 — TRUST FIRST: patched secret es-http-tls ca.crt to a bundle
+   (newCA + oldCA), kept the old leaf, and did a rolling restart. Every node
+   now trusts both CAs while still serving the old leaf. No node ever rejected
+   a peer -> cluster stayed available throughout.
+3. Phase 2 — SWAP LEAF: patched secret es-http-tls tls.crt/tls.key to the new
+   leaf and rolling-restarted again. All nodes now serve the new leaf, signed
+   by the new CA, which every node already trusts.
+4. Updated client-facing configmap es-http-ca to the NEW CA so clients trust
+   the new CA chain.
+
+Verification:
+- All 3 pods Running/Ready; quorum maintained during both rolling restarts.
+- Served cert: issuer CN=es-http-ca, subject CN=es-http,
+  notBefore Jun 18 2026 / notAfter Jun 18 2027 (~1 year).
+- Client (curl-test) using the new-CA configmap: "SSL certificate verify ok",
+  SAN matched es-http, HTTP 401 (auth-only, pre-existing) -> HTTPS healthy.
+- configmap es-http-ca CA validity confirmed ~1 year.
+
+Result: cluster remained available, new ~1-year certs are served, and clients
+trust the new CA.

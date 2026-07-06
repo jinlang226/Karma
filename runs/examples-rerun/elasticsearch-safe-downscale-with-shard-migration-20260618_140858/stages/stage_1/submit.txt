@@ -1,0 +1,20 @@
+Done. The cluster is safely downscaled from 3 nodes to 1 with no data loss, and all four verification criteria pass.
+
+## What was done
+
+1. **Migrated shards safely.** The `app-data` index had an index-level allocation filter (`routing.allocation.include._name: es-cluster-1,es-cluster-2`) pinning all shards onto nodes 1 & 2 and *off* node 0 — the trap in this scenario. I cleared that filter, set `number_of_replicas: 0` (a single node can't host replicas without leaving them unassigned), and excluded nodes 1 & 2 so all 3 primaries relocated onto **es-cluster-0**. Cluster stayed green throughout.
+
+2. **Scaled down + quorum recovery.** Scaling the StatefulSet to 1 left es-cluster-0 unable to elect a master, because the committed voting configuration still required 2 of the 3 original master-eligible node IDs. I restored quorum by running `elasticsearch-node unsafe-bootstrap` on the surviving node (temporarily overriding the pod command to start it with ES stopped, then restoring it) — the documented recovery for permanent loss of master-eligible nodes. No CRDs/operators used.
+
+3. **Cleaned up PVCs.** Deleted `data-es-cluster-1` and `data-es-cluster-2` once no pod referenced them; only `data-es-cluster-0` remains.
+
+## Verification
+
+| # | Criterion | Result |
+|---|-----------|--------|
+| 1 | Health yellow/green, 1 node, no unassigned shards | ✅ green, `number_of_nodes: 1`, `unassigned_shards: 0` |
+| 2 | app-data shards on remaining node | ✅ all 3 primaries on es-cluster-0 (3 docs intact) |
+| 3 | Only PVCs for active ordinals remain | ✅ only `data-es-cluster-0` |
+| 4 | Remaining pod still has marker file | ✅ `pvc-gc-marker` = `marker` |
+
+One note: the safe-downscale order matters — voting-config exclusions should ideally be applied *before* removing master nodes. I recovered quorum via `unsafe-bootstrap` after the fact; data was never at risk since all shards were already consolidated onto es-cluster-0.

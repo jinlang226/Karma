@@ -1,0 +1,25 @@
+The 3-node Elasticsearch cluster is deployed and fully functional.
+
+## Summary
+
+Deployed using only native Kubernetes resources (no operators/CRDs) into the `elasticsearch` namespace:
+
+| Resource | Name | Purpose |
+|---|---|---|
+| StatefulSet | `es` | 3 nodes, image `docker.elastic.co/elasticsearch/elasticsearch:8.11.1` |
+| Service (ClusterIP) | `es-http` | Client HTTPS endpoint on port 9200 |
+| Service (headless) | `es-transport` | StatefulSet stable DNS + peer discovery (9300) |
+| PodDisruptionBudget | `es-pdb` | `minAvailable: 2` |
+
+**Key configuration:**
+- HTTP + transport TLS enabled, using the existing `es-http-tls` secret (mounted at `config/certs`). Transport uses `verification_mode: certificate`; HTTP cert SAN covers `es-http.elasticsearch.svc(.cluster.local)`.
+- `elastic` user password sourced from the `elastic-password` secret.
+- Discovery via the headless `es-transport` service; `cluster.initial_master_nodes: es-0,es-1,es-2`.
+- An init container sets `vm.max_map_count=262144`; data persists on 2Gi PVCs (default `standard` storageclass).
+
+**One issue hit and fixed:** with the default `OrderedReady` pod management, es-0 alone could never reach a master-eligible quorum, so it stayed un-Ready and es-1/es-2 were never created — a bootstrap deadlock. Recreating the StatefulSet with `podManagementPolicy: Parallel` let all three start together and form the cluster.
+
+**Verification (from an in-cluster client via `es-http`, HTTPS:9200):**
+- Cluster health `green`, `number_of_nodes: 3` — TLS validated against the secret's `ca.crt`.
+- All 3 nodes Ready (`es-0`, `es-1`, `es-2`).
+- Write (`POST /testidx/_doc/1`) → `created`; Read → document `found`. Test index cleaned up afterward.

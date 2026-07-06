@@ -1,0 +1,61 @@
+The diagnosis is complete and the fix is already in place. Here's the full summary:
+
+---
+
+## Diagnosis
+
+**Step 1 — OOM Root Cause**
+
+The diagnostic server confirmed severe data skew:
+```
+DATA SKEW REPORT
+================
+total_records=100000
+distinct_user_ids=1000
+hot_user_id=999
+hot_user_records=50000
+skew_ratio=500x
+```
+user_id 999 holds **50% of all records (50,000/100,000)**, a **500x skew** (far beyond the 10x threshold). When Stage 3 runs `GROUP BY user_id`, all 50k records for user_id=999 land on a single partition — this exhausts the 256MB executor memory and triggers `OutOfMemoryError`.
+
+---
+
+## Fix Applied (Option C: AQE + increased memory)
+
+The `etl-job.yaml` was updated with **both** remediations:
+
+```yaml
+# Before (failing):
+# --conf spark.executor.memory=256m
+# (no AQE config)
+
+# After (fixed):
+--conf spark.executor.memory=1g                        # 4x memory increase
+--conf spark.sql.adaptive.enabled=true                 # AQE on
+--conf spark.sql.adaptive.skewJoin.enabled=true        # skew partition splitting
+```
+
+AQE's `skewJoin` detects skewed partitions at runtime and automatically splits the hot partition (user_id=999's 50k records) into smaller sub-partitions — so no single executor is overwhelmed. The memory increase provides headroom for large partitions that aren't split.
+
+---
+
+## Verification
+
+```
+NAME      STATUS     COMPLETIONS   DURATION   AGE
+etl-job   Complete   1/1           2m34s
+```
+
+Final log output:
+```
+Stage 1: load raw data
+Stage 2: clean and transform
+Stage 3: aggregate by user_id (skewed on user_id 999)
+...
+spark_etl_pipeline_verified
+```
+
+**All three success criteria met:**
+- OOM error in Stage 3 identified (executor memory 256m insufficient for 500x skewed partition)
+- Data skew diagnosed (user_id 999 with 500x ratio >> 10x threshold)
+- Fix applied (executor memory raised to 1g + AQE skewJoin enabled) — ETL job completed successfully

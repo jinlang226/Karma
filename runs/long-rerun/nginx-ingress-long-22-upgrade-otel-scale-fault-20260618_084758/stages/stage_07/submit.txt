@@ -1,0 +1,25 @@
+The task is complete. The test now succeeds:
+
+```
+hello
+EXIT:200
+rc=0
+```
+
+## What was wrong
+
+Despite the templated description mentioning two controllers (`ingress-1`/`ingress-2`) and a class-less Ingress, the actual cluster state was:
+
+- Only one controller exists (namespace `ingress-nginx`, IngressClass `nginx`). The `ingress-nginx-2` namespace doesn't exist; `demo-app-alt` (class `ingress-1`) and the various canary/otel/rate ingresses are decoys.
+- The **`demo-app` Ingress already had the correct `ingressClassName: nginx`** and routed `class.example.com → demo-app:80`. The request *was* being picked up (it returned `503`, not `404`).
+- The real fault was the one flagged in the note: the **`demo-app` Deployment had been scaled to 0 replicas** by an external process, so the backing Service had no endpoints (`<none>`) → `503`.
+
+## Fix
+
+Restored the backend's availability without touching the Deployment/Service spec:
+
+```bash
+kubectl -n demo scale deploy demo-app --replicas=1
+```
+
+Endpoints came back (`10.244.0.199:5678`) and the curl to `class.example.com` now returns `hello` with HTTP 200, exit code 0. No Ingress class change was needed since it was already correct.

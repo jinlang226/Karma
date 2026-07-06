@@ -1,0 +1,20 @@
+The policy has been applied successfully and verified. Summary:
+
+## Done
+
+I applied the platform's observability and storage policy to the MongoDB replica set by updating the `mongodb-replica` StatefulSet's `mongod` startup command and performing a controlled rolling restart.
+
+**Current → New values (read from the live cluster, not assumed):**
+| Setting | Before | After | Flag added |
+|---|---|---|---|
+| Logging verbosity | `0` | `1` (+1 level) | `-v` |
+| Slow-op threshold | `100ms` | `200ms` (2×) | `--slowms 200` |
+| WiredTiger journal compression | default (snappy) | `zlib` | `--wiredTigerJournalCompressor zlib` |
+
+**Why a StatefulSet patch + rolling restart:** `journalCompressor` is a WiredTiger **startup-only** option — it cannot be changed at runtime via `setParameter`. Encoding all three as command-line flags makes them durable across pod restarts and guarantees the rolling update applies them identically to every member, rather than runtime-only tweaks that would be lost on the next restart and could drift between members.
+
+**Consistency & availability verified:**
+- The environment had scaled to **5 members** (not 3) — I applied the change to all of them. All 5 pods report `verbosity=1 slowms=200 journalCompressor=zlib`.
+- Rolling update completed cleanly (one pod at a time, `OrderedReady`); data preserved on the retained PVCs.
+- Replica set healthy: 1 PRIMARY + 4 SECONDARY, all `health=1` (primary re-elected to `mongodb-replica-2` since `-0` restarted last).
+- Write+read through the replica set succeeded — data is available.

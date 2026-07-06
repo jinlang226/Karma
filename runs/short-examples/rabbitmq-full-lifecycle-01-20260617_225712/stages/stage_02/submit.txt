@@ -1,0 +1,21 @@
+All requirements are met. Summary:
+
+## Done
+
+**Root cause:** Permissions on the two vhosts were both mis-scoped and broken:
+- `/app`: `app-user` had an **empty configure** permission (couldn't declare queues), and `ops-user` held full `.* .* .*` access it shouldn't have had.
+- `/ops`: `ops-user` had **no permissions at all**.
+
+**Fixes applied (RabbitMQ CLI via `rabbitmqctl`):**
+1. `set_permissions -p /app app-user ".*" ".*" ".*"` — full access on its own vhost.
+2. `set_permissions -p /ops ops-user ".*" ".*" ".*"` — full access on its own vhost.
+3. `clear_permissions -p /app ops-user` — removed the cross-vhost grant.
+
+**Secondary blocker:** after the permission fix, `app-client` still crashed on a queue-argument conflict — `app-producer` had already created `app-queue` as `lazy`, but `app-client` declares it without that arg (RabbitMQ "inequivalent args"). I deleted the stale queue so `app-client` could declare its own; the producer (already past its one-time declare, now in its publish loop) keeps running unaffected.
+
+**Final verified end state:**
+- `/app`: only `admin` + `app-user` (full). `/ops`: only `admin` + `ops-user` (full). Each user scoped to a single vhost. ✅
+- `app-client` and `ops-client` both `1/1 Running` (no recent restarts). ✅
+- Cluster healthy: 3 running nodes, no partitions. ✅
+
+No CRDs, operators, or third-party controllers were used — only `kubectl` and `rabbitmqctl`.

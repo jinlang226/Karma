@@ -1,0 +1,28 @@
+Incident resolved.
+
+## Summary
+
+**Root cause:** The readiness/liveness probe runs `health-check.sh`, which authenticates to MongoDB as `health-user`. The script first checks for a per-pod password override in the `health-overrides` ConfigMap (mounted at `/etc/health/overrides/${POD_NAME}`). That ConfigMap contained a stale entry:
+
+```
+mongodb-replica-1: legacyHealthPass123
+```
+
+The actual `health-user` password is `healthpass123` (from the `health-user-password` secret), so on **mongodb-replica-1 only** the probe authenticated with the wrong password and failed with `MongoServerError: Authentication failed`. The other two pods had no override and used the correct base password. This kept replica-1 `0/1 Ready` and the StatefulSet at `2/3`, degrading the replica set — but the mongod process itself was healthy the whole time, so there was no data loss.
+
+**Fix:** Removed the stale override key from the ConfigMap (probe falls back to the correct base password):
+
+```
+kubectl patch cm health-overrides -n mongodb --type=json \
+  -p '[{"op":"remove","path":"/data/mongodb-replica-1"}]'
+```
+
+No pod restart was needed — the projected ConfigMap volume refreshed in-place within ~10s and the probe began passing.
+
+**Final state (verified):**
+- All 3 pods `Ready`, 0 restarts, no data touched.
+- Replica set healthy with exactly 1 PRIMARY + 2 SECONDARY (primary discovered dynamically via `db.hello()`):
+  - `mongodb-replica-1` → **PRIMARY**
+  - `mongodb-replica-0`, `mongodb-replica-2` → **SECONDARY** (health=1)
+
+Note: the primary is currently replica-1 (not pod-0), consistent with the warning that the primary may step down during maintenance — it was confirmed via `rs.status()`/`db.hello()` rather than assumed.

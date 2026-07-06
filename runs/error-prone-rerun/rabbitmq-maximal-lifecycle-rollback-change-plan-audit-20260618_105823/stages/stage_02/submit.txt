@@ -1,0 +1,24 @@
+Done. All required end-state conditions are verified.
+
+## Summary
+
+**Root cause (permissions):** Inspecting the per-vhost permissions revealed three problems:
+- `app-user` on `/app` had an empty `configure` permission (broken) → app-client couldn't operate.
+- `ops-user` had **no** permissions on `/ops` (broken) → ops-client couldn't connect.
+- `ops-user` held full permissions on `/app` — a cross-vhost grant it should never have (scoping violation).
+
+**Fixes applied (RabbitMQ CLI only):**
+```
+rabbitmqctl set_permissions  -p /app app-user ".*" ".*" ".*"
+rabbitmqctl set_permissions  -p /ops ops-user ".*" ".*" ".*"
+rabbitmqctl clear_permissions -p /app ops-user
+```
+
+**Secondary blocker uncovered:** After the permission fix, `ops-client` went healthy immediately, but `app-client` connected and then crashed on a queue-argument conflict — `app-producer` had already created `app-queue` with `x-queue-mode=lazy`, while `app-client` declares it with no mode (inequivalent args, HTTP 400). Since a queue's mode is immutable and the deployments are fixed, I deleted `app-queue` via `rabbitmqctl` and restarted `app-client`, which recreated it as a plain `classic` queue. The producer (which declares only once at startup and otherwise publishes via the default exchange) continued uninterrupted.
+
+**Verified end state:**
+- `/app`: `app-user` = `.* .* .*`; **no** `ops-user` grant. ✅
+- `/ops`: `ops-user` = `.* .* .*`; **no** `app-user` grant. ✅
+- Each user scoped to exactly its own vhost (per `list_user_permissions`). ✅
+- `app-client` 1/1, `ops-client` 1/1 (both Deployments Available), `app-producer` 1/1; `app-queue` actively flowing messages. ✅
+- RabbitMQ cluster: **3** running nodes. ✅

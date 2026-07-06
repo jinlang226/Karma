@@ -1,0 +1,18 @@
+TLS certificate rotation is complete and verified.
+
+## Summary
+
+When I started, the `crdb-cluster-certs` Secret had been **deleted by an external process** — the cluster was only still working because the running pods held cached copies of the (2-day) certs in their projected volumes. I rebuilt everything from the CA and rolled the cluster onto fresh, 1-year certificates.
+
+**What I did:**
+1. **Diagnosed** — confirmed the Secret was gone but pods were running on cached certs; captured SANs/config from the `openssl-toolbox` pod.
+2. **Regenerated `node.crt`** signed by the existing CA (`/tmp/certs/ca.{key,crt}`), valid 365 days, preserving all 10 SANs (service DNS names, per-pod hostnames, localhost/127.0.0.1).
+3. **Regenerated `client.root.crt`** (CN=root) for 365 days too — it was also expiring in 2 days, which would have broken SQL.
+4. **Recreated the `crdb-cluster-certs` Secret** with all 5 keys (`ca.crt`, `node.crt`, `node.key`, `client.root.crt`, `client.root.key`).
+5. **Rolling-restarted** the statefulset so all 3 nodes loaded the new certs; rollout finished cleanly.
+
+**Verification (all pass):**
+- ✅ Secure SQL works — `SELECT 1;` returns `1` over TLS.
+- ✅ Node cert rotated — fingerprint changed from `49:66:C5:36…` to `28:4A:91:5F:68:0B:95:D8…`.
+- ✅ Validity ~1 year — `notAfter=Jun 18 15:50:36 2027 GMT` (was Jun 20 2026).
+- ✅ Secret exists with valid cert data; all 3 `crdb-cluster` pods Running 1/1.

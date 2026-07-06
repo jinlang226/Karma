@@ -1,0 +1,17 @@
+The oracle passes. The task is complete.
+
+## Summary
+
+**Problem:** Elasticsearch stack monitoring data had stopped flowing to the monitoring cluster — the live ES statefulsets (`es-cluster` ×3, `es-data-new` ×2) ran only the bare `elasticsearch` container with no monitoring sidecars, so no data reached the `monitoring` namespace.
+
+**What I did:**
+1. **Investigated the live state** (workflow-inherited, not the case's standalone defaults): ES is `8.11.1` with security + HTTP TLS (certs at `config/certs`, secret `es-http-tls`), the `elastic` password had been rotated to `elasticpass-elastic-password-next`, and the monitoring cluster is Elasticsearch **7.17.9**.
+2. **Created two ConfigMaps** (`metricbeat-config`, `filebeat-config`) in the `elasticsearch` namespace — Metricbeat uses the `elasticsearch` xpack module against `https://localhost:9200` (CA-verified, `elastic` auth); Filebeat tails `/usr/share/elasticsearch/logs/*.log`. Both output to `http://monitoring-es-http.monitoring.svc:9200`.
+3. **Used Beats 7.17.9** to match the monitoring cluster's output version (8.x Beats refuse to ship to a 7.x ES).
+4. **Patched both statefulsets** (strategic merge) to add `metricbeat` + `filebeat` sidecars, a shared `es-logs` emptyDir for the logs path, the TLS CA mount, and the password env — then drove the rolling restart to completion, keeping the cluster healthy.
+
+**Verified end state:**
+- All 5 ES pods are `3/3 Running` (elasticsearch + metricbeat + filebeat).
+- Cluster health is **green** (5 nodes).
+- Monitoring cluster now holds `.monitoring-es-7-mb-2026.06.18` with live documents; Filebeat connection is established and shipping.
+- The case oracle reports **`Stack monitoring sidecars verified` (exit 0)**.

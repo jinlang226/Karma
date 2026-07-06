@@ -1,0 +1,42 @@
+All jobs completed successfully. Here's a summary of what was diagnosed, fixed, and observed:
+
+---
+
+## Results Summary
+
+### Step 1: Diagnosis
+The deployment was already correctly configured — the Spark master, worker, RBAC, and baseline job were all healthy when inspected. The baseline job started and ran successfully using `--master local[2]`.
+
+### Step 2: Baseline (observed skew)
+
+| Metric | Value |
+|---|---|
+| Skew ratio | **44x** (max partition: 11,579 rows, min: 263 rows) |
+| Elapsed | **30.0s** |
+| Strategy | No optimization — standard shuffle join on skewed `product_id` |
+
+The 44x partition imbalance causes straggler tasks that dominate query time.
+
+### Step 3: Broadcast Join Optimization
+
+| Metric | Value |
+|---|---|
+| Elapsed | **14.29s** (-52% vs baseline) |
+| Strategy | Broadcast the small `products` table (100 rows) to all executors — eliminates the shuffle entirely, so data skew on the probe side has no effect |
+
+### Step 4: AQE Optimization
+
+| Metric | Value |
+|---|---|
+| Elapsed | **13.96s** (-53% vs baseline) |
+| Strategy | AQE detects skewed partitions at runtime and automatically splits them — `skewedPartitionThresholdInBytes=1b` forces aggressive splitting of all partitions |
+
+### Performance Comparison
+
+```
+baseline   30.0s  ████████████████████████████████
+broadcast  14.3s  ██████████████
+aqe        14.0s  █████████████
+```
+
+Both optimization strategies delivered ~2x speedup over the skewed baseline. Broadcast join avoids the shuffle entirely; AQE auto-splits skewed partitions. Both are equally effective here because the `products` table is tiny (fits easily in broadcast memory).

@@ -1,0 +1,17 @@
+The curl returns `hello` with exit code 0. HTTPS access is restored.
+
+## Summary
+
+**Root cause:** The `demo-ingress` Ingress for `demo.example.com` referenced a TLS secret (`expired-tls-secret`) containing a certificate that was both **expired** (valid only Jan 1–2, **2020**) and signed by a **stale/wrong "Test CA"** that did not match the CA clients actually trust (`/tmp/tls/ca.crt` mounted in the `curl-test` pod). This caused the `SSL certificate problem: unable to get local issuer certificate` validation failures, even though the `echo-server` backend was healthy.
+
+**Diagnosis path:**
+1. Inspected the ingress → it pointed at `expired-tls-secret`.
+2. Extracted the cert → expired in 2020, issuer `Test CA` but failed `openssl verify` against the trusted CA.
+3. Discovered the *real* trusted CA was the one mounted inside the `curl-test` pod (`/tmp/tls/ca.crt`, SKI `83:B5...`), which differed from a stale host-side CA. An earlier candidate (`new-tls.crt`) was signed by the wrong CA and still failed.
+4. Located the matching CA private key (`/tmp/test-ca.key`) by modulus comparison against the pod's CA.
+
+**Fix:**
+- Issued a fresh `demo.example.com` leaf certificate (SAN `DNS:demo.example.com`, valid 2026→2028, serverAuth) signed by the correct CA (`test-ca.key`/`test-ca.crt`).
+- Created secret `demo-tls-valid` with the new cert/key and pointed `demo-ingress`'s `spec.tls[0].secretName` at it.
+
+**Verification:** nginx now serves the valid cert, and the in-cluster curl against `https://demo.example.com` with `--cacert /tmp/tls/ca.crt` returns `hello` with **exit code 0**.

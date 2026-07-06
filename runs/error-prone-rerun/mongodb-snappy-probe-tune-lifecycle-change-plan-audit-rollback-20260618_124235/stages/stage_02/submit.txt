@@ -1,0 +1,19 @@
+The task is complete. The MongoDB replica set is now scaled from 3 to 5 members.
+
+## Summary
+
+**Goal:** Scale the `mongodb` replica set from 3 to 5 members, no data loss, no loss of availability, no operators/CRDs.
+
+**Final state:** StatefulSet `mongodb-replica` at `5/5` Ready. Replica set config has 5 voting members — `mongodb-replica-1` PRIMARY, the other four SECONDARY, all `health=1`. The seeded `testdb.data` (3 docs) is preserved, and a `w:"majority"` write succeeded, confirming availability.
+
+**What it took (this was an error-prone scenario):**
+
+1. **Scaled the StatefulSet to 5.** New pods `-3`/`-4` immediately crashed: `Unable to start up mongod due to missing featureCompatibilityVersion document`. The local-path provisioner was injecting **corrupt, half-initialized mongo data** into the freshly provisioned volumes, so mongod fatally aborted before it could ever do an initial sync.
+
+2. **Wiped the volumes.** Because the PVCs use `whenScaled: Retain`, I scaled down to 3 (freeing the volumes while keeping the 3 healthy members up — majority preserved), ran a helper pod to `rm -rf` the corrupt `/data/db` contents, then scaled back to 5.
+
+3. **Fixed a probe poison-loop.** The members still crashlooped — the StatefulSet's liveness/readiness probes authenticate as `admin-user`, which a syncing member doesn't have yet. The liveness probe was **killing members mid-initial-sync**, leaving a half-written data dir that then aborted permanently. I patched the probes to auth-independent `tcpSocket:27017` checks.
+
+4. **Recovered from a patch mistake.** My first patch used `--type merge` (JSON merge), which replaced the whole `containers` array and dropped `image`/`command`/`volumeMounts` — the StatefulSet then couldn't create pods at all (`spec.containers[0].image: Required value`). I re-applied a full **strategic** merge restoring the complete container spec plus the TCP probes.
+
+With clean volumes and tolerant probes, members `-3` and `-4` completed initial sync uninterrupted and reached SECONDARY. The primary stayed on `mongodb-replica-1` throughout, and the original 3 members' data was never touched.

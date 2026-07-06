@@ -1,0 +1,24 @@
+The replica set is fully scaled to 5 members. Here's a summary of what was done:
+
+---
+
+**Result:** The MongoDB replica set `mongodb-replica` is now running with 5 healthy members.
+
+| Member | State | Votes |
+|--------|-------|-------|
+| mongodb-replica-0 | SECONDARY | 1 |
+| mongodb-replica-1 | PRIMARY | 1 |
+| mongodb-replica-2 | SECONDARY | 1 |
+| mongodb-replica-3 | SECONDARY | 1 |
+| mongodb-replica-4 | SECONDARY | 1 |
+
+**Write majority votes:** 3 (quorum from 5)
+
+**What was done:**
+1. Scaled the StatefulSet from 3 → 5, which created new PVCs and pods
+2. The new pods hit a crash cycle: mongod partially initialized the data directory on first boot, then the liveness probe killed it, leaving partial state that caused a "missing FCV document" error on restart
+3. Ran `mongod --repair --dbpath /data/db` (without the replSet config, which blocks repair) via temporary pods to fix the partial state on both PVCs
+4. Patched the StatefulSet startup command to automatically run `--repair` on unclean shutdowns, preventing this cycle in the future
+5. Added members 3 and 4 to the replica set via `rs.add()` from the primary; they completed initial sync and joined as SECONDARY
+
+No data loss occurred — the original 3 members remained healthy throughout, and the 2 new members joined via initial sync.

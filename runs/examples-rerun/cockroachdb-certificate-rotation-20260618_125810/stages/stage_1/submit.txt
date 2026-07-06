@@ -1,0 +1,19 @@
+All verifications pass. The TLS certificate rotation is complete.
+
+## Summary
+
+I rotated the CockroachDB cluster's TLS certificates using the existing CA in the `openssl-toolbox` pod.
+
+**What I did:**
+1. **Inspected the cluster** — 3-node `crdb-cluster` StatefulSet in namespace `cockroachdb`, certs supplied via the `crdb-cluster-certs` secret. The old `node.crt` was expiring imminently (Jun 20 2026).
+2. **Generated new certs** in the toolbox pod, signed by the existing CA (`/tmp/certs/ca.key` + `ca.crt`), each with **fresh 2048-bit keys** and **365-day validity**:
+   - `node.crt`/`node.key` — reusing the original `node.cnf` so all 9 SANs (service DNS names, per-pod hostnames, localhost, 127.0.0.1) and `serverAuth,clientAuth` EKU are preserved.
+   - `client.root.crt`/`client.root.key` — `CN=root`, `clientAuth`.
+   - Both verified against the CA (`openssl verify` → OK).
+3. **Patched the secret** `crdb-cluster-certs` with the new node + client cert/key pairs (CA cert left unchanged).
+4. **Rolling-restarted** the StatefulSet so each node loaded the new certs, and waited for all 3 pods to return to `1/1` Ready (the small cluster flapped readiness during raft rebalancing, then stabilized).
+
+**Verification results:**
+1. ✅ Secure SQL works: `SELECT 1;` returns `1` via `--certs-dir=/cockroach/cockroach-certs`.
+2. ✅ Node cert rotated: new SHA-256 fingerprint `70:7A:4A:D2:DA:39:7C:17:...`.
+3. ✅ Validity ~1 year: `notBefore=Jun 18 13:07:00 2026 GMT` → `notAfter=Jun 18 13:07:00 2027 GMT`.

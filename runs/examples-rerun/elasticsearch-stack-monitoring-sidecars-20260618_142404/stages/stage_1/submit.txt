@@ -1,0 +1,24 @@
+Everything is working. The task is complete.
+
+## Summary
+
+**Root cause:** The Metricbeat and Filebeat monitoring sidecars were already present on every ES pod, but two things broke the data flow:
+
+1. **Logs path broken (the real bug):** Elasticsearch's `path.logs` was set to the shared `/var/log/es` emptyDir (which Filebeat harvests), but the container's `log4j2.properties` used **Console-only appenders** (the Docker default). ES logged solely to stdout and wrote **no log files**, so Filebeat had nothing to ship — its harvester count was 0.
+2. **Metrics path** was fine in config; it had only been failing transiently because the monitoring cluster was still starting up.
+
+**Fix:**
+- Created configmap `es-log4j2-config` with the existing log4j2 config **plus a `RollingFile` appender** writing `${es.logs.base_path}/es-cluster_server.log` (i.e. into the shared `/var/log/es`), attached to the root logger.
+- Mounted it over `/usr/share/elasticsearch/config/log4j2.properties` in the elasticsearch container and let the StatefulSet roll out (one pod at a time, cluster stayed green).
+
+> Note: my first attempt used `kubectl patch --type merge`, which replaced the container/volume arrays wholesale and momentarily dropped the sidecars. I caught it immediately and re-applied the full, correct StatefulSet spec, so the final rollout has all three containers intact.
+
+**Verified end state:**
+- ES cluster: **green, 3 nodes**, all pods `3/3` Running with **both `metricbeat` and `filebeat`** sidecars.
+- ES now writes `es-cluster_server.log` to `/var/log/es`; Filebeat harvester is open and events are `acked`.
+- Monitoring cluster now holds monitoring indices:
+  - `.monitoring-es-7-mb-2026.06.18` (Metricbeat X-Pack stack monitoring)
+  - `metricbeat-7.17.9-*` (metrics path)
+  - `filebeat-7.17.9-*` (logs path)
+
+No CRDs/operators used; cluster remained healthy throughout.

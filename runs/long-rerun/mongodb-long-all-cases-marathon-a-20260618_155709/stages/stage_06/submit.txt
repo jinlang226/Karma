@@ -1,0 +1,25 @@
+The oracle passes. TLS is now fully enabled for the MongoDB replica set.
+
+## Summary
+
+I enabled TLS for the running `mongo-rs` replica set in the `mongodb` namespace:
+
+1. **Generated certificates** using the `openssl-toolbox` pod:
+   - A CA (`ca.crt` / `ca.key`)
+   - A CA-signed **server** cert (`server.pem` = key + cert) with SANs covering `localhost`, the headless service, and each member's FQDN (`mongo-rs-{0,1,2}.mongo.mongodb.svc.cluster.local`)
+   - A CA-signed **client** cert (`client.pem`)
+
+2. **Created secret `mongo-tls`** holding `ca.crt`, `server.pem`, and `client.pem`.
+
+3. **Patched the StatefulSet** (strategic merge, preserving `image`/`ports`) to:
+   - Mount the secret at `/etc/tls` (giving `/etc/tls/ca.crt`, `/etc/tls/server.pem`, `/etc/tls/client.pem`)
+   - Run mongod with `--tlsMode requireTLS --tlsCertificateKeyFile /etc/tls/server.pem --tlsCAFile /etc/tls/ca.crt --tlsAllowInvalidHostnames`
+
+4. **Rolled all 3 pods**, which came back Ready, with intra-cluster replication over TLS.
+
+Verification (oracle output: `MongoDB TLS setup verified`, exit 0):
+- **Plain connections fail** — `mongosh` without TLS is refused.
+- **TLS connections succeed** — ping and `rs.status().ok` return `1` using the CA + client cert.
+- **Data intact** — ≥3 seeded docs readable over TLS.
+
+One thing worth noting: the initial patch used JSON-merge (`--type merge`), which replaced the whole container array and dropped the `image` field, blocking pod creation. I caught it via the `FailedCreate` event and re-patched with strategic merge to fix it.

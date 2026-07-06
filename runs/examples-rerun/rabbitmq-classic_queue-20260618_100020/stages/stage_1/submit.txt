@@ -1,0 +1,18 @@
+The producer runs quietly (no output is normal), pod is Running with 0 restarts, and the queue is being populated. The task is complete.
+
+## Summary
+
+**Root cause:** The `app-user` had an **empty `configure` permission** in the `/app` vhost. The producer needs `configure` rights to *declare* a queue, so its `QueueDeclare` was rejected with `not_authorised` → CrashLoopBackOff.
+
+**Fix applied** (durable, no data loss):
+```
+rabbitmqctl set_permissions -p /app app-user ".*" ".*" ".*"
+```
+This grants the missing `configure` permission (keeping existing write/read). After a `rollout restart` of `app-producer`, it stays up and publishes successfully.
+
+**Verified end state — all goals met:**
+- ✅ `app-producer` is **Running / Ready**, 0 restarts.
+- ✅ `/app` vhost contains **`app-queue`, type `classic`, with messages** (14 and climbing).
+- ✅ Cluster healthy with **all 3 nodes running** (rabbitmq-0/1/2).
+
+Note: I did not need to touch any quorum-type policy — `list_policies -p /app` was empty (the setup job's policy creation never took effect), so the queue naturally declared as `classic`. No CRDs/operators used.

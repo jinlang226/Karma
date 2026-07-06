@@ -1,0 +1,17 @@
+Done.
+
+## Summary
+
+I inspected the live cluster and wrote a controller upgrade change/migration plan into a ConfigMap, applying **no** changes to the running configuration.
+
+**What I found (non-default config worth planning around):**
+- Controller `ingress-nginx-controller` **v1.14.1**, `replicas: 1`, binding **hostPort 80/443** (single-replica = brief data-plane outage on pod swap).
+- **Config drift in the container args**: `--watch-ingress-without-class=true` early *and* a duplicate `--watch-ingress-without-class=false` appended at the end — last-wins, so the controller effectively runs with `false`, diverging from its last-applied manifest. This will silently flip on any chart re-render, so it's flagged as the critical pre-upgrade reconciliation item.
+- ConfigMap override `limit-req-status-code: "429"` (non-default; a naive chart upgrade would revert it to 503).
+- 7 demo Ingresses with meaningful annotations: `rewrite-target`, `limit-rps`/`limit-burst-multiplier`, and the `canary-by-header` family — all must survive the upgrade.
+
+**The plan** (8.8 KB `plan.md`) covers: state snapshot, drift reconciliation, version/compatibility review, backups + smoke-test baseline, execution steps, post-upgrade validation, rollback, and a risk summary.
+
+**Result / verification:**
+- `change-plan` ConfigMap exists in `demo` with `plan.md` = 8842 bytes (non-empty). ✅
+- Live config unchanged: 7 ingresses still present, controller Deployment still `generation: 2`, ConfigMap still `limit-req-status-code: 429`. No patch/scale/delete/restart performed. ✅

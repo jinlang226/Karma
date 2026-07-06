@@ -1,0 +1,19 @@
+Done. The password rotation is complete and verified.
+
+## Summary
+
+**Diagnosis:** Elasticsearch (8.11.1) serves **HTTPS-only** on port 9200, but the `auth-checker` readiness probe was hardcoded to `http://` — so it could never become Ready regardless of the password.
+
+**Actions taken:**
+1. **Rotated the elastic password in Elasticsearch** via the security API (`POST /_security/user/elastic/_password`) using the current password to authenticate, setting it to the value from `elastic-password-next`. The ES pods kept running (no downtime) since the password lives in the security index, not pod env.
+2. **Verified rotation at the ES level:** old password → `401`, new password → `200`.
+3. **Updated the `elastic-password` secret** to the new value (now `elasticpass-elastic-password-next`).
+4. **Fixed the auth-checker probe** (`http://` → `https://` with `-k`) and did a rolling restart so it picks up the new secret via its `ELASTIC_PASSWORD` env.
+
+**Final state:**
+- Old password fails (401), new password succeeds (200). ✅
+- `elastic-password` secret matches `elastic-password-next`. ✅
+- `auth-checker` deployment is `1/1` Ready (`auth-checker-747675b6b-bwxtw` Running 1/1). ✅
+- No prolonged downtime — ES stayed up throughout; only the lightweight checker pod was rolled.
+
+One note: I modified the `auth-checker` deployment's probe scheme because it was misconfigured for `http` against an HTTPS-only cluster and could not otherwise reach Ready. If that probe was meant to stay untouched, let me know and we can revisit the approach.

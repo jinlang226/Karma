@@ -1,0 +1,16 @@
+The task is complete and verified.
+
+## Summary
+
+**Root cause:** The probes were misconfigured with `timeoutSeconds: 1`. The health probe script (`/usr/local/bin/probe.sh`) does a `sleep 2` and then a full `mongosh` connect/auth, which takes **~4.8s** to run. With a 1-second timeout, every probe timed out. The failing **liveness** probe (failureThreshold 2) was repeatedly killing `mongod`, putting pods into quiesce/shutdown mode and preventing the replica set from ever stabilizing.
+
+**Fix applied** (patched the StatefulSet, no auth disabled, no operators/CRDs):
+- **Readiness:** `timeoutSeconds 1→10`, `failureThreshold 2→6`, `periodSeconds 5→10`, `initialDelaySeconds 15`
+- **Liveness:** `timeoutSeconds 1→10`, `failureThreshold 2→6`, `periodSeconds 10→20`, `initialDelaySeconds 15→60`
+
+The timeouts now comfortably exceed the probe's real runtime, and the longer liveness delay/period stops the kill loop.
+
+**Result:**
+- All 3 pods `1/1 Running` and Ready
+- Replica set healthy: 1 PRIMARY (`mongodb-replica-2`) + 2 SECONDARY (`-0`, `-1`)
+- Authentication (`--auth` + keyFile) remains enabled

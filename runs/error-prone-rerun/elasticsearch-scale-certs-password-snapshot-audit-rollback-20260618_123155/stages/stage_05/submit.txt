@@ -1,0 +1,14 @@
+The task is complete. Snapshot `snapshot-1` finished with state **SUCCESS** (4/4 shards, 0 failures).
+
+## Summary
+
+**Root cause:** Snapshots were failing for two reasons — Elasticsearch had no S3 credentials in its keystore, and the MinIO setup was incomplete (the `minio` Service didn't exist, so `minio.elasticsearch.svc.cluster.local` didn't resolve, and the `es-backups` bucket was never created because the init job ran before MinIO was ready).
+
+**What I did:**
+1. **Created the `minio` Service** (`app: minio` selector, port 9000) so the documented endpoint resolves.
+2. **Created the `es-backups` bucket** in MinIO (init job had failed).
+3. **Created Secret `es-secure-settings`** holding `s3.client.default.access_key` / `secret_key` (creds from `minio-root`: `minioadmin`/`minioadmin`).
+4. **Loaded the credentials into the Elasticsearch keystore** on all 5 nodes (es-0/1/2 + es-data-0/1) via `elasticsearch-keystore add --stdin` — keeping them out of `elasticsearch.yml` and env vars as required.
+5. **Reloaded secure settings** with `POST _nodes/reload_secure_settings` (5/5 nodes successful) — **no pod restart needed**, since S3 client keys are reloadable.
+6. **Registered repository `minio-repo`** (type `s3`, `path_style_access: true`, `protocol: http`, endpoint as documented) — verified on all 5 nodes.
+7. **Created snapshot `snapshot-1`** → state SUCCESS.

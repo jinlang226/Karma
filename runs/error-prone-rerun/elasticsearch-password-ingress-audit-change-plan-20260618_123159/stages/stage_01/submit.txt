@@ -1,0 +1,27 @@
+Done. The 3-node Elasticsearch cluster is deployed and fully functional.
+
+## Summary
+
+Deployed a 3-node Elasticsearch 8.11.1 cluster in the `elasticsearch` namespace using only native Kubernetes resources (no CRDs/operators):
+
+| Resource | Name | Purpose |
+|---|---|---|
+| ConfigMap | `es-config` | `elasticsearch.yml` — security + HTTP/transport TLS |
+| StatefulSet | `es` (3 replicas) | The ES nodes, each with a 5Gi PVC |
+| Service | `es-http` | ClusterIP on **9200** (HTTPS) — the required entrypoint |
+| Service | `es-discovery` | Headless, for node-to-node discovery (9300) |
+| PodDisruptionBudget | `es-pdb` | `minAvailable: 2` |
+
+**Configuration highlights:**
+- HTTP TLS terminated with the provided `es-http-tls` secret (`tls.crt`/`tls.key`/`ca.crt`); transport TLS reuses the same cert with `verification_mode: certificate`.
+- `elastic` user password sourced from the `elastic-password` secret via `ELASTIC_PASSWORD`.
+- Init container sets `vm.max_map_count=262144`.
+
+**The key bug I hit and fixed:** the StatefulSet's default `OrderedReady` pod management caused a bootstrap **deadlock** — `es-0` couldn't form a cluster (it needs the master-eligible quorum `es-0,es-1,es-2`), but `es-1`/`es-2` are never created until `es-0` is Ready. I recreated the StatefulSet with `podManagementPolicy: Parallel` so all three pods start together and form the quorum.
+
+**Verification:**
+- All 3 pods `1/1 Ready`; cluster health **green**, `number_of_nodes: 3`.
+- Reachable over HTTPS on `https://es-http:9200` from a separate pod.
+- Write (`PUT .../karma-test/_doc/1` → `"result":"created"`) and read (`found: true`) both succeeded; test index cleaned up afterward.
+
+Note: I observed that the on-disk `/tmp/es.yaml` was being modified by something other than my session mid-task, so I authored my manifests to a separate path (`/tmp/es-sts.yaml`) and operated directly against the live cluster to avoid interference.

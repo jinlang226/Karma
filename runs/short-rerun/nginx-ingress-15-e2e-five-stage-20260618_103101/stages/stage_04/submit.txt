@@ -1,0 +1,22 @@
+The task is complete and verified. Summary of what I did:
+
+## Result
+
+**`/api` is now rate-limited to ~2 r/s and returns HTTP 429 for excess; `/health` remains unlimited (always 200).**
+
+### Changes made
+
+1. **Annotated the `rate-api` Ingress only** (the `/api` path on `rate.example.com`):
+   - `nginx.ingress.kubernetes.io/limit-rps: "2"` → ~2 requests/second per client IP
+   - `nginx.ingress.kubernetes.io/limit-burst-multiplier: "1"` → tightens the burst window (default 5×) so excess traffic is rejected promptly rather than absorbed
+
+2. **Set the controller-wide status code** in the `ingress-nginx-controller` ConfigMap:
+   - `limit-req-status-code: "429"` — by default nginx-ingress returns **503** for `limit_req`; the task requires **429**, which is a controller-level setting (not a per-Ingress annotation).
+
+### Verification
+- Generated nginx config confirms `rate=2r/s`, `burst=2 nodelay`, and `limit_req_status 429`.
+- **`/api` burst test:** first few requests pass, excess return `429`.
+- **`/health` under load:** all `200` — left untouched (separate `rate-health` Ingress, no annotations).
+- The application Deployment (`rate-echo`) was not modified.
+
+Note: the controller is actually running with 1 replica here, so the rate-limit zone is single and behaves deterministically. At a steady 2 r/s the provided 0.5s-interval loop sits right at the configured limit (passes), while any traffic exceeding ~2 r/s is correctly rejected with 429.

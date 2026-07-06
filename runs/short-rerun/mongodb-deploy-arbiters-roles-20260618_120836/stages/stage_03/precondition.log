@@ -1,0 +1,174 @@
+[precondition:mongo_env_ready:preconditionUnits[0] 'mongo_env_ready':probe] $ kubectl -n mongodb get pod mongodb-replica-0 2>/dev/null | grep -c Running
+0
+
+[precondition:mongo_env_ready:preconditionUnits[0] 'mongo_env_ready':apply] $ /bin/sh -c '
+kubectl delete namespace mongodb --ignore-not-found=true; kubectl wait --for=delete namespace/mongodb --timeout=120s || true
+'
+
+namespace "mongodb" deleted
+
+[precondition:mongo_env_ready:preconditionUnits[0] 'mongo_env_ready':apply] $ kubectl create namespace mongodb
+namespace/mongodb created
+
+[precondition:mongo_env_ready:preconditionUnits[0] 'mongo_env_ready':apply] $ kubectl -n mongodb apply -f cases/mongodb/custom-roles/resource/secrets.yaml
+secret/admin-user-password created
+secret/reporting-user-password created
+secret/mongo-keyfile created
+
+[precondition:mongo_env_ready:preconditionUnits[0] 'mongo_env_ready':apply] $ kubectl -n mongodb apply -f cases/mongodb/custom-roles/resource/services.yaml
+service/mongodb-replica-svc created
+
+[precondition:mongo_env_ready:preconditionUnits[0] 'mongo_env_ready':apply] $ kubectl -n mongodb apply -f cases/mongodb/custom-roles/resource/statefulset.yaml
+statefulset.apps/mongodb-replica created
+
+[precondition:mongo_env_ready:preconditionUnits[0] 'mongo_env_ready':apply] $ for i in $(seq 1 120); do
+  ready=$(kubectl -n mongodb get sts mongodb-replica -o jsonpath='{.status.readyReplicas}' 2>/dev/null)
+  if [ "${ready:-0}" -ge 3 ]; then
+    exit 0
+  fi
+  sleep 5
+done
+exit 1
+
+
+[precondition:mongo_env_ready:preconditionUnits[0] 'mongo_env_ready':apply] $ kubectl -n mongodb exec mongodb-replica-0 -- mongosh --quiet --eval '
+rs.initiate({_id:"mongodb-replica",members:[
+  {_id:0,host:"mongodb-replica-0.mongodb-replica-svc.mongodb.svc.cluster.local:27017"},
+  {_id:1,host:"mongodb-replica-1.mongodb-replica-svc.mongodb.svc.cluster.local:27017"},
+  {_id:2,host:"mongodb-replica-2.mongodb-replica-svc.mongodb.svc.cluster.local:27017"}
+]})'
+
+MongoServerError: replSetInitiate quorum check failed because not all proposed set members responded affirmatively: mongodb-replica-2.mongodb-replica-svc.mongodb.svc.cluster.local:27017 failed with Error connecting to mongodb-replica-2.mongodb-replica-svc.mongodb.svc.cluster.local:27017 (10.244.0.209:27017) :: caused by :: Connection refused
+command terminated with exit code 1
+
+[precondition:mongo_env_ready:preconditionUnits[0] 'mongo_env_ready':apply] $ kubectl -n mongodb exec mongodb-replica-0 -- mongosh --quiet --eval '
+rs.initiate({_id:"mongodb-replica",members:[
+  {_id:0,host:"mongodb-replica-0.mongodb-replica-svc.mongodb.svc.cluster.local:27017"},
+  {_id:1,host:"mongodb-replica-1.mongodb-replica-svc.mongodb.svc.cluster.local:27017"},
+  {_id:2,host:"mongodb-replica-2.mongodb-replica-svc.mongodb.svc.cluster.local:27017"}
+]})'
+
+MongoServerError: replSetInitiate quorum check failed because not all proposed set members responded affirmatively: mongodb-replica-2.mongodb-replica-svc.mongodb.svc.cluster.local:27017 failed with Error connecting to mongodb-replica-2.mongodb-replica-svc.mongodb.svc.cluster.local:27017 (10.244.0.209:27017) :: caused by :: Connection refused
+command terminated with exit code 1
+
+[precondition:mongo_env_ready:preconditionUnits[0] 'mongo_env_ready':apply] $ kubectl -n mongodb exec mongodb-replica-0 -- mongosh --quiet --eval '
+rs.initiate({_id:"mongodb-replica",members:[
+  {_id:0,host:"mongodb-replica-0.mongodb-replica-svc.mongodb.svc.cluster.local:27017"},
+  {_id:1,host:"mongodb-replica-1.mongodb-replica-svc.mongodb.svc.cluster.local:27017"},
+  {_id:2,host:"mongodb-replica-2.mongodb-replica-svc.mongodb.svc.cluster.local:27017"}
+]})'
+
+{ ok: 1 }
+
+[precondition:mongo_env_ready:preconditionUnits[0] 'mongo_env_ready':apply] $ for i in $(seq 1 20); do
+  kubectl -n mongodb exec mongodb-replica-0 -- mongosh --quiet --eval 'db.hello().isWritablePrimary' | grep true && exit 0
+  sleep 3
+done
+exit 1
+
+true
+
+[precondition:mongo_env_ready:preconditionUnits[0] 'mongo_env_ready':apply] $ kubectl -n mongodb exec mongodb-replica-0 -- mongosh --quiet --eval '
+db.getSiblingDB("admin").createUser({
+  user: "admin-user",
+  pwd: "admin123password",
+  roles: [
+    {role: "clusterAdmin", db: "admin"},
+    {role: "userAdminAnyDatabase", db: "admin"},
+    {role: "readWriteAnyDatabase", db: "admin"}
+  ]
+})'
+
+{
+  ok: 1,
+  '$clusterTime': {
+    clusterTime: Timestamp({ t: 1781785142, i: 2 }),
+    signature: {
+      hash: Binary(Buffer.from("8d0c6eef98a63518d66798a0a7f2d06c3f5395b7", "hex"), 0),
+      keyId: Long("7652708874734010371")
+    }
+  },
+  operationTime: Timestamp({ t: 1781785142, i: 2 })
+}
+
+[precondition:mongo_env_ready:preconditionUnits[0] 'mongo_env_ready':apply] $ kubectl -n mongodb exec mongodb-replica-0 -- mongosh --quiet \
+"mongodb://admin-user:admin123password@localhost:27017/admin" \
+--eval 'db.getSiblingDB("appdb").createRole({
+  role: "rawRead",
+  privileges: [
+    { resource: { db: "appdb", collection: "raw" }, actions: ["find"] }
+  ],
+  roles: []
+})'
+
+{
+  ok: 1,
+  '$clusterTime': {
+    clusterTime: Timestamp({ t: 1781785150, i: 2 }),
+    signature: {
+      hash: Binary(Buffer.from("534643c8ffb22afb665eb6bb0d3a280426282ef4", "hex"), 0),
+      keyId: Long("7652708874734010371")
+    }
+  },
+  operationTime: Timestamp({ t: 1781785150, i: 2 })
+}
+
+[precondition:mongo_env_ready:preconditionUnits[0] 'mongo_env_ready':apply] $ kubectl -n mongodb exec mongodb-replica-0 -- mongosh --quiet \
+"mongodb://admin-user:admin123password@localhost:27017/admin" \
+--eval 'db.getSiblingDB("admin").createUser({
+  user: "reporting-user",
+  pwd: "reporting123password",
+  roles: [{role: "rawRead", db: "appdb"}]
+})'
+
+{
+  ok: 1,
+  '$clusterTime': {
+    clusterTime: Timestamp({ t: 1781785154, i: 1 }),
+    signature: {
+      hash: Binary(Buffer.from("49c0734c943eb915f5faa1434dacfa1541935935", "hex"), 0),
+      keyId: Long("7652708874734010371")
+    }
+  },
+  operationTime: Timestamp({ t: 1781785154, i: 1 })
+}
+
+[precondition:mongo_env_ready:preconditionUnits[0] 'mongo_env_ready':apply] $ kubectl -n mongodb exec mongodb-replica-0 -- mongosh --quiet \
+"mongodb://admin-user:admin123password@localhost:27017/admin" \
+--eval 'db.getSiblingDB("appdb").reports.insertMany([{x:1},{x:2},{x:3}], {writeConcern:{w:1}})'
+
+{
+  acknowledged: true,
+  insertedIds: {
+    '0': ObjectId("6a33e2467ef7d7556ebfabde"),
+    '1': ObjectId("6a33e2467ef7d7556ebfabdf"),
+    '2': ObjectId("6a33e2467ef7d7556ebfabe0")
+  }
+}
+
+[precondition:mongo_env_ready:preconditionUnits[0] 'mongo_env_ready':apply] $ kubectl -n mongodb exec mongodb-replica-0 -- mongosh --quiet \
+"mongodb://admin-user:admin123password@localhost:27017/admin" \
+--eval 'db.getSiblingDB("appdb").raw.insertMany([{x:10},{x:11}], {writeConcern:{w:1}})'
+
+{
+  acknowledged: true,
+  insertedIds: {
+    '0': ObjectId("6a33e24ab061084d0e15019d"),
+    '1': ObjectId("6a33e24ab061084d0e15019e")
+  }
+}
+
+[precondition:mongo_env_ready:preconditionUnits[0] 'mongo_env_ready':verify] $ kubectl -n mongodb get pods 2>/dev/null | grep -c Running
+3
+
+[precondition:admin_user_fixture:preconditionUnits[1] 'admin_user_fixture':probe] $ /bin/sh -c '
+t=""; for cca in /etc/tls/ca.crt /etc/mongo-ca/ca.crt; do kubectl -n mongodb exec mongodb-replica-0 -- ls $cca >/dev/null 2>&1 && { t="--tls --tlsAllowInvalidHostnames --tlsAllowInvalidCertificates --tlsCAFile $cca"; break; }; done
+pw=$(kubectl -n mongodb get secret admin-user-password -o jsonpath="{.data.password}" 2>/dev/null | base64 -d 2>/dev/null)
+[ -n "$pw" ] || exit 1
+kubectl -n mongodb exec mongodb-replica-0 -- mongosh --quiet $t "mongodb://admin-user:$pw@localhost:27017/admin" --eval "db.runCommand({ping:1}).ok" 2>/dev/null | grep -q 1
+'
+
+
+[precondition:reporting_user_fixture:preconditionUnits[2] 'reporting_user_fixture':probe] $ /bin/sh -c 't=""; for cca in /etc/tls/ca.crt /etc/mongo-ca/ca.crt; do kubectl -n mongodb exec mongodb-replica-0 -- ls $cca >/dev/null 2>&1 && { t="--tls --tlsAllowInvalidHostnames --tlsAllowInvalidCertificates --tlsCAFile $cca"; break; }; done; kubectl -n mongodb get secret reporting-user-password >/dev/null 2>&1 || exit 1; pw=$(kubectl -n mongodb get secret admin-user-password -o jsonpath="{.data.password}" 2>/dev/null | base64 -d 2>/dev/null); pw=${pw:-admin123password}; P=""; for _pi in $(seq 1 30); do P=$(kubectl -n mongodb exec mongodb-replica-0 -- mongosh --quiet $t "mongodb://admin-user:$pw@localhost:27017/admin?directConnection=true" --eval '\''rs.hello().primary'\'' 2>/dev/null | cut -d. -f1); [ -n "$P" ] && break; sleep 2; done; P=${P:-mongodb-replica-0}; kubectl -n mongodb exec "$P" -- mongosh --quiet $t "mongodb://admin-user:$pw@localhost:27017/admin" --eval '\''db.getSiblingDB("admin").getUser("reporting-user")?quit(0):quit(1)'\'' >/dev/null 2>&1'
+
+

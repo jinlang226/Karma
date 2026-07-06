@@ -1,0 +1,18 @@
+Resolved. Full membership restored and the cluster is healthy.
+
+## Root cause
+The `es-config` ConfigMap had been corrupted with two breaking edits:
+1. **`node.name:` was left empty (null).** Elasticsearch 7.17 refuses to start on a null-valued setting (`ElasticsearchParseException: null-valued setting found for key [node.name]`) — this is exactly what crash-looped es-cluster-2 on restart.
+2. **`discovery.seed_hosts` pointed at the `default` namespace** (`es-cluster-X.es-cluster.default.svc.cluster.local`), which doesn't resolve — the cluster runs in `elasticsearch`.
+
+Nodes 0 and 1 stayed up because they still held the original, correct config in memory (config is mounted via `subPath`, so it doesn't live-reload). Only the restarted node picked up the broken version.
+
+## Fix
+- Restored the ConfigMap to the known-good config (matching what nodes 0/1 had): `node.name: ${POD_NAME}` (POD_NAME is already injected by the StatefulSet) and seed hosts using the in-namespace short form `es-cluster-X.es-cluster`.
+- Deleted only `es-cluster-2` so it re-mounted the corrected config. Nodes 0/1 were left untouched (they were healthy), so the cluster never lost quorum.
+- No operators or CRDs installed.
+
+## Verification
+1. **Cluster health: green** (`number_of_nodes: 3`, `active_shards_percent: 100`, 0 unassigned).
+2. **All 3 nodes in `/_cat/nodes`:** es-cluster-0 (master), es-cluster-1, es-cluster-2.
+3. **app-data readable:** `_count` returns 1 doc, all shards successful.

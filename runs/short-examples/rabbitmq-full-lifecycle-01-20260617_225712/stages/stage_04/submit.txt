@@ -1,0 +1,15 @@
+All requirements are met:
+
+- **Metrics exposed**: RabbitMQ already had `rabbitmq_prometheus` enabled, serving `/metrics` on port 15692 (verified directly from a pod).
+- **3 targets UP**: Prometheus now scrapes all 3 pods (`10.244.0.237/238/239:15692`), all healthy.
+- **`rabbitmq_up` → 3 samples**: each returning `1`.
+- **RabbitMQ healthy**: all 3 pods `Running` / `1/1`, untouched.
+
+## What was wrong and what I changed
+
+The Prometheus `prometheus-config` ConfigMap only scraped itself — there was no RabbitMQ scrape job. I edited the ConfigMap (native resource, no CRD/operator) to:
+
+1. **Add a `rabbitmq` scrape job using DNS service discovery** on the existing `rabbitmq-headless` service (`type: A`, `port: 15692`). This auto-discovers all 3 pod IPs and requires no API-server RBAC, so the Prometheus ServiceAccount needs no changes.
+2. **Add a recording rule** (`rules.yml`, referenced via `rule_files`) defining `rabbitmq_up = up{job="rabbitmq"}`, since `rabbitmq_up` is not a native plugin metric — this materializes one sample per target (3 total).
+
+Then restarted the Prometheus deployment to load the new config. The RabbitMQ StatefulSet, services, and its config were left untouched.

@@ -1,0 +1,21 @@
+Done. The task is complete and verified.
+
+## What was wrong
+- `/opt/job.py` is a **read-only `subPath` mount** from ConfigMap `ray-job-script`, so the file can't be edited in the pod directly.
+- The original script connected with `ray://ray-head:10001` (Ray Client mode) — the wrong address, and port 10001 isn't even exposed by the `ray-head` service (only `6379` GCS and `8265` dashboard).
+- Simply switching to `ray.init(address="ray-head:6379")` still failed: the `ray-client` pod is **not a member of the Ray cluster**, so a driver-mode `ray.init` against the head's GCS can't find a matching local raylet (`...none of these match this node's IP...`).
+
+## Fix
+Updated the `ray-job-script` ConfigMap so the job:
+1. Registers the client pod as a lightweight (0-CPU) node against `ray-head:6379` (`ray start --address ray-head:6379`), idempotently.
+2. Attaches the driver via `ray.init(address="ray-head:6379")`, prints `pong`, then cleans up.
+
+Then recreated the `ray-client` pod (required because `subPath` ConfigMap mounts don't hot-reload).
+
+## Verification
+```
+kubectl -n ray exec ray-client -- python /opt/job.py
+→ pong
+EXIT:0
+```
+Confirmed exit 0 + `pong`, and verified it's repeatable on a second run.

@@ -1,0 +1,87 @@
+[precondition:mongo_env_ready:preconditionUnits[0] 'mongo_env_ready':probe] $ kubectl -n mongodb get pod mongo-rs-0 2>/dev/null | grep -c Running
+0
+
+[precondition:mongo_env_ready:preconditionUnits[0] 'mongo_env_ready':apply] $ /bin/sh -c '
+kubectl delete namespace mongodb --ignore-not-found=true; kubectl wait --for=delete namespace/mongodb --timeout=120s || true
+'
+
+
+[precondition:mongo_env_ready:preconditionUnits[0] 'mongo_env_ready':apply] $ kubectl create namespace mongodb
+namespace/mongodb created
+
+[precondition:mongo_env_ready:preconditionUnits[0] 'mongo_env_ready':apply] $ kubectl -n mongodb apply -f cases/mongodb/external-access-horizons/resource/services.yaml
+service/mongo created
+service/mongo-external-0 created
+service/mongo-external-1 created
+service/mongo-external-2 created
+
+[precondition:mongo_env_ready:preconditionUnits[0] 'mongo_env_ready':apply] $ kubectl -n mongodb apply -f cases/mongodb/external-access-horizons/resource/statefulset.yaml
+statefulset.apps/mongo-rs created
+
+[precondition:mongo_env_ready:preconditionUnits[0] 'mongo_env_ready':apply] $ for i in $(seq 1 60); do
+  ready=$(kubectl -n mongodb get sts mongo-rs -o jsonpath='{.status.readyReplicas}' 2>/dev/null)
+  if [ "${ready:-0}" -ge 3 ]; then
+    exit 0
+  fi
+  sleep 5
+done
+exit 1
+
+
+[precondition:mongo_env_ready:preconditionUnits[0] 'mongo_env_ready':apply] $ kubectl -n mongodb exec mongo-rs-0 -- mongosh --quiet --eval '
+rs.initiate({_id:"rs0",members:[
+  {_id:0,host:"mongo-rs-0.mongo.mongodb.svc.cluster.local:27017"},
+  {_id:1,host:"mongo-rs-1.mongo.mongodb.svc.cluster.local:27017"},
+  {_id:2,host:"mongo-rs-2.mongo.mongodb.svc.cluster.local:27017"}
+]})'
+
+{ ok: 1 }
+
+[precondition:mongo_env_ready:preconditionUnits[0] 'mongo_env_ready':apply] $ for i in $(seq 1 20); do
+  kubectl -n mongodb exec mongo-rs-0 -- mongosh --quiet --eval 'db.hello().isWritablePrimary' | grep true && exit 0
+  sleep 3
+done
+exit 1
+
+true
+
+[precondition:mongo_env_ready:preconditionUnits[0] 'mongo_env_ready':apply] $ node_ip=$(kubectl get nodes -o jsonpath='{range .items[*]}{.metadata.name}{" "}{range .status.addresses[?(@.type=="InternalIP")]}{.address}{"\n"}{end}{end}' | awk '$1 !~ /control-plane|master/ {print $2; exit}')
+if [ -z "$node_ip" ]; then
+  # Single-node cluster (only the control-plane node, e.g. default
+  # kind): fall back to its InternalIP instead of failing.
+  node_ip=$(kubectl get nodes -o jsonpath='{.items[0].status.addresses[?(@.type=="InternalIP")].address}')
+fi
+if [ -z "$node_ip" ]; then
+  exit 1
+fi
+cat <<EOF | kubectl -n mongodb apply -f -
+apiVersion: v1
+kind: Pod
+metadata:
+  name: mongo-client
+spec:
+  restartPolicy: Never
+  hostAliases:
+  - ip: "$node_ip"
+    hostnames:
+    - domain-rs-1
+    - domain-rs-2
+    - domain-rs-3
+  containers:
+  - name: mongosh
+    image: mongo:6.0
+    command: ["sleep", "3600"]
+EOF
+
+pod/mongo-client created
+
+[precondition:mongo_env_ready:preconditionUnits[0] 'mongo_env_ready':apply] $ kubectl -n mongodb wait --for=condition=ready pod mongo-client --timeout=300s
+pod/mongo-client condition met
+
+[precondition:mongo_env_ready:preconditionUnits[0] 'mongo_env_ready':verify] $ kubectl -n mongodb get pods 2>/dev/null | grep -c Running
+4
+
+[precondition:external_access_fixture:preconditionUnits[1] 'external_access_fixture':probe] $ kubectl -n mongodb get svc mongo-external-1
+NAME               TYPE       CLUSTER-IP      EXTERNAL-IP   PORT(S)           AGE
+mongo-external-1   NodePort   10.96.137.199   <none>        27017:31182/TCP   48s
+
