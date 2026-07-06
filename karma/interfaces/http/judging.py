@@ -341,6 +341,7 @@ def start_judge_job(
         "target_type": target_type,
         "target_path": str(path),
         "dry_run": dry_run,
+        "has_rubric": rubric is not None,
         "status": "running",
     })
 

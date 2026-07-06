@@ -23,6 +23,7 @@
   const lastJudgeLog = {}; // runId -> last judge log text, kept across reloads
   let runsFolder = "";     // current Runs folder being browsed ("" = top level)
   let activeJudgeJob = null; // job_id while a "Judge all" is running (else null)
+  let activeJudgeMode = null; // "wo" | "w" -- which mode's judge-all is running
   let judgeCancelling = false; // true between a cancel click and the job ending
   let activeRubric = null;     // rubric file content (YAML/JSON text) sent with judge requests
   let activeRubricName = null; // its filename, for the chip
@@ -135,21 +136,6 @@
 
   function stopTimers() { if (refreshTimer) { clearTimeout(refreshTimer); refreshTimer = null; } }
 
-  // "Judge all" is scoped to the folder currently being browsed: at the top
-  // level it judges every run under runs/, inside a folder only the runs under
-  // that folder (recursively). Render the scope as a highlighted chip (not a
-  // plain string) so the folder name stands out; falls back to plain "Judge all"
-  // at the top level.
-  function setJudgeAllLabel(btn) {
-    clear(btn);
-    if (runsFolder) {
-      btn.appendChild(document.createTextNode("Judge all in "));
-      btn.appendChild(el("span", { class: "judge-scope" }, runsFolder));
-    } else {
-      btn.appendChild(document.createTextNode("Judge all"));
-    }
-  }
-
   // Search is scoped to the folder currently being browsed (like "Judge all"):
   // the placeholder states the scope so it's clear the query is folder-limited.
   function searchPlaceholder() {
@@ -184,33 +170,52 @@
           "▤ " + activeRubricName,
           el("button", { class: "rubric-clear", title: "clear rubric", onClick: () => { activeRubric = null; activeRubricName = null; render(); } }, "×"))
       : el("button", { class: "btn secondary", title: "Score stages against a rubric file (YAML/JSON)", onClick: () => rubricFile.click() }, "+ Rubric");
-    // "Judge all" sits at the far right of the same row -- scores every finished
-    // run in the current folder scope (objective stage-pass + LLM adjudication of
-    // regression-sweep failures, plus per-stage rubric scores when a rubric is set).
-    const judgeAll = el("button", { id: "judge-all-btn", class: "btn secondary", onClick: () => onJudgeAllClick(judgeAll) });
-    if (activeJudgeJob) judgeAll.textContent = judgeCancelling ? "Cancelling…" : "Cancel judging…";
-    else setJudgeAllLabel(judgeAll);
-    return el("div", { class: "subtabs-row" }, tabs, rubricCtl, rubricFile, judgeAll);
+    // Two folder-scoped "Judge all" buttons: objective (w/o rubric) and rubric
+    // (w/ rubric). Only one judge-all runs at a time; the running one becomes
+    // Cancel and the other is disabled.
+    const scopeTip = runsFolder ? ` for every finished run in "${runsFolder}"` : " for every finished run";
+    const btnWo = el("button", { id: "judge-all-wo", class: "btn secondary",
+      title: "Objective stage-pass score + regression adjudication" + scopeTip,
+      onClick: () => onJudgeAllClick("wo") }, "Judge all w/o Rubric");
+    const btnW = el("button", { id: "judge-all-w", class: "btn secondary",
+      title: "LLM-score each oracle-passing stage against the rubric" + scopeTip,
+      onClick: () => onJudgeAllClick("w") }, "Judge all w/ Rubric");
+    applyJudgeAllButtons(btnWo, btnW);
+    return el("div", { class: "subtabs-row" }, tabs, rubricCtl, rubricFile, btnWo, btnW);
   }
 
-  // One button, two modes: start a Judge all, or cancel the one in flight.
-  function onJudgeAllClick(btn) {
-    if (activeJudgeJob) cancelJudgeAll(btn);
-    else startJudgeAll(btn);
+  // Click a Judge-all button: start that mode, or (if it's the running one) cancel.
+  function onJudgeAllClick(mode) {
+    if (activeJudgeJob) { if (activeJudgeMode === mode) cancelJudgeAll(); }
+    else startJudgeAll(mode);
   }
 
-  // While a job is running the button stays enabled and reads "Cancel judging
-  // (i/N)"; clicking it stops the remaining worklist (the in-flight run finishes).
   function judgeProgressLabel(i, n) {
     return `Cancel judging${i != null && n != null ? ` (${i}/${n})` : "…"}`;
   }
+  const judgeAllModeBtn = (mode) => document.getElementById(mode === "wo" ? "judge-all-wo" : "judge-all-w");
+  const judgeBtn = () => (activeJudgeMode ? judgeAllModeBtn(activeJudgeMode) : null);
 
-  const judgeBtn = () => document.getElementById("judge-all-btn");
+  // Reflect running/idle state on the two buttons. Pass refs at build time
+  // (before they're in the DOM); later calls look them up by id.
+  function applyJudgeAllButtons(bw, bwr) {
+    const map = { wo: bw || judgeAllModeBtn("wo"), w: bwr || judgeAllModeBtn("w") };
+    for (const mode of ["wo", "w"]) {
+      const b = map[mode];
+      if (!b) continue;
+      const idle = mode === "wo" ? "Judge all w/o Rubric" : "Judge all w/ Rubric";
+      if (activeJudgeMode === mode) {          // the running one -> Cancel
+        b.disabled = null;
+        b.textContent = judgeCancelling ? "Cancelling…" : judgeProgressLabel();
+      } else {                                 // idle, or disabled while the other runs
+        b.disabled = activeJudgeJob ? "disabled" : null;
+        b.textContent = idle;
+      }
+    }
+  }
 
-  // Subscribe to a running job's SSE stream. Handlers look the button up by id
-  // (not a captured reference) so they survive re-renders and a page refresh:
-  // the job runs in a backend thread, and the SSE hub replays buffered progress
-  // to a late/reconnecting subscriber, so re-adopting an in-flight job just works.
+  // Subscribe to a running job's SSE stream. Handlers look the active button up
+  // by id (not a captured reference) so they survive re-renders and a refresh.
   function attachJudgeStream(jobId) {
     api.stream(`/api/judge/jobs/${jobId}/stream`, {
       statusPath: `/api/judge/jobs/${jobId}`,
@@ -231,64 +236,69 @@
         } else if (ev.type === "judge_complete") {
           const st = ev.status || "complete";
           KARMA.toast("Judge all " + st, st === "error" ? "error" : (st === "cancelled" ? "info" : "success"));
-          if (sub === "runs") render();   // refresh the list with new scores (incl. partial on cancel)
         }
       },
       onDone: () => {
-        activeJudgeJob = null; judgeCancelling = false;
-        const b = judgeBtn(); if (b) { b.disabled = null; setJudgeAllLabel(b); }
+        activeJudgeJob = null; activeJudgeMode = null; judgeCancelling = false;
+        if (sub === "runs") render();   // refresh scores (incl. partial) + reset buttons
+        else applyJudgeAllButtons();
       },
     });
   }
 
-  async function startJudgeAll(btn) {
-    btn.disabled = "disabled";
-    btn.textContent = "Starting…";
+  async function startJudgeAll(mode) {
+    activeJudgeMode = mode;
+    const b = judgeAllModeBtn(mode);
+    if (b) { b.disabled = "disabled"; b.textContent = "Starting…"; }
+    applyJudgeAllButtons();                     // disable the other mode
     try {
-      const resp = await api.post("/api/judge/start", { target_type: "all", target_path: runsFolder, rubric: activeRubric || undefined });
+      const body = { target_type: "all", target_path: runsFolder };
+      if (mode === "w") {
+        // custom rubric from the picker, else the bundled default
+        if (activeRubric) body.rubric = activeRubric;
+        else body.use_default_rubric = true;
+      }
+      const resp = await api.post("/api/judge/start", body);
       activeJudgeJob = resp.job_id;
       judgeCancelling = false;
-      btn.disabled = null;                      // enabled so it can now cancel
-      btn.textContent = judgeProgressLabel();
+      const bb = judgeBtn(); if (bb) { bb.disabled = null; bb.textContent = judgeProgressLabel(); }
       attachJudgeStream(resp.job_id);
     } catch (e) {
       KARMA.toastError(e);
-      activeJudgeJob = null;
-      judgeCancelling = false;
-      btn.disabled = null;
-      setJudgeAllLabel(btn);
+      activeJudgeJob = null; activeJudgeMode = null; judgeCancelling = false;
+      applyJudgeAllButtons();
     }
   }
 
   // After a page refresh the backend job keeps running in its thread but the
-  // in-page state is gone. Re-adopt any running "Judge all" so the button
-  // reflects reality (and can still cancel); the SSE replay repopulates progress.
+  // in-page state is gone. Re-adopt any running "Judge all" (and its mode) so the
+  // right button reflects reality; the SSE replay repopulates progress.
   async function reattachActiveJudge() {
     if (activeJudgeJob) return;
     let jobs;
     try { jobs = await api.get("/api/judge/jobs"); } catch (_) { return; }
     const running = (jobs || []).filter((j) => j.target_type === "all" && j.status === "running");
     if (!running.length) return;
-    activeJudgeJob = running[running.length - 1].job_id;   // newest
+    const job = running[running.length - 1];   // newest
+    activeJudgeJob = job.job_id;
+    activeJudgeMode = job.has_rubric ? "w" : "wo";
     judgeCancelling = false;
-    const b = judgeBtn(); if (b) { b.disabled = null; b.textContent = judgeProgressLabel(); }
+    applyJudgeAllButtons();
     attachJudgeStream(activeJudgeJob);
   }
 
-  async function cancelJudgeAll(btn) {
+  async function cancelJudgeAll() {
     if (!activeJudgeJob) return;
     judgeCancelling = true;
-    btn.disabled = "disabled";
-    btn.textContent = "Cancelling…";
+    const b = judgeBtn();
+    if (b) { b.disabled = "disabled"; b.textContent = "Cancelling…"; }
     try {
       await api.post(`/api/judge/jobs/${activeJudgeJob}/cancel`, {});
-      // The job ends after its current run; the stream's judge_complete
-      // (status "cancelled") + onDone restore the button.
+      // The job ends after its current run; the stream's judge_complete + onDone reset.
     } catch (e) {
       KARMA.toastError(e);
       judgeCancelling = false;           // cancel POST failed -> let it keep running
-      btn.disabled = null;
-      btn.textContent = judgeProgressLabel();
+      if (b) { b.disabled = null; b.textContent = judgeProgressLabel(); }
     }
   }
 
@@ -403,11 +413,9 @@
   function openRunsFolder(folder) {
     runsFolder = folder;
     setFolderCrumb();
-    // This partial-render path (folder-row click) does not rebuild subtabs(), so
-    // refresh the "Judge all" scope label here -- unless a judge is mid-run
-    // (button disabled), where its progress text must not be clobbered.
-    const jb = document.getElementById("judge-all-btn");
-    if (jb && !jb.disabled && !activeJudgeJob) setJudgeAllLabel(jb);
+    // This partial-render path (folder-row click) does not rebuild subtabs(); the
+    // judge-all scope now lives in the button tooltips (refreshed on full render),
+    // so only the search placeholder needs updating here.
     const sb = document.getElementById("runs-search");
     if (sb) sb.placeholder = searchPlaceholder();
     const body = document.getElementById("runs-body");
