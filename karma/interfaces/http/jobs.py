@@ -89,31 +89,37 @@ def translate_ui_request(
 ) -> dict[str, Any]:
     """Return a normalized workflow dict from a raw UI form submission.
 
-    Accepts two payload shapes:
+    Accepts three payload shapes, checked in order:
+
+    *Inline workflow* (``workflow_yaml`` key present)
+        Parses and normalizes the YAML string via
+        :func:`~karma.definitions.workflows.parse_and_normalize_workflow`.
+
+    *Workflow file* (``workflow_path`` key present)
+        Loads and normalizes the named file; when *workflows_dir* is given,
+        the path is confined to that tree (absolute/``..`` paths rejected).
 
     *Single-case* (``service`` and ``case_name`` keys present)
         Calls :func:`~karma.definitions.workflows.single_case_to_workflow`
         to produce a 1-stage workflow.
 
-    *Inline workflow* (``workflow_yaml`` key present)
-        Parses and normalizes the YAML string via
-        :func:`~karma.definitions.workflows.normalize_workflow`.
-
-    In both cases the returned dict passes directly to
-    ``runtime.service.run_workflow`` or ``runtime.service.submit_run``.
+    In every case the returned dict passes directly to
+    ``runtime.service.run_workflow``.
 
     Parameters
     ----------
     payload:
         Raw dict from the HTTP request body.
     resources_dir:
-        Root resources directory forwarded to ``normalize_workflow``.
+        Root resources directory used to normalize/resolve the workflow.
+    workflows_dir:
+        When set, confines a ``workflow_path`` load to this directory tree.
 
     Raises
     ------
     ValueError
-        When required payload fields are absent or the workflow YAML is
-        unparseable.
+        When required payload fields are absent or the workflow YAML/path is
+        invalid.
     """
     if "workflow_yaml" in payload:
         return parse_and_normalize_workflow(payload["workflow_yaml"], resources_dir)

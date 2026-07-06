@@ -196,8 +196,9 @@ def list_runs(runs_dir: Path) -> list[dict[str, Any]]:
     Each entry summarizes one run directory: its status (from
     ``workflow_state.json`` or ``run.json``), stage count, the relative ``dir``
     (the grouping folder it sits under, e.g. ``examples/rabbitmq``, or ``""`` at
-    the top level), and -- when any stage has a ``judge.json`` -- the mean judge
-    score so the Judge view can list scored runs without re-reading every artifact.
+    the top level), and -- when the run is scored -- its judge score (the
+    run-level ``judge.json``, else the mean of per-stage ``judge.json``) so the
+    Judge view can list scored runs without re-reading every artifact.
     """
     runs: list[dict[str, Any]] = []
     if not runs_dir.exists():

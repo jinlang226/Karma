@@ -4,9 +4,9 @@ Async judge jobs and judge-oriented listings for the HTTP interface.
 The synchronous ``POST /api/judge`` route is fine for a one-shot call, but
 the UI needs to fire a judge run and watch it progress -- especially for a
 cross-run batch that may judge dozens of runs. This module runs judge work
-on a background thread, publishes per-stage / per-run progress to the
-shared :data:`events.hub` (keyed by judge-job id), and tracks job state so
-the UI can poll and stream just like it does for runs.
+on a background daemon thread, publishes per-run progress to the shared
+:data:`events.hub` (keyed by judge-job id), and tracks job state so the UI
+can poll and stream just like it does for runs.
 
 It also provides the browse listings the Judge view needs: the run list
 annotated with judge status, and the batch list (directories that group
@@ -34,12 +34,14 @@ _lock = threading.Lock()
 _PASS_VERDICT_THRESHOLD = 50
 
 
-def _register(job_id: str, meta: dict[str, Any]) -> None:
+def _register_judge_job(job_id: str, meta: dict[str, Any]) -> None:
+    """Register *meta* under *job_id* in the judge jobs table."""
     with _lock:
         _judge_jobs[job_id] = meta
 
 
-def _update(job_id: str, updates: dict[str, Any]) -> None:
+def _update_judge_job(job_id: str, updates: dict[str, Any]) -> None:
+    """Apply *updates* to the entry for *job_id*. No-op when not found."""
     with _lock:
         if job_id in _judge_jobs:
             _judge_jobs[job_id].update(updates)
@@ -266,10 +268,12 @@ def start_judge_job(
 ) -> str:
     """Start an async judge job and return its id immediately.
 
-    *target_type* is ``"run"`` (judge every stage of one run dir) or
-    ``"batch"`` (judge every run under a batch dir). Progress streams to
-    the hub under the returned job id; the final result is stored on the
-    job and a terminal ``judge_complete`` event closes the stream.
+    *target_type* is ``"run"`` (score one run dir), ``"batch"`` (score every
+    run under a batch dir), or ``"all"`` (score every unscored run under
+    *runs_dir*, narrowed to the subfolder named by *target_path* when given).
+    An optional *rubric* is threaded to the scorer. Progress streams to the
+    hub under the returned job id; the final result is stored on the job and a
+    terminal ``judge_complete`` event closes the stream.
 
     Raises
     ------
@@ -327,7 +331,7 @@ def start_judge_job(
                 )
 
     job_id = generate_run_id(f"judge-{target_type}")
-    _register(job_id, {
+    _register_judge_job(job_id, {
         "job_id": job_id,
         "kind": "judge",
         "target_type": target_type,
@@ -347,12 +351,12 @@ def start_judge_job(
             final_status = ("cancelled"
                             if isinstance(result, dict) and result.get("cancelled")
                             else "complete")
-            _update(job_id, {"status": final_status, "result": result})
+            _update_judge_job(job_id, {"status": final_status, "result": result})
             hub.publish(job_id, {
                 "type": "judge_complete", "job_id": job_id, "status": final_status,
             })
         except Exception as exc:
-            _update(job_id, {"status": "error", "error": str(exc)})
+            _update_judge_job(job_id, {"status": "error", "error": str(exc)})
             hub.publish(job_id, {
                 "type": "judge_complete", "job_id": job_id,
                 "status": "error", "error": str(exc),

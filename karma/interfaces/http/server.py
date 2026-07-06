@@ -44,12 +44,11 @@ def create_app(
     workflows_dir: Path | None = None,
     static_dir: Path | None = None,
 ) -> Any:
-    """Create and return the WSGI application instance.
+    """Create and return the Flask application instance.
 
-    Registers all REST and SSE routes. Static files are served from
-    *static_dir* (defaults to ``karma/webui/`` relative to this package).
-    Each POST /api/run call creates a per-request event queue that is
-    kept in a closure-local dict for the matching SSE stream endpoint.
+    Registers all REST and SSE routes. Run and judge progress both stream
+    through the single shared :data:`events.hub`; the SSE endpoints subscribe
+    to it by run/job id. Static files are served from *static_dir*.
 
     Parameters
     ----------
@@ -57,9 +56,11 @@ def create_app(
         Root resources directory used for case discovery.
     runs_dir:
         Root runs directory used for artifact storage.
+    workflows_dir:
+        Directory of saved workflow files (defaults to ``workflows/``).
     static_dir:
-        Directory from which static files are served. Defaults to
-        ``karma/webui/``.
+        Directory from which static files are served. Defaults to the
+        repository-root ``webui/``.
     """
     try:
         from flask import Flask, jsonify, request, Response, send_from_directory

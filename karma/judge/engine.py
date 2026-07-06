@@ -51,6 +51,9 @@ def run_judge(
         Root directory of the run to evaluate.
     stage_id:
         ID of the stage to evaluate.
+    rubric:
+        Explicit rubric to score against. When given it wins; otherwise the
+        per-stage rubric is loaded from disk (and *rubric_overrides* applied).
     rubric_overrides:
         Optional rubric overrides merged on top of the base rubric via
         ``judge.rubric.merge_rubric_overrides``.
