@@ -47,6 +47,10 @@ _DEFAULT_RUBRIC_PATH = str(
 _DEFAULT_REGRESSION_PROMPT_PATH = str(
     Path(__file__).resolve().parents[3] / "docs" / "example-regression-prompt.md"
 )
+# Default agent system prompt (harness contract); the --system-prompt default.
+_DEFAULT_SYSTEM_PROMPT_PATH = str(
+    Path(__file__).resolve().parents[3] / "docs" / "default-system-prompt.md"
+)
 from ...definitions.workflows import load_workflow_file, normalize_workflow
 
 
@@ -185,6 +189,10 @@ def _build_parser() -> argparse.ArgumentParser:
                     help="persistent (default): ONE agent conversation resumed across "
                          "every stage; per_stage: a fresh agent each stage. Overrides "
                          "the workflow's spec.agent_session.")
+    wf.add_argument("--system-prompt", default=_DEFAULT_SYSTEM_PROMPT_PATH, metavar="FILE",
+                    help="Base system prompt sent to every agent each stage (defaults "
+                         "to docs/default-system-prompt.md, the harness contract). The "
+                         "workflow's spec.system_prompt is appended to it.")
     wf.add_argument("--stage-failure-mode", choices=["terminate", "continue"],
                     default="terminate",
                     help="terminate (fail-fast) or continue past a failed stage.")
@@ -396,6 +404,21 @@ def _apply_timeout_overrides(args: argparse.Namespace) -> None:
         _settings.oracle_timeout_sec = args.verify_timeout
 
 
+def _read_system_prompt_arg(args: argparse.Namespace) -> str | None:
+    """Read the --system-prompt file (defaults to the harness contract).
+
+    Returns the file's text, or None if the path is missing/unreadable (the
+    service then falls back to its built-in default).
+    """
+    path = getattr(args, "system_prompt", None)
+    if path and Path(path).exists():
+        try:
+            return Path(path).read_text()
+        except OSError:
+            return None
+    return None
+
+
 def _cmd_run_workflow(args: argparse.Namespace) -> None:
     """Handle the ``run-workflow`` subcommand."""
     profile = load_profile(args.profile) if args.profile else {}
@@ -429,6 +452,7 @@ def _cmd_run_workflow(args: argparse.Namespace) -> None:
         final_sweep_mode=args.final_sweep_mode,
         sandbox_options=_build_sandbox_options(args),
         agent_session=args.agent_session,
+        system_prompt=_read_system_prompt_arg(args),
     )
     _print_result(result, args.output)
     if getattr(args, "judge", False):

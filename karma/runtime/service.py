@@ -28,6 +28,27 @@ from ..agents.registry import resolve_agent
 from ..protocol import generate_run_id, run_config_path
 from .workflow import run_workflow_loop
 
+# Default system prompt (the harness contract) applied to every run's agents.
+# The workflow's spec.system_prompt is APPENDED to this; a CLI --system-prompt
+# replaces this base. Sourced from docs/ so it's editable, with a constant fallback.
+_DEFAULT_SYSTEM_PROMPT_PATH = Path(__file__).resolve().parents[2] / "docs" / "default-system-prompt.md"
+_BUILTIN_DEFAULT_SYSTEM_PROMPT = (
+    "You are running in a single, non-interactive session. There are no background "
+    "tasks, scheduled wakeups, or re-invocations: when you end your turn the process "
+    "exits and your work stops permanently. If you start any asynchronous operation, "
+    "you MUST poll it to completion synchronously within this turn (loop with sleep "
+    "until it is done). Do not end your turn until the entire task is fully complete "
+    "and you have verified the end state."
+)
+
+
+def _default_system_prompt() -> str:
+    """Return the base system prompt (docs/default-system-prompt.md, else builtin)."""
+    try:
+        return _DEFAULT_SYSTEM_PROMPT_PATH.read_text().strip()
+    except OSError:
+        return _BUILTIN_DEFAULT_SYSTEM_PROMPT
+
 
 # ---------------------------------------------------------------------------
 # Run status registry
@@ -72,6 +93,7 @@ def run_workflow(
     final_sweep_mode: str = "auto",
     sandbox_options: dict[str, Any] | None = None,
     agent_session: str | None = None,
+    system_prompt: str | None = None,
 ) -> dict[str, Any]:
     """Execute a workflow synchronously and return the final run result.
 
@@ -178,8 +200,14 @@ def run_workflow(
         # default (persistent: one agent conversation from the first stage to the last).
         agent_session = str(agent_session or workflow.get("agent_session") or "persistent")
         session_id = str(uuid.uuid4()) if agent_session == "persistent" else None
-        # Optional workflow-level system prompt, delivered to every agent per stage.
-        system_prompt = workflow.get("system_prompt") or None
+        # System prompt delivered to every agent each stage = a base (the CLI
+        # --system-prompt override, else the built-in default harness contract)
+        # with the workflow's own spec.system_prompt APPENDED to it.
+        base_prompt = (system_prompt or _default_system_prompt()).rstrip()
+        append_prompt = (workflow.get("system_prompt") or "").strip()
+        effective_system_prompt = (
+            base_prompt + "\n\n" + append_prompt if append_prompt else base_prompt
+        )
 
         result = run_workflow_loop(
             rows,
@@ -192,7 +220,7 @@ def run_workflow(
             prompt_mode=prompt_mode,
             agent_session=agent_session,
             session_id=session_id,
-            system_prompt=system_prompt,
+            system_prompt=effective_system_prompt,
             on_stage_complete=on_stage_complete,
             on_progress=on_progress,
             should_cancel=should_cancel,
