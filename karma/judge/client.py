@@ -38,6 +38,14 @@ _DEFAULT_MAX_RETRIES = 3
 _RETRY_BASE_DELAY_SEC = 2.0
 
 
+class JudgeLLMUnavailable(RuntimeError):
+    """The judge LLM cannot be reached at all (e.g. no API key resolved).
+
+    Distinct from a per-stage grading error: it means NO judge call can
+    succeed, so callers abort rather than fall back to fabricated scores.
+    """
+
+
 def _resolve_backend(backend: str | None, api_key: str | None) -> str:
     """Pick the judge backend: 'openai' or 'claude_cli'.
 
@@ -114,7 +122,7 @@ def _build_client(
         or os.environ.get("KARMA_JUDGE_API_KEY")
     )
     if not key:
-        raise RuntimeError(
+        raise JudgeLLMUnavailable(
             "no API key found for judge LLM. "
             "Set OPENAI_API_KEY or KARMA_JUDGE_API_KEY in the environment."
         )
