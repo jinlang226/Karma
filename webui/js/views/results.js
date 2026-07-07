@@ -794,8 +794,15 @@
     // (a later stage legitimately changed the same state).
     const sweep = d.regression_sweep;
     if (sweep && Object.keys(sweep).length) {
+      // Adjudication verdicts live in whichever judge ran. Prefer the w/o-rubric
+      // breakdown, but fall back to the rubric one -- otherwise a run judged ONLY
+      // with the rubric shows the sweep failures with no judge verdict, looking
+      // as if the regression LLM judge never ran (it did; the verdicts + the
+      // shared regression_adjudication.json agree between the two modes).
       const adj = {};
-      (d.judge_breakdown && d.judge_breakdown.regressions || []).forEach((r) => { adj[r.stage_id] = r; });
+      const regs = (d.judge_breakdown && d.judge_breakdown.regressions)
+        || (d.judge_rubric_breakdown && d.judge_rubric_breakdown.regressions) || [];
+      regs.forEach((r) => { adj[r.stage_id] = r; });
       const rp = el("div", { class: "panel" });
       rp.appendChild(el("h3", {}, "Regression sweep"));
       const regressed = Object.values(sweep).filter((v) => v && v.verdict !== "pass").length;
