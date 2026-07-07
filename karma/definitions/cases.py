@@ -611,12 +611,26 @@ def normalize_oracle_config(case_data: dict[str, Any]) -> dict[str, Any]:
     if isinstance(raw.get("script"), str):
         script_path = raw["script"].strip() or None
 
+    # Case-authored convergence retries for the verify: an eventually-consistent
+    # check (e.g. "all pods Ready") can author retries: N / interval_sec so the
+    # oracle re-runs the verify on FAIL instead of losing the race once. Default
+    # 1 (single check) keeps existing behavior for cases that don't ask for it.
+    # (The precondition normalizer honors the same keys; the oracle side dropped
+    # them silently -- M6.)
+    retries = _coerce_int(verify_block.get("retries"), default=1)
+    interval_sec = _coerce_float(
+        verify_block.get("interval_sec") or verify_block.get("intervalSec"),
+        default=2.0,
+    )
+
     return {
         "verify_commands": verify_commands,
         "before_commands": before_commands,
         "after_commands": after_commands,
         "after_failure_mode": after_failure_mode,
         "script_path": script_path,
+        "verify_retries": max(1, retries),
+        "verify_interval_sec": max(0.0, interval_sec),
     }
 
 
