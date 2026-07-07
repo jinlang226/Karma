@@ -842,7 +842,9 @@
       api.stream(`/api/judge/jobs/${job_id}/stream`, {
         statusPath: `/api/judge/jobs/${job_id}`,
         onEvent: (ev) => {
-          if (ev.type === "judge_progress") {
+          if (ev.type === "judge_log") {
+            log.textContent += ev.line + "\n";           // detailed per-line judge log
+          } else if (ev.type === "judge_progress") {
             const where = ev.stage_id ? `${ev.run_id}/${ev.stage_id}` : ev.run_id;
             const extra = ev.message ? "  " + ev.message : "";
             log.textContent += `  ${where}: verdict=${ev.verdict ?? "-"} score=${ev.score ?? "-"}${extra}\n`;
