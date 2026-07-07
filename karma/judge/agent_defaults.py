@@ -54,7 +54,7 @@ def resolve_agent_judge_defaults(run_dir: Path) -> dict[str, Any]:
         # its endpoint exactly so the judge hits the same model.
         out: dict[str, Any] = {
             "backend": "openai",
-            "model": os.environ.get("KARMA_API_MODEL") or "deepseek-chat",
+            "model": os.environ.get("KARMA_API_MODEL") or "deepseek-v4-flash",
             "base_url": os.environ.get("KARMA_API_BASE_URL") or "https://api.deepseek.com",
         }
         api_key = (
