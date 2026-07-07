@@ -34,6 +34,7 @@ from typing import Any
 
 from .client import call_judge_llm
 from .scoring import _extract_json
+from .rubric import rubric_hash as _rubric_hash
 
 # Cap each stage prompt included in the adjudicator context (keep the call bounded).
 _PROMPT_CAP = 2000
@@ -249,6 +250,9 @@ def score_run(
         "base_score": base_score,
         "all_passed": total > 0 and passed == total,
         "stage_scores": stage_scores,
+        # Stamp the rubric's content hash so a later judge can tell the score is
+        # stale when the rubric changed (see judging._judge_is_current).
+        "rubric_hash": _rubric_hash(rubric) if scored_with_rubric else None,
         "regression_sweep_run": False,
         "regression_failures": 0,
         "legitimate_regressions": 0,
