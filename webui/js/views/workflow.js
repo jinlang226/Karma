@@ -555,13 +555,15 @@
       "and Concatenated (blind) sends the full history untagged."));
     panel.appendChild(top);
 
-    // Optional workflow-level system prompt, sent to every agent each stage.
-    const sysInput = el("textarea", { rows: "3", class: "wf-system-prompt",
-      placeholder: "Optional system prompt sent to every agent each stage — for "
-        + "experiments (e.g. \"a regression sweep will re-check every earlier stage "
-        + "at the end\"). Do not describe how to submit; the harness handles that." });
+    // Optional workflow-level system prompt, APPENDED to the default (harness
+    // contract) and sent to every agent each stage.
+    const sysInput = el("textarea", { rows: "4", class: "wf-system-prompt",
+      placeholder: "Optional — appended to the default system prompt and sent to every "
+        + "agent each stage (for experiments, e.g. \"a regression sweep will re-check "
+        + "every earlier stage\"). Don't describe how to submit; the harness handles that." });
+    sysInput.addEventListener("input", () => autosize(sysInput));
     panel.appendChild(el("div", { style: "margin-top:10px" },
-      el("label", {}, "System Prompt (optional)"), sysInput));
+      el("label", {}, "System Prompt (optional — appended to the default)"), sysInput));
 
     panel.appendChild(el("h3", {}, "Stages"));
     panel.appendChild(el("p", { class: "field-help" },
