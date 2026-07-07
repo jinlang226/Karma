@@ -658,27 +658,11 @@
     root.appendChild(judgeLog);
 
     // Rubric per-stage scores (present only when the run was judged w/ a rubric)
-    // are shown inline under each stage in Stage results, not as a separate panel.
+    // are surfaced inside each stage's row in Stage results (a badge + a section
+    // in "view details"), via KARMA.stageDetail below.
     const rbBreakdown = d.judge_rubric_breakdown;
     const rubricByStage = {};
     ((rbBreakdown && rbBreakdown.stage_scores) || []).forEach((e) => { if (e.stage_id) rubricByStage[e.stage_id] = e; });
-    const scorePct = (v) => (typeof v === "number") ? Math.round((v <= 1 ? v * 100 : v)) : null;
-    function stageRubricBlock(e) {
-      const pct = scorePct(e.score);
-      const badges = el("div", { class: "sweep-verdicts" });
-      if (e.regressed) badges.appendChild(el("span", { class: "badge bad" }, "regressed → 0"));
-      badges.appendChild(el("span", { class: "badge " + (pct == null ? "" : pct >= 80 ? "ok" : pct >= 50 ? "warn" : "bad") },
-        "rubric: " + (pct == null ? "—" : pct + "%")));
-      const wrap = el("div", { class: "stage-rubric" },
-        el("div", { class: "stage-rubric-head" }, el("span", { class: "stage-rubric-title" }, "Rubric score"), badges));
-      (e.items || []).forEach((it) => {
-        const iscore = (typeof it.score === "number") ? Math.round(it.score * 100) + "%" : "—";
-        wrap.appendChild(el("div", { class: "rubric-item" },
-          el("span", { class: "rubric-item-id" }, `${it.id}: ${iscore}`),
-          it.reasoning ? el("span", { class: "muted rubric-item-reason" }, " — " + it.reasoning) : null));
-      });
-      return wrap;
-    }
 
     const stagesPanel = el("div", { class: "panel" });
     stagesPanel.appendChild(el("h3", {}, "Stage results"));
@@ -695,11 +679,7 @@
       clear(host);
       const list = Object.values(byId);
       if (!list.length) { host.appendChild(el("p", { class: "muted" }, "No stages yet.")); return; }
-      for (const s of list) {
-        host.appendChild(KARMA.stageDetail(runId, s));
-        const rb = rubricByStage[s.stage_id];
-        if (rb && Array.isArray(rb.items) && rb.items.length) host.appendChild(stageRubricBlock(rb));
-      }
+      for (const s of list) host.appendChild(KARMA.stageDetail(runId, s, rubricByStage[s.stage_id]));
     }
     renderStages();
 

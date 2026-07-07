@@ -170,34 +170,69 @@
       el("pre", { class: "log" }, text));
   }
 
-  // A failure-detail block for one stage: status + error inline, plus a lazy
-  // "view logs" expander that pulls the triggering precondition command, the
-  // oracle output, and the agent log from /api/run/<id>/stages/<stage_id>.
-  // `stage` is the stage object from a stage_complete event.
-  KARMA.stageDetail = function stageDetail(runId, stage) {
+  // A detail block for one stage: Oracle (and, when present, Rubric) verdict
+  // badges on the banner, plus a lazy "view details" expander with the rubric
+  // judge section then the triggering precondition command, the oracle output,
+  // and the agent log from /api/run/<id>/stages/<stage_id>. `stage` is the stage
+  // object from a stage_complete event; `rubric` is its per-stage rubric entry.
+  // The rubric-judge detail for one stage: an overview of each item's score,
+  // then the judge's reasoning in a scrollable block (same pattern as the other
+  // log fields). Built from in-memory data -- no fetch needed.
+  function rubricDetailSection(rubric) {
+    const sec = el("div", { class: "rubric-detail" });
+    sec.appendChild(el("div", { class: "log-block-title" }, "Rubric judge"));
+    const overview = el("div", { class: "rubric-overview" });
+    (rubric.items || []).forEach((it) => {
+      const pct = (typeof it.score === "number") ? Math.round(it.score * 100) + "%" : "—";
+      overview.appendChild(el("span", { class: "rubric-item-id" }, it.id + ": " + pct));
+    });
+    sec.appendChild(overview);
+    const reasons = (rubric.items || []).map((it) => {
+      const pct = (typeof it.score === "number") ? Math.round(it.score * 100) + "%" : "—";
+      return `${it.id} (${pct}): ${it.reasoning || "(no reasoning)"}`;
+    }).join("\n\n");
+    sec.appendChild(logBlock("Judge reasoning", reasons));
+    return sec;
+  }
+
+  KARMA.stageDetail = function stageDetail(runId, stage, rubric) {
     const sid = stage.stage_id || "?";
     const st = KARMA.labels && KARMA.labels.status
       ? KARMA.labels.status(stage.status) : { text: stage.status, cls: "bad" };
     const wrap = el("div", { class: "stage-detail " + (st.cls || "bad") });
+
+    // Verdict badges pushed to the right of the banner: ORACLE (rightmost), and
+    // -- when a rubric judge has run for this stage -- RUBRIC beside it, same
+    // shape but a distinct color.
+    const verdict = String(stage.oracle_verdict || stage.status || "?");
+    const badges = el("div", { class: "stage-verdicts" });
+    if (rubric && typeof rubric.score === "number") {
+      const pct = Math.round((rubric.score <= 1 ? rubric.score * 100 : rubric.score));
+      badges.appendChild(el("span", { class: "badge verdict-badge rubric-verdict" }, "Rubric: " + pct + "%"));
+    }
+    badges.appendChild(el("span", { class: "badge verdict-badge " + (st.cls || "bad") }, "Oracle: " + verdict));
+
     wrap.appendChild(el("div", { class: "stage-detail-head" },
-      el("strong", {}, KARMA.humanize(sid)),
-      el("span", { class: "badge " + (st.cls || "bad") }, st.text || stage.status || "?"),
-      stage.oracle_verdict ? el("span", { class: "muted" }, "oracle: " + stage.oracle_verdict) : null));
+      el("strong", {}, KARMA.humanize(sid)), badges));
     if (stage.error) wrap.appendChild(el("div", { class: "stage-error" }, stage.error));
 
+    const hasRubric = !!(rubric && Array.isArray(rubric.items) && rubric.items.length);
     const body = el("div", { class: "stage-logs", style: "display:none" });
     let loaded = false;
-    const toggle = el("button", { class: "btn secondary small" }, "▸ view logs");
+    const toggle = el("button", { class: "btn secondary small" }, "▸ view details");
     toggle.addEventListener("click", async () => {
       const open = body.style.display === "none";
       body.style.display = open ? "" : "none";
-      toggle.textContent = open ? "▾ hide logs" : "▸ view logs";
+      toggle.textContent = open ? "▾ hide details" : "▸ view details";
       if (!open || loaded) return;
       loaded = true;
-      body.appendChild(el("span", { class: "muted" }, "Loading…"));
+      // Rubric judge detail first (from in-memory data), then the fetched logs.
+      if (hasRubric) body.appendChild(rubricDetailSection(rubric));
+      const loading = el("span", { class: "muted" }, "Loading…");
+      body.appendChild(loading);
       try {
         const d = await KARMA.api.get(`/api/run/${runId}/stages/${sid}`);
-        clear(body);
+        loading.remove();
         if (d.precondition_log)
           body.appendChild(logBlock("Setup (the command that triggered the failure)", d.precondition_log));
         if (d.oracle) {
@@ -206,10 +241,10 @@
             o.output || JSON.stringify(o, null, 2)));
         }
         if (d.agent_log) body.appendChild(logBlock("Agent log", d.agent_log));
-        if (!d.precondition_log && !d.oracle && !d.agent_log)
+        if (!d.precondition_log && !d.oracle && !d.agent_log && !hasRubric)
           body.appendChild(el("p", { class: "muted" }, "No logs captured for this stage."));
       } catch (e) {
-        clear(body);
+        loading.remove();
         body.appendChild(el("div", { class: "error-box" }, e.message));
       }
     });
