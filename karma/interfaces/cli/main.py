@@ -266,7 +266,7 @@ def _build_parser() -> argparse.ArgumentParser:
     jg.add_argument("--rubric", nargs="?", const=_DEFAULT_RUBRIC_PATH, default=None,
                     metavar="FILE",
                     help="Score each oracle-passing stage 0-1 against a rubric file "
-                         "(YAML/JSON: weighted items summing to 1.0 + passing_threshold) "
+                         "(YAML/JSON: weighted items summing to 1.0) "
                          "instead of flat full marks. Bare --rubric uses the bundled "
                          "docs/example-rubric.yaml.")
     jg.add_argument("--fail-open", dest="fail_open", action="store_true", default=True,
