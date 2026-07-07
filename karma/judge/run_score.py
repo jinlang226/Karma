@@ -126,8 +126,14 @@ def score_run(
     judge_timeout_sec: int | None = None,
     judge_max_retries: int | None = None,
     dry_run: bool = False,
+    should_cancel=None,
 ) -> dict[str, Any]:
     """Compute the run-level score and write ``{run_dir}/judge.json``.
+
+    *should_cancel*, when given, is a zero-arg callable polled between the LLM
+    calls (each rubric stage grade and each regression adjudication). If it
+    returns true, scoring stops and returns ``{"cancelled": True, ...}`` WITHOUT
+    writing any judge artifact, so a cancelled judge leaves the prior score intact.
 
     Returns the result dict (see module docstring for the scoring model). When
     *dry_run* is true, the adjudicator prompts are assembled and returned but no
@@ -172,6 +178,9 @@ def score_run(
             contributions[sid] = 1.0
             entry["score"] = 1.0
         else:
+            if should_cancel and should_cancel():
+                return {"cancelled": True, "score": None,
+                        "summary": "judging cancelled before completion"}
             from .engine import run_judge
             try:
                 res = run_judge(
@@ -298,6 +307,9 @@ def score_run(
     regressions: list[dict[str, Any]] = []
     model_used: str | None = None
     for sid, v in failures:
+        if should_cancel and should_cancel():
+            return {"cancelled": True, "score": None,
+                    "summary": "judging cancelled before completion"}
         output = (v or {}).get("output") or ""
         prompt = _build_adjudication_prompt(run_dir, sid, output, ordered_ids)
         try:

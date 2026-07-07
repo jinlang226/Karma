@@ -636,9 +636,38 @@
         ? "This run was interrupted — there is no complete outcome to judge."
         : "This run has an unknown status — there is no recorded outcome to judge."));
     } else if (isTerminal(d.status)) {
-      actions.appendChild(el("button", { class: "btn", title: "Objective stage-pass score + regression adjudication", onClick: () => startJudge("run", runId, false, judgeLog, false) }, "Judge w/o Rubric"));
-      actions.appendChild(el("button", { class: "btn", title: "LLM-score each oracle-passing stage against the rubric (picker, else the bundled example)", onClick: () => startJudge("run", runId, false, judgeLog, true) }, "Judge w/ Rubric"));
-      actions.appendChild(el("button", { class: "btn secondary", title: "Assemble the judge without calling the LLM or writing results", onClick: () => startJudge("run", runId, true, judgeLog, false) }, "Dry run"));
+      // The judge buttons share one in-flight slot: while a judge runs its own
+      // button becomes "Cancel judging…" (click to stop) and the others are
+      // disabled. Cancel stops a long rubric judge between stages.
+      let judgeJob = null;      // active judge job_id, or null when idle
+      let runningBtn = null;    // the button that started it
+      const jbtns = [];
+      const restoreJudge = () => {
+        judgeJob = null; runningBtn = null;
+        jbtns.forEach((b) => { b.disabled = null; b.textContent = b._label; });
+      };
+      const cancelJudge = async (b) => {
+        b.disabled = "disabled"; b.textContent = "Cancelling…";
+        try { await api.post(`/api/judge/jobs/${judgeJob}/cancel`, {}); }
+        catch (e) { KARMA.toastError(e); b.disabled = null; b.textContent = "Cancel judging…"; }
+      };
+      const mkJudge = (label, cls, tip, dryRun, withRubric) => {
+        const b = el("button", { class: cls, title: tip, onClick: () => {
+          if (judgeJob) { if (b === runningBtn) cancelJudge(b); return; }
+          jbtns.forEach((o) => { if (o !== b) o.disabled = "disabled"; });
+          b.textContent = "Starting…";
+          startJudge("run", runId, dryRun, judgeLog, withRubric, {
+            onJob: (id) => { judgeJob = id; runningBtn = b; b.disabled = null; b.textContent = "Cancel judging…"; },
+            onEnd: restoreJudge,
+          });
+        } }, label);
+        b._label = label;
+        jbtns.push(b);
+        return b;
+      };
+      actions.appendChild(mkJudge("Judge w/o Rubric", "btn", "Objective stage-pass score + regression adjudication", false, false));
+      actions.appendChild(mkJudge("Judge w/ Rubric", "btn", "LLM-score each oracle-passing stage against the bundled example rubric", false, true));
+      actions.appendChild(mkJudge("Dry run", "btn secondary", "Assemble the judge without calling the LLM or writing results", true, false));
     } else {
       const cancelBtn = el("button", { class: "btn secondary" }, "Cancel");
       cancelBtn.addEventListener("click", () => {
@@ -800,13 +829,15 @@
   }
 
   // --- Judge (job + stream) -- reused from the old Judge view ----------------
-  async function startJudge(targetType, targetPath, dryRun, log, withRubric) {
+  async function startJudge(targetType, targetPath, dryRun, log, withRubric, hooks) {
+    hooks = hooks || {};
     log.style.display = "";
     log.textContent = `${dryRun ? "Dry-" : ""}judging ${targetPath}${withRubric ? " (w/ rubric)" : ""}\n`;
     try {
       const body = { target_type: targetType, target_path: targetPath, dry_run: dryRun };
       if (withRubric) body.use_default_rubric = true;  // score against the bundled example
       const { job_id } = await api.post("/api/judge/start", body);
+      if (hooks.onJob) hooks.onJob(job_id);            // lets the caller flip its button to Cancel
       log.textContent += "job " + job_id + "\n";
       api.stream(`/api/judge/jobs/${job_id}/stream`, {
         statusPath: `/api/judge/jobs/${job_id}`,
@@ -817,9 +848,11 @@
             log.textContent += `  ${where}: verdict=${ev.verdict ?? "-"} score=${ev.score ?? "-"}${extra}\n`;
           } else if (ev.type === "judge_complete") {
             log.textContent += `judge ${ev.status}\n`;
-            KARMA.toast("Judge " + (ev.status || "complete"), ev.status === "error" ? "error" : "success");
-            // Reload the detail so the new test score appears beside the heading.
-            if (targetType === "run" && !dryRun && ev.status !== "error") {
+            KARMA.toast("Judge " + (ev.status || "complete"),
+              ev.status === "error" ? "error" : (ev.status === "cancelled" ? "info" : "success"));
+            // Reload the detail so the new score appears (skip on cancel: nothing
+            // was written, so keep the buttons as-is via onEnd instead).
+            if (targetType === "run" && !dryRun && ev.status === "complete") {
               setTimeout(() => { if (sub === "runs") renderDetail(targetPath); }, 600);
             }
           }
@@ -829,12 +862,14 @@
         onDone: () => {
           log.textContent += "— judge stream ended —\n";
           if (targetType === "run") lastJudgeLog[targetPath] = log.textContent;
+          if (hooks.onEnd) hooks.onEnd();               // restore the buttons
         },
       });
     } catch (e) {
       log.textContent += "Error: " + e.message + "\n";
       if (targetType === "run") lastJudgeLog[targetPath] = log.textContent;
       KARMA.toastError(e);
+      if (hooks.onEnd) hooks.onEnd();
     }
   }
 
