@@ -23,8 +23,24 @@ Rubric schema::
 
 from __future__ import annotations
 
+import hashlib
+import json
 from pathlib import Path
 from typing import Any
+
+
+def rubric_hash(rubric: dict[str, Any] | None) -> str | None:
+    """Return a stable content hash of *rubric*, or None when there is no rubric.
+
+    Used to detect that a rubric changed since a run was last scored (so the
+    rubric result is stale and should be re-judged), independent of any file
+    path -- covers both the bundled default and a custom CLI rubric.
+    """
+    if not rubric:
+        return None
+    return hashlib.sha256(
+        json.dumps(rubric, sort_keys=True, default=str).encode("utf-8")
+    ).hexdigest()
 
 
 def load_rubric(

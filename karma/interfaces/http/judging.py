@@ -21,6 +21,7 @@ from typing import Any
 
 from ...protocol import generate_run_id
 from ...judge.engine import run_judge
+from ...judge.rubric import rubric_hash
 from ...judge.batch import discover_runs, judge_batch_dir
 from .events import hub
 from . import catalog
@@ -93,7 +94,7 @@ def _judge_run_streaming(
     # Make-style skip: if the existing score is newer than every run input, the
     # run is already up to date -- don't spend LLM calls re-judging it.
     base_name = "judge_rubric" if rubric is not None else "judge"
-    if not dry_run and _judge_is_current(run_dir, base_name):
+    if not dry_run and _judge_is_current(run_dir, base_name, rubric_hash(rubric)):
         existing = catalog._read_json(run_dir / f"{base_name}.json")
         hub.publish(job_id, {
             "type": "judge_progress", "job_id": job_id, "run_id": run_dir.name,
@@ -149,21 +150,30 @@ def _run_input_mtime(run_dir: Path) -> float:
     return latest
 
 
-def _judge_is_current(run_dir: Path, base_name: str = "judge") -> bool:
-    """True if ``{base_name}.json`` exists and is newer than every run input.
+def _judge_is_current(
+    run_dir: Path, base_name: str = "judge", rubric_hash: str | None = None,
+) -> bool:
+    """True if ``{base_name}.json`` is up to date for the requested judge.
 
-    Make-style staleness: the judge result is up to date when it was written after
-    the last change to any artifact it scored, so re-running Judge is a no-op. A
-    missing result, or one older than some input (e.g. the run was re-executed),
-    returns False -> re-judge.
+    Make-style staleness: the result is up to date when it was written after the
+    last change to any artifact it scored (mtime vs the newest run input). For a
+    rubric score, the rubric lives OUTSIDE runs/, so we additionally require the
+    stored ``rubric_hash`` to match the rubric being requested -- a changed rubric
+    makes the result stale even though no run file moved. Missing / older /
+    hash-mismatch all return False -> re-judge.
     """
     target = run_dir / f"{base_name}.json"
     if not target.exists():
         return False
     try:
-        return target.stat().st_mtime >= _run_input_mtime(run_dir)
+        if target.stat().st_mtime < _run_input_mtime(run_dir):
+            return False
     except OSError:
         return False
+    if rubric_hash is not None:
+        if catalog._read_json(target).get("rubric_hash") != rubric_hash:
+            return False
+    return True
 
 
 def _run_needs_llm(run_dir: Path, rubric: dict[str, Any] | None = None) -> bool:
@@ -222,6 +232,7 @@ def _judge_all_streaming(
     # Skip runs already scored *in this mode* (objective vs rubric are separate
     # artifacts), so "Judge all w/ Rubric" doesn't skip runs scored only w/o.
     base_name = "judge_rubric" if rubric else "judge"
+    rhash = rubric_hash(rubric)
     worklist: list[Path] = []
     already_scored = 0
     not_judgeable = 0
@@ -235,8 +246,8 @@ def _judge_all_streaming(
             not_judgeable += 1
             continue
         # Make-style: skip only runs whose score is up to date; a stale one (its
-        # inputs changed since the last judge) is re-judged.
-        if _judge_is_current(rd, base_name):
+        # inputs OR the rubric changed since the last judge) is re-judged.
+        if _judge_is_current(rd, base_name, rhash):
             already_scored += 1
             continue
         worklist.append(rd)
