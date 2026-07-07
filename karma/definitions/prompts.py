@@ -129,22 +129,3 @@ def assemble_agent_prompt(
         assembled = assembled + "\n\n" + adversary_hint.strip()
 
     return assembled
-
-
-def render_workflow_system_prompt(
-    workflow: dict[str, Any],
-    *,
-    variables: dict[str, str] | None = None,
-) -> str | None:
-    """Return the rendered workflow-level system prompt, or ``None``.
-
-    Returns ``None`` when the workflow declares no system prompt. Used by
-    ``runtime.workflow`` to prepend a shared instruction block to each
-    stage prompt in multi-stage runs.
-    """
-    template = str((workflow.get("spec") or {}).get("system_prompt") or "").strip()
-    if not template:
-        return None
-    builtins: dict[str, str] = {"workflow_id": str(workflow.get("id") or "")}
-    merged = {**builtins, **(variables or {})}
-    return _expand_placeholders(template, merged)
