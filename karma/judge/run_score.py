@@ -138,6 +138,13 @@ def _parse_adjudication(content: str) -> dict[str, Any]:
     if not isinstance(obj, dict):
         return {"legitimate_regression": True, "reasoning": "unparseable adjudication; kept as regression"}
     val = obj.get("legitimate_regression")
+    if val is None:
+        # A dict with no verdict key is as unusable as a non-dict: keep the
+        # penalty (conservative), per the docstring. The old bug read the missing
+        # key as False -> bool(None) -> forgave the regression, letting a
+        # malformed-but-dict response (or a prompt-injected one) score the run 100.
+        return {"legitimate_regression": True,
+                "reasoning": "adjudication missing 'legitimate_regression'; kept as regression"}
     if isinstance(val, str):
         val = val.strip().lower() in ("true", "yes", "1")
     return {
