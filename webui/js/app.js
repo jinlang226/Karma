@@ -206,9 +206,17 @@
     // shape but a distinct color.
     const verdict = String(stage.oracle_verdict || stage.status || "?");
     const badges = el("div", { class: "stage-verdicts" });
-    if (rubric && typeof rubric.score === "number") {
-      const pct = Math.round((rubric.score <= 1 ? rubric.score * 100 : rubric.score));
-      badges.appendChild(el("span", { class: "badge verdict-badge rubric-verdict" }, "Rubric: " + pct + "%"));
+    if (rubric && (typeof rubric.score === "number" || rubric.status)) {
+      // A stage that failed its oracle is never rubric-graded (it just scores 0
+      // objectively), so show "N/A" rather than a misleading "0%".
+      const oracleFailed = (rubric.status && rubric.status !== "pass")
+        || String(stage.oracle_verdict || stage.status) === "fail";
+      if (oracleFailed) {
+        badges.appendChild(el("span", { class: "badge verdict-badge rubric-na" }, "Rubric: N/A"));
+      } else {
+        const pct = Math.round((rubric.score <= 1 ? rubric.score * 100 : rubric.score));
+        badges.appendChild(el("span", { class: "badge verdict-badge rubric-verdict" }, "Rubric: " + pct + "%"));
+      }
     }
     badges.appendChild(el("span", { class: "badge verdict-badge " + (st.cls || "bad") }, "Oracle: " + verdict));
 
