@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import os
 import shlex
+import signal
 import subprocess
 import time
 from pathlib import Path
@@ -84,14 +85,29 @@ class AgentProcess:
             except Exception:
                 pass
         else:
+            # Local: the entrypoint bash wrapper leads its own process group
+            # (start_new_session at launch). Signal the whole GROUP -- SIGTERM to
+            # self._proc alone would orphan the real agent CLI (bash's child),
+            # which would keep mutating the cluster after "termination" (C3).
             try:
-                self._proc.terminate()
+                pgid = os.getpgid(self._proc.pid)
+            except (ProcessLookupError, OSError):
+                return
+            def _killpg(sig: int) -> None:
                 try:
-                    self._proc.wait(timeout=5)
-                except subprocess.TimeoutExpired:
-                    self._proc.kill()
-                    self._proc.wait(timeout=5)
-            except Exception:
+                    os.killpg(pgid, sig)
+                except (ProcessLookupError, PermissionError, OSError):
+                    pass
+            _killpg(signal.SIGTERM)
+            try:
+                self._proc.wait(timeout=5)
+            except subprocess.TimeoutExpired:
+                pass
+            # Force-reap any survivor of the group (e.g. a CLI ignoring SIGTERM).
+            _killpg(signal.SIGKILL)
+            try:
+                self._proc.wait(timeout=5)
+            except subprocess.TimeoutExpired:
                 pass
 
     def is_running(self) -> bool:
@@ -231,15 +247,21 @@ def _launch_local(
             proc = subprocess.Popen(
                 command_override, shell=True, env=merged_env,
                 cwd=str(run_dir), stdout=log_fh, stderr=log_fh,
+                start_new_session=True,
             )
         return AgentProcess(proc, sandbox_mode="local")
     entrypoint = agent_meta.get("entrypoint") or "entrypoint.sh"
     folder = agent_meta.get("folder")
     cmd = [str(Path(folder) / entrypoint)] if folder else [entrypoint]
     with log_path.open("w") as log_fh:
+        # start_new_session: the entrypoint is a bash wrapper that runs the real
+        # agent CLI (claude/codex/copilot) as a child, not via exec. Putting the
+        # wrapper in its own process group lets terminate() kill the WHOLE group
+        # -- otherwise the CLI is orphaned and keeps running after "termination".
         proc = subprocess.Popen(
             cmd, env=merged_env, cwd=str(run_dir),
             stdout=log_fh, stderr=log_fh,
+            start_new_session=True,
         )
     return AgentProcess(proc, sandbox_mode="local")
 
