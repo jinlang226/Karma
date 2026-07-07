@@ -1,0 +1,7 @@
+#!/usr/bin/env bash
+# Generated from workflows/pass/cockroachdb-rebalance-upgrade-change-plan-rollback.yaml
+
+plan_stage "stage_01" "cockroachdb/cluster-settings.sh"
+plan_stage "stage_02" "cockroachdb/partitioned-update.sh"
+plan_stage "stage_03" "cockroachdb/change-plan-only.sh"
+plan_stage "stage_04" "cockroachdb/rollback-rehearsal.sh"

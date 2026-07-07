@@ -1,0 +1,239 @@
+type: nginx-header-canary-routing
+targetApp: NGINX-Ingress
+numAppInstance: 2
+maxAttempts: 1
+
+namespace_contract:
+  required_roles:
+  - ingress
+  - app
+
+params:
+  definitions:
+    stable_ingress_name:
+      type: string
+      default: canary-stable
+    canary_ingress_name:
+      type: string
+      default: canary-canary
+    host:
+      type: string
+      default: canary.example.com
+    path:
+      type: string
+      default: /
+    header_name:
+      type: string
+      default: X-Canary
+    header_value:
+      type: string
+      default: always
+    baseline_header_value:
+      type: string
+      default: wrong
+    stable_body:
+      type: string
+      default: stable
+    canary_body:
+      type: string
+      default: canary
+
+preconditionUnits:
+  - id: ingress_controller_ready
+    probe:
+      commands:
+        - command: ["kubectl", "-n", "${BENCH_NS_INGRESS}", "rollout", "status", "deployment/ingress-nginx-controller", "--timeout=5s"]
+          timeout_sec: 10
+    apply:
+      commands:
+        - command:
+            - /bin/sh
+            - -c
+            - >
+              set -e;
+              awk 'BEGIN{skip=1} /^---$/{if(skip){skip=0; next}} !skip {print}'
+              resources/nginx-ingress/header_canary_routing/resource/deploy.yaml |
+              sed "s/namespace: ingress-nginx/namespace: ${BENCH_NS_INGRESS}/g" |
+              kubectl apply -f -
+          timeout_sec: 40
+    verify:
+      commands:
+        - command: ["kubectl", "-n", "${BENCH_NS_INGRESS}", "rollout", "status", "deployment/ingress-nginx-controller", "--timeout=120s"]
+          timeout_sec: 130
+      retries: 3
+      interval_sec: 3
+
+  - id: stable_backend_ready
+    probe:
+      commands:
+        - command:
+            - /bin/sh
+            - -c
+            - >
+              set -e;
+              kubectl -n ${BENCH_NS_APP} rollout status deployment/stable-echo --timeout=5s >/dev/null;
+              test "$(kubectl -n ${BENCH_NS_APP} get deployment stable-echo -o jsonpath='{.spec.template.spec.containers[0].args[0]}')" = "-text={{params.stable_body}}";
+              kubectl -n ${BENCH_NS_APP} get service stable-echo >/dev/null
+          timeout_sec: 10
+    apply:
+      commands:
+        - command: ["/bin/sh", "-c", "envsubst '${BENCH_NS_APP} ${BENCH_PARAM_STABLE_BODY}' < resources/nginx-ingress/header_canary_routing/resource/stable-echo.yaml | kubectl apply -f -"]
+          timeout_sec: 20
+    verify:
+      commands:
+        - command:
+            - /bin/sh
+            - -c
+            - >
+              set -e;
+              kubectl -n ${BENCH_NS_APP} rollout status deployment/stable-echo --timeout=60s >/dev/null;
+              test "$(kubectl -n ${BENCH_NS_APP} get deployment stable-echo -o jsonpath='{.spec.template.spec.containers[0].args[0]}')" = "-text={{params.stable_body}}";
+              kubectl -n ${BENCH_NS_APP} get service stable-echo >/dev/null
+          timeout_sec: 70
+      retries: 3
+      interval_sec: 2
+
+  - id: canary_backend_ready
+    probe:
+      commands:
+        - command:
+            - /bin/sh
+            - -c
+            - >
+              set -e;
+              kubectl -n ${BENCH_NS_APP} rollout status deployment/canary-echo --timeout=5s >/dev/null;
+              test "$(kubectl -n ${BENCH_NS_APP} get deployment canary-echo -o jsonpath='{.spec.template.spec.containers[0].args[0]}')" = "-text={{params.canary_body}}";
+              kubectl -n ${BENCH_NS_APP} get service canary-echo >/dev/null
+          timeout_sec: 10
+    apply:
+      commands:
+        - command: ["/bin/sh", "-c", "envsubst '${BENCH_NS_APP} ${BENCH_PARAM_CANARY_BODY}' < resources/nginx-ingress/header_canary_routing/resource/canary-echo.yaml | kubectl apply -f -"]
+          timeout_sec: 20
+    verify:
+      commands:
+        - command:
+            - /bin/sh
+            - -c
+            - >
+              set -e;
+              kubectl -n ${BENCH_NS_APP} rollout status deployment/canary-echo --timeout=60s >/dev/null;
+              test "$(kubectl -n ${BENCH_NS_APP} get deployment canary-echo -o jsonpath='{.spec.template.spec.containers[0].args[0]}')" = "-text={{params.canary_body}}";
+              kubectl -n ${BENCH_NS_APP} get service canary-echo >/dev/null
+          timeout_sec: 70
+      retries: 3
+      interval_sec: 2
+
+  - id: curl_test_ready
+    probe:
+      commands:
+        - command: ["kubectl", "-n", "${BENCH_NS_APP}", "wait", "--for=condition=Ready", "pod/curl-test", "--timeout=5s"]
+          timeout_sec: 10
+    apply:
+      commands:
+        - command: ["kubectl", "-n", "${BENCH_NS_APP}", "delete", "pod", "curl-test", "--ignore-not-found=true", "--wait=true"]
+          timeout_sec: 60
+        - command: ["/bin/sh", "-c", "envsubst '${BENCH_NS_APP}' < resources/nginx-ingress/header_canary_routing/resource/curl-test.yaml | kubectl apply -f -"]
+          timeout_sec: 20
+    verify:
+      commands:
+        - command: ["kubectl", "-n", "${BENCH_NS_APP}", "wait", "--for=condition=Ready", "pod/curl-test", "--timeout=150s"]
+          timeout_sec: 180
+      retries: 3
+      interval_sec: 2
+
+  - id: canary_routing_state_ready
+    probe:
+      commands:
+        - command: ["kubectl", "-n", "${BENCH_NS_APP}", "get", "ingress", "{{params.stable_ingress_name}}"]
+          timeout_sec: 10
+        - command:
+            - /bin/sh
+            - -c
+            - >
+              set -e;
+              stable_host=$(kubectl -n ${BENCH_NS_APP} get ingress {{params.stable_ingress_name}} -o jsonpath='{.spec.rules[0].host}');
+              stable_paths=$(kubectl -n ${BENCH_NS_APP} get ingress {{params.stable_ingress_name}} -o jsonpath='{range .spec.rules[0].http.paths[*]}{.path}{"\n"}{end}');
+              canary_host=$(kubectl -n ${BENCH_NS_APP} get ingress {{params.canary_ingress_name}} -o jsonpath='{.spec.rules[0].host}');
+              canary_path=$(kubectl -n ${BENCH_NS_APP} get ingress {{params.canary_ingress_name}} -o jsonpath='{.spec.rules[0].http.paths[0].path}');
+              header=$(kubectl -n ${BENCH_NS_APP} get ingress {{params.canary_ingress_name}} -o jsonpath='{.metadata.annotations.nginx\.ingress\.kubernetes\.io/canary-by-header}');
+              current=$(kubectl -n ${BENCH_NS_APP} get ingress {{params.canary_ingress_name}} -o jsonpath='{.metadata.annotations.nginx\.ingress\.kubernetes\.io/canary-by-header-value}');
+              test "${stable_host}" = "{{params.host}}";
+              printf '%s\n' "${stable_paths}" | grep -Fqx -- '{{params.path}}';
+              test "${canary_host}" = "{{params.host}}";
+              test "${canary_path}" = "{{params.path}}";
+              test "${header}" = "{{params.header_name}}";
+              test "${current}" = "{{params.baseline_header_value}}"
+          timeout_sec: 10
+    apply:
+      commands:
+        - command: ["/bin/sh", "-c", "envsubst '${BENCH_NS_APP} ${BENCH_PARAM_HOST} ${BENCH_PARAM_PATH} ${BENCH_PARAM_STABLE_INGRESS_NAME}' < resources/nginx-ingress/header_canary_routing/resource/ingress-stable.yaml | kubectl apply -f -"]
+          timeout_sec: 20
+        - command: ["/bin/sh", "-c", "envsubst '${BENCH_NS_APP} ${BENCH_PARAM_BASELINE_HEADER_VALUE} ${BENCH_PARAM_CANARY_INGRESS_NAME} ${BENCH_PARAM_HEADER_NAME} ${BENCH_PARAM_HOST} ${BENCH_PARAM_PATH}' < resources/nginx-ingress/header_canary_routing/resource/ingress-canary.yaml | kubectl apply -f -"]
+          timeout_sec: 20
+    verify:
+      commands:
+        - command: ["kubectl", "-n", "${BENCH_NS_APP}", "get", "ingress", "{{params.stable_ingress_name}}"]
+          timeout_sec: 10
+        - command:
+            - /bin/sh
+            - -c
+            - >
+              set -e;
+              stable_host=$(kubectl -n ${BENCH_NS_APP} get ingress {{params.stable_ingress_name}} -o jsonpath='{.spec.rules[0].host}');
+              stable_paths=$(kubectl -n ${BENCH_NS_APP} get ingress {{params.stable_ingress_name}} -o jsonpath='{range .spec.rules[0].http.paths[*]}{.path}{"\n"}{end}');
+              canary_host=$(kubectl -n ${BENCH_NS_APP} get ingress {{params.canary_ingress_name}} -o jsonpath='{.spec.rules[0].host}');
+              canary_path=$(kubectl -n ${BENCH_NS_APP} get ingress {{params.canary_ingress_name}} -o jsonpath='{.spec.rules[0].http.paths[0].path}');
+              header=$(kubectl -n ${BENCH_NS_APP} get ingress {{params.canary_ingress_name}} -o jsonpath='{.metadata.annotations.nginx\.ingress\.kubernetes\.io/canary-by-header}');
+              current=$(kubectl -n ${BENCH_NS_APP} get ingress {{params.canary_ingress_name}} -o jsonpath='{.metadata.annotations.nginx\.ingress\.kubernetes\.io/canary-by-header-value}');
+              test "${stable_host}" = "{{params.host}}";
+              printf '%s\n' "${stable_paths}" | grep -Fqx -- '{{params.path}}';
+              test "${canary_host}" = "{{params.host}}";
+              test "${canary_path}" = "{{params.path}}";
+              test "${header}" = "{{params.header_name}}";
+              test "${current}" = "{{params.baseline_header_value}}"
+          timeout_sec: 10
+
+detailedInstructions: |
+  Fix header-based canary routing in the assigned namespaces.
+
+  Namespaces:
+  - controller: `${BENCH_NS_INGRESS}`
+  - application: `${BENCH_NS_APP}`
+
+  Current baseline:
+  - `stable-echo` serves `{{params.stable_body}}`.
+  - `canary-echo` serves `{{params.canary_body}}`.
+  - Stable ingress is healthy.
+  - Canary ingress exists, but its header match value is wrong.
+
+  Requirements:
+  - Requests without the header must return `{{params.stable_body}}`.
+  - Requests with header `{{params.header_name}}: {{params.header_value}}` must return `{{params.canary_body}}`.
+  - Do not modify the backend Deployments or Services.
+
+  Good validation commands:
+  ```bash
+  kubectl -n ${BENCH_NS_APP} exec curl-test -- \
+    curl -sS -H "Host: {{params.host}}" \
+    http://ingress-nginx-controller.${BENCH_NS_INGRESS}.svc.cluster.local{{params.path}}
+  kubectl -n ${BENCH_NS_APP} exec curl-test -- \
+    curl -sS -H "Host: {{params.host}}" -H "{{params.header_name}}: {{params.header_value}}" \
+    http://ingress-nginx-controller.${BENCH_NS_INGRESS}.svc.cluster.local{{params.path}}
+  ```
+
+operatorContext: |
+  Helpful commands:
+  ```bash
+  kubectl -n ${BENCH_NS_APP} get ingress,svc,deploy,pod
+  kubectl -n ${BENCH_NS_INGRESS} logs deploy/ingress-nginx-controller --tail=200
+  ```
+
+oracle:
+  verify:
+    commands:
+      - command: ["python3", "resources/nginx-ingress/header_canary_routing/oracle/oracle.py", "--check", "annotations", "--curl-pod-name", "curl-test", "--canary-ingress-name", "{{params.canary_ingress_name}}", "--host", "{{params.host}}", "--path", "{{params.path}}", "--header-name", "{{params.header_name}}", "--header-value", "{{params.header_value}}", "--expected-stable-body", "{{params.stable_body}}", "--expected-canary-body", "{{params.canary_body}}"]
+        timeout_sec: 30
+      - command: ["python3", "resources/nginx-ingress/header_canary_routing/oracle/oracle.py", "--check", "stable", "--curl-pod-name", "curl-test", "--canary-ingress-name", "{{params.canary_ingress_name}}", "--host", "{{params.host}}", "--path", "{{params.path}}", "--header-name", "{{params.header_name}}", "--header-value", "{{params.header_value}}", "--expected-stable-body", "{{params.stable_body}}", "--expected-canary-body", "{{params.canary_body}}"]
+        timeout_sec: 30
+      - command: ["python3", "resources/nginx-ingress/header_canary_routing/oracle/oracle.py", "--check", "canary", "--curl-pod-name", "curl-test", "--canary-ingress-name", "{{params.canary_ingress_name}}", "--host", "{{params.host}}", "--path", "{{params.path}}", "--header-name", "{{params.header_name}}", "--header-value", "{{params.header_value}}", "--expected-stable-body", "{{params.stable_body}}", "--expected-canary-body", "{{params.canary_body}}"]
+        timeout_sec: 30
