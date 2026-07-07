@@ -531,17 +531,25 @@
     const panel = el("div", { class: "panel", id: "wf-builder" });
 
     const idInput = el("input", { value: builderId });
+    // Agent session: persistent (default) keeps ONE agent conversation across all
+    // stages; per_stage starts a fresh agent each stage.
+    const sessionSel = el("select", {},
+      el("option", { value: "persistent" }, "Persistent — one agent, all stages"),
+      el("option", { value: "per_stage" }, "Per stage — fresh agent each stage"));
     const modeSel = el("select", {},
       el("option", { value: "progressive" }, KARMA.labels.promptMode("progressive")),
       el("option", { value: "concat_stateful" }, KARMA.labels.promptMode("concat_stateful")),
       el("option", { value: "concat_blind" }, KARMA.labels.promptMode("concat_blind")));
     const top = el("div", { class: "row" },
       el("div", {}, el("label", {}, "Workflow ID"), idInput),
+      el("div", {}, el("label", {}, "Agent Session"), sessionSel),
       el("div", {}, el("label", {}, "Prompt Mode"), modeSel));
     panel.appendChild(el("h3", {}, "Basics"));
     panel.appendChild(el("p", { class: "field-help" },
-      "Workflow ID is a short name for this workflow. Prompt mode controls how " +
-      "earlier stages' prompts are shown to the agent — Progressive adds each " +
+      "Workflow ID is a short name for this workflow. Agent session controls whether " +
+      "one agent runs the whole workflow (Persistent — the same conversation resumes " +
+      "each stage) or a fresh agent runs each stage (Per stage). Prompt mode controls " +
+      "how earlier stages' prompts are shown to the agent — Progressive adds each " +
       "stage to the previous, Concatenated (stateful) shows the full running " +
       "history, and Concatenated (blind) shows only the current stage."));
     panel.appendChild(top);
@@ -619,7 +627,7 @@
       if (!stages.length) { KARMA.toast("Add at least one stage first.", "error"); return null; }
       const bad = stages.findIndex((s) => !s.service || !s.case);
       if (bad >= 0) { KARMA.toast(`Stage ${bad + 1}: choose a service and a case.`, "error"); return null; }
-      return generateYaml(idInput.value, modeSel.value, stages, advRows);
+      return generateYaml(idInput.value, sessionSel.value, modeSel.value, stages, advRows);
     }
     function showYaml(text) { yaml.value = text; output.style.display = ""; autosize(yaml); }
 
@@ -799,8 +807,9 @@
       paramsBox);
   }
 
-  function generateYaml(id, mode, stageRows, adversaryRows) {
-    const lines = [`metadata:`, `  id: ${id}`, `spec:`, `  prompt_mode: ${mode}`, `  stages:`];
+  function generateYaml(id, session, mode, stageRows, adversaryRows) {
+    const lines = [`metadata:`, `  id: ${id}`, `spec:`,
+                   `  agent_session: ${session}`, `  prompt_mode: ${mode}`, `  stages:`];
     stageRows.forEach((s, i) => {
       lines.push(`    - id: stage_${i + 1}`);
       lines.push(`      service: ${s.service}`);
