@@ -30,25 +30,20 @@ from .workflow import run_workflow_loop
 
 # Default system prompt (the harness contract) applied to every run's agents.
 # The workflow's spec.system_prompt is APPENDED to this; a CLI --system-prompt
-# replaces this base. Sourced from docs/ so it's editable, with a constant fallback.
+# replaces this base. docs/default-system-prompt.md is the single source of truth.
 _DEFAULT_SYSTEM_PROMPT_PATH = Path(__file__).resolve().parents[2] / "docs" / "default-system-prompt.md"
-_BUILTIN_DEFAULT_SYSTEM_PROMPT = (
-    "You are running in a single, non-interactive session. There are no background "
-    "tasks, scheduled wakeups, or re-invocations: when you end your turn the process "
-    "exits and your work stops permanently. If you start any asynchronous operation, "
-    "you MUST wait for it to finish within this turn -- prefer a single blocking "
-    "command (e.g. kubectl rollout status / kubectl wait) over a manual sleep-and-poll "
-    "loop. Do not end your turn until the entire task is fully complete and you have "
-    "verified the end state."
-)
 
 
 def _default_system_prompt() -> str:
-    """Return the base system prompt (docs/default-system-prompt.md, else builtin)."""
+    """Return the base system prompt read from docs/default-system-prompt.md.
+
+    Returns "" if the file can't be read; the agents then deliver no system
+    prompt, which they handle gracefully (no hardcoded copy to drift from it).
+    """
     try:
         return _DEFAULT_SYSTEM_PROMPT_PATH.read_text().strip()
     except OSError:
-        return _BUILTIN_DEFAULT_SYSTEM_PROMPT
+        return ""
 
 
 # ---------------------------------------------------------------------------
