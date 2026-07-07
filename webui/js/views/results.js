@@ -174,6 +174,17 @@
 
   // Reflect running/idle state on the two buttons. Pass refs at build time
   // (before they're in the DOM); later calls look them up by id.
+  // Idle label with the browsed-folder scope as a highlighted chip
+  // ("Judge all w/o Rubric in [short/r6]"), matching the old single-button pattern.
+  function setScopedJudgeLabel(btn, base) {
+    clear(btn);
+    btn.appendChild(document.createTextNode(base));
+    if (runsFolder) {
+      btn.appendChild(document.createTextNode(" in "));
+      btn.appendChild(el("span", { class: "judge-scope" }, runsFolder));
+    }
+  }
+
   function applyJudgeAllButtons(bw, bwr) {
     const map = { wo: bw || judgeAllModeBtn("wo"), w: bwr || judgeAllModeBtn("w") };
     for (const mode of ["wo", "w"]) {
@@ -185,7 +196,7 @@
         b.textContent = judgeCancelling ? "Cancelling…" : judgeProgressLabel();
       } else {                                 // idle, or disabled while the other runs
         b.disabled = activeJudgeJob ? "disabled" : null;
-        b.textContent = idle;
+        setScopedJudgeLabel(b, idle);
       }
     }
   }
@@ -385,9 +396,10 @@
   function openRunsFolder(folder) {
     runsFolder = folder;
     setFolderCrumb();
-    // This partial-render path (folder-row click) does not rebuild subtabs(); the
-    // judge-all scope now lives in the button tooltips (refreshed on full render),
-    // so only the search placeholder needs updating here.
+    // This partial-render path (folder-row click) does not rebuild subtabs(), so
+    // refresh the folder-scope chip on both Judge-all buttons and the search
+    // placeholder here.
+    applyJudgeAllButtons();
     const sb = document.getElementById("runs-search");
     if (sb) sb.placeholder = searchPlaceholder();
     const body = document.getElementById("runs-body");
