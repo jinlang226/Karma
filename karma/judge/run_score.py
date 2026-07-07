@@ -34,7 +34,7 @@ from pathlib import Path
 from string import Template
 from typing import Any
 
-from .client import call_judge_llm
+from .client import JudgeLLMUnavailable, call_judge_llm
 from .scoring import _extract_json
 from .rubric import rubric_hash as _rubric_hash
 
@@ -258,6 +258,11 @@ def score_run(
                     emit(f"[judge]     - {it.get('id')}: "
                          + (f"{round(float(isc) * 100)}%" if isinstance(isc, (int, float)) else "-"))
                 emit(f"[judge]   rubric {sid} -> {round(frac, 3)}")
+            except JudgeLLMUnavailable as exc:
+                # LLM unreachable -> NO call can succeed; abort instead of
+                # fabricating a per-stage 1.0 that masks a judge that never ran.
+                emit(f"[judge] ABORT: judge LLM unavailable -- {exc}")
+                raise
             except Exception as exc:  # grading failed -> keep the oracle pass
                 contributions[sid] = 1.0
                 entry["score"] = 1.0
@@ -403,6 +408,11 @@ def score_run(
                     "reasoning": parsed.get("reasoning") or "",
                     "model": raw.get("model"),
                 }
+            except JudgeLLMUnavailable as exc:
+                # LLM unreachable -> abort rather than defaulting every sweep
+                # failure to a real regression (a fabricated score).
+                emit(f"[judge] ABORT: judge LLM unavailable -- {exc}")
+                raise
             except Exception as exc:
                 # On adjudication failure, conservatively keep it as a real regression.
                 verdict = {"legitimate_regression": True,
