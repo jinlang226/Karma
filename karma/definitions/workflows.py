@@ -37,7 +37,7 @@ from typing import Any, Literal
 import re
 
 import yaml
-from pydantic import BaseModel, Field, ValidationError
+from pydantic import BaseModel, Field, ValidationError, model_validator
 
 _VALID_PROMPT_MODES = ("progressive", "concat_stateful", "concat_blind")
 _DEFAULT_PROMPT_MODE = "progressive"
@@ -93,6 +93,23 @@ class _WorkflowSpec(BaseModel):
     # must NOT describe the submit mechanism (the wrapper handles that).
     system_prompt: str | None = None
     adversary: list[Any] = []
+
+    @model_validator(mode="after")
+    def _progressive_requires_persistent(self) -> "_WorkflowSpec":
+        """progressive prompt_mode only makes sense with a persistent agent.
+
+        progressive sends ONLY the current stage's prompt, relying on the agent's
+        own memory for prior stages -- a fresh per_stage agent would lose all
+        earlier context. Reject that combination at validation time.
+        """
+        if self.prompt_mode == "progressive" and self.agent_session == "per_stage":
+            raise ValueError(
+                "prompt_mode 'progressive' requires agent_session 'persistent': "
+                "progressive sends only the current stage, so a fresh per_stage "
+                "agent has no prior-stage context. Use agent_session: persistent, "
+                "or a concat_* prompt_mode."
+            )
+        return self
 
 
 class WorkflowSchema(BaseModel):
