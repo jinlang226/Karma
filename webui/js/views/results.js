@@ -792,7 +792,12 @@
     // of a multi-stage workflow to catch stages that later stages broke. The
     // judge adjudicates each failure as a real regression or a false positive
     // (a later stage legitimately changed the same state).
+    // Always show the section. The sweep only runs once the workflow COMPLETES
+    // with every stage passing its oracle (KARMA re-runs each passed oracle at
+    // the end); a run that failed halfway or was single-stage shows Not Applicable.
     const sweep = d.regression_sweep;
+    const rp = el("div", { class: "panel" });
+    rp.appendChild(el("h3", {}, "Regression sweep"));
     if (sweep && Object.keys(sweep).length) {
       // Adjudication verdicts live in whichever judge ran. Prefer the w/o-rubric
       // breakdown, but fall back to the rubric one -- otherwise a run judged ONLY
@@ -803,8 +808,6 @@
       const regs = (d.judge_breakdown && d.judge_breakdown.regressions)
         || (d.judge_rubric_breakdown && d.judge_rubric_breakdown.regressions) || [];
       regs.forEach((r) => { adj[r.stage_id] = r; });
-      const rp = el("div", { class: "panel" });
-      rp.appendChild(el("h3", {}, "Regression sweep"));
       const regressed = Object.values(sweep).filter((v) => v && v.verdict !== "pass").length;
       rp.appendChild(el("p", { class: "field-help" },
         "Every previously-passing stage's oracle, re-evaluated after the whole workflow ran. " +
@@ -835,8 +838,13 @@
       if (d.judge_breakdown && d.judge_breakdown.summary) {
         rp.appendChild(el("p", { class: "field-help sweep-summary" }, "Score: " + d.judge_breakdown.summary));
       }
-      root.appendChild(rp);
+    } else {
+      rp.appendChild(el("p", { class: "field-help" },
+        "Not applicable — the regression sweep re-runs every stage's oracle only after "
+        + "the whole workflow completes with all stages passing. This run didn't qualify "
+        + "(a stage failed partway, or it was a single-stage run)."));
     }
+    root.appendChild(rp);
 
 
     // Stage definitions + adversary, always shown (every stage, regardless of how
