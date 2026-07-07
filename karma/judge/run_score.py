@@ -296,14 +296,11 @@ def score_run(
         "regressions": [],
     }
 
-    # Only adjudicate when every stage passed -- otherwise the score is purely the
-    # objective pass fraction and the LLM is not involved at all.
-    if total == 0 or passed < total:
-        result["summary"] = (
-            f"{passed}/{total} stages passed -> objective score {base_score}."
-            if total else "no stages to score."
-        )
-        emit(f"[judge] not all stages passed -> objective score {base_score} (no LLM)")
+    # The regression sweep is adjudicated regardless of whether EVERY stage
+    # passed: a stage that failed can still have regressed an earlier passing
+    # stage, so the sweep result must lower the score in both judge modes.
+    if total == 0:
+        result["summary"] = "no stages to score."
         emit(f"[judge] done: {result['summary']}")
         if not dry_run:
             _write(run_dir, result, log, base_name=judge_basename)
@@ -315,16 +312,16 @@ def score_run(
     result["regression_failures"] = len(failures)
 
     if not failures:
-        # All oracles passed and nothing regressed -> the base score stands
-        # (100.0 without a rubric; the summed rubric fractions with one).
+        # No regressions -> the base score stands (the objective pass fraction,
+        # or the summed rubric fractions with a rubric).
         result["score"] = base_score
         result["summary"] = (
-            f"all stages passed and the regression sweep is clean -> {base_score}."
-            if sweep else f"all stages passed (single-stage / no sweep) -> {base_score}."
+            f"{passed}/{total} stages passed; regression sweep clean -> {base_score}."
+            if sweep else f"{passed}/{total} stages passed; no regression sweep -> {base_score}."
         )
         emit(
             f"[judge] regression sweep clean -> {base_score}" if sweep
-            else f"[judge] all stages passed, no regression sweep -> {base_score}"
+            else f"[judge] no regression sweep -> {base_score}"
         )
         if not dry_run:
             _write(run_dir, result, log, base_name=judge_basename)
@@ -346,7 +343,7 @@ def score_run(
         return result
 
     emit(
-        f"[judge] all {total} stages passed; regression sweep has {len(failures)} "
+        f"[judge] {passed}/{total} stages passed; regression sweep has {len(failures)} "
         f"failure(s) -> adjudicating each (real regression vs false positive)"
     )
 
@@ -448,7 +445,7 @@ def score_run(
     result["model"] = model_used
     fp = len(failures) - legit
     result["summary"] = (
-        f"all {total} stages passed; {len(failures)} regression-sweep failure(s): "
+        f"{passed}/{total} stages passed; {len(failures)} regression-sweep failure(s): "
         f"{legit} real regression(s), {fp} false positive(s) -> score {score}."
     )
     emit(f"[judge] adjudicated by {model_used or 'judge'}")
