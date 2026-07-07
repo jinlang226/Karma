@@ -38,7 +38,6 @@ class ProxyHandle:
         proc: subprocess.Popen,
         port: int,
         *,
-        run_dir: Path,
         control_port: int | None = None,
     ) -> None:
         """Wrap a running proxy process.
@@ -49,14 +48,11 @@ class ProxyHandle:
             The underlying :class:`subprocess.Popen` for the proxy daemon.
         port:
             TCP port the proxy is listening on.
-        run_dir:
-            Stage run directory used for logging.
         control_port:
             Optional port for the control endpoint.
         """
         self._proc = proc
         self._port = port
-        self._run_dir = run_dir
         self._control_port = control_port
         # Host-only temp dir holding the upstream client cert/key (set by
         # launch_proxy). Kept OUT of run_dir so the agent's /workspace mount never
@@ -214,7 +210,7 @@ def launch_proxy(
         proc = subprocess.Popen(
             cmd, env=merged_env, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True
         )
-        handle = ProxyHandle(proc, proxy_port, run_dir=run_dir, control_port=control_port)
+        handle = ProxyHandle(proc, proxy_port, control_port=control_port)
         try:
             wait_for_readiness(handle, timeout_sec=readiness_timeout_sec)
         except RuntimeError as exc:
