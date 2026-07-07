@@ -183,6 +183,7 @@ def _persist_run_config(run_dir: Path, payload: dict[str, Any], workflow: dict[s
             "workflow_path": payload.get("workflow_path"),
             "workflow_id": workflow.get("id"),
             "prompt_mode": payload.get("prompt_mode") or workflow.get("prompt_mode"),
+            "agent_session": payload.get("agent_session") or workflow.get("agent_session"),
             "agent_timeout_sec": payload.get("agent_timeout_sec"),
             "max_attempts": payload.get("max_attempts"),
             "stage_total": len(workflow.get("stages") or []),
@@ -282,6 +283,7 @@ def submit_job(
                 should_cancel=lambda: run_id in _cancel_requested,
                 max_attempts=(int(payload["max_attempts"]) if payload.get("max_attempts") else None),
                 run_id=run_id,
+                agent_session=payload.get("agent_session"),
             )
             _update_job(run_id, {"status": result.get("status", "complete")})
             hub.publish(run_id, {

@@ -187,7 +187,7 @@ def run_workflow_loop(
     sandbox_mode: str,
     environment: Any,
     prompt_mode: str,
-    agent_session: str = "per_stage",
+    agent_session: str = "persistent",
     session_id: str | None = None,
     on_stage_complete: Any | None = None,
     on_progress: Any | None = None,

@@ -71,6 +71,7 @@ def run_workflow(
     stage_failure_mode: str = "terminate",
     final_sweep_mode: str = "auto",
     sandbox_options: dict[str, Any] | None = None,
+    agent_session: str | None = None,
 ) -> dict[str, Any]:
     """Execute a workflow synchronously and return the final run result.
 
@@ -173,7 +174,9 @@ def run_workflow(
         # Persistent-session mode keeps ONE agent conversation alive across all
         # stages (each stage resumes the same CLI/api session). Mint one stable
         # session id per run; per_stage mode leaves it None (fresh agent/stage).
-        agent_session = str(workflow.get("agent_session") or "per_stage")
+        # Explicit override (CLI/UI) wins, then the workflow's own value, then the
+        # default (persistent: one agent conversation from the first stage to the last).
+        agent_session = str(agent_session or workflow.get("agent_session") or "persistent")
         session_id = str(uuid.uuid4()) if agent_session == "persistent" else None
 
         result = run_workflow_loop(

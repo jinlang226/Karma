@@ -181,6 +181,10 @@ def _build_parser() -> argparse.ArgumentParser:
     wf.add_argument("--max-attempts", type=int, default=None,
                     help="Workflow-level retry cap: re-run each stage up to N times "
                          "on oracle fail/error/timeout (stage-agnostic; default 1).")
+    wf.add_argument("--agent-session", choices=["per_stage", "persistent"], default=None,
+                    help="persistent (default): ONE agent conversation resumed across "
+                         "every stage; per_stage: a fresh agent each stage. Overrides "
+                         "the workflow's spec.agent_session.")
     wf.add_argument("--stage-failure-mode", choices=["terminate", "continue"],
                     default="terminate",
                     help="terminate (fail-fast) or continue past a failed stage.")
@@ -424,6 +428,7 @@ def _cmd_run_workflow(args: argparse.Namespace) -> None:
         stage_failure_mode=args.stage_failure_mode,
         final_sweep_mode=args.final_sweep_mode,
         sandbox_options=_build_sandbox_options(args),
+        agent_session=args.agent_session,
     )
     _print_result(result, args.output)
     if getattr(args, "judge", False):

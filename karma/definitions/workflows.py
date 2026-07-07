@@ -41,7 +41,7 @@ from pydantic import BaseModel, Field, ValidationError
 
 _VALID_PROMPT_MODES = ("progressive", "concat_stateful", "concat_blind")
 _DEFAULT_PROMPT_MODE = "progressive"
-_DEFAULT_AGENT_SESSION = "per_stage"
+_DEFAULT_AGENT_SESSION = "persistent"
 _DEFAULT_AGENT_TIMEOUT_SEC = 900
 _DEFAULT_NAMESPACE_ALIAS = "default"
 _STAGE_PARAM_REF_RE = re.compile(
