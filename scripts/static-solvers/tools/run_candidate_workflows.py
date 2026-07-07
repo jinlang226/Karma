@@ -47,6 +47,8 @@ WORKFLOW_DEFINITION_PATTERNS = (
     "unknown cluster setting",
     "unknown setting:",
     "inject_at_stage",
+    "failed calling webhook \"validate.nginx.ingress.kubernetes.io\"",
+    "service \"ingress-nginx-controller-admission\" not found",
 )
 GIB = 1024 ** 3
 MIB = 1024 ** 2

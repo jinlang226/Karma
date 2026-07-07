@@ -1,0 +1,6 @@
+#!/usr/bin/env bash
+# Generated from workflows/non-pass/env_runtime_issue/mongodb-day1-deploy-init-healthcheck.yaml
+
+plan_stage "stage_01" "mongodb/deploy.sh"
+plan_stage "stage_02" "mongodb/initialize.sh"
+plan_stage "stage_03" "mongodb/health-check-recovery.sh"
