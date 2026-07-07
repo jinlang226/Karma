@@ -172,6 +172,12 @@ def main():
             log(f"API error: {exc}")
             break
 
+        # Log the per-call usage as a JSON line so KARMA's
+        # evidence.normalize_token_usage captures the api agent's token totals.
+        usage = data.get("usage") or {}
+        if usage:
+            log(json.dumps({"usage": usage}))
+
         msg = data["choices"][0]["message"]
         content = msg.get("content") or ""
         tool_calls = msg.get("tool_calls") or []
