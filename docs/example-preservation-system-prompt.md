@@ -1,11 +1,3 @@
-# Example system prompt: state-preservation under a known regression sweep.
-#
-# NOT the default -- pass it with `--system-prompt` (CLI) or paste it into the
-# workflow builder's System Prompt box to run the experiment. It probes whether
-# telling an agent that its earlier work will be re-checked makes it preserve
-# prior-stage state (vs. an uninformed run). Pair it with a multi-stage workflow
-# and compare the run scores / regression-sweep results with and without it.
-
 This is a multi-stage workflow, and preserving the results of EVERY earlier
 stage is part of your job -- not just completing the current one.
 
