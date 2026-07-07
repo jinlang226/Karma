@@ -97,16 +97,12 @@ def build_judge_input(
         except Exception:
             pass
 
-    # Regression-sweep result (the post-workflow oracle re-run); present only on
-    # multi-stage runs.
-    regression_sweep: Any = None
-    run_json_path = run_dir / "run.json"
-    if run_json_path.exists():
-        try:
-            regression_sweep = json.loads(run_json_path.read_text()).get("regression_sweep")
-        except Exception:
-            pass
-
+    # NOTE: the regression sweep is deliberately NOT included here. It grades the
+    # stage on its own merits; a sweep failure is a CROSS-stage concern handled
+    # separately by the regression adjudication (real regression -> zero the
+    # stage; false positive -> no penalty). Feeding the raw sweep to the rubric
+    # made it dock a stage for a "brittle pass" that the adjudication then ruled a
+    # false positive -- double-penalizing the same failure.
     return {
         "stage_id": stage_id,
         "rubric": rubric,
@@ -116,7 +112,6 @@ def build_judge_input(
         "submit_text": submit_text,
         "prompt_text": prompt_text,
         "agent_log": agent_log,
-        "regression_sweep": regression_sweep,
     }
 
 
@@ -125,7 +120,6 @@ _DEFAULT_JUDGE_TEMPLATE = (
     "## Task Prompt\n{prompt_text}\n\n"
     "## Agent Submission\n{submit_text}\n\n"
     "## Agent Log (turn-by-turn: reasoning + tool calls)\n{agent_log}\n\n"
-    "## Regression Sweep (post-workflow oracle re-run)\n{regression_sweep}\n\n"
     "## Oracle Verification\n"
     "Verdict: {oracle_verdict}\n\n"
     "## Kubernetes API Activity\n"
@@ -184,10 +178,6 @@ def render_judge_prompt(
         "prompt_text": str(judge_input.get("prompt_text") or "(not available)"),
         "submit_text": str(judge_input.get("submit_text") or "(not submitted)"),
         "agent_log": str(judge_input.get("agent_log") or "(not captured)"),
-        "regression_sweep": (
-            json.dumps(judge_input.get("regression_sweep"), indent=2)
-            if judge_input.get("regression_sweep") else "(none — single-stage run)"
-        ),
         "oracle_verdict": verdict_text,
         "total_calls": str(trace_facts.get("total_calls") or 0),
         "mutation_calls": str(trace_facts.get("mutation_calls") or 0),
