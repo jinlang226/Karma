@@ -657,8 +657,34 @@
     root.appendChild(actions);
     root.appendChild(judgeLog);
 
+    // Rubric per-stage scores (present only when the run was judged w/ a rubric)
+    // are shown inline under each stage in Stage results, not as a separate panel.
+    const rbBreakdown = d.judge_rubric_breakdown;
+    const rubricByStage = {};
+    ((rbBreakdown && rbBreakdown.stage_scores) || []).forEach((e) => { if (e.stage_id) rubricByStage[e.stage_id] = e; });
+    const scorePct = (v) => (typeof v === "number") ? Math.round((v <= 1 ? v * 100 : v)) : null;
+    function stageRubricBlock(e) {
+      const pct = scorePct(e.score);
+      const badges = el("div", { class: "sweep-verdicts" });
+      if (e.regressed) badges.appendChild(el("span", { class: "badge bad" }, "regressed → 0"));
+      badges.appendChild(el("span", { class: "badge " + (pct == null ? "" : pct >= 80 ? "ok" : pct >= 50 ? "warn" : "bad") },
+        "rubric: " + (pct == null ? "—" : pct + "%")));
+      const wrap = el("div", { class: "stage-rubric" },
+        el("div", { class: "stage-rubric-head" }, el("span", { class: "stage-rubric-title" }, "Rubric score"), badges));
+      (e.items || []).forEach((it) => {
+        const iscore = (typeof it.score === "number") ? Math.round(it.score * 100) + "%" : "—";
+        wrap.appendChild(el("div", { class: "rubric-item" },
+          el("span", { class: "rubric-item-id" }, `${it.id}: ${iscore}`),
+          it.reasoning ? el("span", { class: "muted rubric-item-reason" }, " — " + it.reasoning) : null));
+      });
+      return wrap;
+    }
+
     const stagesPanel = el("div", { class: "panel" });
     stagesPanel.appendChild(el("h3", {}, "Stage results"));
+    if (rbBreakdown && rbBreakdown.summary) {
+      stagesPanel.appendChild(el("p", { class: "field-help" }, "Rubric — " + rbBreakdown.summary));
+    }
     const host = el("div", {});
     stagesPanel.appendChild(host);
     root.appendChild(stagesPanel);
@@ -669,7 +695,11 @@
       clear(host);
       const list = Object.values(byId);
       if (!list.length) { host.appendChild(el("p", { class: "muted" }, "No stages yet.")); return; }
-      for (const s of list) host.appendChild(KARMA.stageDetail(runId, s));
+      for (const s of list) {
+        host.appendChild(KARMA.stageDetail(runId, s));
+        const rb = rubricByStage[s.stage_id];
+        if (rb && Array.isArray(rb.items) && rb.items.length) host.appendChild(stageRubricBlock(rb));
+      }
     }
     renderStages();
 
@@ -742,39 +772,6 @@
       root.appendChild(rp);
     }
 
-    // Rubric scores: when the run was judged w/ a rubric, show each oracle-passing
-    // stage's 0-1 score and the per-item breakdown with the judge's reasoning
-    // (like the regression sweep above).
-    const rb = d.judge_rubric_breakdown;
-    const rbStages = (rb && Array.isArray(rb.stage_scores)) ? rb.stage_scores : [];
-    if (rbStages.some((s) => Array.isArray(s.items) && s.items.length)) {
-      const rp = el("div", { class: "panel" });
-      rp.appendChild(el("h3", {}, "Rubric scores"));
-      rp.appendChild(el("p", { class: "field-help" },
-        "Each oracle-passing stage scored against the rubric. An oracle-failed stage contributes 0; a real regression zeroes its stage."));
-      const scorePct = (v) => (typeof v === "number") ? Math.round((v <= 1 ? v * 100 : v)) : null;
-      const list = el("div", { class: "stage-scroll" });
-      for (const s of rbStages) {
-        const pct = scorePct(s.score);
-        const badges = el("div", { class: "sweep-verdicts" });
-        if (s.regressed) badges.appendChild(el("span", { class: "badge bad" }, "regressed → 0"));
-        if (s.status && s.status !== "pass") badges.appendChild(el("span", { class: "badge bad" }, "oracle: " + s.status));
-        badges.appendChild(el("span", { class: "badge " + (pct == null ? "" : pct >= 80 ? "ok" : pct >= 50 ? "warn" : "bad") },
-          pct == null ? "—" : pct + "%"));
-        const row = el("div", { class: "builder-row" },
-          el("div", { class: "builder-row-head" }, el("span", {}, KARMA.humanize(s.stage_id)), badges));
-        (s.items || []).forEach((it) => {
-          const iscore = (typeof it.score === "number") ? Math.round(it.score * 100) + "%" : "—";
-          row.appendChild(el("div", { class: "rubric-item" },
-            el("span", { class: "rubric-item-id" }, `${it.id}: ${iscore}`),
-            it.reasoning ? el("span", { class: "muted rubric-item-reason" }, " — " + it.reasoning) : null));
-        });
-        list.appendChild(row);
-      }
-      rp.appendChild(list);
-      if (rb.summary) rp.appendChild(el("p", { class: "field-help sweep-summary" }, "Score: " + rb.summary));
-      root.appendChild(rp);
-    }
 
     // Stage definitions + adversary, always shown (every stage, regardless of how
     // many the agent reached). Prefer the spec stored with the run (works for
