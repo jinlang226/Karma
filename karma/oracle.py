@@ -233,18 +233,27 @@ def run_oracle(
 
     env = {**os.environ, **role_bindings, **(env_vars or {})}
 
-    # A transient apiserver/proxy blip must not be recorded as a real FAIL: when
-    # a fail carries a connectivity signature, re-run the whole evaluation a few
-    # times (short backoff) before trusting it. A genuine fail (real assertion
-    # mismatch) has no such signature and is returned on the first pass.
+    # Two reasons to re-run a FAIL before trusting it:
+    #   * transient apiserver/proxy blip (connectivity signature) -- short backoff;
+    #   * case-authored convergence retries (verify_retries/verify_interval_sec) --
+    #     an eventually-consistent check that just needs more time (M6).
+    # A genuine, non-transient FAIL on a case that didn't ask for retries has
+    # neither signal and is returned on the first pass (unchanged behavior).
+    verify_retries = max(1, int(oracle_config.get("verify_retries") or 1))
+    verify_interval = max(0.0, float(oracle_config.get("verify_interval_sec") or 2.0))
+    attempts = max(3, verify_retries)  # >=3 preserves the transient-blip handling
     result: dict[str, Any] = {"verdict": "error", "output": "", "error": None}
-    for _attempt in range(3):
+    for _attempt in range(attempts):
         result = _evaluate_oracle(
             oracle_config, env=env, effective_timeout=effective_timeout,
         )
-        if result["verdict"] != "fail" or not _is_transient_failure(result):
+        if result["verdict"] != "fail":
             break
-        time.sleep(min(5 * (_attempt + 1), 15))
+        transient = _is_transient_failure(result)
+        case_retry_left = _attempt < verify_retries - 1
+        if not transient and not case_retry_left:
+            break
+        time.sleep(min(5 * (_attempt + 1), 15) if transient else verify_interval)
 
     protocol.ensure_stage_dir(run_dir, stage_id)
     oracle_path = protocol.stage_oracle_path(run_dir, stage_id)
