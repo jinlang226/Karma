@@ -41,11 +41,32 @@ fi
 
 # Headless, full-auto Copilot run: --prompt for the non-interactive task and
 # --allow-all so every tool (shell/kubectl) runs without an approval prompt (the
-# Copilot analogue of claude_code's --dangerously-skip-permissions). tee the
-# output to BOTH the temp submit file and stdout (the sandbox captures stdout to
-# agent.log, so the full turn-by-turn is recorded even on timeout).
+# Copilot analogue of claude_code's --dangerously-skip-permissions).
+# --output-format json emits JSONL events (one per line); tee the full structured
+# stream to stdout (-> agent.log, rich turn-by-turn) and to a temp file to parse.
+STREAM_FILE=".agent.stream.jsonl"
 copilot --prompt "$PROMPT" \
-  --allow-all ${MODEL_ARG} ${SESSION_ARG} \
-  2>&1 | tee "$TMP_FILE"
+  --allow-all --output-format json ${MODEL_ARG} ${SESSION_ARG} \
+  2>&1 | tee "$STREAM_FILE"
 
+# Extract the FINAL answer for submit.txt: the last `assistant.message` event's
+# data.content (Copilot's JSONL schema), matching claude/codex clean extraction.
+# Fall back to the raw stream if nothing parses, so completion is still signalled.
+node -e '
+const fs = require("fs");
+let out = "";
+try {
+  for (const line of fs.readFileSync(process.argv[1], "utf8").split("\n")) {
+    if (!line.trim()) continue;
+    let o; try { o = JSON.parse(line); } catch (e) { continue; }
+    if (o.type === "assistant.message" && o.data
+        && typeof o.data.content === "string" && o.data.content.trim()) {
+      out = o.data.content;
+    }
+  }
+} catch (e) {}
+fs.writeFileSync(process.argv[2], out);
+' "$STREAM_FILE" "$TMP_FILE"
+[ -s "$TMP_FILE" ] || cp -f "$STREAM_FILE" "$TMP_FILE"
 mv -f "$TMP_FILE" "$SUBMIT_FILE"
+rm -f "$STREAM_FILE"
