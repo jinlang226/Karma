@@ -847,12 +847,16 @@
             const extra = ev.message ? "  " + ev.message : "";
             log.textContent += `  ${where}: verdict=${ev.verdict ?? "-"} score=${ev.score ?? "-"}${extra}\n`;
           } else if (ev.type === "judge_complete") {
-            log.textContent += `judge ${ev.status}\n`;
-            KARMA.toast("Judge " + (ev.status || "complete"),
-              ev.status === "error" ? "error" : (ev.status === "cancelled" ? "info" : "success"));
-            // Reload the detail so the new score appears (skip on cancel: nothing
-            // was written, so keep the buttons as-is via onEnd instead).
-            if (targetType === "run" && !dryRun && ev.status === "complete") {
+            log.textContent += `judge ${ev.status}${ev.up_to_date ? " (up to date)" : ""}\n`;
+            if (ev.up_to_date) {
+              KARMA.toast("Already up to date — not re-judged", "info");
+            } else {
+              KARMA.toast("Judge " + (ev.status || "complete"),
+                ev.status === "error" ? "error" : (ev.status === "cancelled" ? "info" : "success"));
+            }
+            // Reload the detail so the new score appears -- skip on cancel / up to
+            // date (nothing changed; restore the buttons via onEnd instead).
+            if (targetType === "run" && !dryRun && ev.status === "complete" && !ev.up_to_date) {
               setTimeout(() => { if (sub === "runs") renderDetail(targetPath); }, 600);
             }
           }
