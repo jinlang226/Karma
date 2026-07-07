@@ -141,24 +141,41 @@ def normalize_token_usage(agent_log_path: Path) -> dict[str, Any]:
     except OSError:
         return result
 
+    prev = ""
     for line in raw_text.splitlines():
         line = line.strip()
         if not line:
+            prev = ""
             continue
         try:
             record = json.loads(line)
         except json.JSONDecodeError:
+            # codex prints its total as the word "tokens used" on one line and the
+            # count (e.g. "19,056") on the next -- a plain-text, non-JSON summary.
+            if prev.lower() == "tokens used":
+                n = line.replace(",", "").strip()
+                if n.isdigit():
+                    result["total_tokens"] += int(n)
+            prev = line
             continue
+        prev = ""
         if not isinstance(record, dict):
             continue
+        # OpenAI/Anthropic-style usage dict (claude stream-json, api agent).
         usage = record.get("usage") or record.get("token_usage") or {}
-        if isinstance(usage, dict):
+        if isinstance(usage, dict) and usage:
             result["prompt_tokens"] += int(usage.get("prompt_tokens") or usage.get("input_tokens") or 0)
             result["completion_tokens"] += int(usage.get("completion_tokens") or usage.get("output_tokens") or 0)
             result["total_tokens"] += int(usage.get("total_tokens") or 0)
             result["turns"] += 1
+        # copilot JSONL: per-turn output count on assistant.message events (its
+        # JSON output carries no prompt-token count, so only completion is summed).
+        data = record.get("data")
+        if record.get("type") == "assistant.message" and isinstance(data, dict) and data.get("outputTokens"):
+            result["completion_tokens"] += int(data.get("outputTokens") or 0)
+            result["turns"] += 1
 
-    if result["total_tokens"] == 0 and result["prompt_tokens"] > 0:
+    if result["total_tokens"] == 0 and (result["prompt_tokens"] or result["completion_tokens"]):
         result["total_tokens"] = result["prompt_tokens"] + result["completion_tokens"]
 
     return result
