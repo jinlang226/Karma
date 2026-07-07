@@ -873,13 +873,14 @@
       const res = await api.post("/api/workflow/import", { yaml_text: text });
       if (res.ok) {
         msg.className = "badge ok";
-        msg.textContent = `Valid: ${res.workflow.stages.length} stage(s), id=${res.workflow.id}`;
+        msg.textContent = "Passed";
       } else {
+        // Keep the status a clean pass/fail badge; the reasons go to the toast.
         msg.className = "badge bad";
-        msg.textContent = (res.errors || []).join("; ");
+        msg.textContent = "Failed";
         KARMA.toast((res.errors || ["Invalid workflow"]).join("; "), "error");
       }
-    } catch (e) { msg.className = "badge bad"; msg.textContent = e.message; KARMA.toastError(e); }
+    } catch (e) { msg.className = "badge bad"; msg.textContent = "Failed"; KARMA.toastError(e); }
   }
 
   async function runInlineYaml(text, msg) {
