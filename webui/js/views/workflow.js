@@ -549,10 +549,19 @@
       "Workflow ID is a short name for this workflow. Agent session controls whether " +
       "one agent runs the whole workflow (Persistent — the same conversation resumes " +
       "each stage) or a fresh agent runs each stage (Per stage). Prompt mode controls " +
-      "how earlier stages' prompts are shown to the agent — Progressive adds each " +
-      "stage to the previous, Concatenated (stateful) shows the full running " +
-      "history, and Concatenated (blind) shows only the current stage."));
+      "how earlier stages' prompts are shown to the agent — Progressive sends only " +
+      "the current stage (a persistent agent remembers the rest), Concatenated " +
+      "(stateful) sends the full history so far with each stage tagged active/earlier, " +
+      "and Concatenated (blind) sends the full history untagged."));
     panel.appendChild(top);
+
+    // Optional workflow-level system prompt, sent to every agent each stage.
+    const sysInput = el("textarea", { rows: "3", class: "wf-system-prompt",
+      placeholder: "Optional system prompt sent to every agent each stage — for "
+        + "experiments (e.g. \"a regression sweep will re-check every earlier stage "
+        + "at the end\"). Do not describe how to submit; the harness handles that." });
+    panel.appendChild(el("div", { style: "margin-top:10px" },
+      el("label", {}, "System Prompt (optional)"), sysInput));
 
     panel.appendChild(el("h3", {}, "Stages"));
     panel.appendChild(el("p", { class: "field-help" },
@@ -627,7 +636,7 @@
       if (!stages.length) { KARMA.toast("Add at least one stage first.", "error"); return null; }
       const bad = stages.findIndex((s) => !s.service || !s.case);
       if (bad >= 0) { KARMA.toast(`Stage ${bad + 1}: choose a service and a case.`, "error"); return null; }
-      return generateYaml(idInput.value, sessionSel.value, modeSel.value, stages, advRows);
+      return generateYaml(idInput.value, sessionSel.value, modeSel.value, sysInput.value, stages, advRows);
     }
     function showYaml(text) { yaml.value = text; output.style.display = ""; autosize(yaml); }
 
@@ -807,9 +816,15 @@
       paramsBox);
   }
 
-  function generateYaml(id, session, mode, stageRows, adversaryRows) {
+  function generateYaml(id, session, mode, systemPrompt, stageRows, adversaryRows) {
     const lines = [`metadata:`, `  id: ${id}`, `spec:`,
-                   `  agent_session: ${session}`, `  prompt_mode: ${mode}`, `  stages:`];
+                   `  agent_session: ${session}`, `  prompt_mode: ${mode}`];
+    const sp = (systemPrompt || "").trim();
+    if (sp) {
+      lines.push(`  system_prompt: |`);
+      for (const ln of sp.split("\n")) lines.push(`    ${ln}`);
+    }
+    lines.push(`  stages:`);
     stageRows.forEach((s, i) => {
       lines.push(`    - id: stage_${i + 1}`);
       lines.push(`      service: ${s.service}`);
