@@ -839,10 +839,13 @@
         rp.appendChild(el("p", { class: "field-help sweep-summary" }, "Score: " + d.judge_breakdown.summary));
       }
     } else {
-      rp.appendChild(el("p", { class: "field-help" },
-        "Not applicable — the regression sweep re-runs every stage's oracle only after "
-        + "the whole workflow completes with all stages passing. This run didn't qualify "
-        + "(a stage failed partway, or it was a single-stage run)."));
+      rp.appendChild(el("div", { class: "sweep-na" },
+        el("div", { class: "sweep-na-icon" }, "⊘"),
+        el("div", { class: "sweep-na-title" }, "Not applicable"),
+        el("div", { class: "sweep-na-sub" },
+          "The regression sweep re-runs every stage's oracle only after the whole "
+          + "workflow completes with all stages passing. This run didn't qualify "
+          + "(a stage failed partway, or it was a single-stage run).")));
     }
     root.appendChild(rp);
 
