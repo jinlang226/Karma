@@ -45,9 +45,13 @@ fi
 # --output-format json emits JSONL events (one per line); tee the full structured
 # stream to stdout (-> agent.log, rich turn-by-turn) and to a temp file to parse.
 STREAM_FILE=".agent.stream.jsonl"
+# Drop streaming *_delta events (assistant.reasoning_delta / message_delta): each
+# is a partial chunk, redundant with the final consolidated assistant.message /
+# assistant.reasoning events, and they bloat the log by hundreds of lines. The
+# filtered stream is tee'd to stdout (-> agent.log) and to the parse temp file.
 copilot --prompt "$PROMPT" \
-  --allow-all --output-format json ${MODEL_ARG} ${SESSION_ARG} \
-  2>&1 | tee "$STREAM_FILE"
+  --allow-all --output-format json ${MODEL_ARG} ${SESSION_ARG} 2>&1 \
+  | grep --line-buffered -vE '"type":"[^"]*_delta"' | tee "$STREAM_FILE"
 
 # Extract the FINAL answer for submit.txt: the last `assistant.message` event's
 # data.content (Copilot's JSONL schema), matching claude/codex clean extraction.
