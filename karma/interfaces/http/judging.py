@@ -90,6 +90,19 @@ def _judge_run_streaming(
     regression-sweep failures (false-positive filtering)."""
     from ...judge.run_score import score_run
 
+    # Make-style skip: if the existing score is newer than every run input, the
+    # run is already up to date -- don't spend LLM calls re-judging it.
+    base_name = "judge_rubric" if rubric is not None else "judge"
+    if not dry_run and _judge_is_current(run_dir, base_name):
+        existing = catalog._read_json(run_dir / f"{base_name}.json")
+        hub.publish(job_id, {
+            "type": "judge_progress", "job_id": job_id, "run_id": run_dir.name,
+            "score": existing.get("score"),
+            "message": "already up to date -- not re-judged",
+        })
+        return {"target_type": "run", "run_id": run_dir.name,
+                "result": existing, "up_to_date": True}
+
     hub.publish(job_id, {
         "type": "judge_progress", "job_id": job_id, "run_id": run_dir.name,
         "message": "scoring stages and adjudicating regression sweep",
@@ -110,16 +123,43 @@ def _judge_run_streaming(
             "result": result, "cancelled": bool(result.get("cancelled"))}
 
 
-def _run_has_score(run_dir: Path, base_name: str = "judge") -> bool:
-    """True if *run_dir* already has a run-level score in ``{base_name}.json``.
+# The judge's own outputs are not prerequisites of themselves; exclude them (by
+# name -- the run-level and per-stage judge.json share it) from the input mtime.
+_JUDGE_OUTPUT_NAMES = {"judge.json", "judge_rubric.json", "judge.log", "judge_rubric.log"}
 
-    *base_name* is ``"judge"`` for the objective score and ``"judge_rubric"`` for
-    the rubric score, so "Judge all" skips only runs already scored in the mode
-    being requested (judging w/ rubric doesn't skip a run scored only w/o, and
-    vice versa).
+
+def _run_input_mtime(run_dir: Path) -> float:
+    """Newest mtime among the run's judge INPUT files (everything the judge reads).
+
+    Excludes the judge's own outputs so a fresh judge never counts itself as a
+    newer prerequisite. Returns 0.0 for an empty/unreadable run.
     """
-    rj = catalog._read_json(run_dir / f"{base_name}.json")
-    return bool(rj and isinstance(rj.get("score"), (int, float)))
+    latest = 0.0
+    for p in run_dir.rglob("*"):
+        if not p.is_file() or p.name in _JUDGE_OUTPUT_NAMES:
+            continue
+        try:
+            latest = max(latest, p.stat().st_mtime)
+        except OSError:
+            pass
+    return latest
+
+
+def _judge_is_current(run_dir: Path, base_name: str = "judge") -> bool:
+    """True if ``{base_name}.json`` exists and is newer than every run input.
+
+    Make-style staleness: the judge result is up to date when it was written after
+    the last change to any artifact it scored, so re-running Judge is a no-op. A
+    missing result, or one older than some input (e.g. the run was re-executed),
+    returns False -> re-judge.
+    """
+    target = run_dir / f"{base_name}.json"
+    if not target.exists():
+        return False
+    try:
+        return target.stat().st_mtime >= _run_input_mtime(run_dir)
+    except OSError:
+        return False
 
 
 def _run_needs_llm(run_dir: Path, rubric: dict[str, Any] | None = None) -> bool:
@@ -190,7 +230,9 @@ def _judge_all_streaming(
         if status not in ("complete", "failed", "error", "passed", "cancelled"):
             not_judgeable += 1
             continue
-        if _run_has_score(rd, base_name):
+        # Make-style: skip only runs whose score is up to date; a stale one (its
+        # inputs changed since the last judge) is re-judged.
+        if _judge_is_current(rd, base_name):
             already_scored += 1
             continue
         worklist.append(rd)
@@ -363,9 +405,10 @@ def start_judge_job(
                             if isinstance(result, dict) and result.get("cancelled")
                             else "complete")
             _update_judge_job(job_id, {"status": final_status, "result": result})
-            hub.publish(job_id, {
-                "type": "judge_complete", "job_id": job_id, "status": final_status,
-            })
+            complete = {"type": "judge_complete", "job_id": job_id, "status": final_status}
+            if isinstance(result, dict) and result.get("up_to_date"):
+                complete["up_to_date"] = True   # Make-style no-op: nothing re-judged
+            hub.publish(job_id, complete)
         except Exception as exc:
             _update_judge_job(job_id, {"status": "error", "error": str(exc)})
             hub.publish(job_id, {
