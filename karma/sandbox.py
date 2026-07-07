@@ -58,7 +58,6 @@ class AgentProcess:
         self._sandbox_mode = sandbox_mode
         self._container_id = container_id
         self._run_dir = run_dir
-        self._exit_code: int | None = None
 
     def wait(self, timeout_sec: int | None = None) -> int:
         """Block until the agent finishes and return its exit code.
@@ -67,8 +66,7 @@ class AgentProcess:
         given and the agent does not finish in time. The caller is
         responsible for calling :meth:`terminate` after catching the error.
         """
-        self._exit_code = self._proc.wait(timeout=timeout_sec)
-        return self._exit_code
+        return self._proc.wait(timeout=timeout_sec)
 
     def terminate(self) -> None:
         """Forcibly stop the agent process.
@@ -99,7 +97,6 @@ class AgentProcess:
                     self._proc.wait(timeout=5)
             except Exception:
                 pass
-        self._exit_code = self._proc.returncode
 
     def is_running(self) -> bool:
         """Return ``True`` when the agent process is still alive.
@@ -117,11 +114,6 @@ class AgentProcess:
             except Exception:
                 return False
         return self._proc.poll() is None
-
-    @property
-    def exit_code(self) -> int | None:
-        """Exit code of the process, or ``None`` while still running."""
-        return self._exit_code
 
 
 def build_agent_image(
