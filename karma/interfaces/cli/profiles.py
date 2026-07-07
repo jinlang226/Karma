@@ -91,13 +91,3 @@ def merge_profile(
         if value is not None:
             merged[key] = value
     return merged
-
-
-def list_profiles() -> list[str]:
-    """Return the sorted list of profile names in the default profiles directory.
-
-    Returns an empty list when the directory does not exist.
-    """
-    if not _PROFILES_DIR.exists():
-        return []
-    return sorted(p.stem for p in _PROFILES_DIR.glob("*.yaml"))
