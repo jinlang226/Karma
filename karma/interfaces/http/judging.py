@@ -130,7 +130,10 @@ def _judge_run_streaming(
 
 # The judge's own outputs are not prerequisites of themselves; exclude them (by
 # name -- the run-level and per-stage judge.json share it) from the input mtime.
-_JUDGE_OUTPUT_NAMES = {"judge.json", "judge_rubric.json", "judge.log", "judge_rubric.log"}
+_JUDGE_OUTPUT_NAMES = {
+    "judge.json", "judge_rubric.json", "judge.log", "judge_rubric.log",
+    "regression_adjudication.json",
+}
 
 
 def _run_input_mtime(run_dir: Path) -> float:

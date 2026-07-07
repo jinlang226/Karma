@@ -43,6 +43,10 @@ from ...metrics import list_metrics
 _DEFAULT_RUBRIC_PATH = str(
     Path(__file__).resolve().parents[3] / "docs" / "example-rubric.yaml"
 )
+# Bundled example regression-adjudication prompt; the --regression-prompt default.
+_DEFAULT_REGRESSION_PROMPT_PATH = str(
+    Path(__file__).resolve().parents[3] / "docs" / "example-regression-prompt.md"
+)
 from ...definitions.workflows import load_workflow_file, normalize_workflow
 
 
@@ -269,6 +273,12 @@ def _build_parser() -> argparse.ArgumentParser:
                          "(YAML/JSON: weighted items summing to 1.0) "
                          "instead of flat full marks. Bare --rubric uses the bundled "
                          "docs/example-rubric.yaml.")
+    jg.add_argument("--regression-prompt", default=_DEFAULT_REGRESSION_PROMPT_PATH,
+                    metavar="FILE",
+                    help="Prompt template for the LLM that adjudicates each "
+                         "regression-sweep failure (real regression vs false "
+                         "positive). Placeholders: $stage_id, $regression_output, "
+                         "$stage_prompts. Defaults to docs/example-regression-prompt.md.")
     jg.add_argument("--fail-open", dest="fail_open", action="store_true", default=True,
                     help="Do not fail the command if the judge errors (default).")
     jg.add_argument("--fail-closed", dest="fail_open", action="store_false",
@@ -617,6 +627,12 @@ def _cmd_judge(args: argparse.Namespace) -> None:
     if getattr(args, "rubric", None):
         from ...judge.rubric import load_rubric_file
         rubric = load_rubric_file(args.rubric)
+    # Regression-adjudication prompt: read the template file (defaults to the
+    # bundled example); None falls back to score_run's built-in default.
+    regression_prompt = None
+    rp_path = getattr(args, "regression_prompt", None)
+    if rp_path and Path(rp_path).exists():
+        regression_prompt = Path(rp_path).read_text()
     judge_kwargs = {
         "judge_model": args.model,
         "judge_base_url": args.base_url,
@@ -626,8 +642,9 @@ def _cmd_judge(args: argparse.Namespace) -> None:
         "include_outcome": not getattr(args, "exclude_outcome", False),
     }
     # score_run / judge_batch_dir take the run-level scorer's kwargs (no
-    # include_outcome, which is a rubric-judge-only knob).
+    # include_outcome, which is a rubric-judge-only knob) plus the regression prompt.
     score_kwargs = {k: v for k, v in judge_kwargs.items() if k != "include_outcome"}
+    score_kwargs["regression_prompt"] = regression_prompt
     try:
         if args.batch:
             # Cross-run batch: score every run under run_dir and average.

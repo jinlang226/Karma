@@ -44,6 +44,7 @@ def judge_batch_dir(
     judge_timeout_sec: int | None = None,
     judge_max_retries: int | None = None,
     dry_run: bool = False,
+    regression_prompt: str | None = None,
     on_run_complete: Any | None = None,
 ) -> dict[str, Any]:
     """Score every run under *batch_dir* and return the experiment mean.
@@ -80,6 +81,7 @@ def judge_batch_dir(
             judge_timeout_sec=judge_timeout_sec,
             judge_max_retries=judge_max_retries,
             dry_run=dry_run,
+            regression_prompt=regression_prompt,
         )
         score = None if dry_run else result.get("score")
         if isinstance(score, (int, float)):
