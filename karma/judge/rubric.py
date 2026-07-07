@@ -16,9 +16,11 @@ Rubric schema::
                 "rubric":      str,     # judge scoring guidance
             },
             ...
-        ],
-        "passing_threshold": float      # minimum score for a "pass" verdict
+        ]
     }
+
+The rubric produces a 0-1 quality score for each oracle-passing stage; there is
+no passing_threshold -- pass/fail is the oracle's job.
 """
 
 from __future__ import annotations
@@ -94,7 +96,6 @@ def load_rubric(
                     "rubric": "Score 1.0 if the task objective was fully achieved, 0.0 otherwise.",
                 }
             ],
-            "passing_threshold": 0.5,
         }
 
     rubric = normalize_rubric(raw_rubric)
@@ -106,9 +107,9 @@ def load_rubric(
 def normalize_rubric(raw: dict[str, Any]) -> dict[str, Any]:
     """Validate and normalize a raw rubric dict.
 
-    Verifies that all items contain required fields, that weights are
-    positive and sum to 1.0 within floating-point tolerance, and that
-    ``passing_threshold`` is in ``[0.0, 1.0]``.
+    Verifies that all items contain required fields and that weights are
+    positive and sum to 1.0 within floating-point tolerance. Returns
+    ``{"items": [...]}``; any legacy ``passing_threshold`` in *raw* is dropped.
 
     Raises
     ------
@@ -141,18 +142,17 @@ def normalize_rubric(raw: dict[str, Any]) -> dict[str, Any]:
     if abs(total_weight - 1.0) > 0.01:
         raise ValueError(f"rubric item weights must sum to 1.0, got {total_weight:.4f}")
 
-    threshold = float(raw.get("passing_threshold") or 0.5)
-    if not 0.0 <= threshold <= 1.0:
-        raise ValueError(f"passing_threshold must be in [0.0, 1.0], got {threshold}")
-
-    return {"items": normalized_items, "passing_threshold": threshold}
+    # No passing_threshold: the oracle is the pass/fail gate (a stage that failed
+    # its oracle never reaches the rubric LLM), so the rubric produces only a
+    # 0-1 quality score. A legacy passing_threshold in *raw* is ignored.
+    return {"items": normalized_items}
 
 
 def load_rubric_file(path: str | Path) -> dict[str, Any]:
     """Load and normalize a rubric from a YAML or JSON file.
 
     The file must match the rubric schema (a non-empty ``items`` list whose
-    weights sum to 1.0, plus ``passing_threshold``). Used by the judge's
+    weights sum to 1.0). Used by the judge's
     ``--rubric`` option so oracle-passing stages are scored against custom
     weighted criteria (0.0-1.0) instead of a flat full-marks pass.
     """
@@ -176,7 +176,7 @@ def load_rubric_text(text: str) -> dict[str, Any]:
 
     raw = yaml.safe_load(text)  # YAML is a JSON superset
     if not isinstance(raw, dict):
-        raise ValueError("rubric must be a mapping (items[] + passing_threshold)")
+        raise ValueError("rubric must be a mapping with an items[] list")
     return normalize_rubric(raw)
 
 
@@ -206,8 +206,5 @@ def merge_rubric_overrides(
     if total > 0:
         for item in result["items"]:
             item["weight"] = round(item.get("weight", 0.0) / total, 6)
-
-    if "passing_threshold" in overrides:
-        result["passing_threshold"] = float(overrides["passing_threshold"])
 
     return result

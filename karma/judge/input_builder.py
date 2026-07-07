@@ -133,7 +133,7 @@ _DEFAULT_JUDGE_TEMPLATE = (
     "Reads: {read_calls}\n"
     "Unique resources: {unique_resources} | "
     "Namespaces: {namespaces_touched}\n\n"
-    "## Rubric (passing threshold: {passing_threshold})\n\n"
+    "## Rubric\n\n"
     "{rubric_items}\n\n"
     "Return a JSON array scoring each rubric item:\n"
     '[{"id": "<id>", "score": <0.0-1.0>, "reasoning": "<explanation>"}]'
@@ -194,7 +194,6 @@ def render_judge_prompt(
         "read_calls": str(trace_facts.get("read_calls") or 0),
         "unique_resources": str(trace_facts.get("unique_resources") or 0),
         "namespaces_touched": ns_str,
-        "passing_threshold": str(rubric.get("passing_threshold") or 0.5),
         "rubric_items": "\n".join(items_lines).rstrip(),
     }
 

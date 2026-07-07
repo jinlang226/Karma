@@ -153,33 +153,14 @@ def compute_aggregate_score(
     return round(max(0.0, min(1.0, aggregate)), 4)
 
 
-def determine_verdict(
-    aggregate_score: float,
-    *,
-    rubric: dict[str, Any],
-    oracle_verdict: str | None = None,
-) -> str:
-    """Return the final verdict string for a stage evaluation.
+def determine_verdict(*, oracle_verdict: str | None = None) -> str:
+    """Return the stage verdict -- the oracle's, since the oracle is the gate.
 
-    When *oracle_verdict* is ``"fail"`` the verdict is always ``"fail"``
-    regardless of the LLM score, because the oracle is the authoritative
-    correctness check.
-
-    Otherwise the verdict is determined by comparing *aggregate_score*
-    against the rubric ``passing_threshold``:
-
-    - ``score >= threshold``      → ``"pass"``
-    - ``score >= threshold / 2``  → ``"partial"``
-    - ``score < threshold / 2``   → ``"fail"``
+    The rubric produces only a 0-1 quality score; whether a stage passed is the
+    automated oracle's call, not a rubric threshold. So the verdict simply echoes
+    the oracle: ``"fail"`` when the oracle failed, ``"pass"`` otherwise.
     """
-    if oracle_verdict == "fail":
-        return "fail"
-    threshold = float(rubric.get("passing_threshold", 0.7))
-    if aggregate_score >= threshold:
-        return "pass"
-    if aggregate_score >= threshold / 2:
-        return "partial"
-    return "fail"
+    return "fail" if oracle_verdict == "fail" else "pass"
 
 
 def aggregate_scores(
@@ -213,9 +194,7 @@ def aggregate_scores(
     """
     item_scores = parse_llm_scores(raw_response, rubric=rubric)
     aggregate01 = compute_aggregate_score(item_scores, rubric=rubric)
-    verdict = determine_verdict(
-        aggregate01, rubric=rubric, oracle_verdict=oracle_verdict
-    )
+    verdict = determine_verdict(oracle_verdict=oracle_verdict)
     # Report the headline score on a 0-100 scale with 0.1 precision (the LLM
     # rubric items stay 0-1 internally; the threshold check uses the 0-1 value).
     score = round(aggregate01 * 100.0, 1)
