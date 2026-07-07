@@ -152,6 +152,29 @@ def score_run(
     total = max(len(stage_results), declared)
     passed = sum(1 for s in stage_results if s.get("status") == "pass")
 
+    # Judge log is flushed to {run_dir}/{basename}.log incrementally (via _flush)
+    # as we go -- not buffered to the end -- so a long rubric judge can be tailed
+    # and a crash/cancel still leaves the partial log on disk. Objective and rubric
+    # scores use separate artifacts, so choose the basename up front.
+    scored_with_rubric = rubric is not None and not dry_run
+    judge_basename = "judge_rubric" if scored_with_rubric else "judge"
+    log_path = run_dir / f"{judge_basename}.log"
+    log: list[str] = [
+        f"[judge] run {run_dir.name}",
+        f"[judge] scoring {total} stage(s); {passed} passed the oracle"
+        + (" -- grading each against the rubric" if scored_with_rubric else ""),
+    ]
+
+    def _flush() -> None:
+        """Write the log accumulated so far to disk (tailable; survives a crash)."""
+        if dry_run:
+            return
+        try:
+            log_path.write_text("\n".join(log) + "\n")
+        except Exception:
+            pass
+    _flush()
+
     # Per-stage contribution to the run score (each 0.0-1.0):
     #   oracle failed            -> 0.0  (the oracle is authoritative)
     #   oracle passed, no rubric -> 1.0  (flat full marks -- the default)
@@ -159,12 +182,8 @@ def score_run(
     # Without a rubric these are 1.0/0.0, so base_score is exactly the old
     # passed/total fraction; a real regression later zeroes a stage (see sweep).
     contributions: dict[str, float] = {}
-    # Per-stage breakdown persisted into judge.json (symmetric with `regressions`):
-    # each entry has stage_id, oracle status, the 0-1 base score, and -- when a
-    # rubric was applied -- the per-rubric-item scores/reasoning. A later real
-    # regression flags its stage here too.
+    # Per-stage breakdown persisted into judge.json (symmetric with `regressions`).
     stage_scores: list[dict[str, Any]] = []
-    rubric_log: list[str] = []
     for s in stage_results:
         sid = s.get("stage_id")
         if not sid:
@@ -179,8 +198,12 @@ def score_run(
             entry["score"] = 1.0
         else:
             if should_cancel and should_cancel():
+                log.append("[judge] cancelled before completion")
+                _flush()
                 return {"cancelled": True, "score": None,
                         "summary": "judging cancelled before completion"}
+            log.append(f"[judge]   grading {sid} against the rubric...")
+            _flush()
             from .engine import run_judge
             try:
                 res = run_judge(
@@ -193,22 +216,22 @@ def score_run(
                 contributions[sid] = frac
                 entry["score"] = frac
                 entry["items"] = res.get("rubric_items") or []
-                rubric_log.append(f"[judge]   rubric {sid} -> {round(frac, 3)}")
+                log.append(f"[judge]   rubric {sid} -> {round(frac, 3)}")
             except Exception as exc:  # grading failed -> keep the oracle pass
                 contributions[sid] = 1.0
                 entry["score"] = 1.0
                 entry["rubric_error"] = str(exc)
-                rubric_log.append(f"[judge]   rubric {sid} FAILED ({exc}) -> 1.0")
+                log.append(f"[judge]   rubric {sid} FAILED ({exc}) -> 1.0")
+            _flush()
         stage_scores.append(entry)
 
     def _compose() -> float:
         return round(sum(contributions.values()) / total * 100.0, 1) if total else 0.0
 
-    scored_with_rubric = rubric is not None and not dry_run
     base_score = _compose()
-    # Rubric and objective scores live in separate artifacts so a run can carry
-    # both without one clobbering the other (the UI shows a column for each).
-    judge_basename = "judge_rubric" if scored_with_rubric else "judge"
+    log.append(f"[judge] {passed}/{total} stages passed -> base score {base_score}"
+               + (" (rubric-scored)" if scored_with_rubric else ""))
+    _flush()
 
     result: dict[str, Any] = {
         "score": base_score,
@@ -225,14 +248,6 @@ def score_run(
         "legitimate_regressions": 0,
         "regressions": [],
     }
-
-    # Human-readable log, persisted to {run_dir}/judge.log alongside judge.json.
-    log: list[str] = [
-        f"[judge] run {run_dir.name}",
-        f"[judge] {passed}/{total} stages passed -> base score {base_score}"
-        + (" (rubric-scored)" if scored_with_rubric else ""),
-    ]
-    log.extend(rubric_log)
 
     # Only adjudicate when every stage passed -- otherwise the score is purely the
     # objective pass fraction and the LLM is not involved at all.
@@ -308,6 +323,8 @@ def score_run(
     model_used: str | None = None
     for sid, v in failures:
         if should_cancel and should_cancel():
+            log.append("[judge] cancelled before completion")
+            _flush()
             return {"cancelled": True, "score": None,
                     "summary": "judging cancelled before completion"}
         output = (v or {}).get("output") or ""
@@ -346,6 +363,7 @@ def score_run(
             f"[judge]   {sid}: {'REAL REGRESSION' if is_legit else 'false positive'} "
             f"-- {reasoning}"
         )
+        _flush()
 
     score = _compose()  # regressed stages were zeroed in the loop above
     result["legitimate_regressions"] = legit
