@@ -20,7 +20,7 @@ local sandbox needs nothing installed and the docker image stays minimal.
 Config (environment):
   KARMA_API_BASE_URL  default https://api.deepseek.com
   KARMA_API_KEY       fallback DEEPSEEK_API_KEY, then OPENAI_API_KEY
-  KARMA_API_MODEL     default deepseek-chat
+  KARMA_API_MODEL     default deepseek-v4-flash
   KARMA_API_MAX_STEPS default 40
 Because DeepSeek's API is OpenAI-compatible, the same loop targets OpenAI or any
 compatible endpoint by changing KARMA_API_BASE_URL / KARMA_API_KEY / KARMA_API_MODEL.
@@ -38,7 +38,9 @@ API_KEY = (
     or os.environ.get("OPENAI_API_KEY")
     or ""
 )
-MODEL = os.environ.get("KARMA_API_MODEL", "deepseek-chat")
+# deepseek-v4-flash (non-thinking) -- the successor to deepseek-chat, which
+# DeepSeek deprecates 2026-07-24. Override with KARMA_API_MODEL for any endpoint.
+MODEL = os.environ.get("KARMA_API_MODEL", "deepseek-v4-flash")
 MAX_STEPS = int(os.environ.get("KARMA_API_MAX_STEPS", "40"))
 
 PROMPT_FILE = "prompt.txt"
