@@ -127,6 +127,7 @@ def score_run(
     judge_max_retries: int | None = None,
     dry_run: bool = False,
     should_cancel=None,
+    on_log=None,
 ) -> dict[str, Any]:
     """Compute the run-level score and write ``{run_dir}/judge.json``.
 
@@ -152,28 +153,32 @@ def score_run(
     total = max(len(stage_results), declared)
     passed = sum(1 for s in stage_results if s.get("status") == "pass")
 
-    # Judge log is flushed to {run_dir}/{basename}.log incrementally (via _flush)
-    # as we go -- not buffered to the end -- so a long rubric judge can be tailed
-    # and a crash/cancel still leaves the partial log on disk. Objective and rubric
-    # scores use separate artifacts, so choose the basename up front.
+    # Each judge log line is (a) flushed to {run_dir}/{basename}.log incrementally
+    # so the file is tailable and survives a crash/cancel, and (b) streamed to the
+    # optional on_log callback so the HTTP job can relay it to the live UI as it
+    # happens. Objective and rubric scores use separate artifacts -> basename up front.
     scored_with_rubric = rubric is not None and not dry_run
     judge_basename = "judge_rubric" if scored_with_rubric else "judge"
     log_path = run_dir / f"{judge_basename}.log"
-    log: list[str] = [
-        f"[judge] run {run_dir.name}",
-        f"[judge] scoring {total} stage(s); {passed} passed the oracle"
-        + (" -- grading each against the rubric" if scored_with_rubric else ""),
-    ]
+    log: list[str] = []
 
-    def _flush() -> None:
-        """Write the log accumulated so far to disk (tailable; survives a crash)."""
-        if dry_run:
-            return
-        try:
-            log_path.write_text("\n".join(log) + "\n")
-        except Exception:
-            pass
-    _flush()
+    def emit(line: str) -> None:
+        """Record a log line: append it, flush the file, and stream it to on_log."""
+        log.append(line)
+        if not dry_run:
+            try:
+                log_path.write_text("\n".join(log) + "\n")
+            except Exception:
+                pass
+        if on_log is not None:
+            try:
+                on_log(line)
+            except Exception:
+                pass
+
+    emit(f"[judge] run {run_dir.name}")
+    emit(f"[judge] scoring {total} stage(s); {passed} passed the oracle"
+         + (" -- grading each against the rubric" if scored_with_rubric else ""))
 
     # Per-stage contribution to the run score (each 0.0-1.0):
     #   oracle failed            -> 0.0  (the oracle is authoritative)
@@ -198,12 +203,10 @@ def score_run(
             entry["score"] = 1.0
         else:
             if should_cancel and should_cancel():
-                log.append("[judge] cancelled before completion")
-                _flush()
+                emit("[judge] cancelled before completion")
                 return {"cancelled": True, "score": None,
                         "summary": "judging cancelled before completion"}
-            log.append(f"[judge]   grading {sid} against the rubric...")
-            _flush()
+            emit(f"[judge]   grading {sid} against the rubric...")
             from .engine import run_judge
             try:
                 res = run_judge(
@@ -216,22 +219,25 @@ def score_run(
                 contributions[sid] = frac
                 entry["score"] = frac
                 entry["items"] = res.get("rubric_items") or []
-                log.append(f"[judge]   rubric {sid} -> {round(frac, 3)}")
+                # Surface the item scores in the streamed log too (not just the file).
+                for it in (res.get("rubric_items") or []):
+                    isc = it.get("score")
+                    emit(f"[judge]     - {it.get('id')}: "
+                         + (f"{round(float(isc) * 100)}%" if isinstance(isc, (int, float)) else "-"))
+                emit(f"[judge]   rubric {sid} -> {round(frac, 3)}")
             except Exception as exc:  # grading failed -> keep the oracle pass
                 contributions[sid] = 1.0
                 entry["score"] = 1.0
                 entry["rubric_error"] = str(exc)
-                log.append(f"[judge]   rubric {sid} FAILED ({exc}) -> 1.0")
-            _flush()
+                emit(f"[judge]   rubric {sid} FAILED ({exc}) -> 1.0")
         stage_scores.append(entry)
 
     def _compose() -> float:
         return round(sum(contributions.values()) / total * 100.0, 1) if total else 0.0
 
     base_score = _compose()
-    log.append(f"[judge] {passed}/{total} stages passed -> base score {base_score}"
-               + (" (rubric-scored)" if scored_with_rubric else ""))
-    _flush()
+    emit(f"[judge] {passed}/{total} stages passed -> base score {base_score}"
+         + (" (rubric-scored)" if scored_with_rubric else ""))
 
     result: dict[str, Any] = {
         "score": base_score,
@@ -256,8 +262,8 @@ def score_run(
             f"{passed}/{total} stages passed -> objective score {base_score}."
             if total else "no stages to score."
         )
-        log.append(f"[judge] not all stages passed -> objective score {base_score} (no LLM)")
-        log.append(f"[judge] done: {result['summary']}")
+        emit(f"[judge] not all stages passed -> objective score {base_score} (no LLM)")
+        emit(f"[judge] done: {result['summary']}")
         if not dry_run:
             _write(run_dir, result, log, base_name=judge_basename)
         return result
@@ -275,7 +281,7 @@ def score_run(
             f"all stages passed and the regression sweep is clean -> {base_score}."
             if sweep else f"all stages passed (single-stage / no sweep) -> {base_score}."
         )
-        log.append(
+        emit(
             f"[judge] regression sweep clean -> {base_score}" if sweep
             else f"[judge] all stages passed, no regression sweep -> {base_score}"
         )
@@ -297,7 +303,7 @@ def score_run(
         ]
         return result
 
-    log.append(
+    emit(
         f"[judge] all {total} stages passed; regression sweep has {len(failures)} "
         f"failure(s) -> adjudicating each (real regression vs false positive)"
     )
@@ -316,17 +322,17 @@ def score_run(
         if judge_api_key is None:
             judge_api_key = derived.get("api_key")
         if judge_model:
-            log.append(f"[judge] no model specified -> mirroring run agent ({judge_model})")
+            emit(f"[judge] no model specified -> mirroring run agent ({judge_model})")
 
     legit = 0
     regressions: list[dict[str, Any]] = []
     model_used: str | None = None
     for sid, v in failures:
         if should_cancel and should_cancel():
-            log.append("[judge] cancelled before completion")
-            _flush()
+            emit("[judge] cancelled before completion")
             return {"cancelled": True, "score": None,
                     "summary": "judging cancelled before completion"}
+        emit(f"[judge]   adjudicating {sid} (regression sweep re-check failed)...")
         output = (v or {}).get("output") or ""
         prompt = _build_adjudication_prompt(run_dir, sid, output, ordered_ids)
         try:
@@ -359,11 +365,10 @@ def score_run(
             "reasoning": reasoning,
             "output": output,
         })
-        log.append(
+        emit(
             f"[judge]   {sid}: {'REAL REGRESSION' if is_legit else 'false positive'} "
             f"-- {reasoning}"
         )
-        _flush()
 
     score = _compose()  # regressed stages were zeroed in the loop above
     result["legitimate_regressions"] = legit
@@ -375,8 +380,8 @@ def score_run(
         f"all {total} stages passed; {len(failures)} regression-sweep failure(s): "
         f"{legit} real regression(s), {fp} false positive(s) -> score {score}."
     )
-    log.append(f"[judge] adjudicated by {model_used or 'judge'}")
-    log.append(f"[judge] done: {result['summary']}")
+    emit(f"[judge] adjudicated by {model_used or 'judge'}")
+    emit(f"[judge] done: {result['summary']}")
     _write(run_dir, result, log, base_name=judge_basename)
     return result
 

@@ -103,15 +103,19 @@ def _judge_run_streaming(
         return {"target_type": "run", "run_id": run_dir.name,
                 "result": existing, "up_to_date": True}
 
-    hub.publish(job_id, {
-        "type": "judge_progress", "job_id": job_id, "run_id": run_dir.name,
-        "message": "scoring stages and adjudicating regression sweep",
-    })
+    # Relay each judge log line to the live UI as it happens (the same lines that
+    # stream to {run_dir}/{basename}.log), so the detail page shows a detailed,
+    # progressing log instead of a single coarse "scoring stages" message.
+    def _relay(line: str) -> None:
+        hub.publish(job_id, {
+            "type": "judge_log", "job_id": job_id, "run_id": run_dir.name, "line": line,
+        })
     # Poll the job's cancel flag between the per-stage rubric grades / regression
     # adjudications so the detail-page Cancel button can stop a long rubric judge.
     result = score_run(
         run_dir, rubric=rubric, judge_model=judge_model, dry_run=dry_run,
         should_cancel=lambda: _cancel_requested(job_id),
+        on_log=_relay,
     )
     hub.publish(job_id, {
         "type": "judge_progress", "job_id": job_id, "run_id": run_dir.name,
