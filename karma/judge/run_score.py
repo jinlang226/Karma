@@ -216,7 +216,9 @@ def score_run(
                     judge_api_key=judge_api_key, judge_timeout_sec=judge_timeout_sec,
                     judge_max_retries=judge_max_retries,
                 )
-                frac = max(0.0, min(1.0, float(res.get("score") or 0.0)))
+                # run_judge returns the stage score on a 0-100 scale; normalize
+                # to the 0-1 contribution (do NOT clamp the raw 0-100 to 1.0).
+                frac = max(0.0, min(1.0, float(res.get("score") or 0.0) / 100.0))
                 contributions[sid] = frac
                 entry["score"] = frac
                 entry["items"] = res.get("rubric_items") or []
