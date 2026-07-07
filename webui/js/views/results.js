@@ -25,8 +25,6 @@
   let activeJudgeJob = null; // job_id while a "Judge all" is running (else null)
   let activeJudgeMode = null; // "wo" | "w" -- which mode's judge-all is running
   let judgeCancelling = false; // true between a cancel click and the job ending
-  let activeRubric = null;     // rubric file content (YAML/JSON text) sent with judge requests
-  let activeRubricName = null; // its filename, for the chip
   let runsFilter = "";     // loose search query across all runs
   let allRuns = [];        // last-fetched runs, used by the folder/search render
 
@@ -142,37 +140,14 @@
     return runsFolder ? `Search runs in ${runsFolder}…` : "Search runs…";
   }
 
-  // Load a rubric file (YAML/JSON) whose content is sent with judge requests so
-  // oracle-passing stages are LLM-scored 0-1 against it instead of flat full marks.
-  function onRubricFile(input) {
-    const f = input.files && input.files[0];
-    if (!f) return;
-    const reader = new FileReader();
-    reader.onload = () => {
-      activeRubric = String(reader.result || "");
-      activeRubricName = f.name;
-      render();
-      KARMA.toast(`Rubric "${f.name}" set — judging will score each passing stage against it.`, "info");
-    };
-    reader.onerror = () => KARMA.toastError("could not read rubric file");
-    reader.readAsText(f);
-  }
-
   function subtabs() {
     const tabs = el("div", { class: "subtabs" },
       el("button", { class: "tab" + (sub === "runs" ? " active" : ""), onClick: () => { sub = "runs"; render(); } }, "Runs"),
       el("button", { class: "tab" + (sub === "batches" ? " active" : ""), onClick: () => { sub = "batches"; render(); } }, "Batches"));
-    // Optional rubric picker: when set, judging scores each oracle-passing stage
-    // against it (0-1) rather than awarding flat full marks.
-    const rubricFile = el("input", { type: "file", accept: ".yaml,.yml,.json", style: "display:none", onChange: (e) => onRubricFile(e.target) });
-    const rubricCtl = activeRubricName
-      ? el("span", { class: "rubric-chip", title: "Rubric active — judging scores stages against it" },
-          "▤ " + activeRubricName,
-          el("button", { class: "rubric-clear", title: "clear rubric", onClick: () => { activeRubric = null; activeRubricName = null; render(); } }, "×"))
-      : el("button", { class: "btn secondary", title: "Score stages against a rubric file (YAML/JSON)", onClick: () => rubricFile.click() }, "+ Rubric");
-    // Two folder-scoped "Judge all" buttons: objective (w/o rubric) and rubric
-    // (w/ rubric). Only one judge-all runs at a time; the running one becomes
-    // Cancel and the other is disabled.
+    // Two folder-scoped "Judge all" buttons grouped at the right (where the single
+    // Judge-all button used to sit): objective (w/o rubric) and rubric (w/ rubric,
+    // scored against the bundled example rubric). Only one runs at a time; the
+    // running one becomes Cancel and the other is disabled.
     const scopeTip = runsFolder ? ` for every finished run in "${runsFolder}"` : " for every finished run";
     const btnWo = el("button", { id: "judge-all-wo", class: "btn secondary",
       title: "Objective stage-pass score + regression adjudication" + scopeTip,
@@ -181,7 +156,8 @@
       title: "LLM-score each oracle-passing stage against the rubric" + scopeTip,
       onClick: () => onJudgeAllClick("w") }, "Judge all w/ Rubric");
     applyJudgeAllButtons(btnWo, btnW);
-    return el("div", { class: "subtabs-row" }, tabs, rubricCtl, rubricFile, btnWo, btnW);
+    return el("div", { class: "subtabs-row" }, tabs,
+      el("div", { class: "judge-all-group" }, btnWo, btnW));
   }
 
   // Click a Judge-all button: start that mode, or (if it's the running one) cancel.
@@ -253,11 +229,7 @@
     applyJudgeAllButtons();                     // disable the other mode
     try {
       const body = { target_type: "all", target_path: runsFolder };
-      if (mode === "w") {
-        // custom rubric from the picker, else the bundled default
-        if (activeRubric) body.rubric = activeRubric;
-        else body.use_default_rubric = true;
-      }
+      if (mode === "w") body.use_default_rubric = true;  // score against the bundled example
       const resp = await api.post("/api/judge/start", body);
       activeJudgeJob = resp.job_id;
       judgeCancelling = false;
@@ -441,8 +413,8 @@
       el("td", {}, statusBadge(r.status)),
       el("td", {}, prog),
       el("td", {}, agent),
-      el("td", {}, scoreCell(r.judge_score)),
-      el("td", {}, scoreCell(r.judge_score_rubric)));
+      el("td", { class: "score-cell" }, scoreCell(r.judge_score)),
+      el("td", { class: "score-cell" }, scoreCell(r.judge_score_rubric)));
   }
 
   // One folder row: a clickable folder name that drills in + a run count.
@@ -543,8 +515,9 @@
       panel.appendChild(el("div", { id: "runs-crumb-bar", class: "dir-bar", style: "display:none" }));
       const tbl = el("table", {}, el("thead", {}, el("tr", {},
         el("th", {}, "Run"), el("th", {}, "Status"), el("th", {}, "Stages"),
-        el("th", {}, "Agent"), el("th", {}, "Score w/o Rubric"),
-        el("th", {}, "Score w/ Rubric"))));
+        el("th", {}, "Agent"),
+        el("th", { class: "score-col" }, "Score", el("br"), "w/o Rubric"),
+        el("th", { class: "score-col" }, "Score", el("br"), "w/ Rubric"))));
       body = el("tbody", { id: "runs-body" });
       tbl.appendChild(body);
       panel.appendChild(tbl);
@@ -843,11 +816,7 @@
     log.textContent = `${dryRun ? "Dry-" : ""}judging ${targetPath}${withRubric ? " (w/ rubric)" : ""}\n`;
     try {
       const body = { target_type: targetType, target_path: targetPath, dry_run: dryRun };
-      if (withRubric) {
-        // custom rubric from the picker, else the bundled default
-        if (activeRubric) body.rubric = activeRubric;
-        else body.use_default_rubric = true;
-      }
+      if (withRubric) body.use_default_rubric = true;  // score against the bundled example
       const { job_id } = await api.post("/api/judge/start", body);
       log.textContent += "job " + job_id + "\n";
       api.stream(`/api/judge/jobs/${job_id}/stream`, {
