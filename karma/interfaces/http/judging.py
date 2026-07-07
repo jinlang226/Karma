@@ -94,14 +94,20 @@ def _judge_run_streaming(
         "type": "judge_progress", "job_id": job_id, "run_id": run_dir.name,
         "message": "scoring stages and adjudicating regression sweep",
     })
-    result = score_run(run_dir, rubric=rubric, judge_model=judge_model, dry_run=dry_run)
+    # Poll the job's cancel flag between the per-stage rubric grades / regression
+    # adjudications so the detail-page Cancel button can stop a long rubric judge.
+    result = score_run(
+        run_dir, rubric=rubric, judge_model=judge_model, dry_run=dry_run,
+        should_cancel=lambda: _cancel_requested(job_id),
+    )
     hub.publish(job_id, {
         "type": "judge_progress", "job_id": job_id, "run_id": run_dir.name,
         "score": result.get("score"),
         "verdict": "pass" if (result.get("score") or 0) >= _PASS_VERDICT_THRESHOLD else "fail",
         "message": result.get("summary"),
     })
-    return {"target_type": "run", "run_id": run_dir.name, "result": result}
+    return {"target_type": "run", "run_id": run_dir.name,
+            "result": result, "cancelled": bool(result.get("cancelled"))}
 
 
 def _run_has_score(run_dir: Path, base_name: str = "judge") -> bool:
