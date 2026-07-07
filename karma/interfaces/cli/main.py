@@ -331,10 +331,23 @@ def _parse_param_overrides(param_args: list[str]) -> dict[str, Any]:
                 f"invalid --param format (expected KEY=VALUE): {item!r}"
             )
         key, _, raw_value = item.partition("=")
-        try:
-            value: Any = json.loads(raw_value)
-        except Exception:
-            value = raw_value
+        if raw_value.startswith("str:"):
+            # Explicit string escape: --param version=str:1.10 keeps "1.10"
+            # verbatim. Use it for version tags / digests / anything that looks
+            # numeric or boolean but must stay a string.
+            value: Any = raw_value[len("str:"):]
+        else:
+            try:
+                value = json.loads(raw_value)
+            except Exception:
+                value = raw_value
+            else:
+                # Guard the silent-mangle case: json turns the version tag "1.10"
+                # into the float 1.1 (and back into "1.1"). If a decoded float
+                # doesn't round-trip to the original text, the user meant a
+                # string -> keep it literal.
+                if isinstance(value, float) and str(value) != raw_value.strip():
+                    value = raw_value.strip()
         result[key.strip()] = value
     return result
 
