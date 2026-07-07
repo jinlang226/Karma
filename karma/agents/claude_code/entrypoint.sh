@@ -55,6 +55,14 @@ a background command), you MUST poll it to completion SYNCHRONOUSLY within this 
 Do not end your turn until the entire task is fully complete and you have verified \
 the end state."
 
+# Optional workflow-level system prompt (spec.system_prompt): append it AFTER the
+# harness contract so experiment instructions reach the model as a system prompt.
+if [ -f "system_prompt.txt" ]; then
+  SYS_PROMPT="$SYS_PROMPT
+
+$(cat system_prompt.txt)"
+fi
+
 # Persistent-session mode (workflow agent_session: persistent): keep ONE claude
 # conversation across stages instead of a fresh one each stage. Stage 0 creates
 # the session with a stable id; later stages resume it. claude keys sessions by

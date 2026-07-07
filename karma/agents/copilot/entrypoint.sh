@@ -22,6 +22,15 @@ TMP_FILE=".submit.partial"
 MODEL_ARG=""
 [ -n "${KARMA_COPILOT_AGENT_MODEL:-}" ] && MODEL_ARG="--model ${KARMA_COPILOT_AGENT_MODEL}"
 
+PROMPT="$(cat "$PROMPT_FILE")"
+# Optional workflow-level system prompt (spec.system_prompt): Copilot has no
+# system-prompt flag, so prepend it to the task prompt.
+if [ -f "system_prompt.txt" ]; then
+  PROMPT="$(cat system_prompt.txt)
+
+$PROMPT"
+fi
+
 # Persistent-session mode (workflow agent_session: persistent): keep ONE Copilot
 # conversation across stages by reusing a stable --session-id. Copilot creates
 # the session on first use and resumes it on subsequent stages with the same id.
@@ -35,7 +44,7 @@ fi
 # Copilot analogue of claude_code's --dangerously-skip-permissions). tee the
 # output to BOTH the temp submit file and stdout (the sandbox captures stdout to
 # agent.log, so the full turn-by-turn is recorded even on timeout).
-copilot --prompt "$(cat "$PROMPT_FILE")" \
+copilot --prompt "$PROMPT" \
   --allow-all ${MODEL_ARG} ${SESSION_ARG} \
   2>&1 | tee "$TMP_FILE"
 

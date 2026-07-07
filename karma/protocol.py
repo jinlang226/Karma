@@ -89,6 +89,15 @@ def stage_prompt_path(run_dir: Path, stage_id: str) -> Path:
     return stage_dir(run_dir, stage_id) / "prompt.txt"
 
 
+def stage_system_prompt_path(run_dir: Path, stage_id: str) -> Path:
+    """Return the path to the optional workflow system prompt for this stage.
+
+    Written only when the workflow declares ``spec.system_prompt``; each agent
+    entrypoint reads it (if present) and injects it as a system prompt.
+    """
+    return stage_dir(run_dir, stage_id) / "system_prompt.txt"
+
+
 def stage_submit_path(run_dir: Path, stage_id: str) -> Path:
     """Return the path to the agent's submitted answer for this stage."""
     return stage_dir(run_dir, stage_id) / "submit.txt"

@@ -125,6 +125,14 @@ def main():
         log(f"FATAL: cannot read {PROMPT_FILE}: {exc}")
         write_submit("(no prompt)")
         return
+    # Optional workflow-level system prompt (spec.system_prompt): prepend it so it
+    # reaches the model each stage (works for both fresh and resumed sessions).
+    try:
+        sp = open("system_prompt.txt").read().strip()
+        if sp:
+            prompt = sp + "\n\n" + prompt
+    except OSError:
+        pass
     if not API_KEY:
         log("FATAL: no API key (set KARMA_API_KEY or DEEPSEEK_API_KEY)")
         write_submit("(no API key configured)")

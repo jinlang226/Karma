@@ -87,6 +87,11 @@ class _WorkflowSpec(BaseModel):
     # just the re-fed prompts. With ``persistent`` the recommended prompt_mode is
     # ``progressive`` -- the live session already holds the history.
     agent_session: Literal["per_stage", "persistent"] = _DEFAULT_AGENT_SESSION
+    # Optional workflow-level system prompt delivered to every agent (claude via
+    # --append-system-prompt; codex/copilot/api prepend it). For experiments --
+    # e.g. telling the agent a regression sweep will re-check earlier stages. It
+    # must NOT describe the submit mechanism (the wrapper handles that).
+    system_prompt: str | None = None
     adversary: list[Any] = []
 
 
@@ -333,6 +338,7 @@ def normalize_workflow(
         "label": meta.get("label"),
         "prompt_mode": str(spec.get("prompt_mode") or _DEFAULT_PROMPT_MODE),
         "agent_session": str(spec.get("agent_session") or _DEFAULT_AGENT_SESSION),
+        "system_prompt": (str(spec.get("system_prompt") or "").strip() or None),
         "stages": normalized_stages,
         "adversary": list(spec.get("adversary") or []),
     }

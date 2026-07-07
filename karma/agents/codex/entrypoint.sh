@@ -23,6 +23,14 @@ MODEL_ARG=""
 
 PROMPT="$(cat "$PROMPT_FILE")"
 
+# Optional workflow-level system prompt (spec.system_prompt): Codex exec has no
+# system-prompt flag, so prepend it to the task prompt.
+if [ -f "system_prompt.txt" ]; then
+  PROMPT="$(cat system_prompt.txt)
+
+$PROMPT"
+fi
+
 # Persistent-session mode (workflow agent_session: persistent): keep ONE Codex
 # conversation across stages. Point CODEX_HOME at a per-run dir so "resume the
 # most recent session" (--last) can only pick THIS run's session, seeding it

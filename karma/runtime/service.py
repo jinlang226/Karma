@@ -178,6 +178,8 @@ def run_workflow(
         # default (persistent: one agent conversation from the first stage to the last).
         agent_session = str(agent_session or workflow.get("agent_session") or "persistent")
         session_id = str(uuid.uuid4()) if agent_session == "persistent" else None
+        # Optional workflow-level system prompt, delivered to every agent per stage.
+        system_prompt = workflow.get("system_prompt") or None
 
         result = run_workflow_loop(
             rows,
@@ -190,6 +192,7 @@ def run_workflow(
             prompt_mode=prompt_mode,
             agent_session=agent_session,
             session_id=session_id,
+            system_prompt=system_prompt,
             on_stage_complete=on_stage_complete,
             on_progress=on_progress,
             should_cancel=should_cancel,
