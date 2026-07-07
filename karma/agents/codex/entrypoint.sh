@@ -48,14 +48,18 @@ fi
 
 # Headless, non-interactive Codex run, against the current working directory so
 # it works in both sandbox modes (-C "$PWD" rather than a hardcoded /workspace).
-# tee so the answer lands in BOTH submit.txt and stdout (captured to agent.log).
+# --output-last-message writes Codex's FINAL message to a temp file (a clean
+# answer, like claude's result extraction) while the full turn-by-turn streams to
+# stdout -> agent.log. The temp file becomes submit.txt atomically afterward.
 if [ -n "$RESUME" ]; then
   codex --dangerously-bypass-approvals-and-sandbox exec resume --last ${MODEL_ARG} \
-    "$PROMPT" 2>&1 | tee "$TMP_FILE"
+    --output-last-message "$TMP_FILE" "$PROMPT" 2>&1
 else
   codex --dangerously-bypass-approvals-and-sandbox exec ${MODEL_ARG} \
     -C "$PWD" --skip-git-repo-check \
-    "$PROMPT" 2>&1 | tee "$TMP_FILE"
+    --output-last-message "$TMP_FILE" "$PROMPT" 2>&1
 fi
 
+# No final message (or killed before writing) -> empty submit still signals done.
+[ -f "$TMP_FILE" ] || : > "$TMP_FILE"
 mv -f "$TMP_FILE" "$SUBMIT_FILE"

@@ -40,27 +40,15 @@ if [ -n "$EFFORT" ]; then
   EFFORT_ARGS=(--effort "$EFFORT")
 fi
 
-# Harness contract appended as a SYSTEM prompt (kept out of the task prompt so
-# cases stay agent-agnostic). Without this, agentic models -- notably Opus --
-# offload waits to background tasks and END THEIR TURN expecting a scheduled
-# wakeup/re-invocation. KARMA runs `claude --print` ONE-SHOT: ending the turn
-# exits the process, no wakeup ever comes, and the task is abandoned half-done
-# (e.g. a TLS rolling restart left incomplete). Tell the model its real runtime.
-SYS_PROMPT="You are running in a single, non-interactive session (claude --print). \
-There are NO background tasks, scheduled wakeups, or re-invocations: when you end \
-your turn the process exits and your work stops permanently. If you start any \
-asynchronous operation (a rolling restart, a kubectl rollout, a wait for pods/jobs, \
-a background command), you MUST poll it to completion SYNCHRONOUSLY within this turn \
-(loop with sleep until it is done) -- do not hand it off and wait to be woken up. \
-Do not end your turn until the entire task is fully complete and you have verified \
-the end state."
-
-# The workflow provides the effective system prompt (the default harness contract
-# plus any spec.system_prompt appended) in system_prompt.txt; when present it
-# REPLACES the built-in above -- the built-in is only a fallback for runs that
-# provide no system prompt (e.g. a direct run_stage call).
+# System prompt: KARMA writes the effective system prompt -- the default harness
+# contract (docs/default-system-prompt.md) plus any workflow spec.system_prompt
+# appended -- to system_prompt.txt. That file is the single source of truth (no
+# hardcoded copy here); the harness contract keeps agentic models, notably Opus,
+# from ending their turn expecting a wakeup that never comes in one-shot --print.
+# Pass --append-system-prompt only when the file is present.
+SYS_ARGS=()
 if [ -f "system_prompt.txt" ]; then
-  SYS_PROMPT="$(cat system_prompt.txt)"
+  SYS_ARGS=(--append-system-prompt "$(cat system_prompt.txt)")
 fi
 
 # Persistent-session mode (workflow agent_session: persistent): keep ONE claude
@@ -94,7 +82,7 @@ claude --print --verbose --output-format stream-json \
   --model "$MODEL" \
   ${EFFORT_ARGS[@]+"${EFFORT_ARGS[@]}"} \
   ${SESSION_ARGS[@]+"${SESSION_ARGS[@]}"} \
-  --append-system-prompt "$SYS_PROMPT" \
+  ${SYS_ARGS[@]+"${SYS_ARGS[@]}"} \
   --dangerously-skip-permissions \
   "$(cat "$PROMPT_FILE")" \
   2>&1 | tee "$STREAM_FILE"
