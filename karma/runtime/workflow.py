@@ -9,11 +9,12 @@ each stage, and runs final sweeps on completion.
 Final sweeps:
 
 *Regression sweep*
-    Re-runs the oracle for all completed stages to detect regressions
+    Re-runs the oracle for all passed stages to detect regressions
     introduced by later stages. By default (``final_sweep_mode="auto"``)
-    executed only when the workflow completes successfully with more than
-    one stage; ``"off"`` disables it and ``"full"`` sweeps whenever at
-    least one stage passed.
+    executed whenever more than one stage ran and at least one passed --
+    including runs that ended on a stage FAILURE, since a later stage that
+    failed can still have regressed an earlier pass. ``"off"`` disables it;
+    ``"full"`` sweeps whenever at least one stage passed.
 
 *Adversary cleanup sweep*
     Lifts any adversary injections whose ``lift_at_stage`` never ran due
@@ -94,7 +95,10 @@ def _run_final_regression_sweep(
 
     passed_ids = {r.get("stage_id") for r in stage_results if r.get("status") == "pass"}
     completed_rows = [row for row in rows if row.get("stage_id") in passed_ids]
-    if len(completed_rows) <= 1:
+    # Re-check the passed stages whenever MORE THAN ONE stage ran -- a later stage
+    # (even one that FAILED) may have regressed an earlier pass. Skip only when a
+    # single stage ran (nothing could have regressed it) or none passed.
+    if not completed_rows or len(stage_results) <= 1:
         return {}
 
     oracle_configs: list[tuple[str, dict[str, Any]]] = []
@@ -369,7 +373,11 @@ def run_workflow_loop(
     elif final_sweep_mode == "full":
         run_sweep = len(completed_stage_ids) >= 1
     else:  # "auto" / "inherit"
-        run_sweep = workflow_status == "complete" and len(completed_stage_ids) > 1
+        # Sweep whenever a later stage could have regressed an earlier pass: more
+        # than one stage ran and at least one passed. NOT gated on a clean finish
+        # -- a later stage that FAILED can still have broken an earlier stage's
+        # state, and that regression must be caught and scored.
+        run_sweep = len(stage_results) > 1 and len(completed_stage_ids) >= 1
     regression_sweep = None
     if run_sweep:
         # A sweep failure is diagnostic only; it must not crash the run result.
