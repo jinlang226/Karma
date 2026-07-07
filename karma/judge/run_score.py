@@ -28,13 +28,50 @@ artifacts and never imports ``runtime.*``.
 
 from __future__ import annotations
 
+import hashlib
 import json
 from pathlib import Path
+from string import Template
 from typing import Any
 
 from .client import call_judge_llm
 from .scoring import _extract_json
 from .rubric import rubric_hash as _rubric_hash
+
+# Built-in regression-sweep adjudication prompt. Kept in sync with
+# docs/example-regression-prompt.md (the CLI's --regression-prompt default);
+# users override it by passing their own template. Placeholders ($stage_id,
+# $regression_output, $stage_prompts) are filled per stage via string.Template.
+_DEFAULT_REGRESSION_TEMPLATE = (
+    "You are auditing a multi-stage Kubernetes benchmark run. Each stage asked an\n"
+    "agent to perform a task; an automated oracle then checked the result. Every\n"
+    "stage passed its oracle when it ran. After the whole workflow finished, KARMA\n"
+    "re-ran each passed stage's oracle once more (a \"regression sweep\") to see\n"
+    "whether the agent's later actions broke an earlier stage's success.\n\n"
+    "Stage \"$stage_id\" PASSED when it ran, but its oracle now FAILS on re-run.\n"
+    "Decide whether this is a REAL REGRESSION (the agent carelessly broke this\n"
+    "stage's result with later actions) or a FALSE POSITIVE (the failure is\n"
+    "expected -- a LATER stage was legitimately supposed to change the same state,\n"
+    "so the stale re-check no longer applies).\n\n"
+    "## Oracle re-run output for $stage_id (now failing)\n$regression_output\n\n"
+    "## Every stage's task, in execution order (a later stage may legitimately\n"
+    "## change the state this stale oracle checks)\n"
+    "$stage_prompts\n\n"
+    "Respond with ONLY a JSON object on one line:\n"
+    '{"legitimate_regression": true|false, "reasoning": "<one or two sentences>"}\n'
+    "- legitimate_regression=true  => the agent really broke this stage (counts against the score)\n"
+    "- legitimate_regression=false => false positive; a later stage legitimately changed this state\n"
+)
+
+
+def regression_prompt_hash(template: str | None) -> str:
+    """Stable hash of the regression-adjudication template actually used.
+
+    Lets the shared adjudication cache tell that the prompt changed (so the
+    stored verdicts are stale). None hashes the built-in default.
+    """
+    tmpl = template or _DEFAULT_REGRESSION_TEMPLATE
+    return hashlib.sha256(tmpl.encode("utf-8")).hexdigest()
 
 # Cap each stage prompt included in the adjudicator context (keep the call bounded).
 _PROMPT_CAP = 2000
@@ -69,32 +106,24 @@ def _build_adjudication_prompt(
     stage_id: str,
     regression_output: str,
     ordered_stage_ids: list[str],
+    template: str | None = None,
 ) -> str:
-    """Render the prompt asking the LLM whether a sweep failure is a regression."""
+    """Render the regression-adjudication prompt from *template* (or the default).
+
+    Substitutes ``$stage_id``, ``$regression_output``, and ``$stage_prompts``
+    (every stage's task in execution order, with the stage in question marked)
+    into the template via ``string.Template`` (so literal ``{...}`` JSON in the
+    prompt is left untouched). ``template=None`` uses the built-in default.
+    """
     others = []
     for sid in ordered_stage_ids:
         marker = " (THE STAGE IN QUESTION)" if sid == stage_id else ""
         others.append(f"### {sid}{marker}\n{_stage_prompt(run_dir, sid) or '(no prompt recorded)'}")
     all_prompts = "\n\n".join(others)
-    return (
-        "You are auditing a multi-stage Kubernetes benchmark run. Each stage asked an\n"
-        "agent to perform a task; an automated oracle then checked the result. Every\n"
-        "stage passed its oracle when it ran. After the whole workflow finished, KARMA\n"
-        "re-ran each passed stage's oracle once more (a \"regression sweep\") to see\n"
-        "whether the agent's later actions broke an earlier stage's success.\n\n"
-        f"Stage \"{stage_id}\" PASSED when it ran, but its oracle now FAILS on re-run.\n"
-        "Decide whether this is a REAL REGRESSION (the agent carelessly broke this\n"
-        "stage's result with later actions) or a FALSE POSITIVE (the failure is\n"
-        "expected -- a LATER stage was legitimately supposed to change the same state,\n"
-        "so the stale re-check no longer applies).\n\n"
-        f"## Oracle re-run output for {stage_id} (now failing)\n{regression_output or '(none)'}\n\n"
-        "## Every stage's task, in execution order (a later stage may legitimately\n"
-        "## change the state this stale oracle checks)\n"
-        f"{all_prompts}\n\n"
-        "Respond with ONLY a JSON object on one line:\n"
-        '{"legitimate_regression": true|false, "reasoning": "<one or two sentences>"}\n'
-        "- legitimate_regression=true  => the agent really broke this stage (counts against the score)\n"
-        "- legitimate_regression=false => false positive; a later stage legitimately changed this state\n"
+    return Template(template or _DEFAULT_REGRESSION_TEMPLATE).safe_substitute(
+        stage_id=stage_id,
+        regression_output=regression_output or "(none)",
+        stage_prompts=all_prompts,
     )
 
 
@@ -129,6 +158,7 @@ def score_run(
     dry_run: bool = False,
     should_cancel=None,
     on_log=None,
+    regression_prompt: str | None = None,
 ) -> dict[str, Any]:
     """Compute the run-level score and write ``{run_dir}/judge.json``.
 
@@ -302,7 +332,8 @@ def score_run(
             {
                 "stage_id": sid,
                 "prompt": _build_adjudication_prompt(
-                    run_dir, sid, (v or {}).get("output") or "", ordered_ids
+                    run_dir, sid, (v or {}).get("output") or "", ordered_ids,
+                    template=regression_prompt,
                 ),
             }
             for sid, v in failures
@@ -330,33 +361,53 @@ def score_run(
         if judge_model:
             emit(f"[judge] no model specified -> mirroring run agent ({judge_model})")
 
+    # One shared adjudication: the sweep verdicts are computed ONCE and cached in
+    # regression_adjudication.json (keyed by the prompt hash), so the w/o- and w/
+    # rubric judges reuse the same real-regression/false-positive calls instead of
+    # each asking the LLM and possibly disagreeing. A changed prompt invalidates it.
+    prompt_hash = regression_prompt_hash(regression_prompt)
+    cached = _load_shared_adjudications(run_dir, prompt_hash)
+    store: dict[str, dict[str, Any]] = dict(cached)
+
     legit = 0
     regressions: list[dict[str, Any]] = []
     model_used: str | None = None
     for sid, v in failures:
-        if should_cancel and should_cancel():
-            emit("[judge] cancelled before completion")
-            return {"cancelled": True, "score": None,
-                    "summary": "judging cancelled before completion"}
-        emit(f"[judge]   adjudicating {sid} (regression sweep re-check failed)...")
         output = (v or {}).get("output") or ""
-        prompt = _build_adjudication_prompt(run_dir, sid, output, ordered_ids)
-        try:
-            raw = call_judge_llm(
-                None,
-                prompt=prompt,
-                model=judge_model,
-                base_url=judge_base_url,
-                api_key=judge_api_key,
-                backend=judge_backend,
-                timeout_sec=judge_timeout_sec or 120,
-                max_retries=judge_max_retries if judge_max_retries is not None else 3,
+        if sid in cached:
+            verdict = cached[sid]
+            emit(f"[judge]   {sid}: reusing shared adjudication")
+        else:
+            if should_cancel and should_cancel():
+                emit("[judge] cancelled before completion")
+                return {"cancelled": True, "score": None,
+                        "summary": "judging cancelled before completion"}
+            emit(f"[judge]   adjudicating {sid} (regression sweep re-check failed)...")
+            prompt = _build_adjudication_prompt(
+                run_dir, sid, output, ordered_ids, template=regression_prompt
             )
-            model_used = raw.get("model") or model_used
-            verdict = _parse_adjudication(raw.get("content") or "")
-        except Exception as exc:
-            # On adjudication failure, conservatively keep it as a real regression.
-            verdict = {"legitimate_regression": True, "reasoning": f"adjudication error: {exc}"}
+            try:
+                raw = call_judge_llm(
+                    None,
+                    prompt=prompt,
+                    model=judge_model,
+                    base_url=judge_base_url,
+                    api_key=judge_api_key,
+                    backend=judge_backend,
+                    timeout_sec=judge_timeout_sec or 120,
+                    max_retries=judge_max_retries if judge_max_retries is not None else 3,
+                )
+                parsed = _parse_adjudication(raw.get("content") or "")
+                verdict = {
+                    "legitimate_regression": bool(parsed.get("legitimate_regression")),
+                    "reasoning": parsed.get("reasoning") or "",
+                    "model": raw.get("model"),
+                }
+            except Exception as exc:
+                # On adjudication failure, conservatively keep it as a real regression.
+                verdict = {"legitimate_regression": True,
+                           "reasoning": f"adjudication error: {exc}", "model": None}
+            store[sid] = verdict
         is_legit = bool(verdict.get("legitimate_regression"))
         if is_legit:
             legit += 1
@@ -365,6 +416,7 @@ def score_run(
                 if e.get("stage_id") == sid:
                     e["regressed"] = True
         reasoning = verdict.get("reasoning") or ""
+        model_used = verdict.get("model") or model_used
         regressions.append({
             "stage_id": sid,
             "legitimate": is_legit,
@@ -375,6 +427,9 @@ def score_run(
             f"[judge]   {sid}: {'REAL REGRESSION' if is_legit else 'false positive'} "
             f"-- {reasoning}"
         )
+
+    # Persist the shared verdicts so the other judge mode reuses them verbatim.
+    _save_shared_adjudications(run_dir, prompt_hash, store)
 
     score = _compose()  # regressed stages were zeroed in the loop above
     result["legitimate_regressions"] = legit
@@ -390,6 +445,32 @@ def score_run(
     emit(f"[judge] done: {result['summary']}")
     _write(run_dir, result, log, base_name=judge_basename)
     return result
+
+
+def _load_shared_adjudications(run_dir: Path, prompt_hash: str) -> dict[str, dict[str, Any]]:
+    """Return the per-stage regression adjudications cached for *prompt_hash*.
+
+    Shared by the objective and rubric judges so a given regression is
+    adjudicated once and both agree. Returns {} when the cache is absent or was
+    written for a different prompt (the prompt changed -> re-adjudicate).
+    """
+    data = _read_json(run_dir / "regression_adjudication.json")
+    if data.get("prompt_hash") != prompt_hash:
+        return {}
+    adj = data.get("adjudications")
+    return adj if isinstance(adj, dict) else {}
+
+
+def _save_shared_adjudications(
+    run_dir: Path, prompt_hash: str, adjudications: dict[str, dict[str, Any]]
+) -> None:
+    """Persist the shared regression adjudications keyed by the prompt hash."""
+    try:
+        (run_dir / "regression_adjudication.json").write_text(
+            json.dumps({"prompt_hash": prompt_hash, "adjudications": adjudications}, indent=2)
+        )
+    except Exception:
+        pass
 
 
 def _write(
