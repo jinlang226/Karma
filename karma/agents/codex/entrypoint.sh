@@ -51,13 +51,16 @@ fi
 # --output-last-message writes Codex's FINAL message to a temp file (a clean
 # answer, like claude's result extraction) while the full turn-by-turn streams to
 # stdout -> agent.log. The temp file becomes submit.txt atomically afterward.
+# </dev/null: the prompt is passed as an argument, so isolate stdin -- otherwise
+# codex reads inherited stdin ("Reading additional input from stdin...") and, per
+# its docs, appends any piped content to the prompt as a <stdin> block.
 if [ -n "$RESUME" ]; then
   codex --dangerously-bypass-approvals-and-sandbox exec resume --last ${MODEL_ARG} \
-    --output-last-message "$TMP_FILE" "$PROMPT" 2>&1
+    --output-last-message "$TMP_FILE" "$PROMPT" < /dev/null 2>&1
 else
   codex --dangerously-bypass-approvals-and-sandbox exec ${MODEL_ARG} \
     -C "$PWD" --skip-git-repo-check \
-    --output-last-message "$TMP_FILE" "$PROMPT" 2>&1
+    --output-last-message "$TMP_FILE" "$PROMPT" < /dev/null 2>&1
 fi
 
 # No final message (or killed before writing) -> empty submit still signals done.
