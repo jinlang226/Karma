@@ -36,9 +36,10 @@ _BUILTIN_DEFAULT_SYSTEM_PROMPT = (
     "You are running in a single, non-interactive session. There are no background "
     "tasks, scheduled wakeups, or re-invocations: when you end your turn the process "
     "exits and your work stops permanently. If you start any asynchronous operation, "
-    "you MUST poll it to completion synchronously within this turn (loop with sleep "
-    "until it is done). Do not end your turn until the entire task is fully complete "
-    "and you have verified the end state."
+    "you MUST wait for it to finish within this turn -- prefer a single blocking "
+    "command (e.g. kubectl rollout status / kubectl wait) over a manual sleep-and-poll "
+    "loop. Do not end your turn until the entire task is fully complete and you have "
+    "verified the end state."
 )
 
 
