@@ -224,9 +224,16 @@ def start_manual_run(
     run_id = protocol.generate_run_id(f"{service}-{case_name}-manual")
     run_dir = runs_dir / run_id
     run_dir.mkdir(parents=True, exist_ok=True)
-    ns_roles = namespace_roles or (
-        case.get("namespace_contract", {}).get("required_roles") or ["default"]
-    )
+    # Use `is None`, not `or`: an explicit required_roles: [] (a case that manages
+    # its own literal namespaces -- mongodb/cockroachdb/spark) is falsy, so the
+    # old `or ["default"]` collapsed it to ["default"], re-bound a karma-* namespace
+    # and set BENCH_NAMESPACE, breaking those cases in manual mode. The run/workflow
+    # paths already guard with `is None`; manual mode was the gap (Law-3).
+    ns_roles = namespace_roles
+    if ns_roles is None:
+        ns_roles = case.get("namespace_contract", {}).get("required_roles")
+    if ns_roles is None:
+        ns_roles = ["default"]
 
     _register(run_id, {
         "run_id": run_id,
