@@ -1,17 +1,16 @@
 """
 Cross-run batch evaluation.
 
-``engine.run_judge_batch`` judges every *stage* within a single run. The
-old framework also had a coarser notion of a *batch*: a directory holding
-many independent run directories, judged together so an experiment's mean
-score could be reported. That cross-run aggregation lived only in the old
-codebase; this module restores it on top of the per-run engine.
-
-A *batch directory* is any directory whose immediate children are run
+A *batch directory* is a directory whose immediate children are run
 directories (a child counts as a run when it contains a ``stages/``
-subdirectory). Each run is judged via ``engine.run_judge_batch`` and its
-per-stage scores are averaged into a single run score; the run scores are
-then averaged into the batch's ``average_final_score``.
+subdirectory) -- an experiment holding many independent runs, judged together
+so its mean score can be reported.
+
+Each run is scored with :func:`judge.run_score.score_run` (the same run-level
+scorer the Results-page buttons use), and those per-run scores are averaged
+into the batch's ``average_final_score``. Using the one scorer keeps the batch
+mean consistent with the per-run scores and lets an optional rubric flow
+through to every run.
 
 No ``runtime.*`` imports: like the rest of the judge package this operates
 entirely on artifacts already written to disk.
@@ -21,8 +20,6 @@ from __future__ import annotations
 
 from pathlib import Path
 from typing import Any
-
-from .engine import run_judge_batch
 
 
 def _is_run_dir(path: Path) -> bool:
@@ -37,37 +34,27 @@ def discover_runs(batch_dir: Path) -> list[Path]:
     return [d for d in sorted(batch_dir.iterdir()) if _is_run_dir(d)]
 
 
-def _mean_stage_score(stage_results: dict[str, Any]) -> float | None:
-    """Return the mean numeric ``score`` across stage result dicts, or ``None``."""
-    scores = [
-        float(r["score"])
-        for r in stage_results.values()
-        if isinstance(r, dict) and isinstance(r.get("score"), (int, float))
-    ]
-    if not scores:
-        return None
-    return round(sum(scores) / len(scores), 1)
-
-
 def judge_batch_dir(
     batch_dir: Path,
     *,
-    rubric_overrides: dict[str, Any] | None = None,
+    rubric: dict[str, Any] | None = None,
     judge_model: str | None = None,
     judge_base_url: str | None = None,
     judge_api_key: str | None = None,
     judge_timeout_sec: int | None = None,
     judge_max_retries: int | None = None,
-    include_outcome: bool = True,
     dry_run: bool = False,
+    regression_prompt: str | None = None,
     on_run_complete: Any | None = None,
 ) -> dict[str, Any]:
-    """Judge every run under *batch_dir* and return an aggregated result.
+    """Score every run under *batch_dir* and return the experiment mean.
 
-    Each discovered run is evaluated with :func:`engine.run_judge_batch`.
-    The optional *on_run_complete* callback is invoked with
-    ``(run_id, run_score, index, total)`` after each run so a caller can
-    stream progress.
+    Each run is scored with :func:`judge.run_score.score_run` -- the same
+    run-level scorer the Results-page buttons use -- so the batch mean and the
+    per-run scores are consistent, and an optional *rubric* flows through to
+    every run. The optional *on_run_complete* callback is invoked with
+    ``(run_id, run_score, index, total)`` after each run so a caller can stream
+    progress.
 
     Returns
     -------
@@ -75,30 +62,32 @@ def judge_batch_dir(
         Keys: ``batch_dir`` (str), ``run_count`` (int), ``judged_count``
         (int, runs that produced a numeric score), ``average_final_score``
         (float or ``None``), and ``runs`` (list of per-run dicts each with
-        ``run_id``, ``score``, and ``stages``).
+        ``run_id``, ``score``, and ``summary``).
     """
+    from .run_score import score_run
+
     run_dirs = discover_runs(batch_dir)
     runs: list[dict[str, Any]] = []
     run_scores: list[float] = []
 
     total = len(run_dirs)
     for idx, run_dir in enumerate(run_dirs):
-        stage_results = run_judge_batch(
+        result = score_run(
             run_dir,
-            rubric_overrides=rubric_overrides,
+            rubric=rubric,
             judge_model=judge_model,
             judge_base_url=judge_base_url,
             judge_api_key=judge_api_key,
             judge_timeout_sec=judge_timeout_sec,
             judge_max_retries=judge_max_retries,
-            include_outcome=include_outcome,
             dry_run=dry_run,
+            regression_prompt=regression_prompt,
         )
-        score = None if dry_run else _mean_stage_score(stage_results)
-        if score is not None:
-            run_scores.append(score)
+        score = None if dry_run else result.get("score")
+        if isinstance(score, (int, float)):
+            run_scores.append(float(score))
         runs.append(
-            {"run_id": run_dir.name, "score": score, "stages": stage_results}
+            {"run_id": run_dir.name, "score": score, "summary": result.get("summary")}
         )
         if on_run_complete is not None:
             try:

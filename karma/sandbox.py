@@ -29,7 +29,7 @@ class AgentProcess:
     """Handle for a running agent process, local or Docker.
 
     Returned by :func:`launch_agent`. Callers use this handle to wait for
-    the agent, terminate it early, or inspect its exit code.
+    the agent or terminate it early.
     """
 
     def __init__(
@@ -38,7 +38,6 @@ class AgentProcess:
         *,
         sandbox_mode: str,
         container_id: str | None = None,
-        run_dir: Path,
     ) -> None:
         """Wrap a running subprocess or Docker container process.
 
@@ -51,14 +50,10 @@ class AgentProcess:
         container_id:
             Docker container ID when *sandbox_mode* is ``"docker"``,
             otherwise ``None``.
-        run_dir:
-            Stage run directory used for logging.
         """
         self._proc = proc
         self._sandbox_mode = sandbox_mode
         self._container_id = container_id
-        self._run_dir = run_dir
-        self._exit_code: int | None = None
 
     def wait(self, timeout_sec: int | None = None) -> int:
         """Block until the agent finishes and return its exit code.
@@ -67,8 +62,7 @@ class AgentProcess:
         given and the agent does not finish in time. The caller is
         responsible for calling :meth:`terminate` after catching the error.
         """
-        self._exit_code = self._proc.wait(timeout=timeout_sec)
-        return self._exit_code
+        return self._proc.wait(timeout=timeout_sec)
 
     def terminate(self) -> None:
         """Forcibly stop the agent process.
@@ -99,7 +93,6 @@ class AgentProcess:
                     self._proc.wait(timeout=5)
             except Exception:
                 pass
-        self._exit_code = self._proc.returncode
 
     def is_running(self) -> bool:
         """Return ``True`` when the agent process is still alive.
@@ -117,11 +110,6 @@ class AgentProcess:
             except Exception:
                 return False
         return self._proc.poll() is None
-
-    @property
-    def exit_code(self) -> int | None:
-        """Exit code of the process, or ``None`` while still running."""
-        return self._exit_code
 
 
 def build_agent_image(
@@ -191,9 +179,11 @@ def launch_agent(
     In ``"local"`` mode the agent entrypoint is spawned as a subprocess
     with *env_vars* injected and *run_dir* as the working directory.
 
-    In ``"docker"`` mode the image is built or pulled as needed, then the
-    container is started with *env_vars* forwarded, *run_dir* mounted as
-    ``/workspace``, and *kubeconfig_path* mounted when provided.
+    In ``"docker"`` mode the image must already exist locally (build it
+    beforehand via :func:`build_agent_image` / ``--agent-build``); launch
+    errors if it is missing rather than pulling. The container is then started
+    with *env_vars* forwarded, *run_dir* mounted as ``/workspace``, and
+    *kubeconfig_path* mounted when provided.
     *extra_mounts* supplies additional ``(host_path, container_path)`` bind
     mounts.
 
@@ -242,7 +232,7 @@ def _launch_local(
                 command_override, shell=True, env=merged_env,
                 cwd=str(run_dir), stdout=log_fh, stderr=log_fh,
             )
-        return AgentProcess(proc, sandbox_mode="local", run_dir=run_dir)
+        return AgentProcess(proc, sandbox_mode="local")
     entrypoint = agent_meta.get("entrypoint") or "entrypoint.sh"
     folder = agent_meta.get("folder")
     cmd = [str(Path(folder) / entrypoint)] if folder else [entrypoint]
@@ -251,7 +241,7 @@ def _launch_local(
             cmd, env=merged_env, cwd=str(run_dir),
             stdout=log_fh, stderr=log_fh,
         )
-    return AgentProcess(proc, sandbox_mode="local", run_dir=run_dir)
+    return AgentProcess(proc, sandbox_mode="local")
 
 
 def _launch_docker(
@@ -336,7 +326,7 @@ def _launch_docker(
     finally:
         log_fh.close()
     # We return the logs proc as the handle's proc so .wait() tracks container termination.
-    return AgentProcess(logs_proc, sandbox_mode="docker", container_id=container_id, run_dir=run_dir)
+    return AgentProcess(logs_proc, sandbox_mode="docker", container_id=container_id)
 
 
 def cleanup_agent(process: AgentProcess) -> None:

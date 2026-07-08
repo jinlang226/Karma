@@ -632,6 +632,7 @@ def run_stage(
     prompt_mode: str,
     agent_session: str = "persistent",
     session_id: str | None = None,
+    system_prompt: str | None = None,
     stage_index: int = 0,
     defer_cleanup: bool = False,
     sandbox_options: dict[str, Any] | None = None,
@@ -671,7 +672,7 @@ def run_stage(
     -------
     dict
         Keys: ``stage_id``, ``status`` (``"pass"``, ``"fail"``,
-        ``"timeout"``, or ``"error"``), ``oracle_verdict``
+        ``"timeout"``, ``"cancelled"``, or ``"error"``), ``oracle_verdict``
         (``"pass"``, ``"fail"``, ``"error"``, or ``None``),
         ``submitted`` (bool), ``duration_sec`` (float),
         ``error`` (str or ``None``), ``evidence_path`` (str),
@@ -843,6 +844,11 @@ def run_stage(
             adversary_hint=adversary_hint,
         )
         protocol.stage_prompt_path(run_dir, stage_id).write_text(final_prompt)
+        # Optional workflow system prompt: write it alongside prompt.txt so each
+        # agent entrypoint can inject it (claude via --append-system-prompt;
+        # codex/copilot/api prepend it). Delivered every stage.
+        if system_prompt:
+            protocol.stage_system_prompt_path(run_dir, stage_id).write_text(system_prompt)
 
         # Step 8: launch agent
         #

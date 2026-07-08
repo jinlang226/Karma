@@ -28,6 +28,23 @@ from ..agents.registry import resolve_agent
 from ..protocol import generate_run_id, run_config_path
 from .workflow import run_workflow_loop
 
+# Default system prompt (the harness contract) applied to every run's agents.
+# The workflow's spec.system_prompt is APPENDED to this; a CLI --system-prompt
+# replaces this base. docs/default-system-prompt.md is the single source of truth.
+_DEFAULT_SYSTEM_PROMPT_PATH = Path(__file__).resolve().parents[2] / "docs" / "default-system-prompt.md"
+
+
+def _default_system_prompt() -> str:
+    """Return the base system prompt read from docs/default-system-prompt.md.
+
+    Returns "" if the file can't be read; the agents then deliver no system
+    prompt, which they handle gracefully (no hardcoded copy to drift from it).
+    """
+    try:
+        return _DEFAULT_SYSTEM_PROMPT_PATH.read_text().strip()
+    except OSError:
+        return ""
+
 
 # ---------------------------------------------------------------------------
 # Run status registry
@@ -71,6 +88,8 @@ def run_workflow(
     stage_failure_mode: str = "terminate",
     final_sweep_mode: str = "auto",
     sandbox_options: dict[str, Any] | None = None,
+    agent_session: str | None = None,
+    system_prompt: str | None = None,
 ) -> dict[str, Any]:
     """Execute a workflow synchronously and return the final run result.
 
@@ -102,8 +121,10 @@ def run_workflow(
     Returns
     -------
     dict
-        Keys: ``run_id``, ``status`` (``"complete"``, ``"failed"``, or
-        ``"error"``), ``stages`` (list[dict]), ``summary`` (dict).
+        Keys: ``run_id``, ``status`` (``"complete"``, ``"failed"``,
+        ``"cancelled"``, or ``"error"``), ``stages`` (list[dict]),
+        ``summary`` (dict). ``"error"`` is returned only when this call
+        itself raises (row resolution, environment/agent setup).
     """
     effective_run_id = run_id or generate_run_id(str(workflow.get("id") or "workflow"))
     run_dir = runs_dir / effective_run_id
@@ -169,12 +190,23 @@ def run_workflow(
             )
         prompt_mode = str(workflow.get("prompt_mode") or "progressive")
         # Persistent-session mode keeps ONE agent conversation alive across all
-        # stages (each stage resumes the same CLI/api session). This is now the
-        # default workflow behavior; per_stage explicitly opts out to a fresh
-        # agent/session each stage. Mint one stable session id per run only
-        # when persistence is enabled.
-        agent_session = str(workflow.get("agent_session") or "persistent")
+        # stages (each stage resumes the same CLI/api session). Explicit override
+        # (CLI/UI) wins, then the workflow's own value, then the persistent
+        # default; per_stage explicitly opts out to a fresh agent/session each
+        # stage. Mint one stable session id per run only when persistence is
+        # enabled.
+        agent_session = str(
+            agent_session or workflow.get("agent_session") or "persistent"
+        )
         session_id = str(uuid.uuid4()) if agent_session == "persistent" else None
+        # System prompt delivered to every agent each stage = a base (the CLI
+        # --system-prompt override, else the built-in default harness contract)
+        # with the workflow's own spec.system_prompt APPENDED to it.
+        base_prompt = (system_prompt or _default_system_prompt()).rstrip()
+        append_prompt = (workflow.get("system_prompt") or "").strip()
+        effective_system_prompt = (
+            base_prompt + "\n\n" + append_prompt if append_prompt else base_prompt
+        )
 
         result = run_workflow_loop(
             rows,
@@ -187,6 +219,7 @@ def run_workflow(
             prompt_mode=prompt_mode,
             agent_session=agent_session,
             session_id=session_id,
+            system_prompt=effective_system_prompt,
             on_stage_complete=on_stage_complete,
             on_progress=on_progress,
             should_cancel=should_cancel,

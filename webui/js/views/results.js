@@ -23,6 +23,7 @@
   const lastJudgeLog = {}; // runId -> last judge log text, kept across reloads
   let runsFolder = "";     // current Runs folder being browsed ("" = top level)
   let activeJudgeJob = null; // job_id while a "Judge all" is running (else null)
+  let activeJudgeMode = null; // "wo" | "w" -- which mode's judge-all is running
   let judgeCancelling = false; // true between a cancel click and the job ending
   let runsFilter = "";     // loose search query across all runs
   let allRuns = [];        // last-fetched runs, used by the folder/search render
@@ -49,7 +50,35 @@
 
   // Reconstruct the run's launch into a /api/run body and a /api/cli/preview
   // payload, from the run's stored config.
+  // Rebuild a minimal workflow YAML from a run's recorded stages -- for runs
+  // launched as an inline workflow, where there is no saved file for the CLI to
+  // point at. config.json records each stage's case as `case_name`; the input
+  // YAML key is `case`.
+  function workflowYamlFromConfig(cfg) {
+    const stages = cfg.stages || [];
+    const out = ["metadata:", "  id: " + (cfg.workflow_id || "workflow"), "spec:"];
+    if (cfg.agent_session) out.push("  agent_session: " + cfg.agent_session);
+    if (cfg.prompt_mode) out.push("  prompt_mode: " + cfg.prompt_mode);
+    out.push("  stages:");
+    stages.forEach((s, i) => {
+      out.push("    - id: " + (s.id || "stage_" + (i + 1)));
+      out.push("      service: " + s.service);
+      out.push("      case: " + s.case_name);
+      const po = s.param_overrides || {};
+      const keys = Object.keys(po);
+      if (keys.length) {
+        out.push("      param_overrides:");
+        keys.forEach((k) => out.push("        " + k + ": " + JSON.stringify(po[k])));
+      }
+    });
+    return out.join("\n") + "\n";
+  }
+
+  // Map a run's config.json to a re-run request + CLI preview. Three shapes:
+  // a saved workflow file, a single case (recorded top-level OR a one-stage
+  // workflow), or an inline multi-stage workflow (no CLI file -> show its YAML).
   function runSpec(cfg) {
+    const stages = cfg.stages || [];
     if (cfg.workflow_path) {
       return {
         body: { workflow_path: cfg.workflow_path, agent: cfg.agent || null,
@@ -58,13 +87,24 @@
                    flags: { agent: cfg.agent, sandbox: cfg.sandbox } },
       };
     }
+    const svc = cfg.service || (stages.length === 1 ? stages[0].service : "");
+    const cas = cfg.case_name || (stages.length === 1 ? stages[0].case_name : "");
+    if (svc && cas) {
+      const params = cfg.params
+        || (stages.length === 1 ? (stages[0].param_overrides || {}) : {});
+      return {
+        body: { service: svc, case_name: cas, params, agent: cfg.agent || null,
+                sandbox: cfg.sandbox || "local", agent_timeout_sec: cfg.agent_timeout_sec || 900 },
+        preview: { command: "case", target: { service: svc, case: cas },
+                   flags: { agent: cfg.agent, sandbox: cfg.sandbox,
+                            timeout: cfg.agent_timeout_sec, params } },
+      };
+    }
     return {
-      body: { service: cfg.service, case_name: cfg.case_name, params: cfg.params || {},
-              agent: cfg.agent || null, sandbox: cfg.sandbox || "local",
-              agent_timeout_sec: cfg.agent_timeout_sec || 900 },
-      preview: { command: "case", target: { service: cfg.service, case: cfg.case_name },
-                 flags: { agent: cfg.agent, sandbox: cfg.sandbox,
-                          timeout: cfg.agent_timeout_sec, params: cfg.params || {} } },
+      body: { workflow_yaml: workflowYamlFromConfig(cfg), agent: cfg.agent || null,
+              sandbox: cfg.sandbox || "local", max_attempts: cfg.max_attempts || 1 },
+      inline: { id: cfg.workflow_id || "workflow", count: stages.length,
+                yaml: workflowYamlFromConfig(cfg) },
     };
   }
 
@@ -78,9 +118,20 @@
       if (navigator.clipboard) navigator.clipboard.writeText(code.textContent);
       copy.textContent = "Copied"; setTimeout(() => { copy.textContent = "Copy"; }, 1200);
     } }, "Copy");
-    api.post("/api/cli/preview", spec.preview)
-      .then((res) => { code.textContent = res.command_multi_line || res.command_one_line || "(unavailable)"; })
-      .catch(() => { code.textContent = "(could not build command)"; });
+    if (spec.inline) {
+      // Inline multi-stage workflow: no CLI file exists, so show the rebuilt YAML
+      // plus the run-workflow line for it. "Run this test again" re-runs it inline.
+      code.textContent =
+        "# Inline " + spec.inline.count + "-stage workflow '" + spec.inline.id
+        + "' (no saved file). Save this YAML to e.g. workflows/" + spec.inline.id
+        + ".yaml, then:\n#   python orchestrator.py run-workflow workflows/"
+        + spec.inline.id + ".yaml --agent " + (cfg.agent || "<agent>")
+        + " --sandbox " + (cfg.sandbox || "local") + "\n\n" + spec.inline.yaml;
+    } else {
+      api.post("/api/cli/preview", spec.preview)
+        .then((res) => { code.textContent = res.command_multi_line || res.command_one_line || "(unavailable)"; })
+        .catch(() => { code.textContent = "(could not build command)"; });
+    }
 
     const runBtn = el("button", { class: "btn", onClick: async () => {
       runBtn.disabled = "disabled"; runBtn.textContent = "Starting…";
@@ -133,21 +184,6 @@
 
   function stopTimers() { if (refreshTimer) { clearTimeout(refreshTimer); refreshTimer = null; } }
 
-  // "Judge all" is scoped to the folder currently being browsed: at the top
-  // level it judges every run under runs/, inside a folder only the runs under
-  // that folder (recursively). Render the scope as a highlighted chip (not a
-  // plain string) so the folder name stands out; falls back to plain "Judge all"
-  // at the top level.
-  function setJudgeAllLabel(btn) {
-    clear(btn);
-    if (runsFolder) {
-      btn.appendChild(document.createTextNode("Judge all in "));
-      btn.appendChild(el("span", { class: "judge-scope" }, runsFolder));
-    } else {
-      btn.appendChild(document.createTextNode("Judge all"));
-    }
-  }
-
   // Search is scoped to the folder currently being browsed (like "Judge all"):
   // the placeholder states the scope so it's clear the query is folder-limited.
   function searchPlaceholder() {
@@ -158,33 +194,65 @@
     const tabs = el("div", { class: "subtabs" },
       el("button", { class: "tab" + (sub === "runs" ? " active" : ""), onClick: () => { sub = "runs"; render(); } }, "Runs"),
       el("button", { class: "tab" + (sub === "batches" ? " active" : ""), onClick: () => { sub = "batches"; render(); } }, "Batches"));
-    // "Judge all" sits at the far right of the same row -- scores every finished
-    // run in the current folder scope (objective stage-pass + LLM adjudication of
-    // regression-sweep failures).
-    const judgeAll = el("button", { id: "judge-all-btn", class: "btn secondary", onClick: () => onJudgeAllClick(judgeAll) });
-    if (activeJudgeJob) judgeAll.textContent = judgeCancelling ? "Cancelling…" : "Cancel judging…";
-    else setJudgeAllLabel(judgeAll);
-    return el("div", { class: "subtabs-row" }, tabs, judgeAll);
+    // Two folder-scoped "Judge all" buttons grouped at the right (where the single
+    // Judge-all button used to sit): objective (w/o rubric) and rubric (w/ rubric,
+    // scored against the bundled example rubric). Only one runs at a time; the
+    // running one becomes Cancel and the other is disabled.
+    const scopeTip = runsFolder ? ` for every finished run in "${runsFolder}"` : " for every finished run";
+    const btnWo = el("button", { id: "judge-all-wo", class: "btn secondary",
+      title: "Objective stage-pass score + regression adjudication" + scopeTip,
+      onClick: () => onJudgeAllClick("wo") }, "Judge all w/o Rubric");
+    const btnW = el("button", { id: "judge-all-w", class: "btn secondary",
+      title: "LLM-score each oracle-passing stage against the rubric" + scopeTip,
+      onClick: () => onJudgeAllClick("w") }, "Judge all w/ Rubric");
+    applyJudgeAllButtons(btnWo, btnW);
+    return el("div", { class: "subtabs-row" }, tabs,
+      el("div", { class: "judge-all-group" }, btnWo, btnW));
   }
 
-  // One button, two modes: start a Judge all, or cancel the one in flight.
-  function onJudgeAllClick(btn) {
-    if (activeJudgeJob) cancelJudgeAll(btn);
-    else startJudgeAll(btn);
+  // Click a Judge-all button: start that mode, or (if it's the running one) cancel.
+  function onJudgeAllClick(mode) {
+    if (activeJudgeJob) { if (activeJudgeMode === mode) cancelJudgeAll(); }
+    else startJudgeAll(mode);
   }
 
-  // While a job is running the button stays enabled and reads "Cancel judging
-  // (i/N)"; clicking it stops the remaining worklist (the in-flight run finishes).
   function judgeProgressLabel(i, n) {
     return `Cancel judging${i != null && n != null ? ` (${i}/${n})` : "…"}`;
   }
+  const judgeAllModeBtn = (mode) => document.getElementById(mode === "wo" ? "judge-all-wo" : "judge-all-w");
+  const judgeBtn = () => (activeJudgeMode ? judgeAllModeBtn(activeJudgeMode) : null);
 
-  const judgeBtn = () => document.getElementById("judge-all-btn");
+  // Reflect running/idle state on the two buttons. Pass refs at build time
+  // (before they're in the DOM); later calls look them up by id.
+  // Idle label with the browsed-folder scope as a highlighted chip
+  // ("Judge all w/o Rubric in [short/r6]"), matching the old single-button pattern.
+  function setScopedJudgeLabel(btn, base) {
+    clear(btn);
+    btn.appendChild(document.createTextNode(base));
+    if (runsFolder) {
+      btn.appendChild(document.createTextNode(" in "));
+      btn.appendChild(el("span", { class: "judge-scope" }, runsFolder));
+    }
+  }
 
-  // Subscribe to a running job's SSE stream. Handlers look the button up by id
-  // (not a captured reference) so they survive re-renders and a page refresh:
-  // the job runs in a backend thread, and the SSE hub replays buffered progress
-  // to a late/reconnecting subscriber, so re-adopting an in-flight job just works.
+  function applyJudgeAllButtons(bw, bwr) {
+    const map = { wo: bw || judgeAllModeBtn("wo"), w: bwr || judgeAllModeBtn("w") };
+    for (const mode of ["wo", "w"]) {
+      const b = map[mode];
+      if (!b) continue;
+      const idle = mode === "wo" ? "Judge all w/o Rubric" : "Judge all w/ Rubric";
+      if (activeJudgeMode === mode) {          // the running one -> Cancel
+        b.disabled = null;
+        b.textContent = judgeCancelling ? "Cancelling…" : judgeProgressLabel();
+      } else {                                 // idle, or disabled while the other runs
+        b.disabled = activeJudgeJob ? "disabled" : null;
+        setScopedJudgeLabel(b, idle);
+      }
+    }
+  }
+
+  // Subscribe to a running job's SSE stream. Handlers look the active button up
+  // by id (not a captured reference) so they survive re-renders and a refresh.
   function attachJudgeStream(jobId) {
     api.stream(`/api/judge/jobs/${jobId}/stream`, {
       statusPath: `/api/judge/jobs/${jobId}`,
@@ -205,64 +273,65 @@
         } else if (ev.type === "judge_complete") {
           const st = ev.status || "complete";
           KARMA.toast("Judge all " + st, st === "error" ? "error" : (st === "cancelled" ? "info" : "success"));
-          if (sub === "runs") render();   // refresh the list with new scores (incl. partial on cancel)
         }
       },
       onDone: () => {
-        activeJudgeJob = null; judgeCancelling = false;
-        const b = judgeBtn(); if (b) { b.disabled = null; setJudgeAllLabel(b); }
+        activeJudgeJob = null; activeJudgeMode = null; judgeCancelling = false;
+        if (sub === "runs") render();   // refresh scores (incl. partial) + reset buttons
+        else applyJudgeAllButtons();
       },
     });
   }
 
-  async function startJudgeAll(btn) {
-    btn.disabled = "disabled";
-    btn.textContent = "Starting…";
+  async function startJudgeAll(mode) {
+    activeJudgeMode = mode;
+    const b = judgeAllModeBtn(mode);
+    if (b) { b.disabled = "disabled"; b.textContent = "Starting…"; }
+    applyJudgeAllButtons();                     // disable the other mode
     try {
-      const resp = await api.post("/api/judge/start", { target_type: "all", target_path: runsFolder });
+      const body = { target_type: "all", target_path: runsFolder };
+      if (mode === "w") body.use_default_rubric = true;  // score against the bundled example
+      const resp = await api.post("/api/judge/start", body);
       activeJudgeJob = resp.job_id;
       judgeCancelling = false;
-      btn.disabled = null;                      // enabled so it can now cancel
-      btn.textContent = judgeProgressLabel();
+      const bb = judgeBtn(); if (bb) { bb.disabled = null; bb.textContent = judgeProgressLabel(); }
       attachJudgeStream(resp.job_id);
     } catch (e) {
       KARMA.toastError(e);
-      activeJudgeJob = null;
-      judgeCancelling = false;
-      btn.disabled = null;
-      setJudgeAllLabel(btn);
+      activeJudgeJob = null; activeJudgeMode = null; judgeCancelling = false;
+      applyJudgeAllButtons();
     }
   }
 
   // After a page refresh the backend job keeps running in its thread but the
-  // in-page state is gone. Re-adopt any running "Judge all" so the button
-  // reflects reality (and can still cancel); the SSE replay repopulates progress.
+  // in-page state is gone. Re-adopt any running "Judge all" (and its mode) so the
+  // right button reflects reality; the SSE replay repopulates progress.
   async function reattachActiveJudge() {
     if (activeJudgeJob) return;
     let jobs;
     try { jobs = await api.get("/api/judge/jobs"); } catch (_) { return; }
     const running = (jobs || []).filter((j) => j.target_type === "all" && j.status === "running");
     if (!running.length) return;
-    activeJudgeJob = running[running.length - 1].job_id;   // newest
+    const job = running[running.length - 1];   // newest
+    activeJudgeJob = job.job_id;
+    activeJudgeMode = job.has_rubric ? "w" : "wo";
     judgeCancelling = false;
-    const b = judgeBtn(); if (b) { b.disabled = null; b.textContent = judgeProgressLabel(); }
+    applyJudgeAllButtons();
     attachJudgeStream(activeJudgeJob);
   }
 
-  async function cancelJudgeAll(btn) {
+  async function cancelJudgeAll() {
     if (!activeJudgeJob) return;
     judgeCancelling = true;
-    btn.disabled = "disabled";
-    btn.textContent = "Cancelling…";
+    const b = judgeBtn();
+    if (b) { b.disabled = "disabled"; b.textContent = "Cancelling…"; }
     try {
       await api.post(`/api/judge/jobs/${activeJudgeJob}/cancel`, {});
-      // The job ends after its current run; the stream's judge_complete
-      // (status "cancelled") + onDone restore the button.
+      // The job ends after its current run; the stream's judge_complete + onDone reset.
     } catch (e) {
       KARMA.toastError(e);
       judgeCancelling = false;           // cancel POST failed -> let it keep running
-      btn.disabled = null;
-      btn.textContent = judgeProgressLabel();
+      if (b) { b.disabled = null; b.textContent = judgeProgressLabel(); }
     }
   }
 
@@ -378,10 +447,9 @@
     runsFolder = folder;
     setFolderCrumb();
     // This partial-render path (folder-row click) does not rebuild subtabs(), so
-    // refresh the "Judge all" scope label here -- unless a judge is mid-run
-    // (button disabled), where its progress text must not be clobbered.
-    const jb = document.getElementById("judge-all-btn");
-    if (jb && !jb.disabled && !activeJudgeJob) setJudgeAllLabel(jb);
+    // refresh the folder-scope chip on both Judge-all buttons and the search
+    // placeholder here.
+    applyJudgeAllButtons();
     const sb = document.getElementById("runs-search");
     if (sb) sb.placeholder = searchPlaceholder();
     const body = document.getElementById("runs-body");
@@ -407,7 +475,8 @@
       el("td", {}, statusBadge(r.status)),
       el("td", {}, prog),
       el("td", {}, agent),
-      el("td", {}, scoreCell(r.judge_score)));
+      el("td", { class: "score-cell" }, scoreCell(r.judge_score)),
+      el("td", { class: "score-cell" }, scoreCell(r.judge_score_rubric)));
   }
 
   // One folder row: a clickable folder name that drills in + a run count.
@@ -415,7 +484,7 @@
     const open = () => openRunsFolder(folder);
     const name = folder.split("/").pop();
     return el("tr", { class: "wf-folder-row" },
-      el("td", { colspan: "4" },
+      el("td", { colspan: "5" },
         el("span", { class: "crumb-link wf-folder-link", onClick: open },
           el("span", { class: "wf-folder-icon" }, "📁"), name),
         el("span", { class: "muted wf-folder-count" }, `${runsUnder(folder).length} runs`)),
@@ -451,7 +520,7 @@
   function renderRunRows(body) {
     clear(body);
     if (!allRuns.length) {
-      body.appendChild(el("tr", {}, el("td", { colspan: "5", class: "muted" }, "No runs yet.")));
+      body.appendChild(el("tr", {}, el("td", { colspan: "6", class: "muted" }, "No runs yet.")));
       return;
     }
     const tokens = runsFilter.split(/\s+/).filter(Boolean);
@@ -461,7 +530,7 @@
       // Scope the search to the browsed folder (recursively); top level = all.
       const hits = runsUnder(runsFolder).filter((r) => runMatches(r, tokens));
       if (!hits.length) {
-        body.appendChild(el("tr", {}, el("td", { colspan: "5", class: "muted" }, "No runs match your search.")));
+        body.appendChild(el("tr", {}, el("td", { colspan: "6", class: "muted" }, "No runs match your search.")));
         return;
       }
       for (const r of hits) body.appendChild(runRow(r, true));
@@ -508,7 +577,9 @@
       panel.appendChild(el("div", { id: "runs-crumb-bar", class: "dir-bar", style: "display:none" }));
       const tbl = el("table", {}, el("thead", {}, el("tr", {},
         el("th", {}, "Run"), el("th", {}, "Status"), el("th", {}, "Stages"),
-        el("th", {}, "Agent"), el("th", {}, "Score"))));
+        el("th", {}, "Agent"),
+        el("th", { class: "score-col" }, "Score", el("br"), "w/o Rubric"),
+        el("th", { class: "score-col" }, "Score", el("br"), "w/ Rubric"))));
       body = el("tbody", { id: "runs-body" });
       tbl.appendChild(body);
       panel.appendChild(tbl);
@@ -574,14 +645,21 @@
     // deep-linked run where the cached runs list was empty at first render).
     if (d.dir) buildCrumb(d.dir);
 
-    // Test score (mean judge score) top-right beside the heading, larger than it.
-    if (d.judge_score != null) {
-      const s = d.judge_score <= 1 ? d.judge_score * 100 : d.judge_score;
-      const cls = s >= 80 ? "ok" : s >= 50 ? "warn" : "bad";
-      scoreSlot.appendChild(el("span", { class: "score-value " + cls }, s.toFixed(1) + "/100.0"));
-    } else {
-      scoreSlot.appendChild(el("span", { class: "score-value none", title: "Not judged yet" }, "—/100.0"));
-    }
+    // Two test scores top-right beside the heading: objective (w/o rubric) and
+    // rubric (w/ rubric). Each shows "—" until the run is judged that way.
+    const scoreValue = (label, val) => {
+      const wrap = el("span", { class: "score-pair" }, el("span", { class: "score-pair-label" }, label));
+      if (val == null) {
+        wrap.appendChild(el("span", { class: "score-value none", title: label + " — not judged yet" }, "—/100.0"));
+      } else {
+        const s = val <= 1 ? val * 100 : val;
+        const cls = s >= 80 ? "ok" : s >= 50 ? "warn" : "bad";
+        wrap.appendChild(el("span", { class: "score-value " + cls }, s.toFixed(1) + "/100.0"));
+      }
+      return wrap;
+    };
+    scoreSlot.appendChild(scoreValue("w/o Rubric", d.judge_score));
+    scoreSlot.appendChild(scoreValue("w/ Rubric", d.judge_score_rubric));
 
     const badges = el("div", { class: "toolbar" });
     badges.appendChild(statusBadge(d.status));
@@ -608,8 +686,38 @@
         ? "This run was interrupted — there is no complete outcome to judge."
         : "This run has an unknown status — there is no recorded outcome to judge."));
     } else if (isTerminal(d.status)) {
-      actions.appendChild(el("button", { class: "btn", onClick: () => startJudge("run", runId, false, judgeLog) }, "Judge"));
-      actions.appendChild(el("button", { class: "btn secondary", onClick: () => startJudge("run", runId, true, judgeLog) }, "Dry run"));
+      // The judge buttons share one in-flight slot: while a judge runs its own
+      // button becomes "Cancel judging…" (click to stop) and the others are
+      // disabled. Cancel stops a long rubric judge between stages.
+      let judgeJob = null;      // active judge job_id, or null when idle
+      let runningBtn = null;    // the button that started it
+      const jbtns = [];
+      const restoreJudge = () => {
+        judgeJob = null; runningBtn = null;
+        jbtns.forEach((b) => { b.disabled = null; b.textContent = b._label; });
+      };
+      const cancelJudge = async (b) => {
+        b.disabled = "disabled"; b.textContent = "Cancelling…";
+        try { await api.post(`/api/judge/jobs/${judgeJob}/cancel`, {}); }
+        catch (e) { KARMA.toastError(e); b.disabled = null; b.textContent = "Cancel judging…"; }
+      };
+      const mkJudge = (label, cls, tip, dryRun, withRubric) => {
+        const b = el("button", { class: cls, title: tip, onClick: () => {
+          if (judgeJob) { if (b === runningBtn) cancelJudge(b); return; }
+          jbtns.forEach((o) => { if (o !== b) o.disabled = "disabled"; });
+          b.textContent = "Starting…";
+          startJudge("run", runId, dryRun, judgeLog, withRubric, {
+            onJob: (id) => { judgeJob = id; runningBtn = b; b.disabled = null; b.textContent = "Cancel judging…"; },
+            onEnd: restoreJudge,
+          });
+        } }, label);
+        b._label = label;
+        jbtns.push(b);
+        return b;
+      };
+      actions.appendChild(mkJudge("Judge w/o Rubric", "btn", "Objective stage-pass score + regression adjudication", false, false));
+      actions.appendChild(mkJudge("Judge w/ Rubric", "btn", "LLM-score each oracle-passing stage against the bundled example rubric", false, true));
+      actions.appendChild(mkJudge("Dry run", "btn secondary", "Assemble the judge without calling the LLM or writing results", true, false));
     } else {
       const cancelBtn = el("button", { class: "btn secondary" }, "Cancel");
       cancelBtn.addEventListener("click", () => {
@@ -628,8 +736,18 @@
     root.appendChild(actions);
     root.appendChild(judgeLog);
 
+    // Rubric per-stage scores (present only when the run was judged w/ a rubric)
+    // are surfaced inside each stage's row in Stage results (a badge + a section
+    // in "view details"), via KARMA.stageDetail below.
+    const rbBreakdown = d.judge_rubric_breakdown;
+    const rubricByStage = {};
+    ((rbBreakdown && rbBreakdown.stage_scores) || []).forEach((e) => { if (e.stage_id) rubricByStage[e.stage_id] = e; });
+
     const stagesPanel = el("div", { class: "panel" });
     stagesPanel.appendChild(el("h3", {}, "Stage results"));
+    if (rbBreakdown && rbBreakdown.summary) {
+      stagesPanel.appendChild(el("p", { class: "field-help" }, "Rubric — " + rbBreakdown.summary));
+    }
     const host = el("div", {});
     stagesPanel.appendChild(host);
     root.appendChild(stagesPanel);
@@ -640,7 +758,7 @@
       clear(host);
       const list = Object.values(byId);
       if (!list.length) { host.appendChild(el("p", { class: "muted" }, "No stages yet.")); return; }
-      for (const s of list) host.appendChild(KARMA.stageDetail(runId, s));
+      for (const s of list) host.appendChild(KARMA.stageDetail(runId, s, rubricByStage[s.stage_id]));
     }
     renderStages();
 
@@ -674,12 +792,22 @@
     // of a multi-stage workflow to catch stages that later stages broke. The
     // judge adjudicates each failure as a real regression or a false positive
     // (a later stage legitimately changed the same state).
+    // Always show the section. The sweep only runs once the workflow COMPLETES
+    // with every stage passing its oracle (KARMA re-runs each passed oracle at
+    // the end); a run that failed halfway or was single-stage shows Not Applicable.
     const sweep = d.regression_sweep;
+    const rp = el("div", { class: "panel" });
+    rp.appendChild(el("h3", {}, "Regression sweep"));
     if (sweep && Object.keys(sweep).length) {
+      // Adjudication verdicts live in whichever judge ran. Prefer the w/o-rubric
+      // breakdown, but fall back to the rubric one -- otherwise a run judged ONLY
+      // with the rubric shows the sweep failures with no judge verdict, looking
+      // as if the regression LLM judge never ran (it did; the verdicts + the
+      // shared regression_adjudication.json agree between the two modes).
       const adj = {};
-      (d.judge_breakdown && d.judge_breakdown.regressions || []).forEach((r) => { adj[r.stage_id] = r; });
-      const rp = el("div", { class: "panel" });
-      rp.appendChild(el("h3", {}, "Regression sweep"));
+      const regs = (d.judge_breakdown && d.judge_breakdown.regressions)
+        || (d.judge_rubric_breakdown && d.judge_rubric_breakdown.regressions) || [];
+      regs.forEach((r) => { adj[r.stage_id] = r; });
       const regressed = Object.values(sweep).filter((v) => v && v.verdict !== "pass").length;
       rp.appendChild(el("p", { class: "field-help" },
         "Every previously-passing stage's oracle, re-evaluated after the whole workflow ran. " +
@@ -710,8 +838,17 @@
       if (d.judge_breakdown && d.judge_breakdown.summary) {
         rp.appendChild(el("p", { class: "field-help sweep-summary" }, "Score: " + d.judge_breakdown.summary));
       }
-      root.appendChild(rp);
+    } else {
+      rp.appendChild(el("div", { class: "sweep-na" },
+        el("div", { class: "sweep-na-icon" }, "⊘"),
+        el("div", { class: "sweep-na-title" }, "Not applicable"),
+        el("div", { class: "sweep-na-sub" },
+          "The regression sweep re-runs every stage's oracle only after the whole "
+          + "workflow completes with all stages passing. This run didn't qualify "
+          + "(a stage failed partway, or it was a single-stage run).")));
     }
+    root.appendChild(rp);
+
 
     // Stage definitions + adversary, always shown (every stage, regardless of how
     // many the agent reached). Prefer the spec stored with the run (works for
@@ -760,26 +897,36 @@
   }
 
   // --- Judge (job + stream) -- reused from the old Judge view ----------------
-  async function startJudge(targetType, targetPath, dryRun, log) {
+  async function startJudge(targetType, targetPath, dryRun, log, withRubric, hooks) {
+    hooks = hooks || {};
     log.style.display = "";
-    log.textContent = `${dryRun ? "Dry-" : ""}judging ${targetPath}\n`;
+    log.textContent = `${dryRun ? "Dry-" : ""}judging ${targetPath}${withRubric ? " (w/ rubric)" : ""}\n`;
     try {
-      const { job_id } = await api.post("/api/judge/start", {
-        target_type: targetType, target_path: targetPath, dry_run: dryRun,
-      });
+      const body = { target_type: targetType, target_path: targetPath, dry_run: dryRun };
+      if (withRubric) body.use_default_rubric = true;  // score against the bundled example
+      const { job_id } = await api.post("/api/judge/start", body);
+      if (hooks.onJob) hooks.onJob(job_id);            // lets the caller flip its button to Cancel
       log.textContent += "job " + job_id + "\n";
       api.stream(`/api/judge/jobs/${job_id}/stream`, {
         statusPath: `/api/judge/jobs/${job_id}`,
         onEvent: (ev) => {
-          if (ev.type === "judge_progress") {
+          if (ev.type === "judge_log") {
+            log.textContent += ev.line + "\n";           // detailed per-line judge log
+          } else if (ev.type === "judge_progress") {
             const where = ev.stage_id ? `${ev.run_id}/${ev.stage_id}` : ev.run_id;
             const extra = ev.message ? "  " + ev.message : "";
             log.textContent += `  ${where}: verdict=${ev.verdict ?? "-"} score=${ev.score ?? "-"}${extra}\n`;
           } else if (ev.type === "judge_complete") {
-            log.textContent += `judge ${ev.status}\n`;
-            KARMA.toast("Judge " + (ev.status || "complete"), ev.status === "error" ? "error" : "success");
-            // Reload the detail so the new test score appears beside the heading.
-            if (targetType === "run" && !dryRun && ev.status !== "error") {
+            log.textContent += `judge ${ev.status}${ev.up_to_date ? " (up to date)" : ""}\n`;
+            if (ev.up_to_date) {
+              KARMA.toast("Already up to date — not re-judged", "info");
+            } else {
+              KARMA.toast("Judge " + (ev.status || "complete"),
+                ev.status === "error" ? "error" : (ev.status === "cancelled" ? "info" : "success"));
+            }
+            // Reload the detail so the new score appears -- skip on cancel / up to
+            // date (nothing changed; restore the buttons via onEnd instead).
+            if (targetType === "run" && !dryRun && ev.status === "complete" && !ev.up_to_date) {
               setTimeout(() => { if (sub === "runs") renderDetail(targetPath); }, 600);
             }
           }
@@ -789,12 +936,14 @@
         onDone: () => {
           log.textContent += "— judge stream ended —\n";
           if (targetType === "run") lastJudgeLog[targetPath] = log.textContent;
+          if (hooks.onEnd) hooks.onEnd();               // restore the buttons
         },
       });
     } catch (e) {
       log.textContent += "Error: " + e.message + "\n";
       if (targetType === "run") lastJudgeLog[targetPath] = log.textContent;
       KARMA.toastError(e);
+      if (hooks.onEnd) hooks.onEnd();
     }
   }
 

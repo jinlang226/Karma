@@ -9,17 +9,19 @@ parameter references, and builds the row list consumed by ``runtime.workflow``.
 A *workflow row* is the unit of work for one stage::
 
     {
-        "stage_id":          str,
-        "service":           str,
-        "case_name":         str,
-        "case":              dict,        # normalized case descriptor
-        "namespace_roles":   list[str],
-        "adversary_deploy":  list[dict],
-        "adversary_lift":    list[dict],
-        "adversary_hint":    str | None,
-        "prompt_mode":       str,
-        "agent_timeout_sec": int,
-        "retries":           int,
+        "stage_id":            str,
+        "service":             str,
+        "case_name":           str,
+        "case":                dict,        # normalized case descriptor
+        "namespace_roles":     list[str],
+        "namespace_binding":   dict | None,
+        "adversary_deploy":    list[dict],
+        "adversary_lift":      list[dict],
+        "adversary_hint":      str | None,
+        "adversary_injections": list[dict],
+        "prompt_mode":         str,
+        "agent_timeout_sec":   int,
+        "retries":             int,
     }
 
 Single-case UI runs are normalized into a 1-stage workflow by
@@ -35,7 +37,7 @@ from typing import Any, Literal
 import re
 
 import yaml
-from pydantic import BaseModel, Field, ValidationError
+from pydantic import BaseModel, Field, ValidationError, model_validator
 
 _VALID_PROMPT_MODES = ("progressive", "concat_stateful", "concat_blind")
 _DEFAULT_PROMPT_MODE = "progressive"
@@ -86,7 +88,29 @@ class _WorkflowSpec(BaseModel):
     # recommended prompt_mode is ``progressive`` -- the live session already
     # holds the history.
     agent_session: Literal["per_stage", "persistent"] = _DEFAULT_AGENT_SESSION
+    # Optional workflow-level system prompt delivered to every agent (claude via
+    # --append-system-prompt; codex/copilot/api prepend it). For experiments --
+    # e.g. telling the agent a regression sweep will re-check earlier stages. It
+    # must NOT describe the submit mechanism (the wrapper handles that).
+    system_prompt: str | None = None
     adversary: list[Any] = []
+
+    @model_validator(mode="after")
+    def _progressive_requires_persistent(self) -> "_WorkflowSpec":
+        """progressive prompt_mode only makes sense with a persistent agent.
+
+        progressive sends ONLY the current stage's prompt, relying on the agent's
+        own memory for prior stages -- a fresh per_stage agent would lose all
+        earlier context. Reject that combination at validation time.
+        """
+        if self.prompt_mode == "progressive" and self.agent_session == "per_stage":
+            raise ValueError(
+                "prompt_mode 'progressive' requires agent_session 'persistent': "
+                "progressive sends only the current stage, so a fresh per_stage "
+                "agent has no prior-stage context. Use agent_session: persistent, "
+                "or a concat_* prompt_mode."
+            )
+        return self
 
 
 class WorkflowSchema(BaseModel):
@@ -284,8 +308,8 @@ def normalize_workflow(
     -------
     dict
         Keys: ``id`` (str), ``label`` (str or ``None``),
-        ``prompt_mode`` (str), ``stages`` (list[dict]),
-        ``adversary`` (list[dict]).
+        ``prompt_mode`` (str), ``agent_session`` (str),
+        ``stages`` (list[dict]), ``adversary`` (list[dict]).
     """
     try:
         WorkflowSchema.model_validate(raw)
@@ -332,6 +356,7 @@ def normalize_workflow(
         "label": meta.get("label"),
         "prompt_mode": str(spec.get("prompt_mode") or _DEFAULT_PROMPT_MODE),
         "agent_session": str(spec.get("agent_session") or _DEFAULT_AGENT_SESSION),
+        "system_prompt": (str(spec.get("system_prompt") or "").strip() or None),
         "stages": normalized_stages,
         "adversary": list(spec.get("adversary") or []),
     }
@@ -478,6 +503,8 @@ def single_case_to_workflow(
         Agent timeout in seconds for the single stage.
     namespace_roles:
         Explicit namespace roles; when ``None`` the case contract is used.
+    retries:
+        Number of retry attempts for the stage (clamped to ``>= 0``).
     """
     if prompt_mode not in _VALID_PROMPT_MODES:
         prompt_mode = _DEFAULT_PROMPT_MODE

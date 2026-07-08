@@ -3,8 +3,9 @@ OpenAI-compatible LLM client for judge evaluation calls.
 
 This is the only module in KARMA that calls an external LLM API.
 It renders the judge prompt via ``judge.input_builder.render_judge_prompt``,
-submits it to a chat completions endpoint, and returns the raw response dict
-for ``judge.scoring`` to parse.
+submits it to either an OpenAI-compatible chat completions endpoint or the
+``claude`` CLI (auto-selected by credential availability), and returns the raw
+response dict for ``judge.scoring`` to parse.
 
 Configuration is read from environment variables when not supplied
 explicitly:
@@ -35,6 +36,14 @@ _DEFAULT_TEMPERATURE = 0.0
 _DEFAULT_TIMEOUT_SEC = 120
 _DEFAULT_MAX_RETRIES = 3
 _RETRY_BASE_DELAY_SEC = 2.0
+
+
+class JudgeLLMUnavailable(RuntimeError):
+    """The judge LLM cannot be reached at all (e.g. no API key resolved).
+
+    Distinct from a per-stage grading error: it means NO judge call can
+    succeed, so callers abort rather than fall back to fabricated scores.
+    """
 
 
 def _resolve_backend(backend: str | None, api_key: str | None) -> str:
@@ -113,7 +122,7 @@ def _build_client(
         or os.environ.get("KARMA_JUDGE_API_KEY")
     )
     if not key:
-        raise RuntimeError(
+        raise JudgeLLMUnavailable(
             "no API key found for judge LLM. "
             "Set OPENAI_API_KEY or KARMA_JUDGE_API_KEY in the environment."
         )
@@ -143,22 +152,29 @@ def call_judge_llm(
 ) -> dict[str, Any]:
     """Submit the judge input to the LLM and return the raw response dict.
 
-    Renders the judge prompt via
-    ``judge.input_builder.render_judge_prompt``, then sends it to the
-    chat completions endpoint. Retries on transient errors (rate limits,
-    timeouts, 5xx responses) with exponential backoff.
+    Sends *prompt* (or, when not given, the prompt rendered from *judge_input*
+    via ``judge.input_builder.render_judge_prompt``) to the resolved backend:
+    the OpenAI-compatible chat completions endpoint, or the ``claude`` CLI when
+    no API key is available. Retries on transient errors (rate limits, timeouts,
+    5xx responses) with exponential backoff.
 
     Parameters
     ----------
     judge_input:
         Assembled judge input from ``judge.input_builder.build_judge_input``.
+    prompt:
+        Fully-rendered prompt to send as-is; when ``None`` it is rendered from
+        *judge_input*.
     model:
-        Model name override. Falls back to ``KARMA_JUDGE_MODEL`` then
-        ``"gpt-4o"``.
+        Model name override. Falls back to ``KARMA_JUDGE_MODEL`` then the
+        backend default (``"gpt-4o"`` for openai, ``"sonnet"`` for claude_cli).
     base_url:
         Base URL override for OpenAI-compatible endpoints.
     api_key:
         API key override.
+    backend:
+        Force ``"openai"`` or ``"claude_cli"``; auto-detected from the API key
+        when ``None``.
     max_tokens:
         Maximum tokens in the completion.
     temperature:

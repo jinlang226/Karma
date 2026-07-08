@@ -2,7 +2,7 @@
 CLI parsing, request normalization, and result output.
 
 Defines all CLI subcommands and delegates execution to ``runtime.service``
-and ``judge.engine``. No orchestration logic lives here.
+and the ``judge`` package. No orchestration logic lives here.
 
 Entrypoint::
 
@@ -15,6 +15,8 @@ Subcommands:
     Run a workflow YAML file end to end.
 ``run-case``
     Run a single case directly without a workflow file.
+``run-batch``
+    Run many cases sequentially (selected by --all / --service / --case).
 ``manual``
     Set a case up, hand the namespace to a human operator to act on by
     hand, then verify on demand and tear down.
@@ -36,6 +38,19 @@ from .profiles import load_profile, merge_profile
 from ...runtime.service import run_workflow, run_case
 from ...agents.registry import list_agents
 from ...metrics import list_metrics
+
+# Bundled example rubric used when `--rubric` is given with no path.
+_DEFAULT_RUBRIC_PATH = str(
+    Path(__file__).resolve().parents[3] / "docs" / "example-rubric.yaml"
+)
+# Bundled example regression-adjudication prompt; the --regression-prompt default.
+_DEFAULT_REGRESSION_PROMPT_PATH = str(
+    Path(__file__).resolve().parents[3] / "docs" / "example-regression-prompt.md"
+)
+# Default agent system prompt (harness contract); the --system-prompt default.
+_DEFAULT_SYSTEM_PROMPT_PATH = str(
+    Path(__file__).resolve().parents[3] / "docs" / "default-system-prompt.md"
+)
 from ...definitions.workflows import load_workflow_file, normalize_workflow
 
 
@@ -170,6 +185,14 @@ def _build_parser() -> argparse.ArgumentParser:
     wf.add_argument("--max-attempts", type=int, default=None,
                     help="Workflow-level retry cap: re-run each stage up to N times "
                          "on oracle fail/error/timeout (stage-agnostic; default 1).")
+    wf.add_argument("--agent-session", choices=["per_stage", "persistent"], default=None,
+                    help="persistent (default): ONE agent conversation resumed across "
+                         "every stage; per_stage: a fresh agent each stage. Overrides "
+                         "the workflow's spec.agent_session.")
+    wf.add_argument("--system-prompt", default=_DEFAULT_SYSTEM_PROMPT_PATH, metavar="FILE",
+                    help="Base system prompt sent to every agent each stage (defaults "
+                         "to docs/default-system-prompt.md, the harness contract). The "
+                         "workflow's spec.system_prompt is appended to it.")
     wf.add_argument("--stage-failure-mode", choices=["terminate", "continue"],
                     default="terminate",
                     help="terminate (fail-fast) or continue past a failed stage.")
@@ -256,6 +279,18 @@ def _build_parser() -> argparse.ArgumentParser:
                     help="Judge LLM retry attempts on transient errors.")
     jg.add_argument("--batch", action="store_true",
                     help="Treat run_dir as a batch dir and judge every run under it.")
+    jg.add_argument("--rubric", nargs="?", const=_DEFAULT_RUBRIC_PATH, default=None,
+                    metavar="FILE",
+                    help="Score each oracle-passing stage 0-1 against a rubric file "
+                         "(YAML/JSON: weighted items summing to 1.0) "
+                         "instead of flat full marks. Bare --rubric uses the bundled "
+                         "docs/example-rubric.yaml.")
+    jg.add_argument("--regression-prompt", default=_DEFAULT_REGRESSION_PROMPT_PATH,
+                    metavar="FILE",
+                    help="Prompt template for the LLM that adjudicates each "
+                         "regression-sweep failure (real regression vs false "
+                         "positive). Placeholders: $stage_id, $regression_output, "
+                         "$stage_prompts. Defaults to docs/example-regression-prompt.md.")
     jg.add_argument("--fail-open", dest="fail_open", action="store_true", default=True,
                     help="Do not fail the command if the judge errors (default).")
     jg.add_argument("--fail-closed", dest="fail_open", action="store_false",
@@ -369,6 +404,21 @@ def _apply_timeout_overrides(args: argparse.Namespace) -> None:
         _settings.oracle_timeout_sec = args.verify_timeout
 
 
+def _read_system_prompt_arg(args: argparse.Namespace) -> str | None:
+    """Read the --system-prompt file (defaults to the harness contract).
+
+    Returns the file's text, or None if the path is missing/unreadable (the
+    service then falls back to its built-in default).
+    """
+    path = getattr(args, "system_prompt", None)
+    if path and Path(path).exists():
+        try:
+            return Path(path).read_text()
+        except OSError:
+            return None
+    return None
+
+
 def _cmd_run_workflow(args: argparse.Namespace) -> None:
     """Handle the ``run-workflow`` subcommand."""
     profile = load_profile(args.profile) if args.profile else {}
@@ -401,6 +451,8 @@ def _cmd_run_workflow(args: argparse.Namespace) -> None:
         stage_failure_mode=args.stage_failure_mode,
         final_sweep_mode=args.final_sweep_mode,
         sandbox_options=_build_sandbox_options(args),
+        agent_session=args.agent_session,
+        system_prompt=_read_system_prompt_arg(args),
     )
     _print_result(result, args.output)
     if getattr(args, "judge", False):
@@ -600,6 +652,16 @@ def _cmd_judge(args: argparse.Namespace) -> None:
         raise RuntimeError(f"run directory not found: {run_dir}")
 
     _load_env_file(getattr(args, "llm_env_file", None))
+    rubric = None
+    if getattr(args, "rubric", None):
+        from ...judge.rubric import load_rubric_file
+        rubric = load_rubric_file(args.rubric)
+    # Regression-adjudication prompt: read the template file (defaults to the
+    # bundled example); None falls back to score_run's built-in default.
+    regression_prompt = None
+    rp_path = getattr(args, "regression_prompt", None)
+    if rp_path and Path(rp_path).exists():
+        regression_prompt = Path(rp_path).read_text()
     judge_kwargs = {
         "judge_model": args.model,
         "judge_base_url": args.base_url,
@@ -608,20 +670,23 @@ def _cmd_judge(args: argparse.Namespace) -> None:
         "judge_max_retries": args.max_retries,
         "include_outcome": not getattr(args, "exclude_outcome", False),
     }
+    # score_run / judge_batch_dir take the run-level scorer's kwargs (no
+    # include_outcome, which is a rubric-judge-only knob) plus the regression prompt.
+    score_kwargs = {k: v for k, v in judge_kwargs.items() if k != "include_outcome"}
+    score_kwargs["regression_prompt"] = regression_prompt
     try:
         if args.batch:
-            # Cross-run batch: judge every run under run_dir (old `judge batch`).
+            # Cross-run batch: score every run under run_dir and average.
             from ...judge.batch import judge_batch_dir
-            result = judge_batch_dir(run_dir, dry_run=args.dry_run, **judge_kwargs)
+            result = judge_batch_dir(run_dir, rubric=rubric, dry_run=args.dry_run, **score_kwargs)
         elif args.stage:
             # Per-stage rubric judge (inspection of a single stage).
-            result = run_judge(run_dir, args.stage, dry_run=args.dry_run, **judge_kwargs)
+            result = run_judge(run_dir, args.stage, rubric=rubric, dry_run=args.dry_run, **judge_kwargs)
         else:
-            # Default: run-level score -- objective stage-pass fraction, with the
-            # LLM only adjudicating regression-sweep failures (false positives).
+            # Default: run-level score -- objective stage-pass fraction (or per-stage
+            # rubric scores when --rubric is given), plus regression adjudication.
             from ...judge.run_score import score_run
-            score_kwargs = {k: v for k, v in judge_kwargs.items() if k != "include_outcome"}
-            result = score_run(run_dir, dry_run=args.dry_run, **score_kwargs)
+            result = score_run(run_dir, rubric=rubric, dry_run=args.dry_run, **score_kwargs)
     except Exception as exc:
         if args.fail_open:
             print(f"judge error (continuing, --fail-open): {exc}", file=sys.stderr)

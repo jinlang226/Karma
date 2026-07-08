@@ -83,21 +83,15 @@ class TestComputeAggregateScore:
 
 
 class TestDetermineVerdict:
-    def test_pass_above_threshold(self):
-        assert determine_verdict(0.9, rubric=_RUBRIC) == "pass"
+    # The verdict echoes the oracle (the gate); there is no rubric threshold.
+    def test_oracle_pass_is_pass(self):
+        assert determine_verdict(oracle_verdict="pass") == "pass"
 
-    def test_partial_between_half_and_threshold(self):
-        assert determine_verdict(0.4, rubric=_RUBRIC) == "partial"
+    def test_oracle_fail_is_fail(self):
+        assert determine_verdict(oracle_verdict="fail") == "fail"
 
-    def test_fail_below_half_threshold(self):
-        assert determine_verdict(0.1, rubric=_RUBRIC) == "fail"
-
-    def test_oracle_fail_overrides_llm_score(self):
-        assert determine_verdict(1.0, rubric=_RUBRIC, oracle_verdict="fail") == "fail"
-
-    def test_oracle_pass_does_not_override(self):
-        result = determine_verdict(0.9, rubric=_RUBRIC, oracle_verdict="pass")
-        assert result == "pass"
+    def test_no_oracle_defaults_to_pass(self):
+        assert determine_verdict() == "pass"
 
 
 class TestAggregateScores:

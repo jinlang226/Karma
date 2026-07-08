@@ -96,6 +96,7 @@ class TestNormalizeWorkflow:
         raw = {
             "metadata": {"id": "my-wf"},
             "spec": {
+                "prompt_mode": "concat_stateful",
                 "agent_session": "per_stage",
                 "stages": [
                     {"id": "stage_1", "service": "svc", "case": "my-case"}

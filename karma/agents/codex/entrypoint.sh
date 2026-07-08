@@ -23,6 +23,14 @@ MODEL_ARG=""
 
 PROMPT="$(cat "$PROMPT_FILE")"
 
+# Optional workflow-level system prompt (spec.system_prompt): Codex exec has no
+# system-prompt flag, so prepend it to the task prompt.
+if [ -f "system_prompt.txt" ]; then
+  PROMPT="$(cat system_prompt.txt)
+
+$PROMPT"
+fi
+
 # Persistent-session mode (workflow agent_session: persistent): keep ONE Codex
 # conversation across stages. Point CODEX_HOME at a per-run dir so "resume the
 # most recent session" (--last) can only pick THIS run's session, seeding it
@@ -40,14 +48,21 @@ fi
 
 # Headless, non-interactive Codex run, against the current working directory so
 # it works in both sandbox modes (-C "$PWD" rather than a hardcoded /workspace).
-# tee so the answer lands in BOTH submit.txt and stdout (captured to agent.log).
+# --output-last-message writes Codex's FINAL message to a temp file (a clean
+# answer, like claude's result extraction) while the full turn-by-turn streams to
+# stdout -> agent.log. The temp file becomes submit.txt atomically afterward.
+# </dev/null: the prompt is passed as an argument, so isolate stdin -- otherwise
+# codex reads inherited stdin ("Reading additional input from stdin...") and, per
+# its docs, appends any piped content to the prompt as a <stdin> block.
 if [ -n "$RESUME" ]; then
   codex --dangerously-bypass-approvals-and-sandbox exec resume --last ${MODEL_ARG} \
-    "$PROMPT" 2>&1 | tee "$TMP_FILE"
+    --output-last-message "$TMP_FILE" "$PROMPT" < /dev/null 2>&1
 else
   codex --dangerously-bypass-approvals-and-sandbox exec ${MODEL_ARG} \
     -C "$PWD" --skip-git-repo-check \
-    "$PROMPT" 2>&1 | tee "$TMP_FILE"
+    --output-last-message "$TMP_FILE" "$PROMPT" < /dev/null 2>&1
 fi
 
+# No final message (or killed before writing) -> empty submit still signals done.
+[ -f "$TMP_FILE" ] || : > "$TMP_FILE"
 mv -f "$TMP_FILE" "$SUBMIT_FILE"

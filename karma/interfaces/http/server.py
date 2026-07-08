@@ -44,12 +44,11 @@ def create_app(
     workflows_dir: Path | None = None,
     static_dir: Path | None = None,
 ) -> Any:
-    """Create and return the WSGI application instance.
+    """Create and return the Flask application instance.
 
-    Registers all REST and SSE routes. Static files are served from
-    *static_dir* (defaults to ``karma/webui/`` relative to this package).
-    Each POST /api/run call creates a per-request event queue that is
-    kept in a closure-local dict for the matching SSE stream endpoint.
+    Registers all REST and SSE routes. Run and judge progress both stream
+    through the single shared :data:`events.hub`; the SSE endpoints subscribe
+    to it by run/job id. Static files are served from *static_dir*.
 
     Parameters
     ----------
@@ -57,9 +56,11 @@ def create_app(
         Root resources directory used for case discovery.
     runs_dir:
         Root runs directory used for artifact storage.
+    workflows_dir:
+        Directory of saved workflow files (defaults to ``workflows/``).
     static_dir:
-        Directory from which static files are served. Defaults to
-        ``karma/webui/``.
+        Directory from which static files are served. Defaults to the
+        repository-root ``webui/``.
     """
     try:
         from flask import Flask, jsonify, request, Response, send_from_directory
@@ -283,12 +284,32 @@ def create_app(
     @app.route("/api/judge/start", methods=["POST"])
     def api_judge_start():
         payload = request.get_json(force=True, silent=True) or {}
+        # Optional rubric: the UI sends the file's content as a YAML/JSON string;
+        # an already-parsed mapping is also accepted. When present, oracle-passing
+        # stages are LLM-scored against it instead of flat full marks.
+        rubric = None
+        raw_rubric = payload.get("rubric")
+        try:
+            if isinstance(raw_rubric, str) and raw_rubric.strip():
+                from ...judge.rubric import load_rubric_text
+                rubric = load_rubric_text(raw_rubric)
+            elif isinstance(raw_rubric, dict):
+                from ...judge.rubric import normalize_rubric
+                rubric = normalize_rubric(raw_rubric)
+            elif payload.get("use_default_rubric"):
+                # "Judge w/ Rubric" with no custom file -> the bundled example.
+                from ...judge.rubric import load_rubric_file
+                default_path = Path(__file__).resolve().parents[3] / "docs" / "example-rubric.yaml"
+                rubric = load_rubric_file(default_path)
+        except Exception as exc:
+            return jsonify({"error": f"invalid rubric: {exc}"}), 400
         try:
             job_id = judging.start_judge_job(
                 str(payload.get("target_type") or "run"),
                 str(payload.get("target_path") or ""),
                 runs_dir=Path(runs_dir),
                 judge_model=payload.get("model"),
+                rubric=rubric,
                 dry_run=bool(payload.get("dry_run")),
             )
         except ValueError as exc:

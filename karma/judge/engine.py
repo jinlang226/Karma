@@ -25,6 +25,7 @@ def run_judge(
     run_dir: Path,
     stage_id: str,
     *,
+    rubric: dict[str, Any] | None = None,
     rubric_overrides: dict[str, Any] | None = None,
     judge_model: str | None = None,
     judge_base_url: str | None = None,
@@ -50,6 +51,9 @@ def run_judge(
         Root directory of the run to evaluate.
     stage_id:
         ID of the stage to evaluate.
+    rubric:
+        Explicit rubric to score against. When given it wins; otherwise the
+        per-stage rubric is loaded from disk (and *rubric_overrides* applied).
     rubric_overrides:
         Optional rubric overrides merged on top of the base rubric via
         ``judge.rubric.merge_rubric_overrides``.
@@ -72,7 +76,10 @@ def run_judge(
         ``"partial"``), ``score`` (float), ``rubric_items`` (list[dict]),
         ``reasoning`` (str), ``raw_response`` (dict).
     """
-    rubric = load_rubric(run_dir, stage_id, overrides=rubric_overrides)
+    # An explicit *rubric* (e.g. the one --rubric loaded once for the whole run)
+    # wins; otherwise resolve the per-stage rubric from disk.
+    if rubric is None:
+        rubric = load_rubric(run_dir, stage_id, overrides=rubric_overrides)
     judge_input = build_judge_input(run_dir, stage_id, rubric=rubric)
     judge_input["_include_outcome"] = include_outcome
 

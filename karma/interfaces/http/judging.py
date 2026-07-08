@@ -4,9 +4,9 @@ Async judge jobs and judge-oriented listings for the HTTP interface.
 The synchronous ``POST /api/judge`` route is fine for a one-shot call, but
 the UI needs to fire a judge run and watch it progress -- especially for a
 cross-run batch that may judge dozens of runs. This module runs judge work
-on a background thread, publishes per-stage / per-run progress to the
-shared :data:`events.hub` (keyed by judge-job id), and tracks job state so
-the UI can poll and stream just like it does for runs.
+on a background daemon thread, publishes per-run progress to the shared
+:data:`events.hub` (keyed by judge-job id), and tracks job state so the UI
+can poll and stream just like it does for runs.
 
 It also provides the browse listings the Judge view needs: the run list
 annotated with judge status, and the batch list (directories that group
@@ -21,6 +21,7 @@ from typing import Any
 
 from ...protocol import generate_run_id
 from ...judge.engine import run_judge
+from ...judge.rubric import rubric_hash
 from ...judge.batch import discover_runs, judge_batch_dir
 from .events import hub
 from . import catalog
@@ -34,12 +35,14 @@ _lock = threading.Lock()
 _PASS_VERDICT_THRESHOLD = 50
 
 
-def _register(job_id: str, meta: dict[str, Any]) -> None:
+def _register_judge_job(job_id: str, meta: dict[str, Any]) -> None:
+    """Register *meta* under *job_id* in the judge jobs table."""
     with _lock:
         _judge_jobs[job_id] = meta
 
 
-def _update(job_id: str, updates: dict[str, Any]) -> None:
+def _update_judge_job(job_id: str, updates: dict[str, Any]) -> None:
+    """Apply *updates* to the entry for *job_id*. No-op when not found."""
     with _lock:
         if job_id in _judge_jobs:
             _judge_jobs[job_id].update(updates)
@@ -81,47 +84,109 @@ def list_judge_jobs() -> list[dict[str, Any]]:
 
 
 def _judge_run_streaming(
-    job_id: str, run_dir: Path, judge_model: str | None, dry_run: bool
+    job_id: str, run_dir: Path, judge_model: str | None, dry_run: bool,
+    rubric: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Score the run: objective stage-pass score + LLM adjudication of any
     regression-sweep failures (false-positive filtering)."""
     from ...judge.run_score import score_run
 
-    hub.publish(job_id, {
-        "type": "judge_progress", "job_id": job_id, "run_id": run_dir.name,
-        "message": "scoring stages and adjudicating regression sweep",
-    })
-    result = score_run(run_dir, judge_model=judge_model, dry_run=dry_run)
+    # Make-style skip: if the existing score is newer than every run input, the
+    # run is already up to date -- don't spend LLM calls re-judging it.
+    base_name = "judge_rubric" if rubric is not None else "judge"
+    if not dry_run and _judge_is_current(run_dir, base_name, rubric_hash(rubric)):
+        existing = catalog._read_json(run_dir / f"{base_name}.json")
+        hub.publish(job_id, {
+            "type": "judge_progress", "job_id": job_id, "run_id": run_dir.name,
+            "score": existing.get("score"),
+            "message": "already up to date -- not re-judged",
+        })
+        return {"target_type": "run", "run_id": run_dir.name,
+                "result": existing, "up_to_date": True}
+
+    # Relay each judge log line to the live UI as it happens (the same lines that
+    # stream to {run_dir}/{basename}.log), so the detail page shows a detailed,
+    # progressing log instead of a single coarse "scoring stages" message.
+    def _relay(line: str) -> None:
+        hub.publish(job_id, {
+            "type": "judge_log", "job_id": job_id, "run_id": run_dir.name, "line": line,
+        })
+    # Poll the job's cancel flag between the per-stage rubric grades / regression
+    # adjudications so the detail-page Cancel button can stop a long rubric judge.
+    result = score_run(
+        run_dir, rubric=rubric, judge_model=judge_model, dry_run=dry_run,
+        should_cancel=lambda: _cancel_requested(job_id),
+        on_log=_relay,
+    )
     hub.publish(job_id, {
         "type": "judge_progress", "job_id": job_id, "run_id": run_dir.name,
         "score": result.get("score"),
         "verdict": "pass" if (result.get("score") or 0) >= _PASS_VERDICT_THRESHOLD else "fail",
         "message": result.get("summary"),
     })
-    return {"target_type": "run", "run_id": run_dir.name, "result": result}
+    return {"target_type": "run", "run_id": run_dir.name,
+            "result": result, "cancelled": bool(result.get("cancelled"))}
 
 
-def _run_has_score(run_dir: Path) -> bool:
-    """True if *run_dir* already has a run-level score (``judge.json``).
+# The judge's own outputs are not prerequisites of themselves; exclude them (by
+# name -- the run-level and per-stage judge.json share it) from the input mtime.
+_JUDGE_OUTPUT_NAMES = {
+    "judge.json", "judge_rubric.json", "judge.log", "judge_rubric.log",
+    "regression_adjudication.json",
+}
 
-    Used by "Judge all" to skip runs that are already scored under the current
-    (run-level) model. Legacy per-stage ``judge.json`` from the old per-stage
-    rubric does NOT count, so the first "Judge all" upgrades every run to the
-    objective stage-pass + regression-adjudication score.
+
+def _run_input_mtime(run_dir: Path) -> float:
+    """Newest mtime among the run's judge INPUT files (everything the judge reads).
+
+    Excludes the judge's own outputs so a fresh judge never counts itself as a
+    newer prerequisite. Returns 0.0 for an empty/unreadable run.
     """
-    rj = catalog._read_json(run_dir / "judge.json")
-    return bool(rj and isinstance(rj.get("score"), (int, float)))
+    latest = 0.0
+    for p in run_dir.rglob("*"):
+        if not p.is_file() or p.name in _JUDGE_OUTPUT_NAMES:
+            continue
+        try:
+            latest = max(latest, p.stat().st_mtime)
+        except OSError:
+            pass
+    return latest
 
 
-def _run_needs_llm(run_dir: Path) -> bool:
-    """Whether scoring this run will invoke the LLM adjudicator.
+def _judge_is_current(
+    run_dir: Path, base_name: str = "judge", rubric_hash: str | None = None,
+) -> bool:
+    """True if ``{base_name}.json`` is up to date for the requested judge.
 
-    Mirrors ``judge.run_score.score_run``'s decision: the LLM runs only for a run
-    where every stage passed AND the regression sweep has failures to adjudicate.
-    Every other run -- failed/partial (objective stage-pass %) or all-passed with
-    a clean sweep (100) -- is scored statically with no LLM. Used to order the
-    "Judge all" worklist so the free/static runs are scored first and the costly
-    LLM ones last.
+    Make-style staleness: the result is up to date when it was written after the
+    last change to any artifact it scored (mtime vs the newest run input). For a
+    rubric score, the rubric lives OUTSIDE runs/, so we additionally require the
+    stored ``rubric_hash`` to match the rubric being requested -- a changed rubric
+    makes the result stale even though no run file moved. Missing / older /
+    hash-mismatch all return False -> re-judge.
+    """
+    target = run_dir / f"{base_name}.json"
+    if not target.exists():
+        return False
+    try:
+        if target.stat().st_mtime < _run_input_mtime(run_dir):
+            return False
+    except OSError:
+        return False
+    if rubric_hash is not None:
+        if catalog._read_json(target).get("rubric_hash") != rubric_hash:
+            return False
+    return True
+
+
+def _run_needs_llm(run_dir: Path, rubric: dict[str, Any] | None = None) -> bool:
+    """Whether scoring this run will invoke the LLM.
+
+    With a *rubric*, every oracle-passing stage gets an LLM grade, so any run with
+    a passing stage needs the LLM. Without a rubric, the LLM runs only when every
+    stage passed AND the regression sweep has failures to adjudicate; all other
+    runs are scored statically. Used to order the "Judge all" worklist so the
+    free/static runs are scored first and the costly LLM ones last.
     """
     meta = (catalog._read_json(run_dir / "run.json")
             or catalog._read_json(run_dir / "workflow_state.json"))
@@ -133,6 +198,8 @@ def _run_needs_llm(run_dir: Path) -> bool:
         declared = 0
     total = max(len(stage_results), declared)
     passed = sum(1 for s in stage_results if s.get("status") == "pass")
+    if rubric is not None:
+        return passed > 0  # every oracle-passing stage gets an LLM rubric grade
     if total == 0 or passed < total:
         return False  # partial/failed run -> objective score, no LLM
     sweep = meta.get("regression_sweep") or {}
@@ -140,7 +207,8 @@ def _run_needs_llm(run_dir: Path) -> bool:
 
 
 def _judge_all_streaming(
-    job_id: str, runs_dir: Path, judge_model: str | None, dry_run: bool
+    job_id: str, runs_dir: Path, judge_model: str | None, dry_run: bool,
+    rubric: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Score every UNSCORED finished run under *runs_dir* (the "Judge all" button).
 
@@ -164,6 +232,10 @@ def _judge_all_streaming(
     # majority: with e.g. 147/151 runs already scored, emitting per-run progress
     # for every skip made the button read "47/151" -- which looks like "47 judged
     # of 151" when only one run was being judged. Skips are tallied, not streamed.
+    # Skip runs already scored *in this mode* (objective vs rubric are separate
+    # artifacts), so "Judge all w/ Rubric" doesn't skip runs scored only w/o.
+    base_name = "judge_rubric" if rubric else "judge"
+    rhash = rubric_hash(rubric)
     worklist: list[Path] = []
     already_scored = 0
     not_judgeable = 0
@@ -176,7 +248,9 @@ def _judge_all_streaming(
         if status not in ("complete", "failed", "error", "passed", "cancelled"):
             not_judgeable += 1
             continue
-        if _run_has_score(rd):
+        # Make-style: skip only runs whose score is up to date; a stale one (its
+        # inputs OR the rubric changed since the last judge) is re-judged.
+        if _judge_is_current(rd, base_name, rhash):
             already_scored += 1
             continue
         worklist.append(rd)
@@ -189,7 +263,7 @@ def _judge_all_streaming(
     static_work: list[Path] = []
     llm_work: list[Path] = []
     for rd in worklist:
-        (llm_work if _run_needs_llm(rd) else static_work).append(rd)
+        (llm_work if _run_needs_llm(rd, rubric) else static_work).append(rd)
     ordered = static_work + llm_work
 
     # Announce the scan up front so the UI can frame the work ("Judging N of M;
@@ -210,7 +284,7 @@ def _judge_all_streaming(
             cancelled = True
             break
         try:
-            res = score_run(rd, judge_model=judge_model, dry_run=dry_run)
+            res = score_run(rd, rubric=rubric, judge_model=judge_model, dry_run=dry_run)
             results[rd.name] = {"score": res.get("score"), "summary": res.get("summary")}
             hub.publish(job_id, {
                 "type": "judge_progress", "job_id": job_id, "run_id": rd.name,
@@ -230,7 +304,8 @@ def _judge_all_streaming(
 
 
 def _judge_batch_streaming(
-    job_id: str, batch_dir: Path, judge_model: str | None, dry_run: bool
+    job_id: str, batch_dir: Path, judge_model: str | None, dry_run: bool,
+    rubric: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Judge each run under *batch_dir*, publishing per-run progress."""
     def _on_run(run_id: str, score: Any, index: int, total: int) -> None:
@@ -245,6 +320,7 @@ def _judge_batch_streaming(
 
     return judge_batch_dir(
         batch_dir,
+        rubric=rubric,
         judge_model=judge_model,
         dry_run=dry_run,
         on_run_complete=_on_run,
@@ -257,14 +333,17 @@ def start_judge_job(
     *,
     runs_dir: Path | None = None,
     judge_model: str | None = None,
+    rubric: dict[str, Any] | None = None,
     dry_run: bool = False,
 ) -> str:
     """Start an async judge job and return its id immediately.
 
-    *target_type* is ``"run"`` (judge every stage of one run dir) or
-    ``"batch"`` (judge every run under a batch dir). Progress streams to
-    the hub under the returned job id; the final result is stored on the
-    job and a terminal ``judge_complete`` event closes the stream.
+    *target_type* is ``"run"`` (score one run dir), ``"batch"`` (score every
+    run under a batch dir), or ``"all"`` (score every unscored run under
+    *runs_dir*, narrowed to the subfolder named by *target_path* when given).
+    An optional *rubric* is threaded to the scorer. Progress streams to the
+    hub under the returned job id; the final result is stored on the job and a
+    terminal ``judge_complete`` event closes the stream.
 
     Raises
     ------
@@ -322,32 +401,34 @@ def start_judge_job(
                 )
 
     job_id = generate_run_id(f"judge-{target_type}")
-    _register(job_id, {
+    _register_judge_job(job_id, {
         "job_id": job_id,
         "kind": "judge",
         "target_type": target_type,
         "target_path": str(path),
         "dry_run": dry_run,
+        "has_rubric": rubric is not None,
         "status": "running",
     })
 
     def _run() -> None:
         try:
             if target_type == "run":
-                result = _judge_run_streaming(job_id, path, judge_model, dry_run)
+                result = _judge_run_streaming(job_id, path, judge_model, dry_run, rubric)
             elif target_type == "all":
-                result = _judge_all_streaming(job_id, path, judge_model, dry_run)
+                result = _judge_all_streaming(job_id, path, judge_model, dry_run, rubric)
             else:
-                result = _judge_batch_streaming(job_id, path, judge_model, dry_run)
+                result = _judge_batch_streaming(job_id, path, judge_model, dry_run, rubric)
             final_status = ("cancelled"
                             if isinstance(result, dict) and result.get("cancelled")
                             else "complete")
-            _update(job_id, {"status": final_status, "result": result})
-            hub.publish(job_id, {
-                "type": "judge_complete", "job_id": job_id, "status": final_status,
-            })
+            _update_judge_job(job_id, {"status": final_status, "result": result})
+            complete = {"type": "judge_complete", "job_id": job_id, "status": final_status}
+            if isinstance(result, dict) and result.get("up_to_date"):
+                complete["up_to_date"] = True   # Make-style no-op: nothing re-judged
+            hub.publish(job_id, complete)
         except Exception as exc:
-            _update(job_id, {"status": "error", "error": str(exc)})
+            _update_judge_job(job_id, {"status": "error", "error": str(exc)})
             hub.publish(job_id, {
                 "type": "judge_complete", "job_id": job_id,
                 "status": "error", "error": str(exc),

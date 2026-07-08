@@ -10,8 +10,10 @@ Final sweeps:
 
 *Regression sweep*
     Re-runs the oracle for all completed stages to detect regressions
-    introduced by later stages. Executed only when the workflow completes
-    successfully with more than one stage.
+    introduced by later stages. By default (``final_sweep_mode="auto"``)
+    executed only when the workflow completes successfully with more than
+    one stage; ``"off"`` disables it and ``"full"`` sweeps whenever at
+    least one stage passed.
 
 *Adversary cleanup sweep*
     Lifts any adversary injections whose ``lift_at_stage`` never ran due
@@ -187,6 +189,7 @@ def run_workflow_loop(
     prompt_mode: str,
     agent_session: str = "persistent",
     session_id: str | None = None,
+    system_prompt: str | None = None,
     on_stage_complete: Any | None = None,
     on_progress: Any | None = None,
     should_cancel: Any | None = None,
@@ -239,7 +242,7 @@ def run_workflow_loop(
     -------
     dict
         Keys: ``run_id``, ``status`` (``"complete"``, ``"failed"``, or
-        ``"error"``), ``stages`` (list[dict]),
+        ``"cancelled"``), ``stages`` (list[dict]),
         ``regression_sweep`` (dict or ``None``),
         ``adversary_cleanup`` (dict or ``None``),
         ``duration_sec`` (float).
@@ -296,6 +299,7 @@ def run_workflow_loop(
                 prompt_mode=prompt_mode,
                 agent_session=agent_session,
                 session_id=session_id,
+                system_prompt=system_prompt,
                 stage_index=idx,
                 defer_cleanup=True,
                 sandbox_options=sandbox_options,

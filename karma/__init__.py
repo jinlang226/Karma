@@ -1,8 +1,8 @@
 """
 KARMA — Kubernetes microservice agent benchmark framework.
 
-Subpackages
------------
+Subpackages and modules
+------------------------
 definitions
     Static data loading and validation for cases, workflows, prompts,
     and adversary scenarios.

@@ -10,7 +10,7 @@ class TestProxyHandle:
     def _make_handle(self, tmp_path, port=18080):
         proc = MagicMock()
         proc.poll.return_value = None
-        return ProxyHandle(proc, port, run_dir=tmp_path)
+        return ProxyHandle(proc, port)
 
     def test_port_property(self, tmp_path):
         handle = self._make_handle(tmp_path, port=19090)

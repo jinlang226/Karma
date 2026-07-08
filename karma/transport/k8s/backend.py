@@ -14,9 +14,11 @@ from __future__ import annotations
 import base64
 import json
 import os
+import shutil
 import socket
 import subprocess
 import sys
+import tempfile
 import time
 import urllib.request
 from pathlib import Path
@@ -36,7 +38,6 @@ class ProxyHandle:
         proc: subprocess.Popen,
         port: int,
         *,
-        run_dir: Path,
         control_port: int | None = None,
     ) -> None:
         """Wrap a running proxy process.
@@ -47,15 +48,16 @@ class ProxyHandle:
             The underlying :class:`subprocess.Popen` for the proxy daemon.
         port:
             TCP port the proxy is listening on.
-        run_dir:
-            Stage run directory used for logging.
         control_port:
             Optional port for the control endpoint.
         """
         self._proc = proc
         self._port = port
-        self._run_dir = run_dir
         self._control_port = control_port
+        # Host-only temp dir holding the upstream client cert/key (set by
+        # launch_proxy). Kept OUT of run_dir so the agent's /workspace mount never
+        # exposes the cluster credential; removed on teardown.
+        self._creds_dir: Path | None = None
 
     @property
     def port(self) -> int:
@@ -108,6 +110,11 @@ class ProxyHandle:
                 self._proc.kill()
                 self._proc.wait(timeout=5)
 
+        # Wipe the host-only cert/key temp dir now that the proxy is down.
+        if self._creds_dir is not None:
+            shutil.rmtree(self._creds_dir, ignore_errors=True)
+            self._creds_dir = None
+
 
 def launch_proxy(
     *,
@@ -130,6 +137,10 @@ def launch_proxy(
         Maximum seconds to wait for the proxy to accept connections.
     env:
         Additional environment variables forwarded to the proxy process.
+    bind_host:
+        Address the proxy binds to (``0.0.0.0`` for docker-sandbox reach).
+    max_attempts:
+        How many times to retry with fresh ports on a transient bind race.
 
     Raises
     ------
@@ -151,12 +162,23 @@ def launch_proxy(
     merged_env = {**os.environ, **(env or {})}
     auth = _get_upstream_auth(env)
     auth_args: list[str] = []
+    creds_dir: Path | None = None
     if auth.get("client_cert_file") and auth.get("client_key_file"):
         auth_args += ["--client-cert", auth["client_cert_file"],
                       "--client-key", auth["client_key_file"]]
     elif auth.get("client_cert_data") and auth.get("client_key_data"):
-        cert_path = run_dir / "proxy-client.crt"
-        key_path = run_dir / "proxy-client.key"
+        # Embedded cert data (kind's default) must be written to a file the proxy
+        # can read. It must NOT go under run_dir: that dir is bind-mounted into the
+        # agent as /workspace, so the agent could read the upstream cluster-admin
+        # key and talk to the API server directly, bypassing the proxy (C2). Write
+        # it to a host-only temp dir instead, removed on teardown.
+        creds_dir = Path(tempfile.mkdtemp(prefix="karma-proxy-creds-"))
+        try:
+            os.chmod(creds_dir, 0o700)
+        except Exception:
+            pass
+        cert_path = creds_dir / "client.crt"
+        key_path = creds_dir / "client.key"
         cert_path.write_text(auth["client_cert_data"])
         key_path.write_text(auth["client_key_data"])
         try:
@@ -188,18 +210,23 @@ def launch_proxy(
         proc = subprocess.Popen(
             cmd, env=merged_env, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True
         )
-        handle = ProxyHandle(proc, proxy_port, run_dir=run_dir, control_port=control_port)
+        handle = ProxyHandle(proc, proxy_port, control_port=control_port)
         try:
             wait_for_readiness(handle, timeout_sec=readiness_timeout_sec)
         except RuntimeError as exc:
             last_err = exc
             handle.teardown()  # reap the dead/failed child before retrying
-            continue
+            continue          # (this handle has no creds_dir, so it won't wipe them)
+        # Hand the cert/key temp dir to the surviving handle so its teardown wipes it.
+        handle._creds_dir = creds_dir
         try:
             (run_dir / "proxy.pid").write_text(str(proc.pid))
         except Exception:
             pass
         return handle
+    # Every attempt failed: no handle owns the creds dir, so clean it up here.
+    if creds_dir is not None:
+        shutil.rmtree(creds_dir, ignore_errors=True)
     raise last_err or RuntimeError("kubectl proxy failed to start")
 
 

@@ -20,7 +20,7 @@ local sandbox needs nothing installed and the docker image stays minimal.
 Config (environment):
   KARMA_API_BASE_URL  default https://api.deepseek.com
   KARMA_API_KEY       fallback DEEPSEEK_API_KEY, then OPENAI_API_KEY
-  KARMA_API_MODEL     default deepseek-chat
+  KARMA_API_MODEL     default deepseek-v4-flash
   KARMA_API_MAX_STEPS default 40
 Because DeepSeek's API is OpenAI-compatible, the same loop targets OpenAI or any
 compatible endpoint by changing KARMA_API_BASE_URL / KARMA_API_KEY / KARMA_API_MODEL.
@@ -38,7 +38,9 @@ API_KEY = (
     or os.environ.get("OPENAI_API_KEY")
     or ""
 )
-MODEL = os.environ.get("KARMA_API_MODEL", "deepseek-chat")
+# deepseek-v4-flash (non-thinking) -- the successor to deepseek-chat, which
+# DeepSeek deprecates 2026-07-24. Override with KARMA_API_MODEL for any endpoint.
+MODEL = os.environ.get("KARMA_API_MODEL", "deepseek-v4-flash")
 MAX_STEPS = int(os.environ.get("KARMA_API_MAX_STEPS", "40"))
 
 PROMPT_FILE = "prompt.txt"
@@ -125,6 +127,14 @@ def main():
         log(f"FATAL: cannot read {PROMPT_FILE}: {exc}")
         write_submit("(no prompt)")
         return
+    # Optional workflow-level system prompt (spec.system_prompt): prepend it so it
+    # reaches the model each stage (works for both fresh and resumed sessions).
+    try:
+        sp = open("system_prompt.txt").read().strip()
+        if sp:
+            prompt = sp + "\n\n" + prompt
+    except OSError:
+        pass
     if not API_KEY:
         log("FATAL: no API key (set KARMA_API_KEY or DEEPSEEK_API_KEY)")
         write_submit("(no API key configured)")
@@ -163,6 +173,12 @@ def main():
         except Exception as exc:  # noqa: BLE001
             log(f"API error: {exc}")
             break
+
+        # Log the per-call usage as a JSON line so KARMA's
+        # evidence.normalize_token_usage captures the api agent's token totals.
+        usage = data.get("usage") or {}
+        if usage:
+            log(json.dumps({"usage": usage}))
 
         msg = data["choices"][0]["message"]
         content = msg.get("content") or ""

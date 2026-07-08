@@ -46,15 +46,6 @@ class _CommandItem(BaseModel):
     timeout_sec: int | None = None
 
 
-class _OperationBlock(BaseModel):
-    """A probe/apply/verify operation block within a precondition unit."""
-
-    probe: list[_CommandItem] | _CommandItem | str
-    apply: list[_CommandItem] | _CommandItem | str
-    verify: list[_CommandItem] | _CommandItem | str
-    on_probe_fail: Literal["error", "skip"] = "skip"
-
-
 class _PreconditionUnit(BaseModel):
     """One precondition unit with a name and an operation block."""
 

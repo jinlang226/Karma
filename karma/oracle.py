@@ -176,11 +176,15 @@ def run_oracle(
     ``after_commands`` in order. A non-zero exit code from
     ``verify_commands`` sets the verdict to ``"fail"``. If
     ``after_commands`` fail and ``after_failure_mode`` is ``"fail"``, the
-    verdict is additionally marked as degraded.
+    verdict is also set to ``"fail"``.
 
-    When ``oracle_config`` contains a ``script_path``, the ``oracle.py``
-    script is executed as a subprocess with ``role_bindings`` injected as
+    When ``oracle_config`` contains a ``script_path``, the script at that
+    path is executed as a subprocess with ``role_bindings`` injected as
     environment variables, and its output is merged into the verdict.
+
+    A ``"fail"`` whose output carries a transient connectivity signature is
+    re-evaluated a few times before being trusted, so a brief apiserver/proxy
+    blip is not recorded as a real fail.
 
     The verdict is written to ``protocol.stage_oracle_path(run_dir, stage_id)``.
 
