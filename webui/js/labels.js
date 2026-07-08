@@ -113,11 +113,13 @@
     // contain hyphens (e.g. nginx-ingress). Returns spaced, humanized parts.
     runName(runId, meta) {
       meta = meta || {};
-      const m = String(runId || "").match(/(\d{8}_\d{6})$/);
+      // ts, optionally followed by a short collision-avoidance suffix (-<hex>).
+      const m = String(runId || "").match(/(\d{8}_\d{6})(?:-[0-9a-f]+)?$/);
       const ts = m ? m[1] : "";
+      const tail = m ? m[0] : "";
       let app = meta.service, name = meta.case_name;
       if (!app || !name) {
-        const prefix = ts ? String(runId).slice(0, String(runId).length - ts.length - 1) : String(runId);
+        const prefix = tail ? String(runId).slice(0, String(runId).length - tail.length - 1) : String(runId);
         const i = prefix.indexOf("-");
         app = i > 0 ? prefix.slice(0, i) : prefix;
         name = i > 0 ? prefix.slice(i + 1) : "";

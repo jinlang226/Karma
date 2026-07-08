@@ -83,7 +83,14 @@ class TestGenerateRunId:
         assert run_id == "wf-20240101_120000"
 
     def test_auto_ts_format(self):
+        import re
         run_id = protocol.generate_run_id("wf")
-        parts = run_id.split("-", 1)
-        assert len(parts) == 2
-        assert len(parts[1]) == 15
+        # wf-<15-char ts>-<short hex suffix>; the suffix avoids same-second collisions.
+        assert re.match(r"^wf-\d{8}_\d{6}-[0-9a-f]+$", run_id), run_id
+
+    def test_explicit_ts_is_deterministic(self):
+        # An explicit ts is used verbatim with no suffix.
+        assert protocol.generate_run_id("wf", ts="20240101_120000") == "wf-20240101_120000"
+
+    def test_auto_ts_avoids_same_second_collision(self):
+        assert protocol.generate_run_id("wf") != protocol.generate_run_id("wf")

@@ -31,6 +31,7 @@ from __future__ import annotations
 
 import datetime
 import re
+import uuid
 from pathlib import Path
 
 _UNSAFE_RUN_ID_CHARS = re.compile(r"[^A-Za-z0-9._-]+")
@@ -154,15 +155,21 @@ def ensure_bundle_dir(run_dir: Path) -> Path:
 def generate_run_id(workflow_id: str, *, ts: str | None = None) -> str:
     """Return a run id derived from *workflow_id* and a UTC timestamp.
 
-    The format is ``{workflow_id}-{YYYYMMDD_HHMMSS}``. If *ts* is provided
-    it is used as the timestamp string verbatim.
+    The format is ``{workflow_id}-{YYYYMMDD_HHMMSS}``, plus a short random
+    suffix (``-{hex}``) when *ts* is auto-generated so two submits in the same
+    second don't collide on the same run dir + deterministic namespaces. When
+    *ts* is provided it is used verbatim with no suffix (deterministic).
 
     The *workflow_id* is sanitized so the run id is safe to use both as a
     single path segment and as a URL path variable. Any run of characters
     outside ``[A-Za-z0-9._-]`` (notably the ``/`` in single-case workflow
     ids like ``service/case``) is collapsed to a single hyphen.
     """
-    if ts is None:
+    auto = ts is None
+    if auto:
         ts = datetime.datetime.now(datetime.timezone.utc).strftime("%Y%m%d_%H%M%S")
     safe_id = _UNSAFE_RUN_ID_CHARS.sub("-", workflow_id).strip("-") or "workflow"
-    return f"{safe_id}-{ts}"
+    run_id = f"{safe_id}-{ts}"
+    if auto:
+        run_id = f"{run_id}-{uuid.uuid4().hex[:4]}"
+    return run_id
