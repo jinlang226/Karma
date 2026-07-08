@@ -148,3 +148,19 @@ class TestGetAllStageIds:
 
     def test_empty_workflow(self):
         assert get_all_stage_ids({}) == []
+
+
+class TestStageIdValidation:
+    def test_traversal_stage_id_is_rejected(self):
+        # A stage id becomes a path segment; a traversal id must not be accepted
+        # (it would write artifacts outside runs/) -- C4.
+        wf = {"metadata": {"id": "t"}, "spec": {"stages": [
+            {"id": "../../../x", "service": "rabbitmq", "case": "failover"}]}}
+        with pytest.raises(ValueError, match="invalid stage id"):
+            normalize_workflow(wf, resources_dir=Path("cases"))
+
+    def test_valid_stage_id_passes(self):
+        wf = {"metadata": {"id": "t"}, "spec": {"stages": [
+            {"id": "stage_01", "service": "rabbitmq", "case": "failover"}]}}
+        out = normalize_workflow(wf, resources_dir=Path("cases"))
+        assert len(out["stages"]) == 1

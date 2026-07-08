@@ -330,6 +330,13 @@ def normalize_workflow(
 
     for i, s in enumerate(raw_stages):
         stage_id = str(s.get("id") or f"stage_{i + 1}")
+        # stage_id becomes a path segment (runs/<id>/stages/<stage_id>/...), so it
+        # must not carry traversal characters -- an unguarded id like
+        # "../../../x" from workflow YAML would write artifacts outside runs/.
+        if not _is_valid_name(stage_id):
+            raise ValueError(
+                f"invalid stage id {stage_id!r}: only letters, digits, '-', and '_' are allowed"
+            )
         resolved_overrides, w = _resolve_stage_param_overrides(
             s, i, raw_stages, prior_stage_params
         )
