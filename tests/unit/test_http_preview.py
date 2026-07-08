@@ -41,6 +41,14 @@ class TestJudgePreview:
         resp = client.post("/api/judge/preview", json={})
         assert resp.status_code == 400
 
-    def test_unknown_run_dir_is_404(self, client):
-        resp = client.post("/api/judge/preview", json={"run_dir": "runs/nope"})
+    def test_unknown_run_dir_is_404(self, client, tmp_path):
+        # A path INSIDE the runs dir that doesn't exist -> 404.
+        resp = client.post(
+            "/api/judge/preview", json={"run_dir": str(tmp_path / "runs" / "nope")})
         assert resp.status_code == 404
+
+    def test_run_dir_outside_runs_is_400(self, client, tmp_path):
+        # A path OUTSIDE the runs dir is rejected before any filesystem access (C5).
+        resp = client.post(
+            "/api/judge/preview", json={"run_dir": str(tmp_path / "etc" / "passwd")})
+        assert resp.status_code == 400
