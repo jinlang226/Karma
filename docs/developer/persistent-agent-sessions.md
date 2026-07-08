@@ -1,21 +1,21 @@
 # Persistent Agent Sessions
 
-By default KARMA launches a **fresh agent each stage** of a workflow
-(`agent_session: per_stage`). The agent has no memory of earlier stages; the
+By default KARMA keeps **one persistent agent conversation across all stages**
+of a workflow (`agent_session: persistent`). Each stage resumes the same
+CLI/API session, so the agent carries its own earlier reasoning, tool calls,
+and results forward rather than starting cold each time.
+
+Setting `agent_session: per_stage` opts out and launches a **fresh agent each
+stage**. In that mode the agent has no memory of earlier stages; the
 `prompt_mode` (`concat_stateful`/`concat_blind`) re-feeds prior stage *prompts*
 as text to compensate, but the agent never sees its own earlier reasoning or
 tool output. Only the cluster state carries over.
-
-Setting `agent_session: persistent` keeps **one agent conversation alive across
-all stages** — each stage resumes the same CLI/API session, so the agent carries
-its full transcript (its reasoning, tool calls, and results) forward, not just
-the re-fed prompts.
 
 ```yaml
 metadata:
   id: my-workflow
 spec:
-  agent_session: persistent   # per_stage (default) | persistent
+  agent_session: per_stage     # persistent (default) | per_stage
   prompt_mode: progressive     # recommended with persistent: the live session
                                # already holds the history, so don't re-feed it
   stages:
@@ -62,8 +62,8 @@ Each agent entrypoint resumes its own session:
 
 ## Notes and limitations
 
-- With `persistent`, prefer `prompt_mode: progressive` — the session already
-  carries the history, so concat modes just double-feed it.
+- With `persistent` (the default), prefer `prompt_mode: progressive` — the
+  session already carries the history, so concat modes just double-feed it.
 - **Retries**: a retried stage resumes the same session, so a failed attempt's
   messages stay in the transcript. (A per-attempt `--fork-session` is a possible
   future refinement.)

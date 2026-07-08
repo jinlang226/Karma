@@ -2,8 +2,10 @@
 """Run a workflow queue across multiple kubeconfigs with resume support.
 
 This helper is intentionally runtime-light: it shells out to
-``orchestrator.py run-workflow`` and records one JSONL result per workflow so a
-campaign can be resumed safely after process or host failure.
+``orchestrator.py run-workflow`` and records one final JSONL result per
+workflow so a campaign can be resumed safely after process or host failure.
+Transient precondition failures are retried in-process and collapsed into that
+single ledger row.
 """
 
 from __future__ import annotations
@@ -30,6 +32,19 @@ PROTECTED_NAMESPACES = {
     "kube-node-lease",
     "local-path-storage",
 }
+TRANSIENT_RETRY_SIGNALS = (
+    "precondition units failed",
+    "precondition failed",
+    "preconditions exceeded",
+    "environment preflight failed",
+    "namespace cleanup timed out",
+    "unable to connect to the server",
+    "connection refused",
+    "tls handshake timeout",
+    "i/o timeout",
+    "etcdserver: request timed out",
+    "kubectl proxy",
+)
 
 
 def now_utc_iso() -> str:
@@ -154,6 +169,17 @@ def tail(text: str, limit: int = 4000) -> str:
     if len(text) <= limit:
         return text
     return text[-limit:]
+
+
+def attempt_log_paths(logs_dir: Path, workflow_rel: str, attempt: int) -> tuple[Path, Path]:
+    """Return per-attempt stdout and stderr log paths for *workflow_rel*."""
+
+    slug = sanitize_name(workflow_rel)
+    suffix = f".attempt-{attempt:02d}"
+    return (
+        logs_dir / f"{slug}{suffix}.stdout.log",
+        logs_dir / f"{slug}{suffix}.stderr.log",
+    )
 
 
 def parse_result(stdout_text: str) -> Optional[Dict[str, Any]]:
@@ -401,6 +427,7 @@ def simulate_record(
         "run_id": "",
         "run_status": "simulated",
         "run_dir": "",
+        "stages": [],
         "stage_total": 0,
         "stage_passed": 0,
         "stage_failed": 0,
@@ -413,15 +440,105 @@ def simulate_record(
     }
 
 
-def run_one_workflow(
+def retry_signal(text: str) -> str:
+    """Return the matching transient retry signal contained in *text*, if any."""
+
+    lowered = text.lower()
+    for signal in TRANSIENT_RETRY_SIGNALS:
+        if signal in lowered:
+            return signal
+    return ""
+
+
+def classify_retryable_failure(record: Dict[str, Any]) -> str:
+    """Return a retry reason for transient precondition failures, else ``""``."""
+
+    if bool(record.get("workflow_passed")) or str(record.get("outcome") or "") == "pass":
+        return ""
+
+    if str(record.get("outcome") or "") == "env_preflight_failed":
+        reason = str(record.get("error") or "").strip()
+        if reason:
+            return reason
+        return str((record.get("preflight") or {}).get("reason") or "environment preflight failed")
+
+    stages = [stage for stage in (record.get("stages") or []) if isinstance(stage, dict)]
+    if any(str(stage.get("oracle_verdict") or "").lower() == "fail" for stage in stages):
+        return ""
+
+    for stage in stages:
+        if str(stage.get("status") or "") not in {"fail", "error", "timeout"}:
+            continue
+        stage_error = str(stage.get("error") or "").strip()
+        if stage_error and retry_signal(stage_error):
+            stage_id = str(stage.get("stage_id") or "").strip()
+            if stage_id:
+                return f"{stage_id}: {stage_error}"
+            return stage_error
+
+    for text in (
+        str(record.get("error") or "").strip(),
+        str(record.get("stderr_tail") or "").strip(),
+        str(record.get("stdout_tail") or "").strip(),
+    ):
+        if text and retry_signal(text):
+            return text
+    return ""
+
+
+def compact_attempt_record(record: Dict[str, Any]) -> Dict[str, Any]:
+    """Return the stable attempt history stored inside the final ledger row."""
+
+    return {
+        "attempt": record.get("attempt"),
+        "started_at": record.get("started_at"),
+        "finished_at": record.get("finished_at"),
+        "duration_sec": record.get("duration_sec"),
+        "returncode": record.get("returncode"),
+        "outcome": record.get("outcome"),
+        "run_id": record.get("run_id"),
+        "run_status": record.get("run_status"),
+        "run_dir": record.get("run_dir"),
+        "stages": list(record.get("stages") or []),
+        "stage_total": record.get("stage_total"),
+        "stage_passed": record.get("stage_passed"),
+        "stage_failed": record.get("stage_failed"),
+        "workflow_passed": record.get("workflow_passed"),
+        "stdout_log": record.get("stdout_log"),
+        "stderr_log": record.get("stderr_log"),
+        "error": record.get("error"),
+        "preflight": record.get("preflight"),
+        "post_cleanup": record.get("post_cleanup"),
+        "retryable_failure": record.get("retryable_failure"),
+        "retry_reason": record.get("retry_reason"),
+    }
+
+
+def finalize_workflow_record(attempts: List[Dict[str, Any]], *, transient_retry_limit: int) -> Dict[str, Any]:
+    """Collapse *attempts* into the single ledger row stored for one workflow."""
+
+    final_record = dict(attempts[-1])
+    final_record["attempt_count"] = len(attempts)
+    final_record["transient_retry_limit"] = transient_retry_limit
+    final_record["transient_retry_count"] = max(0, len(attempts) - 1)
+    final_record["retry_exhausted"] = bool(
+        final_record.get("retryable_failure")
+        and len(attempts) >= (1 + max(0, transient_retry_limit))
+    )
+    final_record["attempts"] = [compact_attempt_record(attempt) for attempt in attempts]
+    return final_record
+
+
+def run_workflow_attempt(
     args: argparse.Namespace,
     workflow_rel: str,
     kubeconfig: str,
     *,
+    attempt: int,
     heavy: bool,
     logs_dir: Path,
 ) -> Dict[str, Any]:
-    """Run one workflow and return its ledger record."""
+    """Run one workflow attempt and return its raw ledger record."""
 
     if args.simulate:
         return simulate_record(
@@ -431,9 +548,7 @@ def run_one_workflow(
             delay_sec=args.simulate_delay,
         )
 
-    slug = sanitize_name(workflow_rel)
-    stdout_path = logs_dir / (slug + ".stdout.log")
-    stderr_path = logs_dir / (slug + ".stderr.log")
+    stdout_path, stderr_path = attempt_log_paths(logs_dir, workflow_rel, attempt)
     command = build_command(args, workflow_rel)
     env = dict(os.environ)
     env["KUBECONFIG"] = kubeconfig
@@ -455,6 +570,7 @@ def run_one_workflow(
             "run_id": "",
             "run_status": "",
             "run_dir": "",
+            "stages": [],
             "stage_total": 0,
             "stage_passed": 0,
             "stage_failed": 0,
@@ -516,6 +632,7 @@ def run_one_workflow(
         "run_id": run_id,
         "run_status": run_status,
         "run_dir": run_dir,
+        "stages": stages,
         "stage_total": stage_total,
         "stage_passed": stage_passed,
         "stage_failed": stage_failed,
@@ -528,6 +645,41 @@ def run_one_workflow(
         "preflight": preflight,
         "post_cleanup": post_cleanup,
     }
+
+
+def run_one_workflow(
+    args: argparse.Namespace,
+    workflow_rel: str,
+    kubeconfig: str,
+    *,
+    heavy: bool,
+    logs_dir: Path,
+) -> Dict[str, Any]:
+    """Run one workflow, retrying transient precondition failures in-process."""
+
+    transient_retry_limit = max(0, int(getattr(args, "transient_retries", 0) or 0))
+    attempts: List[Dict[str, Any]] = []
+    attempt = 1
+    while True:
+        record = run_workflow_attempt(
+            args,
+            workflow_rel,
+            kubeconfig,
+            attempt=attempt,
+            heavy=heavy,
+            logs_dir=logs_dir,
+        )
+        retry_reason = classify_retryable_failure(record)
+        record["attempt"] = attempt
+        record["retryable_failure"] = bool(retry_reason)
+        record["retry_reason"] = retry_reason
+        attempts.append(record)
+        if not retry_reason or attempt > transient_retry_limit:
+            return finalize_workflow_record(
+                attempts,
+                transient_retry_limit=transient_retry_limit,
+            )
+        attempt += 1
 
 
 def parse_args() -> argparse.Namespace:
@@ -560,6 +712,12 @@ def parse_args() -> argparse.Namespace:
                         help="Optional delay per simulated workflow.")
     parser.add_argument("--namespace-cleanup-timeout", type=int, default=240,
                         help="Seconds to wait for non-system namespaces to delete before/after a workflow.")
+    parser.add_argument(
+        "--transient-retries",
+        type=int,
+        default=3,
+        help="Extra reruns for transient precondition or environment failures before recording the final result.",
+    )
     args = parser.parse_args()
     args.batch_dir_path = Path(args.batch_dir).resolve()
     return args
@@ -628,11 +786,16 @@ def main() -> int:
                     atomic_write_json(summary_path, summarize_records(workflows, completed))
                     write_status(status_path, workflows=workflows, completed=completed, inflight=inflight)
                 print(
-                    "[{0}/{1}] {2} -> {3}".format(
+                    "[{0}/{1}] {2} -> {3}{4}".format(
                         len(completed),
                         len(workflows),
                         workflow_rel,
                         record.get("outcome"),
+                        (
+                            " (attempts={0})".format(record.get("attempt_count"))
+                            if int(record.get("attempt_count") or 1) > 1
+                            else ""
+                        ),
                     ),
                     flush=True,
                 )

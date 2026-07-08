@@ -630,7 +630,7 @@ def run_stage(
     prior_stage_ids: list[str],
     stage_prompts: list[str],
     prompt_mode: str,
-    agent_session: str = "per_stage",
+    agent_session: str = "persistent",
     session_id: str | None = None,
     stage_index: int = 0,
     defer_cleanup: bool = False,

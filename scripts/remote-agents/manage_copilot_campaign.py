@@ -24,6 +24,12 @@ DEFAULT_CLUSTER_NAME = "kind"
 QUEUE_RUNNER = REPO_ROOT / "scripts" / "remote-agents" / "run_workflow_queue.py"
 COPILOT_DOCKERFILE = REPO_ROOT / "karma" / "agents" / "copilot" / "Dockerfile"
 COPILOT_CONTEXT = REPO_ROOT / "karma" / "agents" / "copilot"
+PERSISTENT_SESSION_RUNTIME_FILES = (
+    REPO_ROOT / "karma" / "definitions" / "workflows.py",
+    REPO_ROOT / "karma" / "runtime" / "service.py",
+    REPO_ROOT / "karma" / "runtime" / "workflow.py",
+    REPO_ROOT / "karma" / "runtime" / "case.py",
+)
 
 
 @dataclass(frozen=True)
@@ -150,6 +156,33 @@ def group_paths(paths: List[Path]) -> Dict[Path, List[Path]]:
     return grouped
 
 
+def campaign_support_files() -> List[Path]:
+    """Return repository-relative files every remote Copilot host must receive.
+
+    This includes the queue runner, Copilot container bits, and the runtime /
+    workflow-definition files that control persistent cross-stage sessions.
+    CloudLab hosts may have stale local clones, so long-horizon behavior must be
+    synced explicitly instead of assumed.
+    """
+
+    files = [
+        Path(repo_rel(QUEUE_RUNNER)),
+        Path(repo_rel(COPILOT_DOCKERFILE)),
+        Path(repo_rel(COPILOT_CONTEXT / "entrypoint.sh")),
+    ]
+    files += [Path(repo_rel(path)) for path in PERSISTENT_SESSION_RUNTIME_FILES]
+    return files
+
+
+def remote_repo_dir(remote_root: str, repo_path: Path) -> str:
+    """Return the remote directory path for a repository-relative path."""
+
+    path_text = repo_path.as_posix()
+    if path_text == ".":
+        return remote_root
+    return f"{remote_root}/{path_text}"
+
+
 def batch_files(batch_dir: Path, assignment: HostAssignment) -> List[Path]:
     """Return batch metadata files needed on one host."""
 
@@ -180,29 +213,22 @@ def sync_host(
     remote_root: str,
     remote_user: str,
 ) -> Dict[str, Any]:
-    """Copy the queue runner, env file, metadata, and assigned workflows to one host."""
+    """Copy support files, env, metadata, and assigned workflows to one host."""
 
     remote_batch_root = f"{remote_root}/{batch_rel(batch_dir)}"
     host_batch_root = f"{remote_batch_root}/hosts/{assignment.safe_host}"
-    files = [
-        Path(repo_rel(QUEUE_RUNNER)),
-        Path(repo_rel(COPILOT_DOCKERFILE)),
-        Path(repo_rel(COPILOT_CONTEXT / "entrypoint.sh")),
-    ]
+    files = campaign_support_files()
     files += batch_files(batch_dir, assignment)
     files += workflow_files_for_assignment(batch_dir, assignment)
 
     mkdirs = {
-        f"{remote_root}/scripts/remote-agents",
-        f"{remote_root}/karma/agents/copilot",
-        f"{remote_root}/workflows/pass",
-        f"{remote_root}/workflows/short",
         remote_batch_root,
         f"{remote_batch_root}/shards",
         f"{remote_batch_root}/hosts",
         host_batch_root,
         f"{host_batch_root}/logs",
     }
+    mkdirs.update(remote_repo_dir(remote_root, path.parent) for path in files)
     ssh(
         assignment.host,
         "mkdir -p " + " ".join(shlex.quote(item) for item in sorted(mkdirs)),
@@ -213,7 +239,7 @@ def sync_host(
     grouped = group_paths(files)
     for parent, entries in grouped.items():
         local_sources = [str((REPO_ROOT / item).resolve()) for item in sorted(entries)]
-        remote_target = f"{remote_user}@{assignment.host}:{remote_root}/{parent.as_posix()}/"
+        remote_target = f"{remote_user}@{assignment.host}:{remote_repo_dir(remote_root, parent)}/"
         run(scp_base(key_path) + local_sources + [remote_target], check=True)
 
     run(

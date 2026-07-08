@@ -88,8 +88,22 @@ class TestNormalizeWorkflow:
         }
         result = normalize_workflow(raw, resources_dir=tmp_path)
         assert result["id"] == "my-wf"
+        assert result["agent_session"] == "persistent"
         assert len(result["stages"]) == 1
         assert result["adversary"] == []
+
+    def test_preserves_explicit_agent_session(self, tmp_path):
+        raw = {
+            "metadata": {"id": "my-wf"},
+            "spec": {
+                "agent_session": "per_stage",
+                "stages": [
+                    {"id": "stage_1", "service": "svc", "case": "my-case"}
+                ],
+            },
+        }
+        result = normalize_workflow(raw, resources_dir=tmp_path)
+        assert result["agent_session"] == "per_stage"
 
 
 class TestSingleCaseToWorkflow:
@@ -111,6 +125,10 @@ class TestSingleCaseToWorkflow:
     def test_adversary_list_is_empty(self):
         wf = single_case_to_workflow("svc", "case")
         assert wf["adversary"] == []
+
+    def test_agent_session_defaults_to_persistent(self):
+        wf = single_case_to_workflow("svc", "case")
+        assert wf["agent_session"] == "persistent"
 
     def test_no_explicit_roles_passes_none_for_case_contract(self):
         # Must NOT force ["default"] -- that masks a multi-role case's contract.

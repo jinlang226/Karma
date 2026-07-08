@@ -39,7 +39,7 @@ from pydantic import BaseModel, Field, ValidationError
 
 _VALID_PROMPT_MODES = ("progressive", "concat_stateful", "concat_blind")
 _DEFAULT_PROMPT_MODE = "progressive"
-_DEFAULT_AGENT_SESSION = "per_stage"
+_DEFAULT_AGENT_SESSION = "persistent"
 _DEFAULT_AGENT_TIMEOUT_SEC = 900
 _DEFAULT_NAMESPACE_ALIAS = "default"
 _STAGE_PARAM_REF_RE = re.compile(
@@ -79,11 +79,12 @@ class _WorkflowSpec(BaseModel):
 
     stages: list[_StageSpec] = Field(min_length=1)
     prompt_mode: Literal["progressive", "concat_stateful", "concat_blind"] = _DEFAULT_PROMPT_MODE
-    # ``per_stage`` (default) launches a fresh agent each stage; ``persistent``
-    # keeps ONE agent conversation alive across all stages (the CLI/api session
-    # is resumed each stage) so the agent carries its own reasoning forward, not
-    # just the re-fed prompts. With ``persistent`` the recommended prompt_mode is
-    # ``progressive`` -- the live session already holds the history.
+    # ``persistent`` (default) keeps ONE agent conversation alive across all
+    # stages (the CLI/api session is resumed each stage) so the agent carries
+    # its own reasoning forward, not just the re-fed prompts. ``per_stage``
+    # opts out and launches a fresh agent each stage. With ``persistent`` the
+    # recommended prompt_mode is ``progressive`` -- the live session already
+    # holds the history.
     agent_session: Literal["per_stage", "persistent"] = _DEFAULT_AGENT_SESSION
     adversary: list[Any] = []
 
@@ -491,6 +492,7 @@ def single_case_to_workflow(
         "id": workflow_id,
         "label": None,
         "prompt_mode": prompt_mode,
+        "agent_session": _DEFAULT_AGENT_SESSION,
         "stages": [
             {
                 "id": "stage_1",

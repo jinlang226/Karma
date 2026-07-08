@@ -277,13 +277,18 @@ That generates:
 - `.benchmark/copilot-campaign/host-assignments.json`
 - `.benchmark/copilot-campaign/shards/shard-01.txt`, ...
 
-Sync the auth file, queue runner, and assigned workflow YAMLs to every host:
+Sync the auth file, queue runner, persistent-session runtime files, and
+assigned workflow YAMLs to every host:
 
 ```bash
 python3 scripts/remote-agents/manage_copilot_campaign.py sync \
   --batch-dir .benchmark/copilot-campaign \
   --env-file .benchmark/copilot.env
 ```
+
+That sync step now also ships the local workflow/runtime files that control
+`agent_session: persistent`, so remote hosts inherit the current long-horizon
+session behavior instead of silently falling back to stale per-stage defaults.
 
 Preflight every host with the exact requested model:
 
@@ -318,6 +323,9 @@ This launch command uses:
 - the synced `.benchmark/copilot.env` on each host,
 - the per-host shard file,
 - `--resume` so the shard is failure-recoverable,
+- automatic transient retries: queue-level environment failures and workflow
+  precondition failures are retried up to 3 extra times before the shard writes
+  one final `results.jsonl` record for that workflow,
 - `/tmp/kc-1` as the node's single cluster kubeconfig,
 - and `gpt-5.3-codex` as the requested Copilot model.
 

@@ -169,9 +169,11 @@ def run_workflow(
             )
         prompt_mode = str(workflow.get("prompt_mode") or "progressive")
         # Persistent-session mode keeps ONE agent conversation alive across all
-        # stages (each stage resumes the same CLI/api session). Mint one stable
-        # session id per run; per_stage mode leaves it None (fresh agent/stage).
-        agent_session = str(workflow.get("agent_session") or "per_stage")
+        # stages (each stage resumes the same CLI/api session). This is now the
+        # default workflow behavior; per_stage explicitly opts out to a fresh
+        # agent/session each stage. Mint one stable session id per run only
+        # when persistence is enabled.
+        agent_session = str(workflow.get("agent_session") or "persistent")
         session_id = str(uuid.uuid4()) if agent_session == "persistent" else None
 
         result = run_workflow_loop(
