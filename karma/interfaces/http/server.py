@@ -242,6 +242,13 @@ def create_app(
         if not run_dir_str:
             return jsonify({"error": "run_dir is required"}), 400
         run_dir_path = Path(run_dir_str)
+        # Confine to runs_dir: this route accepts a raw path, so reject anything
+        # resolving outside the runs directory -- otherwise it is an arbitrary
+        # host-filesystem read (preview) / judge.json write (C5).
+        try:
+            run_dir_path.resolve().relative_to(Path(runs_dir).resolve())
+        except ValueError:
+            return jsonify({"error": "run_dir must be inside the runs directory"}), 400
         if not run_dir_path.exists():
             return jsonify({"error": "run_dir not found"}), 404
         stage_id = payload.get("stage_id")
@@ -269,6 +276,13 @@ def create_app(
         if not run_dir_str:
             return jsonify({"error": "run_dir is required"}), 400
         run_dir_path = Path(run_dir_str)
+        # Confine to runs_dir: this route accepts a raw path, so reject anything
+        # resolving outside the runs directory -- otherwise it is an arbitrary
+        # host-filesystem read (preview) / judge.json write (C5).
+        try:
+            run_dir_path.resolve().relative_to(Path(runs_dir).resolve())
+        except ValueError:
+            return jsonify({"error": "run_dir must be inside the runs directory"}), 400
         if not run_dir_path.exists():
             return jsonify({"error": "run_dir not found"}), 404
         stage_id = payload.get("stage_id")
