@@ -30,6 +30,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 from pathlib import Path
 from string import Template
 from typing import Any
@@ -358,10 +359,13 @@ def score_run(
     )
 
     # When the caller did not name a judge model, mirror the agent that ran the
-    # tasks (recorded in config.json) instead of the fixed gpt-4o default. An
-    # explicit base_url/api_key still wins over the mirrored one.
+    # tasks (recorded in config.json) instead of the fixed gpt-4o default -- BUT
+    # only when the user hasn't pinned one via KARMA_JUDGE_MODEL. That explicit
+    # env must win over the mirror (M1); leaving judge_model/backend None lets
+    # client.py resolve them from KARMA_JUDGE_*. Explicit base_url/api_key still
+    # win over the mirrored ones.
     judge_backend: str | None = None
-    if judge_model is None:
+    if judge_model is None and not os.environ.get("KARMA_JUDGE_MODEL"):
         from .agent_defaults import resolve_agent_judge_defaults
         derived = resolve_agent_judge_defaults(run_dir)
         judge_model = derived.get("model")
