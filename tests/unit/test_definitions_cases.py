@@ -43,6 +43,39 @@ class TestLoadCaseFile:
         with pytest.raises(RuntimeError, match="YAML object"):
             load_case_file(tmp_path, "svc", "bad")
 
+    def test_typo_in_top_level_key_hard_fails(self, tmp_path):
+        # Bug B: a mis-keyed top-level field (here 'oracel', a typo of
+        # 'oracle') must be a hard error, not a silent drop that leaves the
+        # case with an empty oracle passing unconditionally. CaseSchema now
+        # uses extra='forbid', so load_case_file surfaces the offending key.
+        p = tmp_path / "svc" / "typo" / "test.yaml"
+        p.parent.mkdir(parents=True)
+        p.write_text(
+            "prompt: do the thing\n"
+            "oracel:\n"          # <-- typo
+            "  verify:\n"
+            "    commands: [ {command: 'true'} ]\n"
+        )
+        with pytest.raises(RuntimeError, match="oracel"):
+            load_case_file(tmp_path, "svc", "typo")
+
+    def test_before_after_hooks_still_allowed(self, tmp_path):
+        # extra='forbid' is top-level only: the oracle.verify block keeps
+        # extra='ignore' so case-authored before/after hooks (read straight
+        # from the raw dict by the oracle normalizer) must still load.
+        p = tmp_path / "svc" / "hooks" / "test.yaml"
+        p.parent.mkdir(parents=True)
+        p.write_text(
+            "prompt: p\n"
+            "oracle:\n"
+            "  verify:\n"
+            "    before_commands: [ {command: 'echo before'} ]\n"
+            "    commands: [ {command: 'true'} ]\n"
+            "    after_commands: [ {command: 'echo after'} ]\n"
+        )
+        data = load_case_file(tmp_path, "svc", "hooks")
+        assert data["oracle"]["verify"]["before_commands"]
+
 
 class TestResolveCaseParams:
     def test_defaults_used_when_no_overrides(self):
