@@ -268,7 +268,6 @@
         sub.textContent = prompt ? (prompt.length > 150 ? prompt.slice(0, 150) + "…" : prompt) : "—";
         clear(facts);
         facts.appendChild(el("span", { class: "count" }, `${d.precondition_count} preconditions`));
-        facts.appendChild(document.createTextNode(`  ·  ${d.metrics.length} metrics`));
         if (d.params && d.params.length) {
           facts.appendChild(document.createTextNode(`  ·  ${d.params.length} params`));
         }
@@ -301,7 +300,6 @@
     // Metadata badges
     const badges = el("div", { class: "toolbar" });
     badges.appendChild(el("span", { class: "badge" }, detail.precondition_count + " preconditions"));
-    badges.appendChild(el("span", { class: "badge" }, detail.metrics.length + " metrics"));
     for (const t of detail.tags) badges.appendChild(el("span", { class: "badge" }, KARMA.humanize(t)));
     root.appendChild(badges);
 

@@ -42,7 +42,6 @@ _EVIDENCE_ARTIFACT = {
     "trace_facts": {"total_calls": 1, "mutation_calls": 0, "read_calls": 1,
                     "unique_resources": ["pods"], "namespaces_touched": ["ns"],
                     "first_mutation_sec": None},
-    "metrics": {},
 }
 
 
