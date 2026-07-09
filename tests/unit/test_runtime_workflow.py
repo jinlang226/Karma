@@ -255,6 +255,23 @@ class TestStagePromptDistribution:
         assert second["stage_prompts"] == ["TASK ONE", "TASK TWO"]
         assert second["stage_index"] == 1
 
+    def test_stage_prologue_forwarded_to_run_stage(self, tmp_path):
+        # The mode prologue resolved upstream must reach run_stage for every stage.
+        row = self._make_row("s1"); row["case"] = {"prompt": "TASK"}
+        pass_r = lambda sid: {
+            "stage_id": sid, "status": "pass", "oracle_verdict": "pass",
+            "submitted": True, "duration_sec": 0.1, "error": None,
+            "evidence_path": "", "oracle_path": "",
+        }
+        with patch("karma.runtime.workflow.run_stage",
+                   side_effect=lambda r, **k: pass_r(r["stage_id"])) as m:
+            run_workflow_loop(
+                [row], run_id="r1", run_dir=tmp_path, resources_dir=tmp_path,
+                agent_meta={}, sandbox_mode="local", environment=MagicMock(),
+                prompt_mode="concat_blind", stage_prologue="ORIENT-BLIND",
+            )
+        assert m.call_args_list[0].kwargs["prologue"] == "ORIENT-BLIND"
+
     def test_teardown_runs_when_a_callback_raises(self, tmp_path):
         # SR8: the deferred namespace teardown lives in a `finally`, so a stage
         # callback that raises (a broken should_cancel / on_progress from the

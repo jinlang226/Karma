@@ -91,6 +91,7 @@ def run_workflow(
     sandbox_options: dict[str, Any] | None = None,
     agent_session: str | None = None,
     system_prompt: str | None = None,
+    prompt_mode_prologues: str | None = None,
 ) -> dict[str, Any]:
     """Execute a workflow synchronously and return the final run result.
 
@@ -219,6 +220,12 @@ def run_workflow(
             base_prompt + "\n\n" + append_prompt if append_prompt else base_prompt
         )
 
+        # Mode-specific prologue prepended to each stage's assembled prompt so the
+        # agent understands the prompt STRUCTURE (default file, or the
+        # --prompt-mode-prologues override). Resolved once; the mode is workflow-level.
+        from ..definitions.prompts import load_prompt_mode_prologues
+        stage_prologue = load_prompt_mode_prologues(prompt_mode_prologues).get(prompt_mode, "")
+
         result = run_workflow_loop(
             rows,
             run_id=effective_run_id,
@@ -228,6 +235,7 @@ def run_workflow(
             sandbox_mode=sandbox_mode,
             environment=env,
             prompt_mode=prompt_mode,
+            stage_prologue=stage_prologue,
             agent_session=agent_session,
             session_id=session_id,
             system_prompt=effective_system_prompt,
