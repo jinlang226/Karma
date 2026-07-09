@@ -76,6 +76,25 @@ def _tokens_to_multi_line(tokens: list[str]) -> str:
     return " \\\n".join(lines)
 
 
+def _workflow_flags(flags: dict[str, Any]) -> list[str]:
+    """run-workflow behavior knobs, emitted only when set to a non-default so the
+    command reproduces the launch configuration without needless clutter."""
+    tokens: list[str] = []
+    ma = flags.get("max_attempts")
+    if ma not in (None, "", 1, "1"):
+        tokens += ["--max-attempts", str(ma)]
+    ses = _clean(flags.get("agent_session"))
+    if ses and ses != "persistent":
+        tokens += ["--agent-session", ses]
+    sfm = _clean(flags.get("stage_failure_mode"))
+    if sfm and sfm != "terminate":
+        tokens += ["--stage-failure-mode", sfm]
+    fsm = _clean(flags.get("final_sweep_mode"))
+    if fsm and fsm != "auto":
+        tokens += ["--final-sweep-mode", fsm]
+    return tokens
+
+
 def _common_flags(flags: dict[str, Any], defaults: dict[str, Any]) -> list[str]:
     """Return the flag tokens shared by run-case and run-workflow."""
     tokens: list[str] = []
@@ -157,6 +176,7 @@ def build_preview(payload: dict[str, Any]) -> dict[str, Any]:
             errors.append("workflow command requires target.path")
         tokens += ["run-workflow", path]
         tokens += _common_flags(flags, defaults)
+        tokens += _workflow_flags(flags)
         if flags.get("dry_run"):
             tokens.append("--dry-run")
 

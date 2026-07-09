@@ -287,6 +287,8 @@ def submit_job(
                 max_attempts=(int(payload["max_attempts"]) if payload.get("max_attempts") else None),
                 run_id=run_id,
                 agent_session=payload.get("agent_session"),
+                stage_failure_mode=str(payload.get("stage_failure_mode") or "terminate"),
+                final_sweep_mode=str(payload.get("final_sweep_mode") or "auto"),
             )
             _update_job(run_id, {"status": result.get("status", "complete")})
             hub.publish(run_id, {

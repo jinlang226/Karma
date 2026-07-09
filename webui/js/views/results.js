@@ -53,6 +53,17 @@
 
   // Reconstruct the run's launch into a /api/run body and a /api/cli/preview
   // payload, from the run's stored config.
+  // The run-workflow behavior knobs (retries, session, failure handling, sweep)
+  // recorded in config.json, as CLI flags -- emitted only when non-default so the
+  // reconstructed command reproduces the launch configuration cleanly.
+  function workflowKnobFlags(cfg) {
+    let f = "";
+    if (cfg.max_attempts && cfg.max_attempts !== 1) f += " --max-attempts " + cfg.max_attempts;
+    if (cfg.agent_session && cfg.agent_session !== "persistent") f += " --agent-session " + cfg.agent_session;
+    if (cfg.stage_failure_mode && cfg.stage_failure_mode !== "terminate") f += " --stage-failure-mode " + cfg.stage_failure_mode;
+    if (cfg.final_sweep_mode && cfg.final_sweep_mode !== "auto") f += " --final-sweep-mode " + cfg.final_sweep_mode;
+    return f;
+  }
   // Rebuild a minimal workflow YAML from a run's recorded stages -- for runs
   // launched as an inline workflow, where there is no saved file for the CLI to
   // point at. config.json records each stage's case as `case_name`; the input
@@ -67,6 +78,7 @@
       out.push("    - id: " + (s.id || "stage_" + (i + 1)));
       out.push("      service: " + s.service);
       out.push("      case: " + s.case_name);
+      if (s.agent_timeout_sec) out.push("      agent_timeout_sec: " + s.agent_timeout_sec);
       const po = s.param_overrides || {};
       const keys = Object.keys(po);
       if (keys.length) {
@@ -82,12 +94,20 @@
   // workflow), or an inline multi-stage workflow (no CLI file -> show its YAML).
   function runSpec(cfg) {
     const stages = cfg.stages || [];
+    const knobBody = {
+      max_attempts: cfg.max_attempts || 1, agent_session: cfg.agent_session,
+      stage_failure_mode: cfg.stage_failure_mode, final_sweep_mode: cfg.final_sweep_mode,
+    };
+    const knobFlags = {
+      max_attempts: cfg.max_attempts, agent_session: cfg.agent_session,
+      stage_failure_mode: cfg.stage_failure_mode, final_sweep_mode: cfg.final_sweep_mode,
+    };
     if (cfg.workflow_path) {
       return {
-        body: { workflow_path: cfg.workflow_path, agent: cfg.agent || null,
-                sandbox: cfg.sandbox || "local", max_attempts: cfg.max_attempts || 1 },
+        body: Object.assign({ workflow_path: cfg.workflow_path, agent: cfg.agent || null,
+                sandbox: cfg.sandbox || "local" }, knobBody),
         preview: { command: "workflow", target: { path: cfg.workflow_path },
-                   flags: { agent: cfg.agent, sandbox: cfg.sandbox } },
+                   flags: Object.assign({ agent: cfg.agent, sandbox: cfg.sandbox }, knobFlags) },
       };
     }
     const svc = cfg.service || (stages.length === 1 ? stages[0].service : "");
@@ -104,8 +124,8 @@
       };
     }
     return {
-      body: { workflow_yaml: workflowYamlFromConfig(cfg), agent: cfg.agent || null,
-              sandbox: cfg.sandbox || "local", max_attempts: cfg.max_attempts || 1 },
+      body: Object.assign({ workflow_yaml: workflowYamlFromConfig(cfg), agent: cfg.agent || null,
+              sandbox: cfg.sandbox || "local" }, knobBody),
       inline: { id: cfg.workflow_id || "workflow", count: stages.length,
                 yaml: workflowYamlFromConfig(cfg) },
     };
@@ -129,7 +149,8 @@
         + "' (no saved file). Save this YAML to e.g. workflows/" + spec.inline.id
         + ".yaml, then:\n#   python orchestrator.py run-workflow workflows/"
         + spec.inline.id + ".yaml --agent " + (cfg.agent || "<agent>")
-        + " --sandbox " + (cfg.sandbox || "local") + "\n\n" + spec.inline.yaml;
+        + " --sandbox " + (cfg.sandbox || "local") + workflowKnobFlags(cfg)
+        + "\n\n" + spec.inline.yaml;
     } else {
       api.post("/api/cli/preview", spec.preview)
         .then((res) => { code.textContent = res.command_multi_line || res.command_one_line || "(unavailable)"; })
