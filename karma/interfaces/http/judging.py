@@ -377,6 +377,16 @@ def start_judge_job(
         if not path.exists():
             raise ValueError(f"target path not found: {target_path}")
 
+        # Confine to runs_dir (SR4). An existing absolute or "../" path passes the
+        # exists() check above and would otherwise skip resolve_run_dir entirely --
+        # letting a request read (and write judge.json into) an arbitrary tree
+        # (e.g. {"target_type":"batch","target_path":"/etc"}). The "all" branch
+        # already confines; apply the same guard here. Only enforced when a
+        # runs_dir is supplied (always the case on the HTTP path, the untrusted
+        # boundary); a direct caller passing no runs_dir is trusted.
+        if runs_dir is not None and not path.resolve().is_relative_to(Path(runs_dir).resolve()):
+            raise ValueError(f"target path is outside the runs directory: {target_path}")
+
         # A run must have a recorded, complete outcome to be judged. An
         # interrupted or unknown run never finished, so it has nothing to score.
         if target_type == "run":

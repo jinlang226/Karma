@@ -26,6 +26,23 @@ class TestStartJudgeJob:
         with pytest.raises(ValueError, match="not found"):
             judging.start_judge_job("run", str(tmp_path / "nope"))
 
+    def test_rejects_batch_path_outside_runs_dir(self, tmp_path):
+        # SR4: an existing absolute path outside runs_dir must be rejected, not
+        # judged. batch has no status gate, so this is the raw confinement check.
+        runs = tmp_path / "runs"; runs.mkdir()
+        evil = tmp_path / "evil"; evil.mkdir()  # exists, but outside runs/
+        with pytest.raises(ValueError, match="outside the runs directory"):
+            judging.start_judge_job("batch", str(evil), runs_dir=runs)
+
+    def test_rejects_run_shaped_dir_outside_runs_dir(self, tmp_path):
+        # SR4: even a run-shaped dir (valid workflow_state) outside runs_dir is
+        # rejected -- the status gate alone is not confinement.
+        runs = tmp_path / "runs"; runs.mkdir()
+        evil = tmp_path / "evil"; evil.mkdir()
+        (evil / "workflow_state.json").write_text(json.dumps({"status": "complete"}))
+        with pytest.raises(ValueError, match="outside the runs directory"):
+            judging.start_judge_job("run", str(evil), runs_dir=runs)
+
 
 class TestListJudgeRuns:
     def test_annotates_judge_status(self, tmp_path):
