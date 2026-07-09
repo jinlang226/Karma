@@ -15,7 +15,6 @@ Routes::
     POST /api/run/<run_id>/cancel   cancel a running job
     GET  /api/cases                 list available cases by service
     GET  /api/agents                list registered agents
-    GET  /api/metrics               list registered metric plugins
     POST /api/judge                 trigger judge on a completed run
 """
 
@@ -34,7 +33,6 @@ from . import cli_preview
 from ...definitions.workflows import parse_and_normalize_workflow
 from ...runtime import manual
 from ...agents.registry import list_agents
-from ...metrics import list_metrics
 
 
 def create_app(
@@ -240,10 +238,6 @@ def create_app(
             "default_system_prompt_available": bool(_default_system_prompt()),
         })
 
-    @app.route("/api/metrics")
-    def api_metrics():
-        return jsonify(list_metrics())
-
     @app.route("/api/judge", methods=["POST"])
     def api_judge():
         from ...judge.engine import run_judge, run_judge_batch
@@ -418,10 +412,6 @@ def create_app(
     @app.route("/api/manual/<run_id>/cleanup", methods=["POST"])
     def api_manual_cleanup(run_id):
         return jsonify(manual.cleanup_manual_run(run_id))
-
-    @app.route("/api/manual/<run_id>/metrics")
-    def api_manual_metrics(run_id):
-        return jsonify(manual.get_manual_metrics(run_id))
 
     @app.route("/api/manual/<run_id>/adversary/deploy", methods=["POST"])
     def api_manual_adversary_deploy(run_id):

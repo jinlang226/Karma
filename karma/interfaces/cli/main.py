@@ -37,7 +37,6 @@ from typing import Any
 from .profiles import load_profile, merge_profile
 from ...runtime.service import run_workflow, run_case
 from ...agents.registry import list_agents
-from ...metrics import list_metrics
 
 # Bundled example rubric used when `--rubric` is given with no path.
 _DEFAULT_RUBRIC_PATH = str(
@@ -308,7 +307,6 @@ def _build_parser() -> argparse.ArgumentParser:
 
     inf = sub.add_parser("info", help="Print registry info.")
     inf.add_argument("--agents", action="store_true")
-    inf.add_argument("--metrics", action="store_true")
 
     return parser
 
@@ -751,10 +749,7 @@ def main(argv: list[str] | None = None) -> None:
         sys.exit(0)
 
     if args.command == "info":
-        if args.agents or not args.metrics:
-            print("agents:", ", ".join(list_agents()))
-        if args.metrics or not args.agents:
-            print("metrics:", ", ".join(list_metrics()))
+        print("agents:", ", ".join(list_agents()))
         sys.exit(0)
 
     try:

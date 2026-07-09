@@ -113,7 +113,7 @@ class TestSubcommandParsing:
         assert "hidden to reduce" in render_judge_prompt({**ji, "_include_outcome": False})
 
     def test_info_flags(self):
-        assert _parse(["info", "--agents", "--metrics"]).command == "info"
+        assert _parse(["info", "--agents"]).command == "info"
 
     def test_workflow_run_controls(self):
         ns = _parse(["run-workflow", "wf.yaml", "--stage-failure-mode", "continue",
@@ -188,7 +188,7 @@ class TestDispatch:
         with pytest.raises(SystemExit):
             main(["info"])
         out = capsys.readouterr().out
-        assert "agents:" in out and "metrics:" in out
+        assert "agents:" in out
 
 
 class TestUiGeneratedCommandsAreValid:

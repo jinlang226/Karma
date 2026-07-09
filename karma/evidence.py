@@ -1,5 +1,5 @@
 """
-Snapshot collection, usage normalization, trace facts, and metric dispatch.
+Snapshot collection, usage normalization, and trace facts.
 
 Evidence is collected after the agent exits and before the oracle runs.
 It captures what the agent did (kubectl calls, resource mutations, timing)
@@ -15,7 +15,6 @@ import json
 from pathlib import Path
 from typing import Any
 
-from .metrics import dispatch_metrics
 
 
 _MUTATION_VERBS = frozenset(
@@ -236,9 +235,9 @@ def collect_evidence(
 ) -> dict[str, Any]:
     """Assemble the full evidence dict for one stage and write it to disk.
 
-    Reads the kubectl log, normalizes token usage, computes trace facts,
-    and dispatches to all enabled metric plugins. Writes the assembled
-    dict to ``protocol.stage_evidence_path(run_dir, stage_id)``.
+    Reads the kubectl log, normalizes token usage, and computes trace facts.
+    Writes the assembled dict to
+    ``protocol.stage_evidence_path(run_dir, stage_id)``.
 
     This function never raises. Partial results are returned with an
     ``"error"`` key when any step fails.
@@ -246,8 +245,7 @@ def collect_evidence(
     Returns
     -------
     dict
-        Keys: ``kubectl_snapshot``, ``token_usage``, ``trace_facts``,
-        ``metrics``.
+        Keys: ``kubectl_snapshot``, ``token_usage``, ``trace_facts``.
     """
     from . import protocol
 
@@ -255,7 +253,6 @@ def collect_evidence(
         "kubectl_snapshot": [],
         "token_usage": {},
         "trace_facts": {},
-        "metrics": {},
         "error": None,
     }
     try:
@@ -269,14 +266,6 @@ def collect_evidence(
             evidence["token_usage"] = normalize_token_usage(agent_log)
 
         evidence["trace_facts"] = compute_trace_facts(evidence["kubectl_snapshot"])
-
-        enabled_metrics = case.get("metrics") or None
-        evidence["metrics"] = dispatch_metrics(
-            evidence["kubectl_snapshot"],
-            case,
-            role_bindings,
-            enabled=enabled_metrics,
-        )
     except Exception as exc:
         evidence["error"] = str(exc)
 

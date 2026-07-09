@@ -432,25 +432,3 @@ def lift_manual_adversary(run_id: str, scenario: str) -> dict[str, Any]:
             if scenario in active:
                 active.remove(scenario)
     return {"scenario": scenario, "lift": result}
-
-
-def get_manual_metrics(run_id: str) -> dict[str, Any]:
-    """Return the evidence/metrics artifact for a manual run.
-
-    Reads ``stages/manual/evidence.json`` from the run directory. Returns a
-    ``{"status": "pending"}`` marker when the artifact is not yet written.
-    """
-    with _lock:
-        session = _sessions.get(run_id)
-    if session is None:
-        return {"status": "unknown"}
-    run_dir: Path = session["_run_dir"]
-    evidence_path = protocol.stage_evidence_path(run_dir, _MANUAL_STAGE_ID)
-    if not evidence_path.exists():
-        return {"status": "pending", "path": str(evidence_path)}
-    import json
-    try:
-        return {"status": "ok", "path": str(evidence_path),
-                "evidence": json.loads(evidence_path.read_text())}
-    except Exception as exc:
-        return {"status": "error", "error": str(exc)}
