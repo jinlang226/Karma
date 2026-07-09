@@ -143,6 +143,7 @@ def assemble_agent_prompt(
     prompt_mode: str,
     *,
     adversary_hint: str | None = None,
+    prologue: str | None = None,
 ) -> str:
     """Return the final prompt string to deliver to the agent for one stage.
 
@@ -207,5 +208,10 @@ def assemble_agent_prompt(
 
     if adversary_hint:
         assembled = assembled + "\n\n" + adversary_hint.strip()
+
+    # A mode-specific prologue (see load_prompt_mode_prologues) orients the agent
+    # to the STRUCTURE of what follows -- prepended so it reads first.
+    if prologue and prologue.strip():
+        assembled = prologue.strip() + "\n\n" + assembled
 
     return assembled

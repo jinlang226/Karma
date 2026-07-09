@@ -634,6 +634,7 @@ def run_stage(
     session_id: str | None = None,
     system_prompt: str | None = None,
     stage_index: int = 0,
+    prologue: str = "",
     defer_cleanup: bool = False,
     sandbox_options: dict[str, Any] | None = None,
     on_progress: Any | None = None,
@@ -860,6 +861,7 @@ def run_stage(
             idx,
             prompt_mode,
             adversary_hint=adversary_hint,
+            prologue=prologue,
         )
         protocol.stage_prompt_path(run_dir, stage_id).write_text(final_prompt)
         # Optional workflow system prompt: write it alongside prompt.txt so each

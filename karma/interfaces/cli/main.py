@@ -193,6 +193,10 @@ def _build_parser() -> argparse.ArgumentParser:
                     help="Base system prompt sent to every agent each stage (defaults "
                          "to docs/default-system-prompt.md, the harness contract). The "
                          "workflow's spec.system_prompt is appended to it.")
+    wf.add_argument("--prompt-mode-prologues", default=None, metavar="FILE",
+                    help="YAML file of per-mode prologues prepended to the assembled "
+                         "prompt (keys: progressive, concat_stateful, concat_blind). "
+                         "Defaults to docs/prompt-mode-prologues.yaml when omitted.")
     wf.add_argument("--stage-failure-mode", choices=["terminate", "continue"],
                     default="terminate",
                     help="terminate (fail-fast) or continue past a failed stage.")
@@ -467,6 +471,7 @@ def _cmd_run_workflow(args: argparse.Namespace) -> None:
         sandbox_options=_build_sandbox_options(args),
         agent_session=args.agent_session,
         system_prompt=_read_system_prompt_arg(args),
+        prompt_mode_prologues=getattr(args, "prompt_mode_prologues", None),
     )
     _print_result(result, args.output)
     if getattr(args, "judge", False):

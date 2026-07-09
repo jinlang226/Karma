@@ -95,6 +95,15 @@ class TestAssembleAgentPrompt:
         with pytest.raises(ValueError, match="prompt_mode"):
             assemble_agent_prompt(["p"], current_index=0, prompt_mode="bad_mode")
 
+    def test_prologue_is_prepended(self):
+        # The mode prologue orients the agent and must come FIRST, before the tasks.
+        result = assemble_agent_prompt(
+            ["do the task"], current_index=0, prompt_mode="progressive",
+            prologue="ORIENTATION: read the structure below.",
+        )
+        assert result.startswith("ORIENTATION:")
+        assert "do the task" in result
+
 
 class TestRenderStagePrompt:
     def test_raises_when_no_prompt_template(self):
