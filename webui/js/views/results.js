@@ -699,13 +699,22 @@
     scoreSlot.appendChild(scoreValue("w/o Rubric", d.judge_score));
     scoreSlot.appendChild(scoreValue("w/ Rubric", d.judge_score_rubric));
 
-    const badges = el("div", { class: "toolbar" });
-    badges.appendChild(statusBadge(d.status));
-    badges.appendChild(el("span", { class: "badge" },
-      cfg.agent ? "agent: " + KARMA.labels.agent(cfg.agent) : "no agent"));
-    if (cfg.sandbox) badges.appendChild(el("span", { class: "badge" }, cfg.sandbox));
-    if (d.duration_sec) badges.appendChild(el("span", { class: "muted" }, Math.round(d.duration_sec) + "s"));
-    root.appendChild(badges);
+    // Labeled fact pills: Status · Agent · Env · Prompt mode · Session · Duration.
+    // Values keep natural case (so "42s" reads right); the Status pill is tinted
+    // by outcome. (No MODEL -- not captured; mode/session show only for runs that
+    // recorded them.)
+    const facts = el("div", { class: "run-facts" });
+    const fact = (label, value, cls) => el("span", { class: "fact" + (cls ? " " + cls : "") },
+      el("span", { class: "fact-label" }, label),
+      el("span", { class: "fact-value" }, value));
+    const stt = KARMA.labels.status(d.status);
+    facts.appendChild(fact("Status", stt.text, stt.cls));
+    facts.appendChild(fact("Agent", cfg.agent ? KARMA.labels.agent(cfg.agent) : "none"));
+    if (cfg.sandbox) facts.appendChild(fact("Env", cfg.sandbox));
+    if (cfg.prompt_mode) facts.appendChild(fact("Prompt mode", cfg.prompt_mode));
+    if (cfg.agent_session) facts.appendChild(fact("Session", cfg.agent_session));
+    if (d.duration_sec) facts.appendChild(fact("Duration", Math.round(d.duration_sec) + "s"));
+    root.appendChild(facts);
 
     // Judge (terminal) or Cancel (running), with an inline judge log. Shows the
     // live in-session log if present, else the persisted runs/<id>/judge.log.
