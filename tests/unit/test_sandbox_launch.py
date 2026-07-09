@@ -2,7 +2,10 @@
 
 import os
 import time
+from pathlib import Path
+from unittest.mock import patch
 
+from karma import sandbox
 from karma.sandbox import launch_agent
 
 
@@ -71,3 +74,28 @@ class TestTerminateKillsProcessGroup:
                 break
             time.sleep(0.1)
         assert dead, f"agent child {child_pid} survived terminate() (C3 regression)"
+
+
+class TestDockerHostAlias:
+    """The container reaches the host proxy via host.docker.internal; on Linux
+    Docker that name must be injected (Docker Desktop provides it natively)."""
+
+    def test_no_alias_off_linux(self):
+        with patch("karma.sandbox.sys.platform", "darwin"):
+            assert sandbox._docker_host_alias_args(kubeconfig_path=Path("/kc")) == []
+
+    def test_no_alias_without_kubeconfig(self):
+        with patch("karma.sandbox.sys.platform", "linux"):
+            assert sandbox._docker_host_alias_args(kubeconfig_path=None) == []
+
+    def test_linux_prefers_bridge_gateway_ip(self):
+        with patch("karma.sandbox.sys.platform", "linux"), \
+             patch.object(sandbox, "_docker_bridge_gateway", return_value="172.17.0.1"):
+            assert sandbox._docker_host_alias_args(kubeconfig_path=Path("/kc")) == \
+                ["--add-host", "host.docker.internal:172.17.0.1"]
+
+    def test_linux_falls_back_to_host_gateway(self):
+        with patch("karma.sandbox.sys.platform", "linux"), \
+             patch.object(sandbox, "_docker_bridge_gateway", return_value=None):
+            assert sandbox._docker_host_alias_args(kubeconfig_path=Path("/kc")) == \
+                ["--add-host", "host.docker.internal:host-gateway"]
