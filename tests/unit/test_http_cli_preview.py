@@ -69,6 +69,33 @@ class TestBuildPreview:
         assert " \\\n" in out["command_multi_line"]
 
 
+class TestWorkflowKnobFlags:
+    """The run-workflow command must carry every behavior knob so it reproduces
+    the launch configuration -- but only emit non-defaults to stay clean."""
+
+    def _cmd(self, flags):
+        base = {"agent": "claude_code", "sandbox": "local"}
+        base.update(flags)
+        return cli_preview.build_preview({
+            "command": "workflow", "target": {"path": "wf.yaml"}, "flags": base,
+        })["command_one_line"]
+
+    def test_non_default_knobs_are_emitted(self):
+        cmd = self._cmd({"max_attempts": 3, "agent_session": "per_stage",
+                         "stage_failure_mode": "continue", "final_sweep_mode": "off"})
+        assert "--max-attempts 3" in cmd
+        assert "--agent-session per_stage" in cmd
+        assert "--stage-failure-mode continue" in cmd
+        assert "--final-sweep-mode off" in cmd
+
+    def test_default_knobs_are_omitted(self):
+        cmd = self._cmd({"max_attempts": 1, "agent_session": "persistent",
+                         "stage_failure_mode": "terminate", "final_sweep_mode": "auto"})
+        for flag in ("--max-attempts", "--agent-session",
+                     "--stage-failure-mode", "--final-sweep-mode"):
+            assert flag not in cmd
+
+
 class TestCliOptions:
     def test_lists_choices_and_defaults(self):
         opts = cli_preview.get_cli_options()
