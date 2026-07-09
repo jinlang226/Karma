@@ -299,7 +299,8 @@ def write_agent_bundle(
 
     When *docker* is True the kubeconfig points at ``host.docker.internal``
     instead of ``127.0.0.1`` so the agent container can reach the proxy
-    running on the host.
+    running on the host. ``sandbox._launch_docker`` injects a Linux host
+    alias for that name when Docker does not provide it automatically.
 
     Returns
     -------

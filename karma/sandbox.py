@@ -21,9 +21,48 @@ import os
 import shlex
 import signal
 import subprocess
+import sys
 import time
 from pathlib import Path
 from typing import Any
+
+
+def _docker_bridge_gateway() -> str | None:
+    """Return the default Docker bridge gateway IP on Linux hosts."""
+    if sys.platform != "linux":
+        return None
+    try:
+        result = subprocess.run(
+            [
+                "docker",
+                "network",
+                "inspect",
+                "bridge",
+                "--format",
+                "{{(index .IPAM.Config 0).Gateway}}",
+            ],
+            capture_output=True,
+            text=True,
+            timeout=5,
+        )
+    except FileNotFoundError:
+        return None
+    gateway = result.stdout.strip()
+    if result.returncode != 0 or not gateway:
+        return None
+    return gateway
+
+
+def _docker_host_alias_args(*, kubeconfig_path: Path | None) -> list[str]:
+    """Return docker args that make the host proxy reachable from the container."""
+    if kubeconfig_path is None or sys.platform != "linux":
+        return []
+    gateway = _docker_bridge_gateway()
+    if gateway:
+        return ["--add-host", f"host.docker.internal:{gateway}"]
+    # Linux Docker does not define host.docker.internal by default; fall back
+    # to the engine's host-gateway shortcut when bridge inspection is unavailable.
+    return ["--add-host", "host.docker.internal:host-gateway"]
 
 
 class AgentProcess:
@@ -293,6 +332,7 @@ def _launch_docker(
         _v = os.environ.get(_k)
         if _v:
             docker_cmd += ["-e", f"{_k}={_v}"]
+    docker_cmd += _docker_host_alias_args(kubeconfig_path=kubeconfig_path)
     # Docker bind mounts require ABSOLUTE host paths -- a relative path (e.g.
     # --runs-dir runs) is otherwise read as a named volume and rejected.
     docker_cmd += ["-v", f"{run_dir.resolve()}:/workspace"]
