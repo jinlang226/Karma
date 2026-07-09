@@ -47,6 +47,12 @@ def _extract_json(text: str) -> Any:
 # Public API
 # ---------------------------------------------------------------------------
 
+# Reasoning stamped on a rubric item the LLM did NOT score. When EVERY item has
+# this (the response was empty/unparseable), the grade is ungradeable -- a judge
+# fault, not a real zero.
+_UNSCORED_REASON = "not scored by judge"
+
+
 def parse_llm_scores(
     raw_response: dict[str, Any],
     *,
@@ -121,7 +127,7 @@ def parse_llm_scores(
         scores.get(item_id) or {
             "id": item_id,
             "score": 0.0,
-            "reasoning": "not scored by judge",
+            "reasoning": _UNSCORED_REASON,
         }
         for item_id in rubric_items
     ]
@@ -193,6 +199,13 @@ def aggregate_scores(
         ``reasoning``, ``raw_response``.
     """
     item_scores = parse_llm_scores(raw_response, rubric=rubric)
+    # Gradeable only if the LLM actually scored at least one rubric item. An empty
+    # or unparseable response scores none (every item is the unscored fallback) --
+    # that is a JUDGE fault, and the caller must treat it as N/A, not a real 0.
+    gradeable = (
+        bool(rubric.get("items"))
+        and any(s.get("reasoning") != _UNSCORED_REASON for s in item_scores)
+    )
     aggregate01 = compute_aggregate_score(item_scores, rubric=rubric)
     verdict = determine_verdict(oracle_verdict=oracle_verdict)
     # Report the headline score on a 0-100 scale with 0.1 precision (the LLM
@@ -208,6 +221,7 @@ def aggregate_scores(
         "verdict": verdict,
         "score": score,
         "score_max": 100.0,
+        "gradeable": gradeable,
         "rubric_items": item_scores,
         "reasoning": reasoning,
         "raw_response": raw_response,

@@ -207,11 +207,16 @@
     const verdict = String(stage.oracle_verdict || stage.status || "?");
     const badges = el("div", { class: "stage-verdicts" });
     if (rubric && (typeof rubric.score === "number" || rubric.status)) {
-      // A stage that failed its oracle is never rubric-graded (it just scores 0
-      // objectively), so show "N/A" rather than a misleading "0%".
+      // Three cases, kept distinct:
+      //  - oracle FAILED -> nothing to grade; the stage still counts as 0 -> "not applicable"
+      //  - judge FAULTED (empty/unusable response) -> can't grade -> "N/A"
+      //  - graded -> the percentage
       const oracleFailed = (rubric.status && rubric.status !== "pass")
         || String(stage.oracle_verdict || stage.status) === "fail";
-      if (oracleFailed) {
+      if (rubric.rubric_state === "not_applicable"
+          || (oracleFailed && rubric.rubric_state !== "ungraded")) {
+        badges.appendChild(el("span", { class: "badge verdict-badge rubric-na" }, "Rubric: 0 · not applicable"));
+      } else if (rubric.rubric_state === "ungraded" || typeof rubric.score !== "number") {
         badges.appendChild(el("span", { class: "badge verdict-badge rubric-na" }, "Rubric: N/A"));
       } else {
         const pct = Math.round((rubric.score <= 1 ? rubric.score * 100 : rubric.score));
