@@ -256,7 +256,9 @@
     btn.appendChild(document.createTextNode(base));
     if (runsFolder) {
       btn.appendChild(document.createTextNode(" in "));
-      btn.appendChild(el("span", { class: "judge-scope" }, runsFolder));
+      // The chip is width-capped and ellipsis-truncated in CSS; the title keeps
+      // the full folder path reachable on hover.
+      btn.appendChild(el("span", { class: "judge-scope", title: runsFolder }, runsFolder));
     }
   }
 
