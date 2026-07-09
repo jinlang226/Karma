@@ -61,7 +61,11 @@ def _install_fakes(monkeypatch, *, precond_ok=True, verdict="pass"):
 def _write_case(resources_dir, service, case):
     p = resources_dir / service / case / "test.yaml"
     p.parent.mkdir(parents=True, exist_ok=True)
-    p.write_text("prompt: do it\nnamespace_contract:\n  required_roles:\n    - default\n")
+    p.write_text(
+        "prompt: do it\n"
+        "namespace_contract:\n  required_roles:\n    - default\n"
+        "oracle:\n  verify:\n    commands:\n      - command: 'true'\n"
+    )
 
 
 def _wait_until(run_id, *statuses, timeout=3.0):

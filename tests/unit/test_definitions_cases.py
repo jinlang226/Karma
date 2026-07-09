@@ -177,11 +177,30 @@ class TestNormalizeCase:
             normalize_case(data, "svc", "bad-case")
 
     def test_returns_required_keys(self, tmp_path):
-        data = {"prompt": "do the thing"}
+        # A case must define at least one oracle check, else normalize_case
+        # rejects it (an empty oracle would pass unconditionally).
+        data = {"prompt": "do the thing",
+                "oracle": {"verify": {"commands": ["true"]}}}
         result = normalize_case(data, "svc", "my-case")
         for key in ("service", "case_name", "params", "namespace_contract",
                     "precondition_units", "oracle", "decoys", "warnings"):
             assert key in result
+
+    def test_case_without_oracle_is_rejected(self):
+        # SR3: an oracle that checks nothing would pass unconditionally, so a
+        # case with no verify commands and no script must fail to normalize --
+        # the contract is enforced at the module level, for every consumer.
+        with pytest.raises(RuntimeError, match="oracle has no verify commands"):
+            normalize_case({"prompt": "do it"}, "svc", "no-oracle")
+
+    def test_case_with_only_blank_command_is_rejected(self):
+        # Post-normalization check: a command list that normalizes to empty
+        # (e.g. a lone blank string) is still an empty oracle, not a valid one.
+        with pytest.raises(RuntimeError, match="oracle has no verify commands"):
+            normalize_case(
+                {"prompt": "do it", "oracle": {"verify": {"commands": [""]}}},
+                "svc", "blank-oracle",
+            )
 
 
 class TestLegacyFormatRejection:

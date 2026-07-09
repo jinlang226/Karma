@@ -750,6 +750,20 @@ def normalize_case(
     namespace_contract = normalize_namespace_contract(data)
     precondition_units = normalize_precondition_units(data)
     oracle = normalize_oracle_config(data)
+    # Every case MUST carry a real oracle: an oracle with no verify commands and
+    # no script checks nothing, and "nothing checked" is scored as an
+    # unconditional pass. Enforce this at the module level so the contract holds
+    # wherever the case is loaded -- standalone or resolved inside a workflow --
+    # rather than leaving the workflow parser to reach into each case (the oracle
+    # is a property of the case, not the workflow). This is post-normalization on
+    # purpose: it catches oracles that normalize to empty (e.g. commands: [""]),
+    # not just a literally-absent block.
+    if not oracle.get("verify_commands") and not oracle.get("script_path"):
+        raise RuntimeError(
+            f"case '{service}/{case_name}': oracle has no verify commands and no "
+            f"script -- a case must define at least one oracle check (an empty "
+            f"oracle would pass unconditionally)"
+        )
     decoys = normalize_decoy_config(data)
 
     metrics = [str(m) for m in (data.get("metrics") or []) if m]

@@ -115,6 +115,18 @@ def _evaluate_oracle(
     try:
         after_failure_mode = oracle_config.get("after_failure_mode") or "warn"
 
+        # Defense-in-depth: an oracle with no verify commands and no script asserts
+        # nothing, and _run_commands([]) returns ok=True -- which would otherwise
+        # score as an unconditional "pass". normalize_case already rejects such a
+        # case at load, but this guards any path that builds an oracle_config
+        # directly. A check that verifies nothing can never be a pass.
+        if not (oracle_config.get("verify_commands") or oracle_config.get("script_path")):
+            result["verdict"] = "error"
+            result["error"] = (
+                "oracle has no verify commands and no script -- nothing was checked"
+            )
+            return result
+
         before_ok, before_out = _run_commands(
             oracle_config.get("before_commands") or [],
             env=env, timeout_sec=effective_timeout,

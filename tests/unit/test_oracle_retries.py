@@ -62,3 +62,34 @@ class TestOracleVerifyRetries:
         res, n = _run(cfg, ["fail"])  # always fails
         assert res["verdict"] == "fail"
         assert n == 3
+
+
+class TestEmptyOracleGuard:
+    """SR3 runtime guard: an oracle that checks nothing must never be a pass.
+
+    normalize_case rejects an empty oracle at load, but _evaluate_oracle also
+    guards any path that builds an oracle_config directly (e.g. a standalone
+    run_oracle call). _run_commands([]) returns ok=True, which would otherwise
+    score as an unconditional "pass".
+    """
+
+    def test_no_verify_and_no_script_is_error(self):
+        with tempfile.TemporaryDirectory() as d:
+            res = O.run_oracle(
+                {"verify_commands": [], "script_path": None},
+                role_bindings={}, run_dir=Path(d), stage_id="s1",
+            )
+        assert res["verdict"] == "error"
+        assert "nothing was checked" in (res.get("error") or "")
+
+    def test_script_only_oracle_is_allowed(self):
+        # A script-backed oracle (no verify commands) checks something, so the
+        # guard must NOT fire -- it runs the script and reports its verdict.
+        with tempfile.TemporaryDirectory() as d:
+            res = O.run_oracle(
+                {"verify_commands": [], "script_path": "/nonexistent/oracle.py"},
+                role_bindings={}, run_dir=Path(d), stage_id="s1",
+            )
+        # The script path is bogus, so the verify fails -- but crucially the
+        # verdict is NOT a fabricated "pass" and NOT the empty-oracle "error".
+        assert res["verdict"] == "fail"
