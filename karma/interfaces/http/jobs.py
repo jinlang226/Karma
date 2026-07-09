@@ -186,6 +186,8 @@ def _persist_run_config(run_dir: Path, payload: dict[str, Any], workflow: dict[s
             "agent_session": payload.get("agent_session") or workflow.get("agent_session"),
             "agent_timeout_sec": payload.get("agent_timeout_sec"),
             "max_attempts": payload.get("max_attempts"),
+            "stage_failure_mode": payload.get("stage_failure_mode") or "terminate",
+            "final_sweep_mode": payload.get("final_sweep_mode") or "auto",
             "stage_total": len(workflow.get("stages") or []),
             "stages": [
                 {
@@ -193,6 +195,7 @@ def _persist_run_config(run_dir: Path, payload: dict[str, Any], workflow: dict[s
                     "service": s.get("service"),
                     "case_name": s.get("case_name"),
                     "param_overrides": s.get("param_overrides") or {},
+                    "agent_timeout_sec": s.get("agent_timeout_sec"),
                 }
                 for s in (workflow.get("stages") or [])
             ],
