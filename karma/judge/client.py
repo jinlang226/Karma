@@ -39,10 +39,13 @@ _RETRY_BASE_DELAY_SEC = 2.0
 
 
 class JudgeLLMUnavailable(RuntimeError):
-    """The judge LLM cannot be reached at all (e.g. no API key resolved).
+    """The judge LLM could not produce a verdict.
 
-    Distinct from a per-stage grading error: it means NO judge call can
-    succeed, so callers abort rather than fall back to fabricated scores.
+    Raised when no API key resolves, OR when the call fails after all retries
+    (bad/expired key -> 401, wrong model -> 404, 5xx, timeout, persistent CLI
+    failure). Either way NO judge call succeeded, so callers abort rather than
+    fall back to a fabricated score (a 1.0 in the rubric path, a penalty in the
+    adjudication path).
     """
 
 
@@ -244,6 +247,12 @@ def call_judge_llm(
             if attempt < max_retries:
                 time.sleep(_RETRY_BASE_DELAY_SEC * (2 ** attempt))
 
-    raise RuntimeError(
+    # Exhausted retries: the judge could not produce a verdict (bad/expired key ->
+    # 401, wrong model -> 404, 5xx, timeout, or a persistent claude-CLI failure).
+    # Raise the SAME typed error as the no-key case so BOTH callers (rubric grade
+    # and regression adjudication) abort instead of fabricating a favorable 1.0 or
+    # silently defaulting -- a judge that never produced a real answer must not score
+    # the run (SR1).
+    raise JudgeLLMUnavailable(
         f"judge LLM call failed after {max_retries + 1} attempts: {last_exc}"
     ) from last_exc
