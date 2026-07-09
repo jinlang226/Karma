@@ -173,7 +173,19 @@ def _parse_adjudication(content: str) -> dict[str, Any]:
         return {"legitimate_regression": True,
                 "reasoning": "adjudication missing 'legitimate_regression'; kept as regression"}
     if isinstance(val, str):
-        val = val.strip().lower() in ("true", "yes", "1")
+        # A string verdict: forgive ONLY on an explicit "no". An ambiguous string
+        # ("unknown", "maybe", "", ...) means the model couldn't decide, so it is
+        # kept as a regression (penalty) -- consistent with the missing-key and
+        # non-dict paths above. The old branch checked only for "true"/"yes"/"1"
+        # and forgave everything else, silently dropping the penalty on any
+        # unclear answer (#4).
+        s = val.strip().lower()
+        if s in ("true", "yes", "1"):
+            val = True
+        elif s in ("false", "no", "0"):
+            val = False
+        else:
+            val = True   # ambiguous -> conservative penalty
     return {
         "legitimate_regression": bool(val),
         "reasoning": str(obj.get("reasoning") or "").strip(),

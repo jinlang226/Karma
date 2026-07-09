@@ -37,6 +37,18 @@ class TestParseAdjudication:
         assert _parse_adjudication('{"legitimate_regression": "false"}')["legitimate_regression"] is False
         assert _parse_adjudication('{"legitimate_regression": "yes"}')["legitimate_regression"] is True
 
+    def test_explicit_negative_strings_forgive(self):
+        # A CLEAR "no" from the model is respected (false positive -> forgive).
+        for s in ("false", "no", "0", "False", " NO "):
+            assert _parse_adjudication(f'{{"legitimate_regression": "{s}"}}')["legitimate_regression"] is False
+
+    def test_ambiguous_string_verdicts_keep_the_penalty(self):
+        # #4: a string the model returns that is neither an explicit yes nor an
+        # explicit no ("unknown"/"maybe"/""/gibberish) means it could not decide,
+        # so the regression is KEPT (penalty) -- not silently forgiven.
+        for s in ("unknown", "maybe", "", "n/a", "unsure", "idk"):
+            assert _parse_adjudication(f'{{"legitimate_regression": "{s}"}}')["legitimate_regression"] is True
+
 
 def _write_run(run_dir):
     """A completed run: both stages passed, but the regression sweep now fails
