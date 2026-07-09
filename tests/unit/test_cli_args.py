@@ -8,7 +8,7 @@ parser (so the "copy this command" button never produces an invalid line).
 
 import pytest
 from unittest.mock import patch
-from karma.interfaces.cli.main import _build_parser, main
+from karma.interfaces.cli.main import _build_parser, main, _print_result
 from karma.interfaces.http.cli_preview import build_preview
 
 
@@ -218,3 +218,41 @@ class TestUiGeneratedCommandsAreValid:
         # accept them without error.
         ns = _build_parser().parse_args(tokens[2:])
         assert ns.command in ("run-case", "run-workflow", "judge")
+
+
+class TestPrintResult:
+    """The text printer is shared by run-* and judge; a judge result must print
+    its score, not degrade to the run-shape placeholder 'run ?: unknown (0.0s)'."""
+
+    def test_judge_result_prints_score_not_placeholder(self, capsys):
+        _print_result({
+            "score": 100.0, "score_max": 100.0,
+            "summary": "all 3 stages passed and the regression sweep is clean -> 100.0.",
+            "stage_scores": [{"stage_id": "stage_1", "score": 1.0}],
+        }, "text")
+        out = capsys.readouterr().out
+        assert "run ?" not in out and "unknown" not in out          # the bug's placeholder is gone
+        assert "all 3 stages passed" in out                          # ready-made summary used
+        assert "stage_1" in out
+
+    def test_judge_result_without_summary_falls_back_to_score(self, capsys):
+        _print_result({"score": 83.3, "score_max": 100.0}, "text")
+        out = capsys.readouterr().out
+        assert "83.3" in out and "run ?" not in out
+
+    def test_single_stage_judge_result(self, capsys):
+        _print_result({"stage_id": "stage_2", "verdict": "pass", "score": 0.9}, "text")
+        out = capsys.readouterr().out
+        assert "stage_2" in out and "pass" in out and "run ?" not in out
+
+    def test_run_result_shape_unchanged(self, capsys):
+        _print_result({
+            "run_id": "r1", "status": "complete", "duration_sec": 4.2,
+            "stages": [{"stage_id": "stage_1", "status": "pass", "oracle_verdict": "pass"}],
+        }, "text")
+        out = capsys.readouterr().out
+        assert "run r1: complete" in out and "stage stage_1: pass" in out
+
+    def test_json_output_dumps_verbatim(self, capsys):
+        _print_result({"score": 50.0}, "json")
+        assert '"score": 50.0' in capsys.readouterr().out

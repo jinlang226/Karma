@@ -387,9 +387,28 @@ def _maybe_inline_judge(
 
 
 def _print_result(result: dict[str, Any], output_format: str) -> None:
-    """Print *result* to stdout in *output_format* (``"text"`` or ``"json"``)."""
+    """Print *result* to stdout in *output_format* (``"text"`` or ``"json"``).
+
+    Two result shapes flow through here: a *run* result (run-case/run-workflow,
+    with ``run_id``/``status``/``stages``) and a *judge* result (the ``judge``
+    subcommand / score_run, with ``score``/``summary``/``stage_scores`` and none
+    of the run keys). Branch on the shape so a judge result no longer degrades to
+    ``run ?: unknown (0.0s)``.
+    """
     if output_format == "json":
         print(json.dumps(result, indent=2))
+        return
+    if "score" in result:  # judge result
+        summary = result.get("summary")
+        if isinstance(summary, str) and summary:
+            print(f"judge: {summary}")
+        elif result.get("stage_id"):  # single-stage rubric judge (--stage)
+            print(f"judge stage {result['stage_id']}: {result.get('verdict', '?')} "
+                  f"(score {result.get('score')})")
+        else:
+            print(f"judge: score {result.get('score')}/{result.get('score_max', 100.0)}")
+        for st in result.get("stage_scores") or []:
+            print(f"  stage {st.get('stage_id', '?')}: score {st.get('score')}")
         return
     status = result.get("status", "unknown")
     run_id = result.get("run_id", "?")
