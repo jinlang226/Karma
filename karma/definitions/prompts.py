@@ -8,11 +8,20 @@ Prompt modes:
     agent maintains its own conversation context across stages.
 
 ``concat_stateful``
-    Each stage receives all prior stage prompts prepended, with an
-    ``(ACTIVE)`` marker on the current stage.
+    The agent receives EVERY stage's prompt -- past, current, and future --
+    concatenated, each headed with its 1-based position and a status
+    (``COMPLETED`` / ``ACTIVE`` / ``UPCOMING``) relative to the stage now
+    running, so it sees the full workflow plan and which stage to work on now.
 
 ``concat_blind``
-    Same as ``concat_stateful`` but without stage boundary markers.
+    The same full-workflow concatenation as ``concat_stateful`` but with no
+    headers, positions, or status markers -- the agent sees every stage's task
+    yet is deliberately blind to where it is in the sequence (it infers
+    progress from submit/state files).
+
+Both concat modes expose the whole workflow, future stages included, so the
+prompt is built from the workflow definition (all stages known up front), not
+from an accumulated runtime history.
 """
 
 from __future__ import annotations
@@ -85,16 +94,18 @@ def assemble_agent_prompt(
 ) -> str:
     """Return the final prompt string to deliver to the agent for one stage.
 
-    Applies *prompt_mode* to determine how many prior stage prompts to
-    include, then appends *adversary_hint* when provided.
+    Applies *prompt_mode* to decide which stages to include and how to mark
+    them, then appends *adversary_hint* when provided. The concat modes span
+    the whole *stage_prompts* list (future stages included); ``progressive``
+    returns only the current stage.
 
     Parameters
     ----------
     stage_prompts:
-        Rendered prompt strings for all stages up to and including the
-        current one.
+        Rendered prompt strings for ALL stages in the workflow (not just those
+        up to the current one), indexed by stage position.
     current_index:
-        Zero-based index of the current stage within *stage_prompts*.
+        Zero-based index of the currently-running stage within *stage_prompts*.
     prompt_mode:
         One of ``VALID_PROMPT_MODES``.
     adversary_hint:
@@ -113,17 +124,28 @@ def assemble_agent_prompt(
         )
 
     current_prompt = stage_prompts[current_index]
+    total = len(stage_prompts)
 
     if prompt_mode == "progressive":
         assembled = current_prompt
     elif prompt_mode == "concat_stateful":
+        # The FULL workflow -- future stages included -- each headed with its
+        # 1-based position and a status relative to the active stage, so the
+        # agent sees the whole plan and knows which stage to work on now.
         parts: list[str] = []
-        for i, p in enumerate(stage_prompts[: current_index + 1]):
-            marker = "(ACTIVE) " if i == current_index else f"(STAGE {i + 1}) "
-            parts.append(marker + p)
+        for i, p in enumerate(stage_prompts):
+            if i < current_index:
+                status = "COMPLETED"
+            elif i == current_index:
+                status = "ACTIVE (work on this stage now)"
+            else:
+                status = "UPCOMING"
+            parts.append(f"=== STAGE {i + 1} of {total} -- {status} ===\n{p}")
         assembled = "\n\n".join(parts)
     else:  # concat_blind
-        assembled = "\n\n".join(stage_prompts[: current_index + 1])
+        # Full workflow, but no headers/position/status -- the agent is blind to
+        # where it is in the sequence (progress comes from submit/state files).
+        assembled = "\n\n".join(stage_prompts)
 
     if adversary_hint:
         assembled = assembled + "\n\n" + adversary_hint.strip()
