@@ -12,6 +12,7 @@ post-hoc on any run directory without a live cluster or agent process.
 
 from __future__ import annotations
 
+import os
 from pathlib import Path
 from typing import Any
 
@@ -87,9 +88,12 @@ def run_judge(
         return {"stage_id": stage_id, "dry_run": True, "input": judge_input}
 
     # When no judge model was named, mirror the agent that ran the tasks
-    # (recorded in config.json) instead of the fixed gpt-4o default.
+    # (recorded in config.json) instead of the fixed gpt-4o default -- BUT only
+    # when the user hasn't pinned one via KARMA_JUDGE_MODEL, which must win over
+    # the mirror (SR2, matching run_score.py). The rubric grade is the stage's
+    # score, so this is where judge independence actually matters.
     judge_backend: str | None = None
-    if judge_model is None:
+    if judge_model is None and not os.environ.get("KARMA_JUDGE_MODEL"):
         from .agent_defaults import resolve_agent_judge_defaults
         derived = resolve_agent_judge_defaults(run_dir)
         judge_model = derived.get("model")
