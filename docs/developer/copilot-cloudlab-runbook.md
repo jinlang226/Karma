@@ -99,8 +99,9 @@ After the pre-build, **do not** pass `--agent-build` in the queue runner.
 
 ## Create worker clusters on each node
 
-For the current CloudLab setup, **start with one cluster per node**. That is
-the safest model and already gives 10-way parallelism across 10 nodes.
+For the current CloudLab setup, **start with one cluster per node** until the
+host proves it can carry more. That is the safest baseline and already gives
+10-way parallelism across the original 10 nodes.
 
 If the node already has a healthy long-lived `kind` cluster, reuse it:
 
@@ -116,13 +117,28 @@ If the node does **not** have a cluster yet, create one:
 kind create cluster --name kc1 --kubeconfig /tmp/kc-1
 ```
 
-Observed caveat from the smoke host:
+Observed caveat from the expansion work:
 
 - trying to create an **additional** kind cluster on top of the existing
-  long-lived host cluster failed during node boot with a systemd
+  long-lived host cluster initially failed during node boot with a systemd
   `Too many open files` / manager-allocation error.
-- So for these nodes, prefer **one cluster per machine** unless you have first
-  validated that the host can support more.
+- the real host-side fix was raising inotify capacity, for example:
+
+```bash
+cat <<'EOF' | sudo tee /etc/sysctl.d/99-kind-multicluster.conf >/dev/null
+fs.inotify.max_user_instances=8192
+fs.inotify.max_user_watches=1048576
+fs.inotify.max_queued_events=32768
+EOF
+sudo sysctl --system
+```
+
+- after that fix, the 6 UMass amd64 expansion hosts were validated with **two**
+  4-node clusters each:
+  - `kind` exported to `/tmp/kc-1`
+  - `kc2` exported to `/tmp/kc-2`
+- do **not** assume a second cluster is ready just because the machine is large;
+  verify it on that host first.
 
 Heavy workflows (CockroachDB, Elasticsearch, MongoDB, Ray, Spark, and any
 `workflows/long/*`) should still be capped conservatively. With one cluster per
@@ -181,6 +197,18 @@ run directory:
 - `stages/*/kubectl_log.jsonl` recorded real cluster API activity.
 - multiple stages reached `agent: submitted` and `oracle: pass`.
 
+To prove **persistent long-session behavior** for Copilot after a smoke run,
+compare the final `result` event in each stage's `agent.log`. The `sessionId`
+should stay the same across stages of the same workflow:
+
+```bash
+rg '"type":"result"' runs/copilot-smoke/<run_id>/stages/*/agent.log
+```
+
+For a true persistent workflow you should see the same `sessionId` repeated in
+`stage_01`, `stage_02`, etc. If the IDs differ, stop and investigate before
+launching a 300-workflow campaign.
+
 ## Failure recovery on one node
 
 The queue runner is append-only and resume-safe:
@@ -234,7 +262,9 @@ For the full **300-workflow** campaign, the recommended flow is:
 5. launch one queue runner per host,
 6. poll aggregate progress until `remaining = 0`.
 
-Create a host list:
+Create a host manifest.
+
+For one profile per host, the old flat list still works:
 
 ```bash
 cat > .benchmark/cloudlab-hosts.json <<'EOF'
@@ -263,6 +293,22 @@ find workflows/pass -maxdepth 1 -type f -name '*.yaml' \
 wc -l .benchmark/pass-workflows.txt   # expect 300
 ```
 
+For mixed-capacity hosts, use the richer mapping form so the manager can weight
+the shard by **worker profile count** instead of physical host count:
+
+```json
+{
+  "c220g2-010614.wisc.cloudlab.us": {
+    "kubeconfigs": ["/tmp/kc-1"],
+    "cluster_names": ["kind"]
+  },
+  "pc25.cloudlab.umass.edu": {
+    "kubeconfigs": ["/tmp/kc-1", "/tmp/kc-2"],
+    "cluster_names": ["kind", "kc2"]
+  }
+}
+```
+
 Prepare even shards with the Copilot campaign manager:
 
 ```bash
@@ -277,7 +323,16 @@ That generates:
 - `.benchmark/copilot-campaign/host-assignments.json`
 - `.benchmark/copilot-campaign/shards/shard-01.txt`, ...
 
-Sync the auth file, queue runner, persistent-session runtime files, and
+With the richer manifest, the shard summary now reports both:
+
+- `hosts_total` - physical machines
+- `profile_total` - runnable kubeconfig worker profiles
+
+The workflow distribution is weighted by `profile_total`, so a host with
+`["/tmp/kc-1", "/tmp/kc-2"]` receives roughly twice the workflows of a host
+with only `["/tmp/kc-1"]`.
+
+Sync the auth file, queue runner, behavior-affecting runtime/prompt files, and
 assigned workflow YAMLs to every host:
 
 ```bash
@@ -287,10 +342,13 @@ python3 scripts/remote-agents/manage_copilot_campaign.py sync \
 ```
 
 That sync step now also ships the local workflow/runtime files that control
-`agent_session: persistent`, so remote hosts inherit the current long-horizon
-session behavior instead of silently falling back to stale per-stage defaults.
+`agent_session: persistent` plus the prompt-support files (`karma/protocol.py`
+and `docs/default-system-prompt.md`) that control stage system-prompt delivery,
+so remote hosts inherit the current long-horizon and system-prompt behavior
+instead of silently falling back to stale local clones.
 
-Preflight every host with the exact requested model:
+Preflight every declared worker profile on every host with the exact requested
+model:
 
 ```bash
 python3 scripts/remote-agents/manage_copilot_campaign.py preflight \
@@ -307,8 +365,9 @@ Interpretation:
 
 ## Launching all 10 nodes
 
-Launch all 10 hosts with one queue worker per node and one reused kind cluster
-per node:
+Launch all prepared hosts. Each host starts one queue runner process, and that
+runner fans out across every kubeconfig declared for that host in the prepared
+manifest:
 
 ```bash
 python3 scripts/remote-agents/manage_copilot_campaign.py launch \
@@ -326,7 +385,7 @@ This launch command uses:
 - automatic transient retries: queue-level environment failures and workflow
   precondition failures are retried up to 3 extra times before the shard writes
   one final `results.jsonl` record for that workflow,
-- `/tmp/kc-1` as the node's single cluster kubeconfig,
+- the prepared host manifest's kubeconfig set (`/tmp/kc-1`, `/tmp/kc-2`, ...),
 - and `gpt-5.3-codex` as the requested Copilot model.
 
 ## Aggregating status across 10 nodes

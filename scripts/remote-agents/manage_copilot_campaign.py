@@ -30,6 +30,61 @@ PERSISTENT_SESSION_RUNTIME_FILES = (
     REPO_ROOT / "karma" / "runtime" / "workflow.py",
     REPO_ROOT / "karma" / "runtime" / "case.py",
 )
+SYSTEM_PROMPT_SUPPORT_FILES = (
+    REPO_ROOT / "karma" / "protocol.py",
+    REPO_ROOT / "docs" / "default-system-prompt.md",
+)
+
+
+@dataclass(frozen=True)
+class HostSpec:
+    """One physical host and the worker profiles it exposes."""
+
+    host: str
+    kubeconfigs: tuple[str, ...] = (DEFAULT_REMOTE_KUBECONFIG,)
+    cluster_names: tuple[str, ...] = ()
+
+    @property
+    def safe_host(self) -> str:
+        """Return a filesystem-safe host slug."""
+
+        return self.host.replace(".", "-")
+
+    @property
+    def profile_count(self) -> int:
+        """Return how many worker profiles this host contributes."""
+
+        return max(1, len(self.kubeconfigs))
+
+    def resolved_profiles(
+        self,
+        *,
+        default_cluster_name: str,
+        default_kubeconfig_path: str,
+    ) -> List[Dict[str, str]]:
+        """Return concrete cluster/kubeconfig pairs for this host."""
+
+        kubeconfigs = tuple(item for item in self.kubeconfigs if item)
+        if not kubeconfigs:
+            kubeconfigs = (default_kubeconfig_path,)
+        if self.cluster_names:
+            cluster_names = self.cluster_names
+        elif len(kubeconfigs) == 1:
+            cluster_names = (default_cluster_name,)
+        else:
+            cluster_names = tuple("" for _ in kubeconfigs)
+        if len(cluster_names) != len(kubeconfigs):
+            raise ValueError(
+                f"host {self.host} defines {len(cluster_names)} cluster names for "
+                f"{len(kubeconfigs)} kubeconfigs"
+            )
+        return [
+            {
+                "cluster_name": cluster_names[index],
+                "kubeconfig_path": kubeconfigs[index],
+            }
+            for index in range(len(kubeconfigs))
+        ]
 
 
 @dataclass(frozen=True)
@@ -38,12 +93,37 @@ class HostAssignment:
 
     host: str
     shard_rel: str
+    kubeconfigs: tuple[str, ...] = (DEFAULT_REMOTE_KUBECONFIG,)
+    cluster_names: tuple[str, ...] = ()
 
     @property
     def safe_host(self) -> str:
         """Return a filesystem-safe host slug."""
 
         return self.host.replace(".", "-")
+
+    @property
+    def profile_count(self) -> int:
+        """Return how many worker profiles this assignment contributes."""
+
+        return max(1, len(self.kubeconfigs))
+
+    def resolved_profiles(
+        self,
+        *,
+        default_cluster_name: str,
+        default_kubeconfig_path: str,
+    ) -> List[Dict[str, str]]:
+        """Return concrete cluster/kubeconfig pairs for this assignment."""
+
+        return HostSpec(
+            host=self.host,
+            kubeconfigs=self.kubeconfigs,
+            cluster_names=self.cluster_names,
+        ).resolved_profiles(
+            default_cluster_name=default_cluster_name,
+            default_kubeconfig_path=default_kubeconfig_path,
+        )
 
 
 def now_utc_iso() -> str:
@@ -81,14 +161,79 @@ def workflow_list(path: Path) -> List[str]:
     return items
 
 
-def host_list(path: Path) -> List[str]:
-    """Load hosts from a JSON list or mapping."""
+def _string_tuple(items: Any) -> tuple[str, ...]:
+    """Return a normalized tuple of non-empty strings."""
+
+    if items is None:
+        return ()
+    if isinstance(items, str):
+        items = [items]
+    if not isinstance(items, list):
+        raise ValueError(f"expected a string or list of strings, got: {type(items).__name__}")
+    return tuple(str(item).strip() for item in items if str(item).strip())
+
+
+def _host_spec_from_payload(host: str, payload: Any) -> HostSpec:
+    """Build one host spec from a manifest payload value."""
+
+    kubeconfigs: tuple[str, ...]
+    cluster_names: tuple[str, ...]
+    if payload is None:
+        kubeconfigs = (DEFAULT_REMOTE_KUBECONFIG,)
+        cluster_names = ()
+    elif isinstance(payload, str):
+        kubeconfigs = _string_tuple(payload) or (DEFAULT_REMOTE_KUBECONFIG,)
+        cluster_names = ()
+    elif isinstance(payload, list):
+        kubeconfigs = _string_tuple(payload) or (DEFAULT_REMOTE_KUBECONFIG,)
+        cluster_names = ()
+    elif isinstance(payload, dict):
+        kubeconfigs = _string_tuple(payload.get("kubeconfigs")) or (DEFAULT_REMOTE_KUBECONFIG,)
+        cluster_names = _string_tuple(payload.get("cluster_names"))
+    else:
+        raise ValueError(f"unsupported host manifest entry for {host}: {type(payload).__name__}")
+    if cluster_names and len(cluster_names) != len(kubeconfigs):
+        raise ValueError(
+            f"host {host} defines {len(cluster_names)} cluster names for "
+            f"{len(kubeconfigs)} kubeconfigs"
+        )
+    return HostSpec(
+        host=str(host).strip(),
+        kubeconfigs=kubeconfigs,
+        cluster_names=cluster_names,
+    )
+
+
+def host_specs(path: Path) -> List[HostSpec]:
+    """Load physical hosts and worker-profile metadata from JSON."""
 
     payload = json.loads(path.read_text())
+    specs: List[HostSpec] = []
+    seen_hosts = set()
     if isinstance(payload, list):
-        return [str(item) for item in payload]
+        for item in payload:
+            if isinstance(item, str):
+                spec = _host_spec_from_payload(str(item), None)
+            elif isinstance(item, dict) and "host" in item:
+                host = str(item.get("host") or "").strip()
+                if not host:
+                    raise ValueError(f"host manifest entry is missing 'host': {item!r}")
+                spec = _host_spec_from_payload(host, item)
+            else:
+                raise ValueError(f"unsupported host manifest list entry: {item!r}")
+            if spec.host in seen_hosts:
+                raise ValueError(f"duplicate host in manifest: {spec.host}")
+            seen_hosts.add(spec.host)
+            specs.append(spec)
+        return specs
     if isinstance(payload, dict):
-        return [str(item) for item in payload.keys()]
+        for host, spec_payload in payload.items():
+            spec = _host_spec_from_payload(str(host), spec_payload)
+            if spec.host in seen_hosts:
+                raise ValueError(f"duplicate host in manifest: {spec.host}")
+            seen_hosts.add(spec.host)
+            specs.append(spec)
+        return specs
     raise ValueError(f"unsupported host manifest format: {path}")
 
 
@@ -120,7 +265,30 @@ def load_assignments(batch_dir: Path) -> List[HostAssignment]:
     """Load host assignments from a prepared batch directory."""
 
     payload = json.loads((batch_dir / "host-assignments.json").read_text())
-    return [HostAssignment(host=str(host), shard_rel=str(shard)) for host, shard in payload.items()]
+    assignments: List[HostAssignment] = []
+    for host, shard_payload in payload.items():
+        if isinstance(shard_payload, str):
+            assignments.append(
+                HostAssignment(host=str(host), shard_rel=str(shard_payload))
+            )
+            continue
+        if not isinstance(shard_payload, dict):
+            raise ValueError(
+                f"unsupported host assignment entry for {host}: "
+                f"{type(shard_payload).__name__}"
+            )
+        shard_rel = str(shard_payload.get("shard") or shard_payload.get("shard_rel") or "").strip()
+        if not shard_rel:
+            raise ValueError(f"host assignment for {host} is missing shard metadata")
+        assignments.append(
+            HostAssignment(
+                host=str(host),
+                shard_rel=shard_rel,
+                kubeconfigs=_string_tuple(shard_payload.get("kubeconfigs")) or (DEFAULT_REMOTE_KUBECONFIG,),
+                cluster_names=_string_tuple(shard_payload.get("cluster_names")),
+            )
+        )
+    return assignments
 
 
 def ssh_base(key_path: Path) -> List[str]:
@@ -160,9 +328,10 @@ def campaign_support_files() -> List[Path]:
     """Return repository-relative files every remote Copilot host must receive.
 
     This includes the queue runner, Copilot container bits, and the runtime /
-    workflow-definition files that control persistent cross-stage sessions.
-    CloudLab hosts may have stale local clones, so long-horizon behavior must be
-    synced explicitly instead of assumed.
+    workflow-definition files that control persistent cross-stage sessions and
+    stage-level system-prompt delivery. CloudLab hosts may have stale local
+    clones, so behavior-affecting local files must be synced explicitly instead
+    of assumed.
     """
 
     files = [
@@ -171,6 +340,7 @@ def campaign_support_files() -> List[Path]:
         Path(repo_rel(COPILOT_CONTEXT / "entrypoint.sh")),
     ]
     files += [Path(repo_rel(path)) for path in PERSISTENT_SESSION_RUNTIME_FILES]
+    files += [Path(repo_rel(path)) for path in SYSTEM_PROMPT_SUPPORT_FILES]
     return files
 
 
@@ -278,6 +448,10 @@ def preflight_host(
 ) -> Dict[str, Any]:
     """Verify one host's model access, cluster baseline, and image prerequisites."""
 
+    profiles = assignment.resolved_profiles(
+        default_cluster_name=cluster_name,
+        default_kubeconfig_path=kubeconfig_path,
+    )
     remote_script = f"""
 import json
 import subprocess
@@ -287,20 +461,40 @@ from pathlib import Path
 repo = Path({remote_root!r})
 remote_python = repo / {remote_python!r}
 env_file = repo / {remote_env_file!r}
-cluster_name = {cluster_name!r}
-kubeconfig_path = Path({kubeconfig_path!r})
 cleanup_timeout = int({cleanup_timeout_sec})
 model = {model!r}
+profiles = json.loads({json.dumps(profiles)!r})
 protected = {sorted(['default','kube-system','kube-public','kube-node-lease','local-path-storage'])!r}
 
-def run(cmd, shell=False):
-    return subprocess.run(cmd, shell=shell, text=True, capture_output=True, cwd=str(repo))
+def run(cmd, shell=False, timeout=None):
+    try:
+        return subprocess.run(
+            cmd,
+            shell=shell,
+            text=True,
+            capture_output=True,
+            cwd=str(repo),
+            timeout=timeout,
+        )
+    except subprocess.TimeoutExpired as exc:
+        stdout = exc.stdout or ""
+        stderr = exc.stderr or ""
+        if isinstance(stdout, bytes):
+            stdout = stdout.decode("utf-8", errors="replace")
+        if isinstance(stderr, bytes):
+            stderr = stderr.decode("utf-8", errors="replace")
+        timeout_note = f"[timed out after {{int(timeout or 0)}}s]"
+        if stderr:
+            stderr = stderr.rstrip() + "\\n" + timeout_note
+        else:
+            stderr = timeout_note
+        return subprocess.CompletedProcess(exc.cmd, 124, stdout, stderr)
 
 def ok(cmd):
-    return run(cmd, shell=True).returncode == 0
+    return run(cmd, shell=True, timeout=30).returncode == 0
 
-def extra_namespaces():
-    proc = run(["kubectl", "--kubeconfig", str(kubeconfig_path), "get", "ns", "-o", "json"])
+def extra_namespaces(kubeconfig_path):
+    proc = run(["kubectl", "--kubeconfig", str(kubeconfig_path), "get", "ns", "-o", "json"], timeout=60)
     if proc.returncode != 0:
         return None, proc.stderr.strip() or proc.stdout.strip()
     payload = json.loads(proc.stdout or "{{}}")
@@ -318,13 +512,17 @@ result = {{
     "kind_ok": ok("command -v kind"),
     "kubectl_ok": ok("command -v kubectl"),
     "env_file_ok": env_file.exists(),
-    "cluster_name": cluster_name,
+    "profile_count": len(profiles),
+    "cluster_name": profiles[0]["cluster_name"] if len(profiles) == 1 else "",
+    "cluster_names": [profile["cluster_name"] for profile in profiles],
     "cluster_exists": False,
-    "kubeconfig_path": str(kubeconfig_path),
+    "kubeconfig_path": profiles[0]["kubeconfig_path"] if len(profiles) == 1 else "",
+    "kubeconfig_paths": [profile["kubeconfig_path"] for profile in profiles],
     "kubeconfig_ready": False,
     "nodes_ready": False,
     "node_names": [],
-    "namespace_cleanup": {{}},
+    "profile_results": [],
+    "namespace_cleanup": {{"profiles": [], "timed_out": False}},
     "image_present": False,
     "model": model,
     "model_available": False,
@@ -332,54 +530,96 @@ result = {{
     "model_probe_stderr": "",
 }}
 
-clusters = run(["kind", "get", "clusters"])
-if clusters.returncode == 0:
-    result["cluster_exists"] = cluster_name in [line.strip() for line in clusters.stdout.splitlines() if line.strip()]
+clusters = run(["kind", "get", "clusters"], timeout=60)
+known_clusters = {{
+    line.strip()
+    for line in (clusters.stdout or "").splitlines()
+    if line.strip()
+}} if clusters.returncode == 0 else set()
 
-if result["cluster_exists"]:
-    export = run(["kind", "export", "kubeconfig", "--name", cluster_name, "--kubeconfig", str(kubeconfig_path)])
-    if export.returncode == 0:
-        result["kubeconfig_ready"] = True
-
-if result["kubeconfig_ready"]:
-    nodes = run(["kubectl", "--kubeconfig", str(kubeconfig_path), "get", "nodes", "-o", "json"])
-    if nodes.returncode == 0:
-        payload = json.loads(nodes.stdout or "{{}}")
-        items = payload.get("items") or []
-        result["node_names"] = [item.get("metadata", {{}}).get("name", "") for item in items]
-        result["nodes_ready"] = bool(items) and all(
-            any(cond.get("type") == "Ready" and cond.get("status") == "True" for cond in (item.get("status", {{}}).get("conditions") or []))
-            for item in items
-        )
-    before, err = extra_namespaces()
-    if before is None:
-        result["namespace_cleanup"] = {{"before": [], "remaining": [], "timed_out": True, "error": err}}
+for profile in profiles:
+    cluster_name = str(profile.get("cluster_name") or "")
+    kubeconfig_path = Path(str(profile.get("kubeconfig_path") or ""))
+    profile_result = {{
+        "cluster_name": cluster_name,
+        "kubeconfig_path": str(kubeconfig_path),
+        "cluster_exists": False,
+        "kubeconfig_ready": False,
+        "nodes_ready": False,
+        "node_names": [],
+        "namespace_cleanup": {{}},
+    }}
+    if cluster_name:
+        profile_result["cluster_exists"] = cluster_name in known_clusters
+        if profile_result["cluster_exists"]:
+            export = run(["kind", "export", "kubeconfig", "--name", cluster_name, "--kubeconfig", str(kubeconfig_path)], timeout=60)
+            if export.returncode == 0:
+                profile_result["kubeconfig_ready"] = True
     else:
-        for namespace in before:
-            run(["kubectl", "--kubeconfig", str(kubeconfig_path), "delete", "namespace", namespace, "--wait=false"])
-        deadline = time.monotonic() + cleanup_timeout
-        remaining = before
-        while time.monotonic() < deadline:
-            remaining, err = extra_namespaces()
-            if remaining is None:
-                break
-            if not remaining:
-                break
-            time.sleep(2.0)
-        result["namespace_cleanup"] = {{
-            "before": before,
-            "remaining": remaining if isinstance(remaining, list) else before,
-            "timed_out": bool(remaining),
-        }}
+        profile_result["cluster_exists"] = kubeconfig_path.exists()
+        profile_result["kubeconfig_ready"] = kubeconfig_path.exists()
+    if profile_result["kubeconfig_ready"]:
+        nodes = run(["kubectl", "--kubeconfig", str(kubeconfig_path), "get", "nodes", "-o", "json"], timeout=60)
+        if nodes.returncode == 0:
+            payload = json.loads(nodes.stdout or "{{}}")
+            items = payload.get("items") or []
+            profile_result["node_names"] = [item.get("metadata", {{}}).get("name", "") for item in items]
+            profile_result["nodes_ready"] = bool(items) and all(
+                any(cond.get("type") == "Ready" and cond.get("status") == "True" for cond in (item.get("status", {{}}).get("conditions") or []))
+                for item in items
+            )
+        before, err = extra_namespaces(kubeconfig_path)
+        if before is None:
+            profile_result["namespace_cleanup"] = {{"before": [], "remaining": [], "timed_out": True, "error": err}}
+        else:
+            for namespace in before:
+                run(["kubectl", "--kubeconfig", str(kubeconfig_path), "delete", "namespace", namespace, "--wait=false"], timeout=30)
+            deadline = time.monotonic() + cleanup_timeout
+            remaining = before
+            while time.monotonic() < deadline:
+                remaining, err = extra_namespaces(kubeconfig_path)
+                if remaining is None:
+                    break
+                if not remaining:
+                    break
+                time.sleep(2.0)
+            profile_result["namespace_cleanup"] = {{
+                "before": before,
+                "remaining": remaining if isinstance(remaining, list) else before,
+                "timed_out": bool(remaining),
+            }}
+    result["profile_results"].append(profile_result)
 
-image = run(["docker", "image", "inspect", "karma-agent-copilot:latest"])
+if result["profile_results"]:
+    result["cluster_exists"] = all(item.get("cluster_exists") for item in result["profile_results"])
+    result["kubeconfig_ready"] = all(item.get("kubeconfig_ready") for item in result["profile_results"])
+    result["nodes_ready"] = all(item.get("nodes_ready") for item in result["profile_results"])
+    result["node_names"] = sorted({{
+        name
+        for item in result["profile_results"]
+        for name in (item.get("node_names") or [])
+        if name
+    }})
+    result["namespace_cleanup"] = {{
+        "profiles": [
+            {{
+                "cluster_name": item.get("cluster_name"),
+                "kubeconfig_path": item.get("kubeconfig_path"),
+                **(item.get("namespace_cleanup") or {{}})
+            }}
+            for item in result["profile_results"]
+        ],
+        "timed_out": any((item.get("namespace_cleanup") or {{}}).get("timed_out") for item in result["profile_results"]),
+    }}
+
+image = run(["docker", "image", "inspect", "karma-agent-copilot:latest"], timeout=60)
 result["image_present"] = image.returncode == 0
 if not result["image_present"]:
     build = run([
         "docker", "build", "-t", "karma-agent-copilot:latest",
         "-f", "karma/agents/copilot/Dockerfile",
         "karma/agents/copilot",
-    ])
+    ], timeout=1800)
     result["image_present"] = build.returncode == 0
     if build.returncode != 0:
         result["model_probe_stderr"] = build.stderr.strip() or build.stdout.strip()
@@ -395,7 +635,7 @@ if result["env_file_ok"] and result["image_present"]:
     ]
     if model:
         probe_cmd += ["--model", model]
-    probe = run(probe_cmd)
+    probe = run(probe_cmd, timeout=180)
     result["model_probe_stdout"] = (probe.stdout or "").strip()
     result["model_probe_stderr"] = (probe.stderr or "").strip()
     result["model_available"] = probe.returncode == 0 and result["model_probe_stdout"] == "OK"
@@ -407,8 +647,66 @@ print(json.dumps(result))
         f"python3 - <<'PY'\n{remote_script}\nPY",
         key_path=key_path,
         remote_user=remote_user,
+        check=False,
     )
-    payload = json.loads(proc.stdout)
+    if proc.returncode != 0:
+        return {
+            "host": assignment.host,
+            "safe_host": assignment.safe_host,
+            "repo_ok": False,
+            "python_ok": False,
+            "docker_ok": False,
+            "kind_ok": False,
+            "kubectl_ok": False,
+            "env_file_ok": False,
+            "profile_count": len(profiles),
+            "cluster_name": profiles[0]["cluster_name"] if len(profiles) == 1 else "",
+            "cluster_names": [profile["cluster_name"] for profile in profiles],
+            "cluster_exists": False,
+            "kubeconfig_path": profiles[0]["kubeconfig_path"] if len(profiles) == 1 else "",
+            "kubeconfig_paths": [profile["kubeconfig_path"] for profile in profiles],
+            "kubeconfig_ready": False,
+            "nodes_ready": False,
+            "node_names": [],
+            "profile_results": [],
+            "namespace_cleanup": {"profiles": [], "timed_out": True},
+            "image_present": False,
+            "model": model,
+            "model_available": False,
+            "model_probe_stdout": "",
+            "model_probe_stderr": "",
+            "ssh_error": (proc.stderr or proc.stdout or "").strip(),
+        }
+    try:
+        payload = json.loads(proc.stdout)
+    except json.JSONDecodeError:
+        return {
+            "host": assignment.host,
+            "safe_host": assignment.safe_host,
+            "repo_ok": False,
+            "python_ok": False,
+            "docker_ok": False,
+            "kind_ok": False,
+            "kubectl_ok": False,
+            "env_file_ok": False,
+            "profile_count": len(profiles),
+            "cluster_name": profiles[0]["cluster_name"] if len(profiles) == 1 else "",
+            "cluster_names": [profile["cluster_name"] for profile in profiles],
+            "cluster_exists": False,
+            "kubeconfig_path": profiles[0]["kubeconfig_path"] if len(profiles) == 1 else "",
+            "kubeconfig_paths": [profile["kubeconfig_path"] for profile in profiles],
+            "kubeconfig_ready": False,
+            "nodes_ready": False,
+            "node_names": [],
+            "profile_results": [],
+            "namespace_cleanup": {"profiles": [], "timed_out": True},
+            "image_present": False,
+            "model": model,
+            "model_available": False,
+            "model_probe_stdout": "",
+            "model_probe_stderr": "",
+            "ssh_error": (proc.stdout or "").strip(),
+        }
     payload["host"] = assignment.host
     payload["safe_host"] = assignment.safe_host
     return payload
@@ -475,7 +773,7 @@ def prepare_batch(args: argparse.Namespace) -> int:
 
     batch_dir = Path(args.batch_dir).resolve()
     workflows = workflow_list(Path(args.workflow_list).resolve())
-    hosts = host_list(Path(args.hosts_json).resolve())
+    hosts = host_specs(Path(args.hosts_json).resolve())
     if not workflows:
         raise SystemExit("workflow list is empty")
     if not hosts:
@@ -483,28 +781,41 @@ def prepare_batch(args: argparse.Namespace) -> int:
     shards_dir = batch_dir / "shards"
     shards_dir.mkdir(parents=True, exist_ok=True)
 
-    assignments: Dict[str, List[str]] = {host: [] for host in hosts}
+    profile_slots: List[str] = []
+    for profile_index in range(max(host.profile_count for host in hosts)):
+        for host in hosts:
+            if profile_index < host.profile_count:
+                profile_slots.append(host.host)
+    assignments: Dict[str, List[str]] = {host.host: [] for host in hosts}
     for index, workflow_rel in enumerate(workflows):
-        assignments[hosts[index % len(hosts)]].append(workflow_rel)
+        assignments[profile_slots[index % len(profile_slots)]].append(workflow_rel)
 
-    host_payload: Dict[str, str] = {}
+    host_payload: Dict[str, Any] = {}
     summary: Dict[str, Any] = {
         "generated_at": now_utc_iso(),
         "workflow_total": len(workflows),
         "hosts_total": len(hosts),
+        "profile_total": len(profile_slots),
         "shards": [],
     }
     for index, host in enumerate(hosts, start=1):
         shard_rel = f"shards/shard-{index:02d}.txt"
         shard_path = batch_dir / shard_rel
-        shard_path.write_text("".join(f"{item}\n" for item in assignments[host]))
-        host_payload[host] = shard_rel
+        shard_path.write_text("".join(f"{item}\n" for item in assignments[host.host]))
+        host_payload[host.host] = {
+            "shard": shard_rel,
+            "kubeconfigs": list(host.kubeconfigs),
+            "cluster_names": list(host.cluster_names),
+        }
         summary["shards"].append(
             {
-                "host": host,
+                "host": host.host,
                 "shard": shard_rel,
-                "workflow_count": len(assignments[host]),
-                "workflows": assignments[host],
+                "workflow_count": len(assignments[host.host]),
+                "profile_count": host.profile_count,
+                "kubeconfigs": list(host.kubeconfigs),
+                "cluster_names": list(host.cluster_names),
+                "workflows": assignments[host.host],
             }
         )
 
@@ -591,11 +902,12 @@ def launch_batch(args: argparse.Namespace) -> int:
         shard_rel = f"{batch_rel_value}/{assignment.shard_rel}"
         runs_dir = f"runs/{args.runs_subdir}/{assignment.safe_host}"
         model_arg = f" --copilot-model {shlex.quote(args.copilot_model)}" if args.copilot_model else ""
+        kubeconfigs_arg = ",".join(assignment.kubeconfigs) or args.kubeconfig_path
         remote_cmd = (
             "set -euo pipefail; "
             f"cd {shlex.quote(args.remote_root)}; "
             f"mkdir -p {shlex.quote(host_batch_abs)} {shlex.quote(host_batch_abs + '/logs')}; "
-            f"nohup bash -lc {shlex.quote(f'cd {args.remote_root} && exec python3 scripts/remote-agents/run_workflow_queue.py --workflow-list {shard_rel} --kubeconfigs {args.kubeconfig_path} --batch-dir {host_batch_rel} --runtime-python {remote_python_abs} --agent copilot --sandbox docker --runs-dir {runs_dir} --llm-env-file {args.remote_env_file} --resume --max-heavy {args.max_heavy}{model_arg} --namespace-cleanup-timeout {args.namespace_cleanup_timeout}')} "
+            f"nohup bash -lc {shlex.quote(f'cd {args.remote_root} && exec python3 scripts/remote-agents/run_workflow_queue.py --workflow-list {shard_rel} --kubeconfigs {kubeconfigs_arg} --batch-dir {host_batch_rel} --runtime-python {remote_python_abs} --agent copilot --sandbox docker --runs-dir {runs_dir} --llm-env-file {args.remote_env_file} --resume --max-heavy {args.max_heavy}{model_arg} --namespace-cleanup-timeout {args.namespace_cleanup_timeout}')} "
             f"> {shlex.quote(host_batch_abs + '/launch.log')} 2>&1 < /dev/null & printf '%s\\n' \"$!\""
         )
         proc = ssh(
