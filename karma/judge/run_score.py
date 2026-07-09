@@ -419,16 +419,21 @@ def score_run(
                     "reasoning": parsed.get("reasoning") or "",
                     "model": raw.get("model"),
                 }
+                # Cache ONLY a genuine verdict, so re-judging reuses a real decision.
+                store[sid] = verdict
             except JudgeLLMUnavailable as exc:
                 # LLM unreachable -> abort rather than defaulting every sweep
                 # failure to a real regression (a fabricated score).
                 emit(f"[judge] ABORT: judge LLM unavailable -- {exc}")
                 raise
             except Exception as exc:
-                # On adjudication failure, conservatively keep it as a real regression.
+                # An UNEXPECTED adjudication error: use the conservative penalty for
+                # THIS run's score, but deliberately do NOT cache it (no store[sid]=).
+                # A one-off fluke must not be frozen into regression_adjudication.json
+                # and reused forever -- the next re-judge re-adjudicates the stage
+                # fresh instead of inheriting the error verdict (bug #1).
                 verdict = {"legitimate_regression": True,
                            "reasoning": f"adjudication error: {exc}", "model": None}
-            store[sid] = verdict
         is_legit = bool(verdict.get("legitimate_regression"))
         if is_legit:
             legit += 1
