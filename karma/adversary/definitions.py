@@ -35,6 +35,17 @@ _SCENARIO_FILE_NAME = "scenario.yaml"
 # The legacy in-resources location is still accepted as a fallback.
 _ADVERSARIES_DIR_NAME = "adversaries"
 _ADVERSARIAL_DIR_NAME = "adversarial"  # legacy: cases/{service}/adversarial/
+
+
+def _is_safe_segment(name: str) -> bool:
+    """Return ``True`` when *name* is a single safe path component.
+
+    Rejects empty, ``.``/``..``, and any value containing a path separator, so
+    a scenario/service name taken from a request body or workflow spec cannot
+    escape the ``adversaries/`` tree via traversal (SR5). Mirrors the guard on
+    case service/case names in ``definitions.cases``.
+    """
+    return bool(name) and name not in (".", "..") and "/" not in name and "\\" not in name
 _VALID_ON_PROBE_FAIL = {"error", "skip"}
 
 
@@ -312,11 +323,30 @@ def resolve_adversary_scenario(
     scenario_name = entry["scenario"]
     param_overrides = entry.get("param_overrides") or {}
 
+    # The scenario name flows straight into a filesystem path below
+    # (adversaries/<service>/<scenario>/scenario.yaml). Reject traversal (SR5):
+    # a name like "../../../../tmp/evil" would otherwise escape adversaries/ to a
+    # scenario.yaml whose deploy commands run via shell=True. The name is
+    # attacker-supplied (a /api/manual adversary-deploy body or spec.adversary[]
+    # in a /api/run workflow); the upstream validation only .strip()s it.
+    if not _is_safe_segment(scenario_name):
+        raise RuntimeError(
+            f"adversary scenario '{scenario_name}': invalid name -- must be a "
+            f"single path segment (no '/', '\\', or '..')"
+        )
+
     service = stage_service_map.get(inject_at)
     if not service:
         raise RuntimeError(
             f"adversary scenario '{scenario_name}': inject_at_stage '{inject_at}' "
             f"not found in stage service map"
+        )
+    # service is derived from the workflow's stage map (already load-validated),
+    # but it is the other path segment, so guard it too as defense-in-depth.
+    if not _is_safe_segment(service):
+        raise RuntimeError(
+            f"adversary scenario '{scenario_name}': invalid service '{service}' "
+            f"-- must be a single path segment"
         )
 
     # Prefer the top-level adversaries/ tree (sibling of cases/); fall back
