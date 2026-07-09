@@ -75,3 +75,32 @@ class TestListJudgeBatches:
 
     def test_missing_runs_dir_returns_empty(self, tmp_path):
         assert judging.list_judge_batches(tmp_path / "nope") == []
+
+
+class TestJudgeStalenessRegressionHash:
+    """#3: a changed regression-adjudication prompt (which lives outside runs/, so
+    a mtime check can't see it) must mark an existing judge result stale."""
+
+    def _make_judged(self, tmp_path, reg_hash):
+        import os
+        run = tmp_path / "r"
+        run.mkdir(parents=True)
+        (run / "workflow_state.json").write_text(json.dumps({"status": "complete"}))
+        (run / "judge.json").write_text(json.dumps({
+            "score": 100.0, "rubric_hash": None, "regression_prompt_hash": reg_hash,
+        }))
+        base = judging._run_input_mtime(run)          # excludes judge outputs
+        os.utime(run / "judge.json", (base + 10, base + 10))  # fresh judge
+        return run
+
+    def test_current_when_regression_hash_matches(self, tmp_path):
+        run = self._make_judged(tmp_path, "HASH_A")
+        assert judging._judge_is_current(run, "judge", None, "HASH_A") is True
+
+    def test_stale_when_regression_hash_differs(self, tmp_path):
+        run = self._make_judged(tmp_path, "HASH_A")
+        assert judging._judge_is_current(run, "judge", None, "HASH_B") is False
+
+    def test_ignored_when_not_requested(self, tmp_path):
+        run = self._make_judged(tmp_path, "HASH_A")
+        assert judging._judge_is_current(run, "judge", None, None) is True

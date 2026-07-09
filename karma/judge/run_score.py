@@ -324,6 +324,11 @@ def score_run(
         # Stamp the rubric's content hash so a later judge can tell the score is
         # stale when the rubric changed (see judging._judge_is_current).
         "rubric_hash": _rubric_hash(rubric) if scored_with_rubric else None,
+        # Stamp the regression-adjudication prompt's hash too: it lives OUTSIDE
+        # runs/ (the default file, or a --regression-prompt), so a mtime check
+        # can't see a change to it. A different regression prompt can flip a
+        # sweep verdict, so it must mark the score stale (#3).
+        "regression_prompt_hash": regression_prompt_hash(regression_prompt),
         "regression_sweep_run": False,
         "regression_failures": 0,
         "legitimate_regressions": 0,
