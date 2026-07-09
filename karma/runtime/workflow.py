@@ -283,82 +283,14 @@ def run_workflow_loop(
 
     workflow_status = "complete"
 
-    for idx, row in enumerate(rows):
-        if should_cancel is not None and should_cancel():
-            workflow_status = "cancelled"
-            break
-        stage_id = row["stage_id"]
-        # Workflow-level max_attempts (stage-agnostic) overrides any per-stage
-        # retries when set, so one Run Config knob applies to every stage.
-        retries = (max(0, max_attempts - 1) if max_attempts else row.get("retries", 0))
-        stage_result: dict[str, Any] = {}
-        # Per-stage progress sink: tag each fine-grained message with this stage.
-        stage_progress = None
-        if on_progress is not None:
-            stage_progress = (lambda sid: lambda msg: on_progress(sid, msg))(stage_id)
-
-        for attempt in range(retries + 1):
-            if on_progress is not None:
-                on_progress(stage_id, f"▶ stage {stage_id}"
-                            + (f" (attempt {attempt + 1})" if attempt else ""))
-            stage_result = run_stage(
-                row,
-                run_dir=run_dir,
-                resources_dir=resources_dir,
-                agent_meta=agent_meta,
-                sandbox_mode=sandbox_mode,
-                environment=environment,
-                prior_stage_ids=list(completed_stage_ids),
-                stage_prompts=stage_prompts,
-                prompt_mode=prompt_mode,
-                agent_session=agent_session,
-                session_id=session_id,
-                system_prompt=system_prompt,
-                stage_index=idx,
-                defer_cleanup=True,
-                sandbox_options=sandbox_options,
-                on_progress=stage_progress,
-                should_cancel=should_cancel,
-            )
-
-            if on_stage_complete is not None:
-                try:
-                    on_stage_complete(stage_result)
-                except Exception:
-                    pass
-
-            if not _should_retry(stage_result, retries - attempt):
-                break
-
-        stage_results.append(stage_result)
-
-        for inj in (row.get("adversary_injections") or []):
-            if inj.get("id"):
-                deployed_scenario_ids.add(inj["id"])
-
-        if stage_result.get("status") == "pass":
-            completed_stage_ids.add(stage_id)
-        elif stage_result.get("status") == "cancelled":
-            workflow_status = "cancelled"
-            break
-        else:
-            workflow_status = "failed"
-            if stage_failure_mode != "continue":
-                break
-            # "continue": record the failure but keep running later stages.
-
-        _write_workflow_state(run_dir, {
-            "run_id": run_id,
-            "status": "running",
-            "completed_stages": list(completed_stage_ids),
-            "stage_results": stage_results,
-        })
-
-    # Namespace teardown is deferred from each stage to here (run_stage was
-    # called with defer_cleanup=True), so the final sweeps run against the live
-    # cluster. Compute the full binding once for the sweeps and the teardown.
-    # `[]` (literal-namespace cases) contributes no role namespaces to clean up;
-    # only a missing/None contract implies the single default role.
+    # Compute the full namespace binding up front so the deferred teardown in
+    # the `finally` below can ALWAYS run -- even if a stage callback
+    # (should_cancel/on_progress) or a stage/sweep raises mid-run -- so the
+    # workflow's namespaces are never orphaned (SR8). bind_namespace_roles only
+    # derives deterministic names; creation happens per stage and
+    # cleanup_namespaces is delete-by-name (idempotent).
+    # `[]` (literal-namespace cases) contributes no role namespaces; only a
+    # missing/None contract implies the single default role.
     all_roles = sorted({
         role for row in rows
         for role in (row.get("namespace_roles") if row.get("namespace_roles") is not None else ["default"])
@@ -372,47 +304,122 @@ def run_workflow_loop(
         except Exception:
             full_bindings, full_env = {}, {}
 
-    if final_sweep_mode == "off":
-        run_sweep = False
-    elif final_sweep_mode == "full":
-        run_sweep = len(completed_stage_ids) >= 1
-    else:  # "auto" / "inherit"
-        run_sweep = workflow_status == "complete" and len(completed_stage_ids) > 1
     regression_sweep = None
-    if run_sweep:
-        # A sweep failure is diagnostic only; it must not crash the run result.
-        try:
-            regression_sweep = _run_final_regression_sweep(
-                rows, stage_results, run_dir=run_dir, environment=environment
-            )
-        except Exception as exc:
-            regression_sweep = None
-            warn(f"regression sweep failed: {exc}")
-
     adversary_cleanup = None
-    if deployed_scenario_ids:
-        adversary_cleanup = _run_adversary_cleanup_sweep(
-            all_injections,
-            deployed_scenario_ids=deployed_scenario_ids,
-            completed_stage_ids=completed_stage_ids,
-            environment=environment,
-            run_dir=run_dir,
-            role_bindings=full_bindings,
-            env_vars=full_env,
-        )
+    try:
+        for idx, row in enumerate(rows):
+            if should_cancel is not None and should_cancel():
+                workflow_status = "cancelled"
+                break
+            stage_id = row["stage_id"]
+            # Workflow-level max_attempts (stage-agnostic) overrides any per-stage
+            # retries when set, so one Run Config knob applies to every stage.
+            retries = (max(0, max_attempts - 1) if max_attempts else row.get("retries", 0))
+            stage_result: dict[str, Any] = {}
+            # Per-stage progress sink: tag each fine-grained message with this stage.
+            stage_progress = None
+            if on_progress is not None:
+                stage_progress = (lambda sid: lambda msg: on_progress(sid, msg))(stage_id)
 
-    # Deferred namespace teardown: now that the sweeps (which need live state)
-    # have run, delete every namespace the workflow created.
-    if full_bindings and environment is not None:
-        try:
-            environment.cleanup_namespaces(full_bindings, run_dir=run_dir)
-        except Exception as exc:
-            warn(f"failed to delete workflow namespaces: {exc}")
-    if ns_baseline and environment is not None and hasattr(environment, "cleanup_created_namespaces"):
-        try:
-            environment.cleanup_created_namespaces(ns_baseline, run_dir=run_dir)
-        except Exception:
-            pass
+            for attempt in range(retries + 1):
+                if on_progress is not None:
+                    on_progress(stage_id, f"▶ stage {stage_id}"
+                                + (f" (attempt {attempt + 1})" if attempt else ""))
+                stage_result = run_stage(
+                    row,
+                    run_dir=run_dir,
+                    resources_dir=resources_dir,
+                    agent_meta=agent_meta,
+                    sandbox_mode=sandbox_mode,
+                    environment=environment,
+                    prior_stage_ids=list(completed_stage_ids),
+                    stage_prompts=stage_prompts,
+                    prompt_mode=prompt_mode,
+                    agent_session=agent_session,
+                    session_id=session_id,
+                    system_prompt=system_prompt,
+                    stage_index=idx,
+                    defer_cleanup=True,
+                    sandbox_options=sandbox_options,
+                    on_progress=stage_progress,
+                    should_cancel=should_cancel,
+                )
+
+                if on_stage_complete is not None:
+                    try:
+                        on_stage_complete(stage_result)
+                    except Exception:
+                        pass
+
+                if not _should_retry(stage_result, retries - attempt):
+                    break
+
+            stage_results.append(stage_result)
+
+            for inj in (row.get("adversary_injections") or []):
+                if inj.get("id"):
+                    deployed_scenario_ids.add(inj["id"])
+
+            if stage_result.get("status") == "pass":
+                completed_stage_ids.add(stage_id)
+            elif stage_result.get("status") == "cancelled":
+                workflow_status = "cancelled"
+                break
+            else:
+                workflow_status = "failed"
+                if stage_failure_mode != "continue":
+                    break
+                # "continue": record the failure but keep running later stages.
+
+            _write_workflow_state(run_dir, {
+                "run_id": run_id,
+                "status": "running",
+                "completed_stages": list(completed_stage_ids),
+                "stage_results": stage_results,
+            })
+
+        if final_sweep_mode == "off":
+            run_sweep = False
+        elif final_sweep_mode == "full":
+            run_sweep = len(completed_stage_ids) >= 1
+        else:  # "auto" / "inherit"
+            run_sweep = workflow_status == "complete" and len(completed_stage_ids) > 1
+        regression_sweep = None
+        if run_sweep:
+            # A sweep failure is diagnostic only; it must not crash the run result.
+            try:
+                regression_sweep = _run_final_regression_sweep(
+                    rows, stage_results, run_dir=run_dir, environment=environment
+                )
+            except Exception as exc:
+                regression_sweep = None
+                warn(f"regression sweep failed: {exc}")
+
+        adversary_cleanup = None
+        if deployed_scenario_ids:
+            adversary_cleanup = _run_adversary_cleanup_sweep(
+                all_injections,
+                deployed_scenario_ids=deployed_scenario_ids,
+                completed_stage_ids=completed_stage_ids,
+                environment=environment,
+                run_dir=run_dir,
+                role_bindings=full_bindings,
+                env_vars=full_env,
+            )
+
+    finally:
+        # Deferred namespace teardown: runs on EVERY exit path -- normal,
+        # break, or a raised exception -- so namespaces are never orphaned (SR8).
+        if full_bindings and environment is not None:
+            try:
+                environment.cleanup_namespaces(full_bindings, run_dir=run_dir)
+            except Exception as exc:
+                warn(f"failed to delete workflow namespaces: {exc}")
+        if ns_baseline and environment is not None and hasattr(environment, "cleanup_created_namespaces"):
+            try:
+                environment.cleanup_created_namespaces(ns_baseline, run_dir=run_dir)
+            except Exception:
+                pass
 
     result = {
         "run_id": run_id,
