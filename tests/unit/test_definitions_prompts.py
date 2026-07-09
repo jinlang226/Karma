@@ -174,3 +174,46 @@ class TestRenderJudgePrompt:
         inp = self._make_input(trace_facts=None)
         result = render_judge_prompt(inp)
         assert "(none)" in result
+
+
+class TestLoadPromptModePrologues:
+    """The per-mode prologue file has ONE source of truth (docs/), overridable via
+    a path, with STRICT validation: exactly the three mode keys, each non-empty."""
+
+    def test_default_loads_all_three_modes(self):
+        from karma.definitions.prompts import load_prompt_mode_prologues, VALID_PROMPT_MODES
+        d = load_prompt_mode_prologues()
+        assert set(d) == set(VALID_PROMPT_MODES)
+        assert all(v.strip() for v in d.values())
+
+    def _write(self, tmp_path, body):
+        p = tmp_path / "prologues.yaml"
+        p.write_text(body)
+        return str(p)
+
+    def test_custom_file_is_used(self, tmp_path):
+        from karma.definitions.prompts import load_prompt_mode_prologues
+        path = self._write(tmp_path,
+            "progressive: A\nconcat_stateful: B\nconcat_blind: C\n")
+        assert load_prompt_mode_prologues(path) == {
+            "progressive": "A", "concat_stateful": "B", "concat_blind": "C"}
+
+    def test_missing_key_rejected(self, tmp_path):
+        from karma.definitions.prompts import load_prompt_mode_prologues
+        path = self._write(tmp_path, "progressive: A\nconcat_stateful: B\n")  # no concat_blind
+        with pytest.raises(RuntimeError, match="missing.*concat_blind"):
+            load_prompt_mode_prologues(path)
+
+    def test_unknown_key_rejected(self, tmp_path):
+        from karma.definitions.prompts import load_prompt_mode_prologues
+        path = self._write(tmp_path,
+            "progressive: A\nconcat_stateful: B\nconcat_blind: C\nconcat_bind: D\n")  # typo
+        with pytest.raises(RuntimeError, match="unknown.*concat_bind"):
+            load_prompt_mode_prologues(path)
+
+    def test_empty_value_rejected(self, tmp_path):
+        from karma.definitions.prompts import load_prompt_mode_prologues
+        path = self._write(tmp_path,
+            'progressive: ""\nconcat_stateful: B\nconcat_blind: C\n')
+        with pytest.raises(RuntimeError, match="non-empty"):
+            load_prompt_mode_prologues(path)
