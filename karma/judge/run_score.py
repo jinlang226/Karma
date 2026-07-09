@@ -142,11 +142,22 @@ def _build_adjudication_prompt(
     into the template via ``string.Template`` (so literal ``{...}`` JSON in the
     prompt is left untouched). ``template=None`` uses the built-in default.
     """
+    # Each stage's OWN task, reconstructed from its case (like the UI's
+    # jump-to-case), so the adjudicator sees the DISTINCT per-stage goals it needs
+    # to reason "did a later stage legitimately change this state". The stored
+    # prompt.txt is the mode-assembled blob (the whole workflow for concat modes),
+    # which would repeat the same text per stage; fall back to it only if
+    # reconstruction fails.
+    from .input_builder import reconstruct_stage_task
     others = []
     for sid in ordered_stage_ids:
         marker = " (THE STAGE IN QUESTION)" if sid == stage_id else ""
-        others.append(f"### {sid}{marker}\n{_stage_prompt(run_dir, sid) or '(no prompt recorded)'}")
-    all_prompts = "\n\n".join(others)
+        task = (reconstruct_stage_task(run_dir, sid)
+                or _stage_prompt(run_dir, sid) or "(no prompt recorded)")
+        others.append(f"### {sid}{marker}\n{task}")
+    note = ("(Each stage's own task, from its case definition; runtime ${...} "
+            "placeholders are shown unresolved.)")
+    all_prompts = note + "\n\n" + "\n\n".join(others)
     return Template(template or _default_regression_template()).safe_substitute(
         stage_id=stage_id,
         regression_output=_fence_untrusted(regression_output),

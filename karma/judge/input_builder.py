@@ -23,6 +23,62 @@ from ..evidence import compute_trace_facts
 # (where the final answer and outcome are) and drop the head.
 _AGENT_LOG_CAP = 24000
 
+# Prefaces the reconstructed stage task so the judge reads unresolved ${...} tokens
+# as placeholders, not as the task's literal text.
+_STAGE_TASK_CAVEAT = (
+    "(The stage's own task, reconstructed from its case definition. Runtime "
+    "placeholders such as ${BENCH_NAMESPACE} are shown unresolved -- the concrete "
+    "values are in the evidence below.)"
+)
+
+
+def _run_stages(run_dir: Path) -> list[dict[str, Any]]:
+    """Ordered stage descriptors from config.json (id/service/case_name/params)."""
+    try:
+        cfg = json.loads((run_dir / "config.json").read_text())
+    except Exception:
+        return []
+    return cfg.get("stages") or []
+
+
+def reconstruct_stage_task(
+    run_dir: Path, stage_id: str, resources_dir: Path | None = None
+) -> str:
+    """Return the stage's OWN rendered task -- its case prompt -- independent of the
+    workflow's prompt mode.
+
+    The stored prompt.txt is the mode-assembled prompt (for concat modes, the whole
+    workflow), so it does not isolate the stage being judged. Reconstruct the single
+    task by loading the case named in config.json -- exactly like the UI's
+    jump-to-case (load_case_file + normalize_case + render_stage_prompt), using the
+    default resources dir. Runtime ${...} placeholders stay unresolved (no live env
+    post-hoc). Returns "" when the stage or case cannot be resolved.
+    """
+    stage = next((s for s in _run_stages(run_dir) if s.get("id") == stage_id), None)
+    if not stage:
+        return ""
+    service, case_name = stage.get("service"), stage.get("case_name")
+    if not service or not case_name:
+        return ""
+    from ..definitions.cases import load_case_file, normalize_case
+    from ..definitions.prompts import render_stage_prompt
+    from ..settings import settings as _settings
+    rd = Path(resources_dir) if resources_dir else _settings.resources_dir
+    try:
+        data = load_case_file(rd, service, case_name)
+        norm = normalize_case(data, service, case_name, stage.get("param_overrides") or {})
+        return render_stage_prompt(norm, stage, {"id": run_dir.name}).strip()
+    except Exception:
+        return ""
+
+
+def stage_position(run_dir: Path, stage_id: str) -> str:
+    """Return a "STAGE k of n" label for *stage_id*, or "" when not resolvable."""
+    ids = [s.get("id") for s in _run_stages(run_dir)]
+    if stage_id in ids:
+        return f"STAGE {ids.index(stage_id) + 1} of {len(ids)}"
+    return ""
+
 
 def build_judge_input(
     run_dir: Path,
@@ -111,13 +167,18 @@ def build_judge_input(
         "trace_facts": trace_facts,
         "submit_text": submit_text,
         "prompt_text": prompt_text,
+        # The stage's OWN task + position, so the judge knows exactly which stage
+        # it is grading regardless of prompt mode (the mode-assembled prompt_text
+        # does not isolate the stage -- concat_blind in particular).
+        "stage_task": reconstruct_stage_task(run_dir, stage_id),
+        "stage_position": stage_position(run_dir, stage_id),
         "agent_log": agent_log,
     }
 
 
 _DEFAULT_JUDGE_TEMPLATE = (
     "You are evaluating an AI agent on a Kubernetes microservice task.\n\n"
-    "## Task Prompt\n{prompt_text}\n\n"
+    "## Task Being Judged ({stage_position})\n{task_block}\n\n"
     "## Agent Submission\n{submit_text}\n\n"
     "## Agent Log (turn-by-turn: reasoning + tool calls)\n{agent_log}\n\n"
     "## Oracle Verification\n"
@@ -173,8 +234,19 @@ def render_judge_prompt(
     else:
         verdict_text = "(hidden to reduce outcome bias)"
 
+    # Prefer the stage's reconstructed OWN task (with the placeholder caveat) so the
+    # judge grades the right stage; fall back to the mode-assembled prompt.txt only
+    # when reconstruction failed.
+    stage_task = str(judge_input.get("stage_task") or "").strip()
+    if stage_task:
+        task_block = _STAGE_TASK_CAVEAT + "\n" + stage_task
+    else:
+        task_block = str(judge_input.get("prompt_text") or "(not available)")
+
     ctx: dict[str, str] = {
         "stage_id": str(judge_input.get("stage_id") or ""),
+        "stage_position": str(judge_input.get("stage_position") or "").strip() or "this stage",
+        "task_block": task_block,
         "prompt_text": str(judge_input.get("prompt_text") or "(not available)"),
         "submit_text": str(judge_input.get("submit_text") or "(not submitted)"),
         "agent_log": str(judge_input.get("agent_log") or "(not captured)"),
