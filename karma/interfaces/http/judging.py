@@ -89,12 +89,16 @@ def _judge_run_streaming(
 ) -> dict[str, Any]:
     """Score the run: objective stage-pass score + LLM adjudication of any
     regression-sweep failures (false-positive filtering)."""
-    from ...judge.run_score import score_run
+    from ...judge.run_score import score_run, regression_prompt_hash
 
     # Make-style skip: if the existing score is newer than every run input, the
-    # run is already up to date -- don't spend LLM calls re-judging it.
+    # run is already up to date -- don't spend LLM calls re-judging it. The HTTP
+    # path uses the default regression prompt; pass its hash so an edit to it
+    # (it lives outside runs/) correctly marks the score stale (#3).
     base_name = "judge_rubric" if rubric is not None else "judge"
-    if not dry_run and _judge_is_current(run_dir, base_name, rubric_hash(rubric)):
+    if not dry_run and _judge_is_current(
+        run_dir, base_name, rubric_hash(rubric), regression_prompt_hash(None)
+    ):
         existing = catalog._read_json(run_dir / f"{base_name}.json")
         hub.publish(job_id, {
             "type": "judge_progress", "job_id": job_id, "run_id": run_dir.name,
@@ -154,15 +158,18 @@ def _run_input_mtime(run_dir: Path) -> float:
 
 
 def _judge_is_current(
-    run_dir: Path, base_name: str = "judge", rubric_hash: str | None = None,
+    run_dir: Path, base_name: str = "judge",
+    rubric_hash: str | None = None, regression_hash: str | None = None,
 ) -> bool:
     """True if ``{base_name}.json`` is up to date for the requested judge.
 
     Make-style staleness: the result is up to date when it was written after the
-    last change to any artifact it scored (mtime vs the newest run input). For a
-    rubric score, the rubric lives OUTSIDE runs/, so we additionally require the
-    stored ``rubric_hash`` to match the rubric being requested -- a changed rubric
-    makes the result stale even though no run file moved. Missing / older /
+    last change to any artifact it scored (mtime vs the newest run input). Two
+    inputs live OUTSIDE runs/, so a mtime check can't see them change and their
+    stamped content hashes are compared explicitly: the rubric (``rubric_hash``)
+    and the regression-adjudication prompt (``regression_hash``) -- a different
+    rubric OR a different regression prompt can flip the score, so either makes
+    the result stale even though no run file moved (#3). Missing / older /
     hash-mismatch all return False -> re-judge.
     """
     target = run_dir / f"{base_name}.json"
@@ -173,9 +180,11 @@ def _judge_is_current(
             return False
     except OSError:
         return False
-    if rubric_hash is not None:
-        if catalog._read_json(target).get("rubric_hash") != rubric_hash:
-            return False
+    stored = catalog._read_json(target)
+    if rubric_hash is not None and stored.get("rubric_hash") != rubric_hash:
+        return False
+    if regression_hash is not None and stored.get("regression_prompt_hash") != regression_hash:
+        return False
     return True
 
 
@@ -217,7 +226,7 @@ def _judge_all_streaming(
     already have a score are skipped (re-judge a single run with its own Judge
     button).
     """
-    from ...judge.run_score import score_run
+    from ...judge.run_score import score_run, regression_prompt_hash
 
     # Discover run dirs recursively so runs filed under a grouping folder (e.g.
     # runs/examples/<run>) are judged too -- a top-level iterdir would only see
@@ -236,6 +245,7 @@ def _judge_all_streaming(
     # artifacts), so "Judge all w/ Rubric" doesn't skip runs scored only w/o.
     base_name = "judge_rubric" if rubric else "judge"
     rhash = rubric_hash(rubric)
+    reg_hash = regression_prompt_hash(None)   # HTTP uses the default regression prompt
     worklist: list[Path] = []
     already_scored = 0
     not_judgeable = 0
@@ -250,7 +260,7 @@ def _judge_all_streaming(
             continue
         # Make-style: skip only runs whose score is up to date; a stale one (its
         # inputs OR the rubric changed since the last judge) is re-judged.
-        if _judge_is_current(rd, base_name, rhash):
+        if _judge_is_current(rd, base_name, rhash, reg_hash):
             already_scored += 1
             continue
         worklist.append(rd)
