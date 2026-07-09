@@ -22,7 +22,6 @@ _PLUGIN_MODULES: list[str] = [
     "karma.metrics.time_to_first_mutation",
     "karma.metrics.key_material_leakage",
     "karma.metrics.rate_limit_strategy",
-    "karma.metrics.host_specificity_guardrail",
     "karma.metrics.class_upgrade_guardrails",
     "karma.metrics.otel_scope_control",
     "karma.metrics.spark_job_fix_efficiency",
