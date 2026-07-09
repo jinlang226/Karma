@@ -255,6 +255,29 @@ class TestStagePromptDistribution:
         assert second["stage_prompts"] == ["TASK ONE", "TASK TWO"]
         assert second["stage_index"] == 1
 
+    def test_teardown_runs_when_a_callback_raises(self, tmp_path):
+        # SR8: the deferred namespace teardown lives in a `finally`, so a stage
+        # callback that raises (a broken should_cancel / on_progress from the
+        # HTTP/dispatcher layer) must NOT orphan the run's namespaces.
+        row = self._make_row("s1"); row["case"] = {"prompt": "TASK"}
+        env = MagicMock()
+        env.list_namespaces.return_value = {"pre-existing"}       # -> ns_baseline truthy
+        env.bind_namespace_roles.return_value = {"default": "karma-abc"}
+        env.build_namespace_env_vars.return_value = {}
+
+        def boom():
+            raise RuntimeError("dispatcher died")
+
+        with pytest.raises(RuntimeError, match="dispatcher died"):
+            run_workflow_loop(
+                [row], run_id="r1", run_dir=tmp_path, resources_dir=tmp_path,
+                agent_meta={}, sandbox_mode="local", environment=env,
+                prompt_mode="progressive", should_cancel=boom,
+            )
+        # Both teardown paths still ran despite the raised callback.
+        env.cleanup_namespaces.assert_called_once()
+        env.cleanup_created_namespaces.assert_called_once()
+
     def test_failed_stage_prompt_not_accumulated(self, tmp_path):
         rows = [self._make_row("s1"), self._make_row("s2")]
         fail_r = {"stage_id": "s1", "status": "fail", "oracle_verdict": "fail",
