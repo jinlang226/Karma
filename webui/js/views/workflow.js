@@ -22,6 +22,7 @@
   let pendingAdvScenario = null;   // set by KARMA.useScenarioInBuilder ({scenario, overrides})
   let services = [];
   let agents = [];      // available agent names, for the run-config selectors
+  let defaultSysPromptAvailable = true;  // false => server's default harness prompt is missing
   let runAgent = "";    // agent applied to workflow runs ("" = no agent)
   let runSandbox = "local";
   let runMaxAttempts = 1;   // workflow-level retry cap (1 = no retry)
@@ -52,6 +53,7 @@
       try { agents = await api.get("/api/agents"); } catch (_e) { agents = []; }
     }
     try { scenarios = await api.get("/api/adversary/scenarios") || []; } catch (_e) { scenarios = []; }
+    try { defaultSysPromptAvailable = (await api.get("/api/config")).default_system_prompt_available !== false; } catch (_e) {}
     if (pendingWorkflow) { const pw = pendingWorkflow; pendingWorkflow = null; renderWorkflowDetail(pw.name, pw.path); return; }
     let scrollToAdversary = false;
     if (pendingAdvScenario) {
@@ -564,6 +566,12 @@
     sysInput.addEventListener("input", () => autosize(sysInput));
     panel.appendChild(el("div", { style: "margin-top:10px" },
       el("label", {}, "System Prompt (optional — appended to the default)"), sysInput));
+    if (!defaultSysPromptAvailable) {
+      panel.appendChild(el("div", { class: "banner warn", style: "margin-top:8px" },
+        "⚠ The default harness system prompt is unavailable on the server "
+        + "(docs/default-system-prompt.md is missing or empty). Runs will start WITHOUT the "
+        + "harness contract unless you enter a System Prompt above — or deploy docs/ on the host."));
+    }
 
     panel.appendChild(el("h3", {}, "Stages"));
     panel.appendChild(el("p", { class: "field-help" },
@@ -622,6 +630,14 @@
     // Regenerate from the current builder state so edits are always reflected --
     // the user can Run inline directly without clicking Generate YAML first.
     const runBtn = el("button", { class: "btn", onClick: () => {
+      // Alert before starting if agents would get no harness contract at all:
+      // the server's default prompt is missing AND the user supplied none here.
+      if (!defaultSysPromptAvailable && !sysInput.value.trim()) {
+        if (!confirm(
+          "The default harness system prompt is missing on the server and you haven't "
+          + "provided one. Agents will run WITHOUT the harness contract (single-session / "
+          + "submit rules). Start anyway?")) return;
+      }
       const text = buildYamlOrWarn();
       if (text) { showYaml(text); runInlineYaml(text, msg); }
     } }, "Run inline");

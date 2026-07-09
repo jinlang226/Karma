@@ -26,6 +26,7 @@ from ..definitions.workflows import resolve_workflow_rows, single_case_to_workfl
 from ..environments.registry import get_environment
 from ..agents.registry import resolve_agent
 from ..protocol import generate_run_id, run_config_path
+from .._warn import warn
 from .workflow import run_workflow_loop
 
 # Default system prompt (the harness contract) applied to every run's agents.
@@ -197,9 +198,22 @@ def run_workflow(
         agent_session = str(agent_session or workflow.get("agent_session") or "persistent")
         session_id = str(uuid.uuid4()) if agent_session == "persistent" else None
         # System prompt delivered to every agent each stage = a base (the CLI
-        # --system-prompt override, else the built-in default harness contract)
-        # with the workflow's own spec.system_prompt APPENDED to it.
+        # --system-prompt override, else the default harness contract read from
+        # docs/default-system-prompt.md) with the workflow's spec.system_prompt
+        # APPENDED to it.
         base_prompt = (system_prompt or _default_system_prompt()).rstrip()
+        if not base_prompt:
+            # The harness contract resolved to nothing: the default file is
+            # missing/empty (e.g. docs/ wasn't deployed) and no --system-prompt
+            # was supplied. Don't drop it silently -- agents would run without the
+            # single-session/submit contract. Warn loudly (an intentionally-empty
+            # spec.system_prompt is fine; an empty BASE is not).
+            warn(
+                "no base system prompt resolved -- the default harness-contract file "
+                f"({_DEFAULT_SYSTEM_PROMPT_PATH}) is missing or empty and no --system-prompt "
+                "was given. Agents will run WITHOUT the harness contract; deploy docs/ "
+                "or pass --system-prompt."
+            )
         append_prompt = (workflow.get("system_prompt") or "").strip()
         effective_system_prompt = (
             base_prompt + "\n\n" + append_prompt if append_prompt else base_prompt

@@ -230,6 +230,16 @@ def create_app(
     def api_agents():
         return jsonify(list_agents())
 
+    @app.route("/api/config")
+    def api_config():
+        # Lets the UI warn before a run when the default harness system prompt
+        # is unavailable (e.g. docs/ not deployed) so agents won't silently run
+        # without it. False = the default file is missing/empty.
+        from ...runtime.service import _default_system_prompt
+        return jsonify({
+            "default_system_prompt_available": bool(_default_system_prompt()),
+        })
+
     @app.route("/api/metrics")
     def api_metrics():
         return jsonify(list_metrics())
