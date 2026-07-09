@@ -147,16 +147,23 @@ def run_workflow(
         # detail can show every stage even for a multi-stage CLI workflow run.
         wf_stages = workflow.get("stages") or []
         cfg["stage_total"] = len(wf_stages)
-        # Persist the prompt mode so the run self-documents it and the UI can
-        # surface it + reproduce it in the rerun command (the HTTP writer in
-        # jobs.py already records this; the CLI path had dropped it -- #3).
+        # Record every behavior-affecting knob so the run self-documents and the
+        # rerun command can reproduce the exact launch configuration (not the
+        # outcome -- the agent is stochastic). Effective values: an explicit
+        # override wins, then the workflow's own value, then the default. The HTTP
+        # writer (jobs.py) records the same set.
         cfg["prompt_mode"] = str(workflow.get("prompt_mode") or "progressive")
+        cfg["agent_session"] = str(agent_session or workflow.get("agent_session") or "persistent")
+        cfg["max_attempts"] = max_attempts
+        cfg["stage_failure_mode"] = stage_failure_mode
+        cfg["final_sweep_mode"] = final_sweep_mode
         cfg["stages"] = [
             {
                 "id": s.get("id"),
                 "service": s.get("service"),
                 "case_name": s.get("case_name"),
                 "param_overrides": s.get("param_overrides") or {},
+                "agent_timeout_sec": s.get("agent_timeout_sec"),
             }
             for s in wf_stages
         ]
