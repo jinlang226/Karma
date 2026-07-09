@@ -130,3 +130,13 @@ class TestAdjudicationInjectionFence:
         n1 = self._NONCE.findall(self._prompt("a"))[0]
         n2 = self._NONCE.findall(self._prompt("a"))[0]
         assert n1 != n2                                        # unpredictable per call
+
+
+class TestDefaultRegressionPromptIsFileSourced:
+    """The default adjudication prompt has ONE source of truth -- its file -- so the
+    code path and the CLI (--regression-prompt default) can never drift."""
+
+    def test_default_template_equals_the_doc_file(self):
+        from karma.judge.run_score import _default_regression_template, _REGRESSION_PROMPT_PATH
+        assert _default_regression_template() == _REGRESSION_PROMPT_PATH.read_text()
+        assert "$regression_output" in _default_regression_template()   # placeholders intact
