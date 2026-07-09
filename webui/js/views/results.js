@@ -27,6 +27,9 @@
   let judgeCancelling = false; // true between a cancel click and the job ending
   let runsFilter = "";     // loose search query across all runs
   let allRuns = [];        // last-fetched runs, used by the folder/search render
+  let viewingDetail = false; // true while a run detail is open: the 3s runs-list
+                             // auto-refresh must not re-render the list over it or
+                             // clear its breadcrumb (setFolderCrumb).
 
   // Cross-view deep link: open a specific run's detail (used by the back stack
   // so returning from a Cases sub-page lands on the exact run, not the list).
@@ -337,6 +340,7 @@
 
   function render() {
     stopTimers();
+    viewingDetail = false;   // leaving any detail: the list owns the breadcrumb now
     clear(root);
     KARMA.replayEnter(root);
     // The list is a root page: reset any cross-view back history and record it
@@ -430,6 +434,10 @@
   // and openRunsFolder() (folder-row-click path) so both stay in sync; cleared at
   // the top level where the "Results" heading is the title.
   function setFolderCrumb() {
+    // Never touch the breadcrumb while a run detail is open -- that crumb belongs
+    // to renderDetail; clearing it here (e.g. from a late list refresh) is the
+    // top-left-path-disappears bug.
+    if (viewingDetail) return;
     if (!(runsFolder && sub === "runs")) { KARMA.setBreadcrumb(null); return; }
     const goFolder = (folder) => () => { runsFolder = folder; sub = "runs"; render(); };
     const crumbs = [{ label: "Results", onClick: goFolder("") }];
@@ -558,6 +566,12 @@
       return kb < ka ? -1 : 1;
     });
     updateRunningTotal();
+    // A detail opened while this fetch was in flight: keep the freshened data
+    // (allRuns / running total) but do NOT touch the DOM -- rendering the list
+    // or calling setFolderCrumb() here would overwrite the detail and clear its
+    // breadcrumb. Also skips the reschedule below, so no refresh runs under a
+    // detail; returning to the list rebuilds fresh via render().
+    if (viewingDetail) return;
     // Re-render rows in place if the table already exists (auto-refresh), so the
     // search box keeps focus; otherwise build the panel + search + table.
     let body = document.getElementById("runs-body");
@@ -603,6 +617,7 @@
   // --- Run detail -----------------------------------------------------------
   async function renderDetail(runId) {
     stopTimers();
+    viewingDetail = true;    // block the runs-list auto-refresh from clobbering this
     clear(root);
     KARMA.replayEnter(root);
     // Record this run detail as the current location so a jump to a Cases
@@ -641,9 +656,11 @@
     loading.remove();
     try {
     const cfg = d.config || {};
-    // Refresh the breadcrumb folder from the authoritative detail (covers a
-    // deep-linked run where the cached runs list was empty at first render).
-    if (d.dir) buildCrumb(d.dir);
+    // Always re-assert the breadcrumb from the authoritative detail (not only
+    // when d.dir is set): a top-level run has an empty dir, and a concurrent
+    // list refresh may have cleared the crumb -- guarding on d.dir would leave
+    // it missing. Prefer d.dir, else the cached folder, else top level.
+    buildCrumb(d.dir || ((allRuns.find((r) => r.run_id === runId) || {}).dir) || "");
 
     // Two test scores top-right beside the heading: objective (w/o rubric) and
     // rubric (w/ rubric). Each shows "—" until the run is judged that way.
