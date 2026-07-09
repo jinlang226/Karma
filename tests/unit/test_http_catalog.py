@@ -50,6 +50,7 @@ class TestGetCaseDetail:
             "  target:\n"
             "    default: 5\n"
             "    description: target value\n"
+            "oracle:\n  verify:\n    commands:\n      - command: 'true'\n"
             "metrics:\n  - blast_radius\n"
             "tags:\n  - smoke\n",
         )

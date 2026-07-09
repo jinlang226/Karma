@@ -10,7 +10,11 @@ def client(tmp_path):
     # Minimal demo case so workflow preview can resolve a real stage.
     case = tmp_path / "cases" / "demo" / "cm" / "test.yaml"
     case.parent.mkdir(parents=True)
-    case.write_text("prompt: do it\nnamespace_contract:\n  required_roles: [default]\n")
+    case.write_text(
+        "prompt: do it\n"
+        "namespace_contract:\n  required_roles: [default]\n"
+        "oracle:\n  verify:\n    commands:\n      - command: 'true'\n"
+    )
     app = create_app(resources_dir=tmp_path / "cases", runs_dir=tmp_path / "runs")
     app.config.update(TESTING=True)
     return app.test_client()
