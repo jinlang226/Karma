@@ -27,11 +27,63 @@ from an accumulated runtime history.
 from __future__ import annotations
 
 import re
+from pathlib import Path
 from typing import Any
+
+import yaml
+
+from .._warn import warn
 
 _PLACEHOLDER_RE = re.compile(r"\$\{([A-Za-z0-9_.:-]+)\}")
 
 VALID_PROMPT_MODES = ("progressive", "concat_stateful", "concat_blind")
+
+# Per-mode prologue orientation prepended to the assembled prompt. Single source
+# of truth: docs/prompt-mode-prologues.yaml (overridable via --prompt-mode-prologues).
+_PROLOGUE_PATH = Path(__file__).resolve().parents[2] / "docs" / "prompt-mode-prologues.yaml"
+_REQUIRED_PROLOGUE_KEYS = frozenset(VALID_PROMPT_MODES)
+
+
+def load_prompt_mode_prologues(path: str | None = None) -> dict[str, str]:
+    """Return the per-mode prologue texts, keyed by prompt mode.
+
+    Reads *path* when given (the ``--prompt-mode-prologues`` override), else the
+    default ``docs/prompt-mode-prologues.yaml``. STRICT validation: the file must
+    be a mapping with EXACTLY the three mode keys (``progressive``,
+    ``concat_stateful``, ``concat_blind``), each a non-empty string -- a missing
+    OR unknown key raises, so a typo cannot leave a mode silently prologue-less.
+
+    A missing/unreadable DEFAULT warns loudly and yields empty prologues (mirrors
+    the other prompt loaders); a bad EXPLICIT ``path`` raises (the user asked for
+    it, so surface the error).
+    """
+    p = Path(path) if path else _PROLOGUE_PATH
+    try:
+        raw = yaml.safe_load(p.read_text())
+    except Exception as exc:
+        if path:
+            raise RuntimeError(f"prompt-mode prologues not readable: {p}: {exc}") from exc
+        warn(f"default prompt-mode prologues not found at {p}: {exc}")
+        return {k: "" for k in _REQUIRED_PROLOGUE_KEYS}
+    if not isinstance(raw, dict):
+        raise RuntimeError(f"prompt-mode prologues {p}: must be a YAML mapping")
+    keys = set(raw)
+    if keys != _REQUIRED_PROLOGUE_KEYS:
+        missing = sorted(_REQUIRED_PROLOGUE_KEYS - keys)
+        unknown = sorted(keys - _REQUIRED_PROLOGUE_KEYS)
+        raise RuntimeError(
+            f"prompt-mode prologues {p}: must define EXACTLY "
+            f"{sorted(_REQUIRED_PROLOGUE_KEYS)}"
+            + (f"; missing {missing}" if missing else "")
+            + (f"; unknown {unknown}" if unknown else "")
+        )
+    out: dict[str, str] = {}
+    for k in _REQUIRED_PROLOGUE_KEYS:
+        v = raw[k]
+        if not isinstance(v, str) or not v.strip():
+            raise RuntimeError(f"prompt-mode prologues {p}: '{k}' must be a non-empty string")
+        out[k] = v.strip()
+    return out
 
 
 # ---------------------------------------------------------------------------
