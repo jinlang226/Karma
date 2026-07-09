@@ -29,6 +29,7 @@ from pathlib import Path
 from typing import Any
 
 from .case import run_stage, _apply_namespace_binding
+from ..definitions.prompts import render_stage_prompt
 from ..oracle import run_regression_sweep
 from ..adversary import collect_pending_lift_units
 from .. import protocol
@@ -249,7 +250,20 @@ def run_workflow_loop(
     """
     start_time = time.monotonic()
     stage_results: list[dict[str, Any]] = []
-    stage_prompts: list[str] = []
+
+    # Pre-render every stage's prompt from the workflow definition, statically
+    # (no runtime env; unresolved ${ENV} tokens stay literal). Concat modes
+    # deliver the FULL workflow -- future stages included -- so the agent sees
+    # the whole plan; run_stage re-renders each stage's own slot with runtime
+    # env as it executes. Built once from the definition, so there is no
+    # accumulated runtime history to duplicate (retires the concat prompt bug).
+    def _static_render(r: dict[str, Any]) -> str:
+        try:
+            return render_stage_prompt(r.get("case") or {}, r, {"id": run_dir.name})
+        except Exception:
+            return ""
+    stage_prompts: list[str] = [_static_render(r) for r in rows]
+
     completed_stage_ids: set[str] = set()
     deployed_scenario_ids: set[str] = set()
     # Snapshot namespaces before any stage runs so the deferred teardown can
@@ -324,12 +338,6 @@ def run_workflow_loop(
 
         if stage_result.get("status") == "pass":
             completed_stage_ids.add(stage_id)
-            prompt_path = protocol.stage_prompt_path(run_dir, stage_id)
-            if prompt_path.exists():
-                try:
-                    stage_prompts.append(prompt_path.read_text())
-                except Exception as exc:
-                    warn(f"failed to read {stage_id} prompt for history: {exc}")
         elif stage_result.get("status") == "cancelled":
             workflow_status = "cancelled"
             break

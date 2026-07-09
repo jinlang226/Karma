@@ -43,17 +43,40 @@ class TestAssembleAgentPrompt:
         assert "stage 3 prompt" in result
         assert "stage 1 prompt" not in result
 
-    def test_concat_stateful_includes_prior_with_marker(self):
-        prompts = ["first", "second"]
+    def test_concat_stateful_spans_full_workflow_with_status_markers(self):
+        # Concat spans the WHOLE workflow -- future stages included -- with a
+        # COMPLETED / ACTIVE / UPCOMING status header per stage.
+        prompts = ["first", "second", "third"]
         result = assemble_agent_prompt(prompts, current_index=1, prompt_mode="concat_stateful")
-        assert "first" in result
-        assert "(ACTIVE)" in result
+        assert "first" in result and "second" in result
+        assert "third" in result          # the FUTURE stage is included
+        assert "COMPLETED" in result       # stage 1 (before current)
+        assert "ACTIVE" in result          # stage 2 (current)
+        assert "UPCOMING" in result        # stage 3 (future)
 
-    def test_concat_blind_includes_prior_without_marker(self):
-        prompts = ["first", "second"]
+    def test_concat_stateful_first_stage_sees_future(self):
+        # At the very first stage, the agent already sees every later stage.
+        prompts = ["one", "two", "three"]
+        result = assemble_agent_prompt(prompts, current_index=0, prompt_mode="concat_stateful")
+        assert "two" in result and "three" in result
+        assert result.index("ACTIVE") < result.index("UPCOMING")  # active before future
+
+    def test_concat_no_duplication(self):
+        # SR6 regression: no stage prompt may appear more than once, in either
+        # concat mode, at any stage index. Distinctive tokens avoid colliding
+        # with letters in the status-marker words.
+        prompts = ["<<one>>", "<<two>>", "<<three>>"]
+        for mode in ("concat_stateful", "concat_blind"):
+            for idx in range(3):
+                out = assemble_agent_prompt(prompts, current_index=idx, prompt_mode=mode)
+                for tok in prompts:
+                    assert out.count(tok) == 1
+
+    def test_concat_blind_spans_full_workflow_without_markers(self):
+        prompts = ["first", "second", "third"]
         result = assemble_agent_prompt(prompts, current_index=1, prompt_mode="concat_blind")
-        assert "first" in result
-        assert "(ACTIVE)" not in result
+        assert "first" in result and "second" in result and "third" in result
+        assert "ACTIVE" not in result and "STAGE" not in result
 
     def test_adversary_hint_appended(self):
         prompts = ["do the thing"]

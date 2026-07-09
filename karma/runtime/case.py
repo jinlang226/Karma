@@ -658,7 +658,11 @@ def run_stage(
     prior_stage_ids:
         IDs of stages that completed successfully before this one.
     stage_prompts:
-        Rendered prompt strings for all stages up to and including this one.
+        Rendered prompt strings for ALL stages in the workflow, statically
+        rendered from the definition and indexed by stage position. This
+        stage's slot (``stage_index``) is re-rendered here with runtime env;
+        the rest are used as-is. Concat modes span the whole list (future
+        stages included).
     prompt_mode:
         One of the prompt modes defined in ``definitions.prompts``.
     defer_cleanup:
@@ -833,13 +837,27 @@ def run_stage(
             docker=(sandbox_mode == "docker"),
         )
 
-        # Step 7: render and write prompt
-        rendered_prompt = render_stage_prompt(case, row, {"id": run_dir.name}, variables=env_vars_adv)
-        stage_prompts_up = list(stage_prompts) + [rendered_prompt]
+        # Step 7: render and write prompt. `stage_prompts` holds every stage's
+        # prompt pre-rendered statically from the workflow definition (future
+        # stages included). Re-render THIS stage with full runtime env and swap
+        # it into its slot, so the active stage is fully resolved while the rest
+        # stay static, then assemble per prompt_mode. Building from the full
+        # definition (not an accumulated runtime history) is what lets concat
+        # modes show future stages -- and removes the old duplication bug.
+        active_rendered = render_stage_prompt(case, row, {"id": run_dir.name}, variables=env_vars_adv)
         adversary_hint = row.get("adversary_hint")
+        stage_prompts_all = list(stage_prompts or [])
+        idx = stage_index
+        if 0 <= idx < len(stage_prompts_all):
+            stage_prompts_all[idx] = active_rendered
+        else:
+            # Defensive: a direct/single-stage caller may not supply the full
+            # workflow list; fall back to just this stage.
+            stage_prompts_all = [active_rendered]
+            idx = 0
         final_prompt = assemble_agent_prompt(
-            stage_prompts_up,
-            len(stage_prompts_up) - 1,
+            stage_prompts_all,
+            idx,
             prompt_mode,
             adversary_hint=adversary_hint,
         )

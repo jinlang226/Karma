@@ -203,7 +203,7 @@ class TestRunWorkflowLoop:
         assert result["status"] == "complete"
 
 
-class TestStagePromptsAccumulation:
+class TestStagePromptDistribution:
     def _make_row(self, stage_id: str) -> dict:
         return {
             "stage_id": stage_id,
@@ -219,21 +219,21 @@ class TestStagePromptsAccumulation:
             "retries": 0,
         }
 
-    def test_prompt_passed_to_second_stage(self, tmp_path):
+    def test_full_static_prompt_list_passed_to_every_stage(self, tmp_path):
+        # New model: the whole workflow's prompts are pre-rendered statically
+        # from the definition and handed to EVERY stage (concat spans the full
+        # list, future included) -- not accumulated from prior stages' prompt.txt.
         rows = [self._make_row("s1"), self._make_row("s2")]
+        rows[0]["case"] = {"prompt": "TASK ONE"}
+        rows[1]["case"] = {"prompt": "TASK TWO"}
         pass_r = lambda sid: {
             "stage_id": sid, "status": "pass", "oracle_verdict": "pass",
             "submitted": True, "duration_sec": 0.1, "error": None,
             "evidence_path": "", "oracle_path": "",
         }
-        prompt_text = "You are an agent."
 
         def fake_run_stage(row, **kwargs):
-            sid = row["stage_id"]
-            if sid == "s1":
-                protocol.ensure_stage_dir(tmp_path, "s1")
-                protocol.stage_prompt_path(tmp_path, "s1").write_text(prompt_text)
-            return pass_r(sid)
+            return pass_r(row["stage_id"])
 
         with patch("karma.runtime.workflow.run_stage", side_effect=fake_run_stage) as mock_run:
             run_workflow_loop(
@@ -246,8 +246,14 @@ class TestStagePromptsAccumulation:
                 environment=MagicMock(),
                 prompt_mode="concat_stateful",
             )
-        second_call_kwargs = mock_run.call_args_list[1][1]
-        assert prompt_text in second_call_kwargs["stage_prompts"]
+        # Stage 1 (index 0) already carries the FUTURE stage-2 prompt.
+        first = mock_run.call_args_list[0][1]
+        assert first["stage_prompts"] == ["TASK ONE", "TASK TWO"]
+        assert first["stage_index"] == 0
+        # The same full list is handed to stage 2.
+        second = mock_run.call_args_list[1][1]
+        assert second["stage_prompts"] == ["TASK ONE", "TASK TWO"]
+        assert second["stage_index"] == 1
 
     def test_failed_stage_prompt_not_accumulated(self, tmp_path):
         rows = [self._make_row("s1"), self._make_row("s2")]
