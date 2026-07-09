@@ -52,3 +52,17 @@ class TestJudgePreview:
         resp = client.post(
             "/api/judge/preview", json={"run_dir": str(tmp_path / "etc" / "passwd")})
         assert resp.status_code == 400
+
+
+class TestConfigEndpoint:
+    def test_reports_a_boolean(self, client):
+        body = client.get("/api/config").get_json()
+        assert isinstance(body["default_system_prompt_available"], bool)
+
+    def test_flags_missing_default_system_prompt(self, client):
+        import karma.runtime.service as svc
+        from unittest.mock import patch
+        from pathlib import Path
+        with patch.object(svc, "_DEFAULT_SYSTEM_PROMPT_PATH", Path("/nonexistent/x.md")):
+            body = client.get("/api/config").get_json()
+        assert body["default_system_prompt_available"] is False

@@ -418,10 +418,11 @@ def _apply_timeout_overrides(args: argparse.Namespace) -> None:
 
 
 def _read_system_prompt_arg(args: argparse.Namespace) -> str | None:
-    """Read the --system-prompt file (defaults to the harness contract).
+    """Read the --system-prompt file (defaults to docs/default-system-prompt.md).
 
-    Returns the file's text, or None if the path is missing/unreadable (the
-    service then falls back to its built-in default).
+    Returns the file's text, or None if the path is missing/unreadable. The
+    service then reads the default file itself; if THAT is also missing the base
+    prompt is empty and run_workflow warns (there is no in-code fallback).
     """
     path = getattr(args, "system_prompt", None)
     if path and Path(path).exists():
