@@ -27,7 +27,7 @@ from pathlib import Path
 from typing import Any, Literal
 
 import yaml
-from pydantic import BaseModel, ValidationError, field_validator, model_validator
+from pydantic import BaseModel, ConfigDict, ValidationError, field_validator, model_validator
 
 _TEST_FILE_NAME = "test.yaml"
 _VALID_ON_PROBE_FAIL = {"error", "skip"}
@@ -107,7 +107,16 @@ class CaseSchema(BaseModel):
     field has the wrong type, or an unrecognized top-level key is
     present that is not a known contemporary field. The error message
     from pydantic identifies the exact field path and reason.
+
+    ``extra='forbid'`` makes a mis-keyed top-level field a hard error rather
+    than a silent drop: e.g. ``oracel:`` (a typo of ``oracle:``) would
+    otherwise vanish, leaving the case with an empty oracle that passes
+    unconditionally. Nested blocks (``oracle.verify`` etc.) keep the default
+    ``extra='ignore'`` on purpose -- the oracle normalizer reads before/after
+    hooks straight from the raw dict, so those keys must be allowed through.
     """
+
+    model_config = ConfigDict(extra="forbid")
 
     prompt: str
     params: dict[str, _ParamDefinition] = {}
