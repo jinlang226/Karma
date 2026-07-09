@@ -195,9 +195,15 @@ def assemble_agent_prompt(
             parts.append(f"=== STAGE {i + 1} of {total} -- {status} ===\n{p}")
         assembled = "\n\n".join(parts)
     else:  # concat_blind
-        # Full workflow, but no headers/position/status -- the agent is blind to
-        # where it is in the sequence (progress comes from submit/state files).
-        assembled = "\n\n".join(stage_prompts)
+        # Full workflow WITH a stage separator (position + count) so the tasks are
+        # parseable, but NO status marker -- the agent stays blind to WHICH stage
+        # is active and must locate itself from cluster/submit state. Without any
+        # separator the tasks ran together into an unparseable wall (an observed
+        # failure mode); the header gives boundaries without revealing the current
+        # stage. Same prefix as concat_stateful, minus the " -- STATUS".
+        parts = [f"=== STAGE {i + 1} of {total} ===\n{p}"
+                 for i, p in enumerate(stage_prompts)]
+        assembled = "\n\n".join(parts)
 
     if adversary_hint:
         assembled = assembled + "\n\n" + adversary_hint.strip()

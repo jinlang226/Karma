@@ -72,11 +72,15 @@ class TestAssembleAgentPrompt:
                 for tok in prompts:
                     assert out.count(tok) == 1
 
-    def test_concat_blind_spans_full_workflow_without_markers(self):
+    def test_concat_blind_has_separators_but_no_status(self):
+        # Blind gets "=== STAGE k of n ===" boundaries so the tasks are parseable,
+        # but NO status marker -- the agent stays blind to which stage is active.
         prompts = ["first", "second", "third"]
         result = assemble_agent_prompt(prompts, current_index=1, prompt_mode="concat_blind")
         assert "first" in result and "second" in result and "third" in result
-        assert "ACTIVE" not in result and "STAGE" not in result
+        assert "=== STAGE 1 of 3 ===" in result and "=== STAGE 3 of 3 ===" in result
+        for status in ("ACTIVE", "COMPLETED", "UPCOMING"):
+            assert status not in result
 
     def test_adversary_hint_appended(self):
         prompts = ["do the thing"]
