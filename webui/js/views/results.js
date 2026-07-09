@@ -177,7 +177,8 @@
       el("div", { class: "code-block" }, copy, code),
       el("div", { class: "toolbar", style: "margin-top:12px" }, runBtn));
   }
-  function scoreCell(v) {
+  function scoreCell(v, na) {
+    if (na) return el("span", { class: "muted", title: "the judge could not grade this run" }, "N/A");
     if (v == null) return el("span", { class: "muted" }, "—");
     // Scores are 0-100 (0.1 precision); tolerate any legacy 0-1 values until re-judged.
     const s = v <= 1 ? v * 100 : v;
@@ -505,7 +506,7 @@
       el("td", {}, prog),
       el("td", {}, agent),
       el("td", { class: "score-cell" }, scoreCell(r.judge_score)),
-      el("td", { class: "score-cell" }, scoreCell(r.judge_score_rubric)));
+      el("td", { class: "score-cell" }, scoreCell(r.judge_score_rubric, r.judge_rubric_unavailable)));
   }
 
   // One folder row: a clickable folder name that drills in + a run count.
@@ -685,9 +686,11 @@
 
     // Two test scores top-right beside the heading: objective (w/o rubric) and
     // rubric (w/ rubric). Each shows "—" until the run is judged that way.
-    const scoreValue = (label, val) => {
+    const scoreValue = (label, val, na) => {
       const wrap = el("span", { class: "score-pair" }, el("span", { class: "score-pair-label" }, label));
-      if (val == null) {
+      if (na) {
+        wrap.appendChild(el("span", { class: "score-value none", title: label + " — the judge could not grade this run" }, "N/A"));
+      } else if (val == null) {
         wrap.appendChild(el("span", { class: "score-value none", title: label + " — not judged yet" }, "—/100.0"));
       } else {
         const s = val <= 1 ? val * 100 : val;
@@ -697,7 +700,7 @@
       return wrap;
     };
     scoreSlot.appendChild(scoreValue("w/o Rubric", d.judge_score));
-    scoreSlot.appendChild(scoreValue("w/ Rubric", d.judge_score_rubric));
+    scoreSlot.appendChild(scoreValue("w/ Rubric", d.judge_score_rubric, d.judge_rubric_unavailable));
 
     // Labeled fact pills: Status · Agent · Env · Prompt mode · Session · Duration.
     // Values keep natural case (so "42s" reads right); the Status pill is tinted

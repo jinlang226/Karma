@@ -286,6 +286,11 @@ def score_run(
         if status != "pass":
             contributions[sid] = 0.0
             entry["score"] = 0.0
+            if scored_with_rubric:
+                # Oracle failed -> nothing to rubric-grade. Still counted as 0, but
+                # flagged NOT APPLICABLE so the UI distinguishes it from a judge
+                # fault (which is N/A and produces no score at all).
+                entry["rubric_state"] = "not_applicable"
         elif rubric is None or dry_run:
             contributions[sid] = 1.0
             entry["score"] = 1.0
@@ -303,6 +308,34 @@ def score_run(
                     judge_api_key=judge_api_key, judge_timeout_sec=judge_timeout_sec,
                     judge_max_retries=judge_max_retries,
                 )
+                if not res.get("gradeable"):
+                    # The judge produced no usable grade for this stage (empty /
+                    # unparseable response) -- a JUDGE fault, NOT a real 0. Fail the
+                    # whole w/ rubric judge and write an N/A marker (score=None) so
+                    # the UI shows "N/A", distinct from a not-yet-judged dash and
+                    # from an oracle-fail "not applicable".
+                    emit(f"[judge] {sid}: judge produced no usable grade -- "
+                         "w/ rubric judge FAILS (N/A)")
+                    entry["score"] = None
+                    entry["rubric_state"] = "ungraded"
+                    stage_scores.append(entry)
+                    na_result = {
+                        "score": None,
+                        "score_max": 100.0,
+                        "rubric_unavailable": True,
+                        "method": "stage-rubric + regression-adjudication",
+                        "rubric_hash": _rubric_hash(rubric),
+                        "regression_prompt_hash": regression_prompt_hash(regression_prompt),
+                        "total_stages": total,
+                        "passed_stages": passed,
+                        "stage_scores": stage_scores,
+                        "summary": (f"rubric judge could not grade {sid} "
+                                    "(empty/unusable response) -- no w/ rubric score"),
+                    }
+                    if not dry_run:
+                        _write(run_dir, na_result, log, base_name=judge_basename)
+                    emit(f"[judge] done: {na_result['summary']}")
+                    return na_result
                 # run_judge returns the stage score on a 0-100 scale; normalize
                 # to the 0-1 contribution (do NOT clamp the raw 0-100 to 1.0).
                 frac = max(0.0, min(1.0, float(res.get("score") or 0.0) / 100.0))

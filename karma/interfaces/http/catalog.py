@@ -281,6 +281,10 @@ def list_runs(runs_dir: Path) -> list[dict[str, Any]]:
         if run_judge_rubric and isinstance(run_judge_rubric.get("score"), (int, float)):
             entry["judged"] = True
             entry["judge_score_rubric"] = round(float(run_judge_rubric["score"]), 1)
+        elif run_judge_rubric and run_judge_rubric.get("rubric_unavailable"):
+            # The rubric judge ran but couldn't grade (judge fault) -> N/A, distinct
+            # from a not-yet-judged dash.
+            entry["judge_rubric_unavailable"] = True
         runs.append(entry)
     return runs
 
@@ -424,6 +428,13 @@ def get_run_detail(runs_dir: Path, run_id: str) -> dict[str, Any]:
     if run_judge_rubric and isinstance(run_judge_rubric.get("score"), (int, float)):
         detail["judged"] = True
         detail["judge_score_rubric"] = round(float(run_judge_rubric["score"]), 1)
+        detail["judge_rubric_breakdown"] = {
+            k: run_judge_rubric.get(k) for k in _breakdown_keys
+        }
+    elif run_judge_rubric and run_judge_rubric.get("rubric_unavailable"):
+        # The rubric judge ran but couldn't grade one stage (judge fault) -> the
+        # w/ rubric score is N/A, not a not-yet-judged dash.
+        detail["judge_rubric_unavailable"] = True
         detail["judge_rubric_breakdown"] = {
             k: run_judge_rubric.get(k) for k in _breakdown_keys
         }
