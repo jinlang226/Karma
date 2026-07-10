@@ -18,7 +18,8 @@ Kubernetes
   <a href="#quick-start"><b>Quick Start</b></a> |
   <a href="#repo-map"><b>Repo Map</b></a> |
   <a href="#profiles"><b>Profiles</b></a> |
-  <a href="#developer-guide"><b>Developer Guide</b></a>
+  <a href="#developer-guide"><b>Developer Guide</b></a> |
+  <a href="#license"><b>License</b></a>
 </p>
 
 </div>
@@ -37,7 +38,7 @@ Today the repo includes workflow-ready cases across RabbitMQ, MongoDB, Cockroach
 
 KARMA is built around a few ideas that matter in practice:
 
-- **Reusable building blocks.** A testcase defines one operational task with setup, prompt, verification, cleanup, and metrics.
+- **Reusable building blocks.** A testcase defines one operational task with setup, prompt, verification, and cleanup.
 - **Stateful workflows.** Stages run in sequence against preserved system state, so later actions can help or hurt earlier outcomes.
 - **Deterministic correctness checks.** Each stage has explicit verification, with optional workflow-level regression sweeps to catch cross-stage breakage.
 - **Probe/apply/verify setup.** Testcases are broken into smaller resource-level precondition units, each with its own `probe`, `apply`, and `verify` cycle. That makes cases much more chainable because a later workflow stage can reuse the parts of the environment that are already correct instead of replaying a full reset.
@@ -58,7 +59,13 @@ That is the next direction for KARMA:
 
 ## Quick Start
 
-Install dependencies and start the web UI:
+### Prerequisites
+
+- Python 3.11+
+- `kubectl` on your `PATH`, pointing at a reachable cluster (a local [kind](https://kind.sigs.k8s.io/) cluster works)
+- a kubeconfig at `~/.kube/config` (or set `KUBECONFIG`)
+
+### Install and launch the web UI
 
 ```bash
 pip install -r requirements.txt
@@ -71,116 +78,133 @@ Then open:
 http://localhost:8080
 ```
 
-The UI is the easiest way to browse services, inspect workflows, and generate equivalent CLI commands.
+The UI is the easiest way to browse services, inspect workflows, run cases, and generate the equivalent CLI commands.
 
-If you want a local cluster for development, bootstrap a Kind environment with:
+### Bootstrap a local cluster
 
 ```bash
 ./scripts/setup-cluster.sh --provider kind
 ```
 
-Run a sample workflow from the CLI:
+### Run from the CLI
+
+Run a single case:
 
 ```bash
-python3 orchestrator.py workflow-run \
-  --workflow workflows/workflow-demo.yaml
+python3 orchestrator.py run-case demo configmap-update \
+  --agent cli_runner --sandbox local
 ```
 
-Run the same workflow with a checked-in profile:
+Run a multi-stage workflow:
 
 ```bash
-python3 orchestrator.py workflow-run \
-  --profile profiles/debug.yaml \
-  --workflow workflows/workflow-demo.yaml
+python3 orchestrator.py run-workflow workflows/demo/workflow-demo.yaml \
+  --agent cli_runner
 ```
 
-Run tests:
+Judge a completed run (LLM-as-Judge):
 
 ```bash
-python3 tests/run_unit.py
-python3 tests/run_integration.py
+python3 orchestrator.py judge runs/<run_id>
+```
+
+List the available agents:
+
+```bash
+python3 orchestrator.py info --agents
+```
+
+### Run the tests
+
+```bash
+pytest tests/unit          # fast, no cluster required
+pytest tests/integration   # requires a reachable cluster
 ```
 
 ## Repo Map
 
 - `main.py`
-  Starts the local web UI.
+  HTTP server and web UI (served at `http://localhost:8080`).
 
 - `orchestrator.py`
-  Headless CLI entrypoint for `run`, `batch`, and `workflow-run`.
+  Headless CLI entrypoint for `run-case`, `run-workflow`, `run-batch`, `judge`, and `info`.
 
-- `app/`
-  Core runtime code, including the workflow engine, agent runtime, judge pipeline, and UI job machinery.
+- `karma/`
+  The framework package: case/workflow/prompt **definitions**, the Kubernetes **environment** and **transport** (kubectl proxy), the **adversary** lifecycle, the **runtime** execution core, the **oracle** and **evidence** collection, and the LLM-as-**judge** pipeline. See `CLAUDE.md` for the layering rules.
 
-- `resources/`
-  Benchmark corpus. Each testcase lives under `resources/<service>/<case>/test.yaml`.
+- `karma/agents/`
+  Agent adapters and container definitions (`cli_runner`, `react`, `claude_code`, `codex`, `copilot`, `api`).
+
+- `cases/`
+  Benchmark corpus. Each testcase lives under `cases/<service>/<case>/test.yaml`.
 
 - `workflows/`
   Multi-stage workflow definitions built from reusable testcases.
 
-- `agent_tests/`
-  Agent container definitions and wrappers such as `react` and `cli-runner`.
+- `adversaries/`
+  Adversary scenarios (drift, permission constraints, competing controllers) injected into workflows.
 
-- `profiles/`
-  Reusable execution presets for `orchestrator.py --profile`.
+- `webui/`
+  The browser UI — plain HTML/CSS/JS with no build step.
 
 - `docs/`
-  Architecture notes, design docs, and developer runbooks.
+  Developer runbooks, prompt templates, and design notes.
 
 - `tests/`
-  Unit and integration coverage.
+  `tests/unit` (fast, no cluster) and `tests/integration` (require a live cluster).
 
 ## Profiles
 
-KARMA supports reusable run profiles through `orchestrator.py --profile`.
-
-That is the profile system used for commands like:
+A **profile** is a reusable YAML preset of run flags (agent, sandbox, timeout, params, …) so you don't have to repeat them on every invocation. Pass one with `--profile` to `run-case`, `run-workflow`, or `run-batch`:
 
 ```bash
-python3 orchestrator.py workflow-run \
-  --profile profiles/codex.yaml \
-  --workflow workflows/workflow-demo.yaml
+python3 orchestrator.py run-workflow workflows/demo/workflow-demo.yaml \
+  --profile my-profile.yaml
 ```
 
-Shipped examples:
-
-- `profiles/debug.yaml`
-  Starts a Docker workflow run with `cli-runner` held open for manual debugging.
-
-- `profiles/codex.yaml`
-  Starts a Docker workflow run with `cli-runner` and a headless Codex command.
-
-One important naming note: this repo also has judge rubric profiles under `resources/*/judge_base.yaml`. Those are not execution presets. They are overlays for the LLM-as-Judge pipeline.
+Note: the LLM-as-Judge also uses rubric overlays (e.g. `judge_base.yaml`), which are a separate concept — they tune scoring, not execution.
 
 ## Developer Guide
 
 If you want to understand or extend the repo, start here:
 
-- `docs/overview.md`
-  High-level overview of the framework and runtime model.
-
-- `docs/architecture.md`
-  System architecture and execution phases.
-
-- `docs/design/workflow-model.md`
-  Workflow and stage model.
-
-- `docs/design/workflow-agent-progress-contract.md`
-  Prompt and runtime expectations for agents.
-
-- `docs/developer/debugging-runbook.md`
-  Practical debugging notes for workflow runs.
-
-- `docs/developer/internals.md`
-  Maintainer-oriented code map.
+- `CLAUDE.md`
+  Architecture, layering rules, common commands, and the code map.
 
 - `docs/developer/adding-a-test-case.md`
   How to author reusable, workflow-safe testcases.
 
+- `docs/developer/kind-cluster-setup.md`
+  Setting up a local Kind cluster.
+
+- `docs/developer/persistent-agent-sessions.md`
+  How an agent session persists across stages of a workflow.
+
+- `docs/developer/composition-failure-patterns.md`
+  Common failure classes in long, composed workflows.
+
 If you are new to the codebase, a good path is:
 
-1. Read `docs/overview.md`.
-2. Open a workflow in `workflows/`.
-3. Open a testcase in `resources/<service>/<case>/test.yaml`.
-4. Trace `orchestrator.py` into `app/orchestrator_core/cli.py` and `app/orchestrator_core/workflow_engine.py`.
-5. Run a workflow with `profiles/debug.yaml` and inspect the artifacts under `runs/`.
+1. Read `CLAUDE.md`.
+2. Open a workflow in `workflows/` and a testcase in `cases/<service>/<case>/test.yaml`.
+3. Trace `orchestrator.py` into `karma/interfaces/cli/main.py` and `karma/runtime/workflow.py`.
+4. Run a workflow and inspect the artifacts under `runs/`.
+
+## License
+
+KARMA is released under the [MIT License](LICENSE).
+
+## Citation
+
+If you use KARMA in your research, please cite:
+
+```bibtex
+@inproceedings{karma2026,
+  title     = {KARMA: Kubernetes Agent Runtime Measurement Architecture},
+  booktitle = {Proceedings of the 2026 Conference on Empirical Methods in
+               Natural Language Processing: System Demonstrations},
+  year      = {2026}
+}
+```
+
+<!-- TODO: replace with the final citation (authors, pages, DOI) once the paper is published. -->
