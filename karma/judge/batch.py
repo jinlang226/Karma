@@ -72,17 +72,31 @@ def judge_batch_dir(
 
     total = len(run_dirs)
     for idx, run_dir in enumerate(run_dirs):
-        result = score_run(
-            run_dir,
-            rubric=rubric,
-            judge_model=judge_model,
-            judge_base_url=judge_base_url,
-            judge_api_key=judge_api_key,
-            judge_timeout_sec=judge_timeout_sec,
-            judge_max_retries=judge_max_retries,
-            dry_run=dry_run,
-            regression_prompt=regression_prompt,
-        )
+        try:
+            result = score_run(
+                run_dir,
+                rubric=rubric,
+                judge_model=judge_model,
+                judge_base_url=judge_base_url,
+                judge_api_key=judge_api_key,
+                judge_timeout_sec=judge_timeout_sec,
+                judge_max_retries=judge_max_retries,
+                dry_run=dry_run,
+                regression_prompt=regression_prompt,
+            )
+        except Exception as exc:  # noqa: BLE001
+            # SW-3: one run's failure (e.g. JudgeLLMUnavailable on a run that needs
+            # the LLM adjudicator) must NOT abort the whole batch mean. Record the
+            # error, keep going, and let average_final_score be computed over the
+            # runs that scored -- mirroring judging._judge_all_streaming.
+            runs.append({"run_id": run_dir.name, "score": None, "summary": None,
+                         "error": str(exc)})
+            if on_run_complete is not None:
+                try:
+                    on_run_complete(run_dir.name, None, idx + 1, total)
+                except Exception:
+                    pass
+            continue
         score = None if dry_run else result.get("score")
         if isinstance(score, (int, float)):
             run_scores.append(float(score))
