@@ -127,7 +127,9 @@ def _evaluate_oracle(
             )
             return result
 
-        before_ok, before_out = _run_commands(
+        # before_commands only capture baseline state (surfaced in before_output);
+        # they are not assertions, so their ok flag is intentionally unused. (SS-8)
+        _, before_out = _run_commands(
             oracle_config.get("before_commands") or [],
             env=env, timeout_sec=effective_timeout,
         )
