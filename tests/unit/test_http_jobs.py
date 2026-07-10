@@ -162,6 +162,29 @@ def test_stream_route_accepts_run_before_first_event(monkeypatch):
         jobs._active_jobs.pop("run-xyz", None)
 
 
+def test_run_stream_availability_404s_evicted_finished_run():
+    """SS-9: the stream is served for a live run or a hub-known run, but a
+    finished run whose event buffer the hub has evicted must NOT be served --
+    otherwise its feed hangs open forever (no events, no 'done')."""
+    from karma.interfaces.http.server import _run_stream_available
+    from karma.interfaces.http.events import hub
+    import karma.interfaces.http.jobs as jobs
+
+    assert _run_stream_available("never-existed") is False  # unknown run
+
+    jobs._register_job("run-live", {"run_id": "run-live", "status": "running", "kind": "run"})
+    jobs._register_job("run-done", {"run_id": "run-done", "status": "complete", "kind": "run"})
+    try:
+        assert not hub.is_known("run-live") and not hub.is_known("run-done")
+        # live job with no buffered events yet -> served (just-submitted race)
+        assert _run_stream_available("run-live") is True
+        # finished run, buffer evicted -> NOT served (SS-9)
+        assert _run_stream_available("run-done") is False
+    finally:
+        jobs._active_jobs.pop("run-live", None)
+        jobs._active_jobs.pop("run-done", None)
+
+
 def test_workflow_path_confined_at_http_boundary(tmp_path):
     """With workflows_dir set (the HTTP boundary), a traversal path is rejected;
     without it (direct callers) any path is allowed."""

@@ -115,11 +115,12 @@ def create_app(
 
     @app.route("/api/run/<run_id>/stream")
     def api_run_stream(run_id):
-        # A just-submitted run is a registered job but has no buffered events
-        # yet -- its first stage can be tens of seconds away. Accept it (the
-        # live subscriber then receives events as they fire) instead of 404-ing
-        # the race between the UI opening the stream and the first event.
-        if not hub.is_known(run_id) and get_job_status(run_id) is None:
+        # Serve only when the hub still holds this run's event buffer, or the run
+        # is a live job whose first event may be tens of seconds away (the just-
+        # submitted race). A finished run whose buffer the hub evicted -- or an
+        # unknown run -- would never emit 'done', so 404 instead of hanging the
+        # feed forever (SS-9). See _run_stream_available.
+        if not _run_stream_available(run_id):
             return jsonify({"error": "not found"}), 404
         return Response(
             _sse_stream(run_id),
@@ -487,6 +488,22 @@ def create_app(
 
 
 _HEARTBEAT_INTERVAL = 15.0
+
+
+def _run_stream_available(run_id: str) -> bool:
+    """True when the run's SSE stream should be served, False to 404.
+
+    Served when the hub still holds the run's event buffer, or the run is a
+    live (``"running"``) job whose first event may not have fired yet (the
+    just-submitted race). A finished run whose buffer the hub has evicted -- or
+    an unknown run -- is NOT served: it has nothing to stream and would never
+    emit a ``done`` sentinel, so the feed would hang open forever (SS-9). The
+    judge stream 404s the same way.
+    """
+    if hub.is_known(run_id):
+        return True
+    status = get_job_status(run_id)
+    return bool(status) and status.get("status") == "running"
 
 
 def _sse_stream(stream_id: str) -> Any:
