@@ -181,6 +181,13 @@ def _judge_is_current(
     except OSError:
         return False
     stored = catalog._read_json(target)
+    # A judge-fault result (N/A: the LLM grade came back empty/unparseable, so the
+    # rubric judge marked itself rubric_unavailable) or a cancelled judging is NOT
+    # a settled outcome -- it is transient, so a re-judge should actually re-run
+    # rather than serve the stale failure. Oracle-fail "not applicable" stages
+    # still produce a numeric run score and stay cached.
+    if stored.get("rubric_unavailable") or stored.get("cancelled"):
+        return False
     if rubric_hash is not None and stored.get("rubric_hash") != rubric_hash:
         return False
     if regression_hash is not None and stored.get("regression_prompt_hash") != regression_hash:
