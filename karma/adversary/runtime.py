@@ -129,15 +129,27 @@ def _run_units(
             overall_ok = False
             continue
 
-        # Verify
-        verify_ok = True
-        for cmd_entry in unit.get("verify_commands") or []:
-            cmd = cmd_entry["command"]
-            to = cmd_entry.get("timeout_sec") or 30
-            ok, out = _exec_command(cmd, env_vars=env, timeout=to, log_path=log_path)
-            all_output.append(out)
-            if not ok:
-                verify_ok = False
+        # Verify -- retry up to verify_retries times, verify_interval_sec apart,
+        # exiting the instant it passes: a fault can take a moment to manifest on
+        # deploy or clear on lift, so a one-shot check flakes. Mirrors the
+        # precondition probe loop. Default 1/0 => one shot, no wait, so existing
+        # scenarios are unchanged; only a scenario that sets retries waits. (SS-11)
+        tries = max(1, int(unit.get("verify_retries") or 1))
+        interval = float(unit.get("verify_interval_sec") or 0.0)
+        verify_ok = False
+        for attempt in range(tries):
+            if attempt > 0 and interval > 0:
+                time.sleep(interval)
+            verify_ok = True
+            for cmd_entry in unit.get("verify_commands") or []:
+                cmd = cmd_entry["command"]
+                to = cmd_entry.get("timeout_sec") or 30
+                ok, out = _exec_command(cmd, env_vars=env, timeout=to, log_path=log_path)
+                all_output.append(out)
+                if not ok:
+                    verify_ok = False
+                    break
+            if verify_ok:
                 break
         if verify_ok:
             success_ids.append(unit_id)
