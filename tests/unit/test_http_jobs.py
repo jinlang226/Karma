@@ -146,6 +146,20 @@ class TestCancelJob:
         jobs._cancel_requested.discard("cj2")
         del jobs._active_jobs["cj2"]
 
+    def test_late_cancel_on_finished_run_is_noop(self):
+        # SS-10: a cancel arriving after the run finished must not flip its
+        # terminal status to "cancelled" nor grow _cancel_requested (the run
+        # thread already discarded it and would never remove it again).
+        from karma.interfaces.http import jobs
+        jobs._active_jobs["cj3"] = {"run_id": "cj3", "status": "complete"}
+        try:
+            assert cancel_job("cj3") is False
+            assert jobs._active_jobs["cj3"]["status"] == "complete"  # unchanged
+            assert "cj3" not in jobs._cancel_requested
+        finally:
+            jobs._active_jobs.pop("cj3", None)
+            jobs._cancel_requested.discard("cj3")
+
 
 def test_stream_route_accepts_run_before_first_event(monkeypatch):
     """A just-submitted run (registered job, no events yet) must not 404 on

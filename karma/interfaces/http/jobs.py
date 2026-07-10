@@ -345,19 +345,23 @@ def cancel_job(run_id: str) -> bool:
     Returns
     -------
     bool
-        ``True`` when the job was found, ``False`` when *run_id* is not
-        registered.
+        ``True`` when a still-running job was flagged for cancellation;
+        ``False`` when *run_id* is unknown or already in a terminal state.
     """
     with _jobs_lock:
         job = _active_jobs.get(run_id)
-    if job is None:
-        return False
-    # Signal the running workflow thread to stop: it polls this between stages
-    # and during the agent wait, terminates the agent, and ends with a
-    # cancelled run_complete (which closes the stream). We do not close the hub
-    # here so that final cancelled event still reaches attached clients.
-    with _jobs_lock:
+        # Only a still-running job can be cancelled. A late cancel on an already-
+        # finished run must NOT flip its terminal status to "cancelled" or re-add
+        # it to _cancel_requested -- the run thread discarded it on exit and would
+        # never remove it again, so the set would grow unbounded (SS-10). Mirror
+        # judging.request_judge_cancel, which gates on "running".
+        if job is None or job.get("status") != "running":
+            return False
         _cancel_requested.add(run_id)
+    # Signal the running workflow thread to stop: it polls this between stages
+    # and during the agent wait, terminates the agent, and ends with a cancelled
+    # run_complete (which closes the stream). We do not close the hub here so that
+    # final cancelled event still reaches attached clients.
     _update_job(run_id, {"status": "cancelled"})
     hub.publish(run_id, {"type": "cancelled", "run_id": run_id})
     return True
