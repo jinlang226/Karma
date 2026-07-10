@@ -3,10 +3,10 @@
 import os
 import time
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 from karma import sandbox
-from karma.sandbox import launch_agent
+from karma.sandbox import AgentProcess, launch_agent
 
 
 class TestCommandOverride:
@@ -74,6 +74,17 @@ class TestTerminateKillsProcessGroup:
                 break
             time.sleep(0.1)
         assert dead, f"agent child {child_pid} survived terminate() (C3 regression)"
+
+
+class TestDockerLogStreamerReaped:
+    def test_terminate_reaps_the_docker_logs_streamer(self):
+        # SS-3: in docker mode _proc is the `docker logs -f` streamer. terminate()
+        # must wait() on it, or it lingers as a <defunct> zombie -- one per stage.
+        proc = MagicMock()
+        ap = AgentProcess(proc, sandbox_mode="docker", container_id="deadbeef")
+        with patch("karma.sandbox.subprocess.run"):
+            ap.terminate()
+        proc.wait.assert_called()  # the streamer was reaped
 
 
 class TestDockerHostAlias:
