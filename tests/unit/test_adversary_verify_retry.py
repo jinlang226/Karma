@@ -4,7 +4,7 @@ Before the fix these fields were parsed onto the unit but never read, so the
 verify always ran once -- a fault that took a beat to manifest/clear produced a
 spurious deploy/lift failure.
 """
-from karma.adversary.runtime import _run_units
+from karma.adversary.runtime import _run_units, deploy
 
 
 def _unit(cnt_path, retries):
@@ -39,3 +39,20 @@ def test_single_attempt_fails_when_not_yet_settled(tmp_path):
         role_bindings={}, log_path=tmp_path / "adv.log", env_vars={}, result_id_key="ids",
     )
     assert res["ok"] is False and res["ids"] == []
+
+
+# --- The ok signal SW-4 keys on: a failed deploy must be distinguishable so the
+# --- stage aborts instead of running (and being scored) without the fault. ---
+
+def test_deploy_reports_ok_false_when_apply_fails(tmp_path):
+    unit = {"id": "u", "probe_commands": [],
+            "apply_commands": [{"command": "false", "timeout_sec": 5}],
+            "verify_commands": []}
+    res = deploy([unit], role_bindings={}, log_path=tmp_path / "adv.log", env_vars={})
+    assert res["ok"] is False
+
+
+def test_deploy_of_no_units_is_ok(tmp_path):
+    # A non-adversary stage: empty units => ok True, so SW-4's guard never fires.
+    res = deploy([], role_bindings={}, log_path=tmp_path / "adv.log", env_vars={})
+    assert res["ok"] is True
