@@ -59,6 +59,35 @@ def find_free_port() -> int:
         return s.getsockname()[1]
 
 
+def _read_upstream_status(sock: Any, cap: int = 65536) -> tuple[int | None, bytes]:
+    """Peek an upgrade tunnel's upstream HTTP status line.
+
+    Reads from *sock* only up to the end of the first line (the HTTP status
+    line) so the call log can record the real outcome of an exec/attach/
+    port-forward: 101 on a successful protocol switch, or the 4xx/5xx the API
+    server returned when it rejected the request. Returns
+    ``(status_code_or_None, bytes_read)``; the caller MUST forward *bytes_read*
+    to the client unchanged, since reading here consumes them from the upstream.
+    """
+    buf = b""
+    while b"\r\n" not in buf and len(buf) < cap:
+        try:
+            chunk = sock.recv(4096)
+        except Exception:
+            break
+        if not chunk:
+            break
+        buf += chunk
+    line = buf.split(b"\r\n", 1)[0]
+    parts = line.split(None, 2)
+    if len(parts) >= 2 and parts[0].upper().startswith(b"HTTP/"):
+        try:
+            return int(parts[1]), buf
+        except ValueError:
+            pass
+    return None, buf
+
+
 # ---------------------------------------------------------------------------
 # Proxy server
 # ---------------------------------------------------------------------------
@@ -169,6 +198,17 @@ class KubectlProxyServer:
                     usock.sendall(raw)
 
                     client = self.connection
+
+                    # Peek the upstream's HTTP status line so the call log records
+                    # the real outcome: a rejected exec/attach/port-forward returns
+                    # 4xx/5xx here, not the 101 we optimistically assumed above. The
+                    # peeked bytes are forwarded to the client unchanged -- we read
+                    # only to log, not to consume the response.
+                    code, head = _read_upstream_status(usock)
+                    if code is not None:
+                        status = code
+                    if head:
+                        client.sendall(head)
 
                     def _pump(src, dst):
                         try:
