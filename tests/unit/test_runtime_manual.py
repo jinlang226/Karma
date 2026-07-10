@@ -179,3 +179,30 @@ class TestCleanupManualRun:
 
     def test_cleanup_unknown_is_safe(self):
         assert manual.cleanup_manual_run("nope")["status"] == "unknown"
+
+    def test_cleanup_deletes_recorded_literal_namespaces_without_roles(self, tmp_path):
+        # SW-1: a required_roles:[] case (role_bindings={}) that created a literal
+        # namespace (mongodb/cockroachdb/spark) must still get it deleted, via
+        # cleanup_created_namespaces -- the per-role cleanup covers nothing here.
+        calls = {}
+
+        class _Env:
+            def cleanup_namespaces(self, rb, run_dir):
+                calls["role"] = dict(rb)
+
+            def cleanup_created_namespaces(self, created, run_dir):
+                calls["created"] = set(created)
+
+        with manual._lock:
+            manual._sessions["mrun"] = {
+                "run_id": "mrun", "service": "mongodb", "case_name": "deploy",
+                "_env": _Env(), "_role_bindings": {}, "_ns_created": {"mongodb"},
+                "_stage_dir": tmp_path, "_proxy": None,
+            }
+        try:
+            result = manual.cleanup_manual_run("mrun")
+            assert result["status"] == "cleaned"
+            assert calls.get("created") == {"mongodb"}   # literal ns deleted
+            assert "role" not in calls                    # no role ns to clean
+        finally:
+            manual._sessions.pop("mrun", None)

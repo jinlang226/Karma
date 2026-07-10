@@ -39,7 +39,7 @@ from ..oracle import run_oracle
 from ..evidence import collect_evidence
 from .. import protocol
 from ..definitions.cases import load_case_file, normalize_case, discover_case_decoys
-from .case import _run_operation_units, _param_env_vars
+from .case import _run_operation_units, _param_env_vars, _namespaces_created_since
 
 
 _MANUAL_STAGE_ID = "manual"
@@ -75,6 +75,21 @@ def get_manual_status(run_id: str) -> dict[str, Any] | None:
         return _public_view(session) if session else None
 
 
+def _record_ns_created(run_id: str, environment: Any, ns_baseline: set) -> None:
+    """Store the namespaces this manual setup created on the session (SW-1).
+
+    The delta from *ns_baseline* is exactly the literal namespaces the case's
+    preconditions/decoys create (mongodb/cockroachdb/spark), which the per-role
+    cleanup does not cover; cleanup_manual_run deletes this recorded set. Mirrors
+    the automated path in runtime.case.
+    """
+    created = _namespaces_created_since(environment, ns_baseline)
+    with _lock:
+        s = _sessions.get(run_id)
+        if s is not None:
+            s["_ns_created"] = created
+
+
 def _do_setup(run_id: str) -> None:
     """Run setup steps for the session, updating phase as it progresses."""
     with _lock:
@@ -97,6 +112,10 @@ def _do_setup(run_id: str) -> None:
         environment = get_environment(session.get("_environment_provider"))
         role_bindings = environment.bind_namespace_roles(ns_roles, run_dir.name)
         environment.ensure_namespaces(role_bindings, run_dir=stage_dir)
+        # SW-1: all namespaces present now (best-effort; the helper never raises).
+        # The delta after setup is the literal namespaces the case creates, which
+        # cleanup must delete -- exactly as the automated path records them.
+        ns_baseline = _namespaces_created_since(environment, set())
         # Record the live objects on the session immediately so that a failure
         # in a later setup step (or a cleanup call) can still tear the
         # namespaces and proxy down -- otherwise they would be orphaned.
@@ -119,6 +138,9 @@ def _do_setup(run_id: str) -> None:
             env_vars=command_env,
             label="precondition",
         )
+        # SW-1: record now, before the ok-check's raise, so a precondition-failure
+        # teardown still deletes the literal namespaces the preconditions created.
+        _record_ns_created(run_id, environment, ns_baseline)
         if not precond_result["ok"]:
             # Raise rather than return so the except handler below tears down
             # the proxy and the namespaces created above.
@@ -133,6 +155,8 @@ def _do_setup(run_id: str) -> None:
                 decoy_configs, role_bindings,
                 resources_dir=resources_dir, run_dir=stage_dir,
             )
+        # SW-1: re-record to also capture any namespaces decoy planting created.
+        _record_ns_created(run_id, environment, ns_baseline)
 
         env_vars = {
             **environment.build_env_vars(role_bindings, proxy_port=proxy_handle.port),
@@ -178,6 +202,14 @@ def _do_setup(run_id: str) -> None:
         if env_err is not None and rb_err:
             try:
                 env_err.cleanup_namespaces(rb_err, run_dir=sd_err)
+            except Exception:
+                pass
+        # SW-1: also delete the literal namespaces the partial setup created
+        # (not covered by the per-role cleanup; the only path for required_roles:[]).
+        ns_created_err = s_err.get("_ns_created")
+        if env_err is not None and ns_created_err and hasattr(env_err, "cleanup_created_namespaces"):
+            try:
+                env_err.cleanup_created_namespaces(ns_created_err, run_dir=sd_err)
             except Exception:
                 pass
 
@@ -332,6 +364,15 @@ def cleanup_manual_run(run_id: str) -> dict[str, Any]:
     if env is not None and role_bindings:
         try:
             env.cleanup_namespaces(role_bindings, run_dir=stage_dir)
+        except Exception:
+            pass
+    # SW-1: delete the literal namespaces the case's preconditions created
+    # (mongodb/cockroachdb/spark) -- not covered by the per-role cleanup above,
+    # and skipped entirely for required_roles:[] cases where role_bindings is {}.
+    ns_created = session.get("_ns_created")
+    if env is not None and ns_created and hasattr(env, "cleanup_created_namespaces"):
+        try:
+            env.cleanup_created_namespaces(ns_created, run_dir=stage_dir)
         except Exception:
             pass
 
