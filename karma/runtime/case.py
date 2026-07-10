@@ -856,6 +856,23 @@ def run_stage(
             **param_env,
         }
         deploy_result = adversary_deploy(adv_deploy_units, role_bindings=role_bindings, log_path=adv_log, env_vars=env_vars_adv)
+        # SW-4: if the fault failed to deploy, do NOT launch the agent -- the stage
+        # would otherwise run with NO adversary present and be scored as an ordinary
+        # pass/fail, silently corrupting the adversary result. Record the failure
+        # (adversary.json, no lift) and abort like a failed setup.
+        if adv_deploy_units and not deploy_result.get("ok"):
+            adversary_report(str(row.get("stage_id")), deploy_result, None,
+                             run_dir=run_dir, stage_id=stage_id)
+            return {
+                "stage_id": stage_id,
+                "status": "error",
+                "oracle_verdict": None,
+                "submitted": False,
+                "duration_sec": time.monotonic() - start_time,
+                "error": "adversary deploy failed: fault not injected",
+                "evidence_path": str(protocol.stage_evidence_path(run_dir, stage_id)),
+                "oracle_path": str(protocol.stage_oracle_path(run_dir, stage_id)),
+            }
 
         # Step 6: write agent bundle
         opts = sandbox_options or {}
