@@ -104,3 +104,36 @@ class TestJudgeStalenessRegressionHash:
     def test_ignored_when_not_requested(self, tmp_path):
         run = self._make_judged(tmp_path, "HASH_A")
         assert judging._judge_is_current(run, "judge", None, None) is True
+
+
+class TestJudgeStalenessJudgeFaultNA:
+    """A judge-fault N/A (rubric_unavailable) or a cancelled judging is transient,
+    so a re-judge must re-run it -- unlike an oracle-fail 'not applicable', which
+    yields a numeric score and stays cached."""
+
+    def _make_rubric(self, tmp_path, payload):
+        import os
+        run = tmp_path / "r"
+        run.mkdir(parents=True)
+        (run / "workflow_state.json").write_text(json.dumps({"status": "complete"}))
+        (run / "judge_rubric.json").write_text(json.dumps(payload))
+        base = judging._run_input_mtime(run)
+        os.utime(run / "judge_rubric.json", (base + 10, base + 10))  # fresh judge
+        return run
+
+    def test_na_judge_fault_is_stale(self, tmp_path):
+        run = self._make_rubric(tmp_path, {"score": None, "rubric_unavailable": True,
+                                           "rubric_hash": "H", "regression_prompt_hash": "R"})
+        assert judging._judge_is_current(run, "judge_rubric", "H", "R") is False
+
+    def test_cancelled_judging_is_stale(self, tmp_path):
+        run = self._make_rubric(tmp_path, {"score": None, "cancelled": True,
+                                           "rubric_hash": "H", "regression_prompt_hash": "R"})
+        assert judging._judge_is_current(run, "judge_rubric", "H", "R") is False
+
+    def test_graded_rubric_result_stays_current(self, tmp_path):
+        # A genuinely graded run (or an oracle-fail 'not applicable' run, which
+        # also carries a numeric score) is still cached.
+        run = self._make_rubric(tmp_path, {"score": 72.5, "rubric_hash": "H",
+                                           "regression_prompt_hash": "R"})
+        assert judging._judge_is_current(run, "judge_rubric", "H", "R") is True
