@@ -196,19 +196,24 @@ class K8sEnvironment:
         return {ln.split("/", 1)[-1].strip() for ln in out.splitlines() if ln.strip()}
 
     def cleanup_created_namespaces(
-        self, baseline: set[str], *, run_dir: Path, force: bool = False
+        self, created: set[str], *, run_dir: Path, force: bool = False
     ) -> list[str]:
-        """Delete namespaces created since *baseline*.
+        """Delete the namespaces this run created (given as an explicit set).
 
         Cases that manage their own literal namespaces (e.g. ``mongodb``,
         ``cockroachdb``) create them in preconditions; the per-role teardown
         (:meth:`cleanup_namespaces`) only removes the ``karma-*`` role
         namespaces, so those literal namespaces would otherwise leak across
-        runs. This removes every namespace not present in *baseline* and not a
-        protected system namespace. Returns the names deleted.
+        runs. *created* is the exact set of namespaces this run brought into
+        existence -- recorded by the caller as ``snapshot_after_setup -
+        baseline`` and frozen before the agent ran. Deleting only this recorded
+        set (rather than re-diffing the live namespace list against a
+        start-of-stage baseline at teardown) means a concurrent run's
+        namespaces are never swept up on a shared cluster (SS-2). Protected
+        system namespaces are excluded defensively. Returns the names deleted.
         """
-        created = sorted(self.list_namespaces() - set(baseline) - _PROTECTED_NAMESPACES)
-        for ns_name in created:
+        targets = sorted(set(created) - _PROTECTED_NAMESPACES)
+        for ns_name in targets:
             args = ["delete", "namespace", ns_name, "--ignore-not-found", "--wait=false"]
             if force:
                 args += ["--grace-period=0", "--force"]
@@ -216,7 +221,7 @@ class K8sEnvironment:
                 self._kubectl(args, check=False, timeout=self._force_timeout)
             except Exception as exc:
                 warn(f"failed to delete namespace {ns_name}: {exc}")
-        return created
+        return targets
 
     def render_manifest(
         self,
