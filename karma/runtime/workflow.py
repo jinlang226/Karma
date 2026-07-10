@@ -267,14 +267,11 @@ def run_workflow_loop(
 
     completed_stage_ids: set[str] = set()
     deployed_scenario_ids: set[str] = set()
-    # Snapshot namespaces before any stage runs so the deferred teardown can
-    # also remove case-created literal namespaces (mongodb, rabbitmq, ...).
-    ns_baseline: set[str] = set()
-    if environment is not None and hasattr(environment, "list_namespaces"):
-        try:
-            ns_baseline = environment.list_namespaces()
-        except Exception:
-            ns_baseline = set()
+    # Namespaces the stages create (mongodb, rabbitmq, ...), accumulated across
+    # stages via each stage's `created_sink`. The deferred teardown deletes
+    # exactly this recorded set -- never a re-diff of the live namespace list,
+    # which would sweep up a concurrent run's namespaces on a shared cluster (SS-2).
+    ns_created: set[str] = set()
 
     all_injections = [
         inj
@@ -342,6 +339,7 @@ def run_workflow_loop(
                     stage_index=idx,
                     prologue=stage_prologue,
                     defer_cleanup=True,
+                    created_sink=ns_created,
                     sandbox_options=sandbox_options,
                     on_progress=stage_progress,
                     should_cancel=should_cancel,
@@ -417,9 +415,9 @@ def run_workflow_loop(
                 environment.cleanup_namespaces(full_bindings, run_dir=run_dir)
             except Exception as exc:
                 warn(f"failed to delete workflow namespaces: {exc}")
-        if ns_baseline and environment is not None and hasattr(environment, "cleanup_created_namespaces"):
+        if environment is not None and hasattr(environment, "cleanup_created_namespaces"):
             try:
-                environment.cleanup_created_namespaces(ns_baseline, run_dir=run_dir)
+                environment.cleanup_created_namespaces(ns_created, run_dir=run_dir)
             except Exception:
                 pass
 

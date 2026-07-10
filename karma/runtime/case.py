@@ -619,6 +619,22 @@ def _wait_for_submit(
 # Public API
 # ---------------------------------------------------------------------------
 
+def _namespaces_created_since(environment: Any, baseline: set[str]) -> set[str]:
+    """Namespaces that appeared since *baseline* (best-effort, never raises).
+
+    Used to record exactly which namespaces THIS run created so teardown can
+    delete that recorded set instead of re-diffing the live list at teardown --
+    which would sweep up a concurrent run's namespaces on a shared cluster (SS-2).
+    Returns an empty set when the environment cannot list namespaces.
+    """
+    if not hasattr(environment, "list_namespaces"):
+        return set()
+    try:
+        return set(environment.list_namespaces()) - set(baseline)
+    except Exception:
+        return set()
+
+
 def run_stage(
     row: dict[str, Any],
     *,
@@ -636,6 +652,7 @@ def run_stage(
     stage_index: int = 0,
     prologue: str = "",
     defer_cleanup: bool = False,
+    created_sink: set[str] | None = None,
     sandbox_options: dict[str, Any] | None = None,
     on_progress: Any | None = None,
     should_cancel: Any | None = None,
@@ -672,6 +689,11 @@ def run_stage(
         state survives across stages and the final regression sweep can
         re-evaluate it against the live cluster. The proxy and agent are
         always cleaned up per stage regardless.
+    created_sink:
+        Optional set the caller passes so it can learn which namespaces this
+        stage created (recorded before the agent ran). When ``defer_cleanup``
+        is set, the workflow loop uses it to delete exactly this run's
+        namespaces at the end (SS-2), instead of re-diffing the live list.
 
     Returns
     -------
@@ -692,6 +714,10 @@ def run_stage(
     role_bindings: dict[str, str] = {}
     identity_bindings: dict[str, str] = {}
     ns_baseline: set[str] = set()
+    # Namespaces THIS run creates during setup (preconditions/decoys/adversary),
+    # frozen before the agent launches so teardown deletes exactly these and never
+    # a concurrent run's namespaces on a shared cluster (SS-2).
+    ns_created: set[str] = set()
     # F-late: bind these before the try so the outer except can recover the real
     # state instead of nullifying an already-graded stage (see the except below).
     submitted = False
@@ -776,6 +802,10 @@ def run_stage(
             phase_timeout_sec=phase_timeout,
             on_progress=on_progress,
         )
+        # SS-2: record the namespaces the preconditions created (mongodb,
+        # cockroachdb, ...) now -- before the ok-check's early return -- so a
+        # failed precondition's namespaces are still cleaned up.
+        ns_created |= _namespaces_created_since(environment, ns_baseline)
         if not precond_result["ok"]:
             # A budget-exhausted phase (``--setup-timeout``) is reported
             # distinctly from a genuine precondition command failure.
@@ -869,6 +899,12 @@ def run_stage(
         # codex/copilot/api prepend it). Delivered every stage.
         if system_prompt:
             protocol.stage_system_prompt_path(run_dir, stage_id).write_text(system_prompt)
+
+        # SS-2: re-record just before the agent launches, capturing any namespaces
+        # decoys/adversary added. Freezing the set here (not re-diffing at teardown)
+        # means namespaces a concurrent run creates during THIS agent's run are
+        # never swept up by this run's cleanup.
+        ns_created |= _namespaces_created_since(environment, ns_baseline)
 
         # Step 8: launch agent
         #
@@ -1067,10 +1103,16 @@ def run_stage(
                 environment.cleanup_namespaces(identity_bindings, run_dir=stage_dir)
             except Exception as exc:
                 warn(f"failed to delete stage namespaces: {exc}")
+        # Hand the recorded created-set back to a deferring caller (the workflow
+        # loop) so it can delete exactly this run's namespaces at the end.
+        if created_sink is not None:
+            created_sink |= ns_created
         # Also remove any literal namespaces the case created in preconditions
         # (deferred to the workflow loop for multi-stage runs that share state).
-        if not defer_cleanup and ns_baseline and hasattr(environment, "cleanup_created_namespaces"):
+        # Delete only the recorded created-set -- never a re-diff of the live
+        # list, which would sweep up a concurrent run's namespaces (SS-2).
+        if not defer_cleanup and ns_created and hasattr(environment, "cleanup_created_namespaces"):
             try:
-                environment.cleanup_created_namespaces(ns_baseline, run_dir=stage_dir)
+                environment.cleanup_created_namespaces(ns_created, run_dir=stage_dir)
             except Exception:
                 pass
