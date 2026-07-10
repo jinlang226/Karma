@@ -298,7 +298,8 @@ def normalize_workflow(
     raw:
         Parsed workflow YAML dict.
     resources_dir:
-        Root resources directory (used for future schema checks).
+        Root resources directory; used to load each stage's case so
+        cross-stage param references resolve against effective values.
 
     Raises
     ------
@@ -311,7 +312,8 @@ def normalize_workflow(
     dict
         Keys: ``id`` (str), ``label`` (str or ``None``),
         ``prompt_mode`` (str), ``agent_session`` (str),
-        ``stages`` (list[dict]), ``adversary`` (list[dict]).
+        ``system_prompt`` (str or ``None``), ``stages`` (list[dict]),
+        ``adversary`` (list[dict]).
     """
     try:
         WorkflowSchema.model_validate(raw)

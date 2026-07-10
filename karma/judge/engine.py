@@ -73,8 +73,8 @@ def run_judge(
     Returns
     -------
     dict
-        Keys: ``stage_id``, ``verdict`` (``"pass"``, ``"fail"``, or
-        ``"partial"``), ``score`` (float), ``rubric_items`` (list[dict]),
+        Keys: ``stage_id``, ``verdict`` (``"pass"`` or ``"fail"`` -- echoes
+        the oracle), ``score`` (float), ``rubric_items`` (list[dict]),
         ``reasoning`` (str), ``raw_response`` (dict).
     """
     # An explicit *rubric* (e.g. the one --rubric loaded once for the whole run)

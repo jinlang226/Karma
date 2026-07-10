@@ -53,11 +53,13 @@ _SERIALIZABLE_SKIP = lambda k: k.startswith("_")
 
 
 def _register(run_id: str, session: dict[str, Any]) -> None:
+    """Store *session* under *run_id* in the live manual-session table."""
     with _lock:
         _sessions[run_id] = session
 
 
 def _update(run_id: str, updates: dict[str, Any]) -> None:
+    """Apply *updates* to the session for *run_id*. No-op when not found."""
     with _lock:
         if run_id in _sessions:
             _sessions[run_id].update(updates)

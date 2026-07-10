@@ -46,6 +46,7 @@ def get_cli_options() -> dict[str, Any]:
 
 
 def _clean(value: Any) -> str:
+    """Return *value* as a stripped string, or ``""`` when it is ``None``."""
     return "" if value is None else str(value).strip()
 
 

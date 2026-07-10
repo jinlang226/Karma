@@ -155,7 +155,7 @@ def launch_proxy(
     # in it -- the same path evidence reads via
     # ``protocol.stage_kubectl_log_path(run_root, stage_id)``. Computing it as
     # ``stage_kubectl_log_path(run_dir, run_dir.name)`` double-nests
-    # (stages/<id>/stages/<id>/...) and silently empties evidence + metrics.
+    # (stages/<id>/stages/<id>/...) and silently empties evidence.
     log_path = run_dir / "kubectl_log.jsonl"
 
     # Derive the upstream URL + auth once; only the ports change per attempt.

@@ -671,11 +671,12 @@ def normalize_decoy_config(case_data: dict[str, Any]) -> list[dict[str, Any]]:
 def decoy_manifest_namespace(resources_dir: Any, rel_path: str) -> str:
     """Return the first non-empty ``metadata.namespace`` in a decoy manifest.
 
-    The ``decoy_integrity`` metric matches mutations by the descriptor's
-    ``namespace``; an empty namespace can never match a snapshot entry, so a
-    descriptor left at ``""`` makes the metric vacuous (always 1.0). Parses
-    every document of the (possibly multi-doc) manifest; returns ``""`` when
-    unreadable or when no document declares a namespace (Law 4).
+    A decoy descriptor's ``namespace`` is the target the manifest is applied
+    into (``kubectl apply -n``); resolving it from the manifest itself gives a
+    descriptor left at ``""`` a concrete namespace instead of falling back to
+    the default. Parses every document of the (possibly multi-doc) manifest;
+    returns ``""`` when unreadable or when no document declares a namespace
+    (Law 4).
     """
     try:
         import yaml
@@ -699,11 +700,9 @@ def discover_case_decoys(
     Scans ``<resources_dir>/<service>/<case_name>/decoy/*.yaml`` and returns
     one descriptor per file (``path`` relative to *resources_dir*,
     ``namespace`` resolved from the manifest's own ``metadata.namespace`` so
-    the ``decoy_integrity`` metric can match mutations against it). This
-    restores the old auto-discovery of decoy manifests; the new code only
-    read an explicit ``decoys:`` key that no shipped case declares, so decoys
-    were never planted and the ``decoy_integrity`` metric had nothing to
-    score.
+    the decoy is planted into the namespace it declares). This auto-discovers
+    on-disk decoy manifests; an explicit ``decoys:`` key in the case is also
+    honored, though no shipped case declares one.
     """
     base = Path(resources_dir)
     decoy_dir = base / service / case_name / "decoy"

@@ -834,11 +834,10 @@ def run_stage(
             resources_dir, row.get("service"), row.get("case_name")
         )
         # Resolve any descriptor left without a namespace from its manifest's
-        # own metadata.namespace, and write the merged list back onto the case
-        # so evidence/metrics grade the SAME set that was planted (Law 4 --
-        # previously discovered decoys never reached decoy_integrity, and the
-        # empty namespace could never match a snapshot entry, so the metric
-        # scored 1.0 unconditionally).
+        # own metadata.namespace, then write the merged list back onto the case
+        # so the recorded decoy set matches what was planted (Law 4). A decoy
+        # descriptor left without a namespace could never be matched against a
+        # kubectl-snapshot entry in evidence.
         for decoy in decoy_configs:
             if not str(decoy.get("namespace") or "").strip():
                 decoy["namespace"] = decoy_manifest_namespace(

@@ -21,9 +21,7 @@ sandbox
 protocol
     Run-directory layout, artifact path helpers, and file contracts.
 evidence
-    Snapshot collection, usage normalization, and metric dispatch.
-metrics
-    Leaf metric plugins and the metric registry.
+    Snapshot collection, usage normalization, and trace facts.
 judge
     LLM-as-Judge evaluation pipeline.
 interfaces

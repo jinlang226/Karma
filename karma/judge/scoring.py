@@ -2,8 +2,8 @@
 Score aggregation and evidence validation for judge results.
 
 Parses the raw LLM response into per-item scores, computes the weighted
-aggregate, determines the final verdict, and cross-validates the LLM
-score against the oracle result.
+aggregate, and determines the final verdict from the oracle result (the
+oracle is the pass/fail gate).
 """
 
 from __future__ import annotations
@@ -209,7 +209,7 @@ def aggregate_scores(
     aggregate01 = compute_aggregate_score(item_scores, rubric=rubric)
     verdict = determine_verdict(oracle_verdict=oracle_verdict)
     # Report the headline score on a 0-100 scale with 0.1 precision (the LLM
-    # rubric items stay 0-1 internally; the threshold check uses the 0-1 value).
+    # rubric items stay 0-1 internally).
     score = round(aggregate01 * 100.0, 1)
     reasoning = "\n".join(
         f"{s['id']}: {s['reasoning']}"

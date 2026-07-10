@@ -2,8 +2,7 @@
 Rubric loading, normalization, and override merging.
 
 A rubric defines the scoring criteria used by the judge LLM. It contains
-a list of weighted items with descriptions and guidance strings, plus a
-passing threshold.
+a list of weighted items with descriptions and guidance strings.
 
 Rubric schema::
 

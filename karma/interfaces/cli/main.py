@@ -23,7 +23,7 @@ Subcommands:
 ``judge``
     Run the judge on an existing run directory.
 ``info``
-    Print the registry of available agents, metrics, and providers.
+    Print the registry of available agents.
 """
 
 from __future__ import annotations

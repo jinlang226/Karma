@@ -76,10 +76,12 @@ TOOLS = [{
 
 
 def log(msg):
+    """Print *msg* to stdout, flushed, so the sandbox captures it into agent.log."""
     print(msg, flush=True)
 
 
 def call_api(messages):
+    """POST *messages* to the chat-completions endpoint and return the parsed reply."""
     body = json.dumps({
         "model": MODEL,
         "messages": messages,
@@ -101,6 +103,7 @@ def call_api(messages):
 
 
 def run_bash(command):
+    """Run *command* in bash and return its combined stdout/stderr (truncated)."""
     try:
         r = subprocess.run(
             ["/bin/bash", "-c", command],
@@ -115,12 +118,14 @@ def run_bash(command):
 
 
 def write_submit(text):
+    """Atomically write *text* to submit.txt to signal task completion."""
     with open(TMP_FILE, "w") as fh:
         fh.write(text or "(no answer produced)")
     os.replace(TMP_FILE, SUBMIT_FILE)
 
 
 def main():
+    """Drive the model in a bash tool-use loop until it submits a final answer."""
     try:
         prompt = open(PROMPT_FILE).read()
     except Exception as exc:  # noqa: BLE001

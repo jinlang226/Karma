@@ -98,8 +98,9 @@ def build_judge_input(
     dict
         Keys: ``stage_id``, ``rubric``, ``oracle``, ``evidence``,
         ``trace_facts``, ``submit_text`` (str or ``None``),
-        ``prompt_text`` (str or ``None``), ``agent_log`` (tail-capped str or
-        ``None``), ``regression_sweep`` (post-workflow oracle re-run or ``None``).
+        ``prompt_text`` (str or ``None``), ``stage_task``, ``stage_position``,
+        ``agent_log`` (tail-capped str or ``None``). The regression sweep is
+        deliberately excluded (see the NOTE below).
     """
     oracle_path = protocol.stage_oracle_path(run_dir, stage_id)
     evidence_path = protocol.stage_evidence_path(run_dir, stage_id)
@@ -204,8 +205,8 @@ def render_judge_prompt(
 
     Uses the built-in default template when *template* is ``None``. Derives a
     flat set of string values from *judge_input* (rubric items, oracle verdict,
-    trace-fact counts, submit/agent-log/regression-sweep text) and substitutes
-    each ``{key}`` placeholder in the template with them.
+    trace-fact counts, submit/agent-log text) and substitutes each ``{key}``
+    placeholder in the template with them.
     """
     if template is None:
         template = _DEFAULT_JUDGE_TEMPLATE

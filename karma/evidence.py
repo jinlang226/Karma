@@ -22,7 +22,7 @@ _MUTATION_VERBS = frozenset(
 )
 
 # Map raw HTTP methods (as logged by the proxy) to kubectl-style verbs so that
-# mutation detection and metrics see the verbs they expect.
+# mutation detection in the trace facts sees the verbs it expects.
 _HTTP_TO_KUBECTL_VERB = {
     "get": "get",
     "post": "create",
