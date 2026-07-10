@@ -47,6 +47,37 @@ class TestParseStageParamRef:
         assert result == {"stage_id": "s1", "param": "key"}
 
 
+class TestStageParamRefResolvesDefaults:
+    # SS-7: a later stage referencing ${stages.X.params.Y} must get X's EFFECTIVE
+    # value -- the case default when X never overrode Y -- not None.
+    def _wf(self, s1_overrides, s2_overrides):
+        return {"metadata": {"id": "wf"}, "spec": {"stages": [
+            {"id": "s1", "service": "demo", "case": "configmap-update",
+             "param_overrides": s1_overrides},
+            {"id": "s2", "service": "demo", "case": "configmap-update",
+             "param_overrides": s2_overrides},
+        ]}}
+
+    def test_ref_to_defaulted_param_resolves_to_case_default(self):
+        # s1 leaves target_value at its case default ("x"); s2 references it and
+        # must get "x", not None (the pre-fix behavior).
+        wf = normalize_workflow(
+            self._wf({}, {"target_value": "${stages.s1.params.target_value}"}),
+            resources_dir=Path("cases"),
+        )
+        s2 = next(s for s in wf["stages"] if s["id"] == "s2")
+        assert s2["param_overrides"]["target_value"] == "x"
+
+    def test_ref_to_overridden_param_still_wins(self):
+        wf = normalize_workflow(
+            self._wf({"target_value": "custom"},
+                     {"target_value": "${stages.s1.params.target_value}"}),
+            resources_dir=Path("cases"),
+        )
+        s2 = next(s for s in wf["stages"] if s["id"] == "s2")
+        assert s2["param_overrides"]["target_value"] == "custom"
+
+
 class TestNamespaceAliasesForStage:
     def test_returns_empty_when_none_declared(self):
         # No default is applied here; resolve_workflow_rows defers to the
