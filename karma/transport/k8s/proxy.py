@@ -109,6 +109,7 @@ class KubectlProxyServer:
         client_key: str | None = None,
         token: str | None = None,
         bind_host: str = "127.0.0.1",
+        request_timeout: int = 120,
     ) -> None:
         """Initialize the proxy.
 
@@ -128,6 +129,11 @@ class KubectlProxyServer:
         token:
             Bearer token for upstream auth (token-based clusters), added as an
             ``Authorization`` header on each forwarded request.
+        request_timeout:
+            Read timeout (seconds) for a non-streaming upstream request. A slow
+            admission webhook can push a legitimate apply/create past a short
+            cap and surface a spurious 502; default 120 (KARMA's command
+            timeout). Watch/follow streams use their own long window. (SS-4)
         """
         self._upstream_url = upstream_url.rstrip("/")
         self._log_path = log_path
@@ -136,6 +142,7 @@ class KubectlProxyServer:
         self._client_cert = client_cert
         self._client_key = client_key
         self._token = token
+        self._request_timeout = request_timeout
         self._server: HTTPServer | None = None
         self._stop_event = threading.Event()
         # ThreadingHTTPServer handles each request on its own thread, so the
@@ -155,6 +162,7 @@ class KubectlProxyServer:
         client_cert = self._client_cert
         client_key = self._client_key
         token = self._token
+        request_timeout = self._request_timeout
         log_path.parent.mkdir(parents=True, exist_ok=True)
 
         proxy_self = self
@@ -284,9 +292,11 @@ class KubectlProxyServer:
                     if client_cert and client_key:
                         ctx.load_cert_chain(certfile=client_cert, keyfile=client_key)
                     # Watch/follow streams stay open; give them a long read
-                    # window (kubectl applies its own --timeout and closes).
+                    # window (kubectl applies its own --timeout and closes). A
+                    # non-stream op gets request_timeout (SS-4: a hardcoded 60s
+                    # tripped a spurious 502 on slow admission webhooks).
                     resp = urllib.request.urlopen(
-                        req, context=ctx, timeout=600 if streaming else 60
+                        req, context=ctx, timeout=600 if streaming else request_timeout
                     )
                     status = resp.status
                     resp_headers = list(resp.headers.items())
@@ -482,6 +492,8 @@ def main(argv: list[str] | None = None) -> None:
     parser.add_argument("--token", default=None, help="Bearer token for upstream auth")
     parser.add_argument("--bind-host", default="127.0.0.1",
                         help="Address to bind (0.0.0.0 for docker-sandbox reachability)")
+    parser.add_argument("--request-timeout", type=int, default=120,
+                        help="Read timeout (s) for a non-streaming upstream request")
     args = parser.parse_args(argv)
 
     port = args.port or find_free_port()
@@ -495,6 +507,7 @@ def main(argv: list[str] | None = None) -> None:
         client_key=args.client_key,
         token=args.token,
         bind_host=args.bind_host,
+        request_timeout=args.request_timeout,
     )
 
     ctrl_thread = threading.Thread(

@@ -31,3 +31,34 @@ def test_main_threads_bind_host(monkeypatch):
     proxy_main(["--upstream-url", "https://x", "--log-path", "/tmp/x",
                 "--port", "1", "--control-port", "2", "--bind-host", "0.0.0.0"])
     assert captured["bind_host"] == "0.0.0.0"
+
+
+def test_default_request_timeout_is_120():
+    # SS-4: the non-streaming upstream timeout defaults to KARMA's command
+    # timeout (120s), not the old hardcoded 60s that tripped spurious 502s.
+    p = KubectlProxyServer(upstream_url="https://x", log_path=Path("/tmp/x"), port=1)
+    assert p._request_timeout == 120
+
+
+def test_request_timeout_override():
+    p = KubectlProxyServer(upstream_url="https://x", log_path=Path("/tmp/x"),
+                           port=1, request_timeout=300)
+    assert p._request_timeout == 300
+
+
+def test_main_threads_request_timeout(monkeypatch):
+    captured = {}
+
+    class _Stub:
+        def __init__(self, **kw):
+            captured.update(kw)
+        def start(self):
+            pass
+
+    monkeypatch.setattr(proxymod, "KubectlProxyServer", _Stub)
+    monkeypatch.setattr(proxymod, "start_control_server", lambda *a, **k: None)
+    monkeypatch.setattr(proxymod.threading, "Thread",
+                        lambda *a, **k: type("T", (), {"start": lambda self: None})())
+    proxy_main(["--upstream-url", "https://x", "--log-path", "/tmp/x",
+                "--port", "1", "--control-port", "2", "--request-timeout", "200"])
+    assert captured["request_timeout"] == 200
