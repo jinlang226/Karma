@@ -123,6 +123,20 @@ class AgentProcess:
                 )
             except Exception:
                 pass
+            # Reap the `docker logs -f` streamer (self._proc): removing the
+            # container ends its stream so it exits, but without wait() it lingers
+            # as a <defunct> zombie -- one per stage. Kill it if it somehow
+            # outlives the container, then reap either way. (SS-3)
+            try:
+                self._proc.wait(timeout=5)
+            except subprocess.TimeoutExpired:
+                self._proc.kill()
+                try:
+                    self._proc.wait(timeout=5)
+                except Exception:
+                    pass
+            except Exception:
+                pass
         else:
             # Local: the entrypoint bash wrapper leads its own process group
             # (start_new_session at launch). Signal the whole GROUP -- SIGTERM to
