@@ -1,0 +1,16 @@
+All required end states are met:
+
+**Permissions fixed and scoped correctly:**
+- `/app`: only `admin` and `app-user` (full `.*`/`.*`/`.*`) — `ops-user`'s erroneous access removed.
+- `/ops`: only `admin` and `ops-user` (full `.*`/`.*`/`.*`) — `app-user` has no access (confirmed already absent).
+
+**Root causes and fixes:**
+1. `app-user` had an empty `configure` permission on `/app` → fixed with `set_permissions`.
+2. `ops-user` had no permissions on `/ops` at all → granted full access.
+3. `ops-user` had unwanted full access on `/app` (scope violation) → cleared with `clear_permissions`.
+4. After permissions were fixed, `app-client` still crash-looped due to an unrelated pre-existing issue: `app-queue` (created earlier by `app-producer`) has the immutable argument `x-queue-mode: lazy`, but `app-client`'s declare payload omitted it, causing a `bad_request`/inequivalent-argument rejection. To avoid deleting the queue (which held live messages, now 189) I patched the `app-client` Deployment (a native Kubernetes resource) so its declare payload matches the existing queue's arguments — no data loss, no CRDs/operators involved.
+
+**Verified final state:**
+- `app-client` and `ops-client` pods: `1/1 Running`, no errors in logs.
+- `/app` has `app-queue` (classic, 189 messages, growing); `/ops` has `ops-queue` (classic, publishing successfully).
+- All 3 RabbitMQ nodes (`rabbitmq-0/1/2`) still show as Running Nodes in `cluster_status`.

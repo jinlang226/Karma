@@ -1,0 +1,9 @@
+Confirmed — snapshot data objects (indices, metadata, index files) actually landed in the `es-backups` MinIO bucket.
+
+Summary of what was done:
+
+1. **Discovered a gap**: the `minio` Service didn't exist (only the Deployment/pod did), so the earlier `minio-init` Job had silently "succeeded" via `|| true` while actually failing on DNS resolution — the bucket was never created. Created the missing `minio` Service and re-ran bucket creation; `es-backups` now exists.
+2. **Created Secret `es-secure-settings`** with `access_key`/`secret_key` (MinIO root credentials).
+3. **Updated the `es` StatefulSet** with a new `init-keystore` init container that, on each pod, copies the default config into a shared `emptyDir`, creates an ES keystore, and loads `s3.client.default.access_key` / `s3.client.default.secret_key` via `elasticsearch-keystore add-file` — reading directly from the mounted Secret, never through env vars or `elasticsearch.yml`. Rolled out (restart was required since keystore must exist at node boot).
+4. **Registered the repository** `minio-repo` (type `s3`, bucket `es-backups`, endpoint `minio.elasticsearch.svc.cluster.local:9000`, `path_style_access: true`) — non-secret settings passed via the API call, not config files.
+5. **Verified** repository connectivity (`_verify` succeeded on all 3 nodes) and **created snapshot `snapshot-1`**, which completed with `"state":"SUCCESS"`, with objects confirmed present in the MinIO bucket.

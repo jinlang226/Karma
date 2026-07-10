@@ -1,0 +1,10 @@
+Now the live-served fingerprint matches the secret and all verification criteria pass.
+
+Rotation complete:
+
+1. **Discovered the Secret was gone** — as flagged, `crdb-cluster-certs` had been deleted by an external process; confirmed via `kubectl get secret` returning `NotFound`.
+2. **Found the CA** in `openssl-toolbox:/tmp/certs/ca.key` + `ca.crt` (10-year validity, freshly provisioned), along with old short-lived (2-day) node/client certs — these were the ones to rotate away from.
+3. **Generated new node and client-root certs** signed by that same CA, 365-day validity, preserving the node cert's full SAN list (all 3 pod DNS names, both services, wildcard, localhost/127.0.0.1).
+4. **Recreated the `crdb-cluster-certs` Secret** with the new material — StatefulSet's volume reference was untouched and still pointed at this secret name/mode.
+5. Found the mounted files updated via kubelet sync, but the running `cockroach` processes were still serving the **old** cert over the wire (verified via `openssl s_client`) — CockroachDB doesn't hot-reload certs on this path, so restarted all 3 pods together (parallel delete, same approach as the TLS-enablement stage) to avoid a secure/insecure mismatch mid-rollout.
+6. **Verified after restart**: SQL over `--certs-dir` works, the live TLS handshake now presents the new fingerprint `25:10:1B:...31:84` matching the Secret, cert validity ends `2027-07-09` (~1 year out), and all 3 nodes report `is_available=true, is_live=true`.

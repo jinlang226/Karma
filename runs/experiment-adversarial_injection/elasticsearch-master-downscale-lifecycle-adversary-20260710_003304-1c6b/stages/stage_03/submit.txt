@@ -1,0 +1,12 @@
+All four goals are met. Summary:
+
+**Root cause:** After a downscale attempt (StatefulSet reduced to 1 replica), the surviving `es-cluster-0` node still carried on-disk cluster metadata expecting a 3-node voting configuration, so it could never reach quorum alone → `master_not_discovered_exception`, cluster fully unavailable.
+
+**Fix applied (no data loss):**
+1. Scaled the StatefulSet to 0 to stop the node cleanly.
+2. Ran `elasticsearch-node unsafe-bootstrap` from a temporary helper pod mounting the same PVC (`data-es-cluster-0`) — this only rewrites cluster coordination metadata (voting config → itself alone), leaving all shard/index data untouched.
+3. Updated the `es-config` ConfigMap's `discovery.seed_hosts`/`cluster.initial_master_nodes` to list only `es-cluster-0`, matching the intended single-node topology.
+4. Scaled back to 1 replica; node came up, self-elected master, `app-data` remained intact and readable.
+5. Cleaned up two side issues that were blocking a clean `green` state: the orphaned `.geoip_databases` system index (unassignable phantom shard from a departed node — resolved by disabling `ingest.geoip.downloader`, which is unrelated to user data) and reset `cluster.auto_shrink_voting_configuration` (had been explicitly forced to `false`) back to its default `true`. Also dropped `app-data`'s replica count to 0 since there's only one node to host it.
+
+**Verified:** health `green`, exactly one master-eligible node (`es-cluster-0`), voting exclusions empty, `auto_shrink_voting_configuration` back to default `true`, and `app-data` still readable.

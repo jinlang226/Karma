@@ -1,0 +1,15 @@
+All three jobs completed successfully (`spark-skew-baseline`, `spark-skew-broadcast`, `spark-skew-aqe` all show `Complete 1/1`).
+
+**Results:**
+
+| Strategy | Elapsed | Skew ratio observed | Notes |
+|---|---|---|---|
+| baseline | 22.31s | 44.0x (max 11579 / min 263) | No optimization — skewed shuffle join on `product_id` |
+| broadcast | 23.99s | 44.0x (same skew, but no shuffle of the join) | Small `products` table broadcast to executors, avoiding a shuffle join |
+| aqe | **14.05s** | 44.0x (input skew unchanged, but AQE coalesces/splits skewed partitions at runtime) | `spark.sql.adaptive.skewJoin.enabled=true` — best performer here (~37% faster than baseline) |
+
+Notes on what I built: since the referenced `cases/spark/spark_data_skew/resource/skew-job-broadcast.yaml` and `skew-job-aqe.yaml` files didn't exist locally (same situation as the earlier SparkPi stage — this appears to be a different sandbox than the one that authored the task doc), I reconstructed the Jobs by extracting the baseline Job's PySpark script from the cluster, then wrote two variants:
+- **broadcast**: same query but wraps the `products` join with `broadcast()`, with AQE explicitly disabled so the isolated effect of the broadcast hint is visible.
+- **aqe**: identical query to baseline, but with AQE + skew-join handling enabled via `--conf` flags (`spark.sql.adaptive.enabled=true`, `spark.sql.adaptive.skewJoin.enabled=true`, etc.), isolating AQE's effect without a broadcast hint.
+
+All success criteria are met: baseline completed (demonstrating skew), both optimization strategies were applied and completed successfully, and the AQE strategy shows a clear performance improvement over baseline in this run.

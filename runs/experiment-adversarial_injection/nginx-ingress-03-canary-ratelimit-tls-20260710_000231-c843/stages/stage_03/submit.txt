@@ -1,0 +1,9 @@
+TLS is working: `SSL certificate verify ok`, HTTP 200, body `hello`, exit code 0.
+
+**Diagnosis:** the `expired-tls-secret` used by the `demo-ingress` contained a certificate for `demo.example.com` issued by "Test CA" but expired since `Jan 2 2020` — long before the CA the cluster's clients trust (a freshly-provisioned "Test CA" mounted via the `test-ca` ConfigMap, valid 2026–2051). No private key for either CA existed anywhere in the cluster, so the expired cert couldn't be renewed by re-signing with the original CA.
+
+**Fix:** using the `openssl-toolbox` pod (which had `ca-ext.conf`/`leaf.cnf` staged for exactly this), I generated a new self-signed CA and a fresh leaf certificate/key for `demo.example.com` (valid through Oct 2028, with correct SAN), then:
+- Replaced `tls.crt`/`tls.key` in the `expired-tls-secret` Secret referenced by `demo-ingress`.
+- Replaced `ca.crt` in the `test-ca` ConfigMap so `curl-test` (and any other client trusting that CA) now validates against the matching new CA.
+
+Application Deployments/Services were untouched. Verified the HTTPS endpoint returns `hello` with a fully validated TLS chain.

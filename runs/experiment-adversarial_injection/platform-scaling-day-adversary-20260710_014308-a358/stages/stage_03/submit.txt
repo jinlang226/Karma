@@ -1,0 +1,13 @@
+Everything is deployed and verified. Summary:
+
+**Deployed in `elasticsearch` namespace (all native K8s resources, no operators/CRDs):**
+- `ConfigMap/es-config` — `elasticsearch.yml` with security enabled, HTTPS on the transport+HTTP layers using the existing `es-http-tls` secret (transport uses `verification_mode: certificate` so the cert, which is scoped for the `es-http` service name, works for inter-node auth too)
+- `Service/es-transport` (headless, `publishNotReadyAddresses: true`) — governs the StatefulSet and enables discovery; this was the key fix, since headless services normally only publish endpoints for Ready pods, creating a deadlock where nodes can't discover peers to form a cluster before becoming Ready
+- `Service/es-http` (ClusterIP, port 9200) — matches the cert's CN/SAN (`es-http`, `*.elasticsearch.svc[.cluster.local]`)
+- `StatefulSet/es-cluster` (3 replicas, `podManagementPolicy: Parallel` to avoid ordered-readiness deadlock), `ELASTIC_PASSWORD` sourced from the `elastic-password` secret to bootstrap the built-in `elastic` user
+- `PodDisruptionBudget/es-pdb` — `minAvailable: 2` to preserve quorum during voluntary disruptions
+
+**Verified:**
+- All 3 pods Ready, cluster status `green`, 3/3 nodes and data nodes
+- HTTPS reachable through `es-http` service from another pod
+- Write (index), read (get by ID), and search all succeeded; cleaned up the test index afterward

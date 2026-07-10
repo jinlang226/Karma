@@ -1,0 +1,11 @@
+Deployment complete. Summary:
+
+**Security fix first**: The `elastic-password` Secret had been tampered with (`CORRUPTED_BY_ADVERSARY`), detectable via mismatch with its own `last-applied-configuration` annotation. Restored the correct value (`elasticpass`) from the `elastic-password-adv-backup` Secret before bootstrapping the cluster — verified after deployment that the restored password actually authenticates.
+
+**Deployed** (all native resources, no operators/CRDs):
+- **ConfigMap** `es-config` — full `elasticsearch.yml` with `cluster.initial_master_nodes`, discovery seed hosts pointing at the 3 pod FQDNs, and TLS enabled on both HTTP and transport layers using the existing `es-http-tls` cert (transport uses `verification_mode: certificate` since the cert's SAN only covers `*.elasticsearch.svc.cluster.local`, not individual pod hostnames).
+- **Service** `es-transport` — headless, `publishNotReadyAddresses: true` (required to break the chicken-and-egg deadlock where pods can't become Ready without discovering each other via DNS, but headless services hide not-Ready pods from DNS by default).
+- **Service** `es-http` — ClusterIP on port 9200 for in-cluster HTTPS access.
+- **StatefulSet** `es-node` (3 replicas, `Parallel` pod management so all nodes bootstrap concurrently) — mounts the TLS secret read-only (mode 0440, readable via the container's supplementary `root` group), a 3Gi PVC per pod, and `ELASTIC_PASSWORD` from the (now-fixed) Secret to seed the bootstrap password.
+
+**Verified**: cluster status `green`, 3/3 nodes joined with a master elected, `es-http.elasticsearch.svc.cluster.local:9200` reachable over HTTPS with full CA chain validation, and a document successfully written and read back through that service.

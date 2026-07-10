@@ -1,0 +1,9 @@
+**Fixed.** Root cause: an external process had patched the StatefulSet's probes to `timeoutSeconds: 1` with `failureThreshold: 2`, but a real `mongosh` ping under load took ~3.7s — so probes failed almost immediately, kubelet killed the containers on liveness failure, and the pods crash-looped even though mongod itself was healthy.
+
+I patched the probes to realistic values (`timeoutSeconds: 10`, `periodSeconds: 15–20`, `failureThreshold: 6`, `initialDelaySeconds: 30–60`), kept the exec command unchanged (still authenticated `ping` via `mongosh`), and let the StatefulSet roll the new probe config across all 3 pods.
+
+Verified:
+- All 3 pods `1/1 Running`, 0 restarts, stable over a 20s watch window.
+- Replica set: 1 PRIMARY (`mongodb-replica-2`) + 2 SECONDARY, all `health=1`.
+- Authorization is still `enabled` and unauthenticated requests are rejected — auth was never touched.
+- No operators/CRDs used — plain `kubectl patch` on the existing StatefulSet.

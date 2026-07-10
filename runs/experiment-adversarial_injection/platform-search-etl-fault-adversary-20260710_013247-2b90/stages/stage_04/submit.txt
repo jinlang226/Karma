@@ -1,0 +1,21 @@
+All checks pass, no restrictive `cluster.routing.allocation.enable` setting present.
+
+## Root cause & fix
+
+The `es-config` ConfigMap (mounted via `subPath`, so updates don't auto-propagate to running pods) had two bugs:
+1. `node.name:` was set with an empty value instead of `${POD_NAME}` — ES 7.17.9 refuses to start on a null-valued setting.
+2. `discovery.seed_hosts` pointed at `*.es-cluster.default.svc.cluster.local` instead of the actual `elasticsearch` namespace.
+
+`es-cluster-0` and `es-cluster-1` were already running with a valid in-memory config from before the ConfigMap was corrupted, so they stayed healthy as a 2-node cluster. When `es-cluster-2` restarted, it picked up the broken config file and crash-looped (`RunContainerError`).
+
+**Fix applied:**
+- Corrected the ConfigMap (`node.name: ${POD_NAME}`, seed hosts fixed to the `elasticsearch` namespace).
+- Deleted the `es-cluster-2` pod to force a fresh mount of the corrected config (required since `subPath` mounts don't live-update).
+
+**Verification:**
+- Cluster health: `green`, 3/3 nodes.
+- `/_cat/nodes` shows all three: `es-cluster-0`, `es-cluster-1`, `es-cluster-2`.
+- `app-data` index search returns its document successfully.
+- No restrictive `cluster.routing.allocation.enable` setting was present.
+
+No operators/CRDs were installed; only the existing ConfigMap and pod were touched.

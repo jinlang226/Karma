@@ -1,0 +1,14 @@
+SQL executed successfully through the ingress-nginx TCP passthrough on port 26257. Both requirements are verified end-to-end.
+
+**Summary:**
+
+1. **DB Console over HTTPS** (`https://crdb-ui.example.com`):
+   - Fixed a pre-existing issue first: the ingress-nginx controller pod was stuck `Pending` because no node had the `ingress-ready=true` label its nodeSelector required — labeled the single node to unblock scheduling.
+   - Generated a TLS cert (`CN=crdb-ui.example.com`) signed by the cluster's existing CA, stored as Secret `crdb-ui-tls` in `cockroachdb`.
+   - Created `Ingress crdb-ui` (class `nginx`) routing `crdb-ui.example.com` → `crdb-cluster-public:8080`, with `nginx.ingress.kubernetes.io/backend-protocol: HTTPS` since the DB Console backend itself serves TLS.
+   - Verified: `curl https://crdb-ui.example.com/` (via `--resolve` to the node IP) returns `HTTP 200` and presents the `crdb-ui.example.com` cert.
+
+2. **SQL over TCP on port 26257**:
+   - Created ConfigMap `tcp-services` in `ingress-nginx` mapping `"26257": "cockroachdb/crdb-cluster-public:26257"`.
+   - Wired it into the controller via `--tcp-services-configmap=$(POD_NAMESPACE)/tcp-services`, and added port 26257 to both the controller container (`containerPort`/`hostPort`) and the `ingress-nginx-controller` Service (now `26257:30240/TCP`).
+   - Verified: `cockroach sql` from a CockroachDB pod through `ingress-nginx-controller.ingress-nginx.svc.cluster.local:26257` successfully ran `SELECT 1` — this is raw L4 TLS passthrough (nginx doesn't terminate SQL traffic, so the genuine CockroachDB node cert is presented to clients).

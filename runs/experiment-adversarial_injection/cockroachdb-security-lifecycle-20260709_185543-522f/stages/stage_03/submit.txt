@@ -1,0 +1,13 @@
+TLS is now enabled and verified:
+
+**What was done:**
+- Generated a CA, a node cert (SANs covering `crdb-cluster`/`crdb-cluster-public` headless & public service DNS names, wildcard `*.crdb-cluster.cockroachdb.svc.cluster.local`, each pod's explicit DNS name, `localhost`, `127.0.0.1`), and a client `root` cert using `openssl` (the `openssl-toolbox` pod referenced in the task didn't actually exist in the cluster, so certs were generated with `openssl` directly and loaded straight into the Secret — same result).
+- Stored `ca.crt`, `node.crt`, `node.key`, `client.root.crt`, `client.root.key` in Secret `crdb-cluster-certs` (cockroachdb namespace).
+- Updated the `crdb-cluster` StatefulSet: replaced `--insecure` with `--certs-dir=/cockroach/cockroach-certs`, mounted the secret at that path (`defaultMode: 0600`), and switched the liveness/readiness probes to `HTTPS`.
+
+**Gotcha hit and fixed:** StatefulSet rolling updates apply one pod at a time (highest ordinal first) regardless of `podManagementPolicy: Parallel`. That briefly put `crdb-cluster-2` on TLS while `-0`/`-1` were still insecure — incompatible transports, so the cluster lost quorum. Fixed by deleting all 3 pods at once so they recreated together against the already-updated (TLS) pod spec.
+
+**Verified:**
+1. `--insecure` is rejected: `ERROR: node is running secure mode, SSL connection required`.
+2. `--certs-dir=/cockroach/cockroach-certs` succeeds: `SELECT 1` returns `1`.
+3. `cockroach node status --certs-dir=...` shows all 3 nodes live and available, confirming the cert served by the nodes is the one from `crdb-cluster-certs`.

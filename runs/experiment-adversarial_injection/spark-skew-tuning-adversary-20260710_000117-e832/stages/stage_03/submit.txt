@@ -1,0 +1,14 @@
+The ETL job completed successfully after the memory fix.
+
+**Summary:**
+
+1. **Failure identified**: `etl-job` was `Failed` (BackoffLimitExceeded) with error:
+   `[INVALID_DRIVER_MEMORY] System memory 259522560 must be at least 471859200` — the 256m heap was insufficient for Spark's minimum requirement.
+
+2. **Root cause diagnosed**: Diagnostic server and `skew_info.txt` confirmed `user_id=999` holds 50,000 of 100,000 records (**skew_ratio=500x**, far above the 10x threshold), driving Stage 3's `GROUP BY user_id` to blow past the tiny 256m heap.
+
+3. **Fix applied**: Reconstructed `etl-job.yaml` (not present in this environment's filesystem, same as the prior stage) at `/workspace/cases/spark/spark_etl_skew_oom/resource/etl-job.yaml`, raising `--driver-memory` and `spark.executor.memory` from `256m` → `1g`, and additionally enabled `spark.sql.adaptive.enabled=true` / `spark.sql.adaptive.skewJoin.enabled=true` to address the underlying skew. Deleted the failed job and reapplied.
+
+4. **Verified**: `etl-job` is now `Complete (1/1)`, ran in 92s, log ends with `spark_etl_pipeline_verified`.
+
+Note: I checked the `spark-worker` deployment per the task's warning about an external process changing replica count — it's steady at 1/1 — but this job runs in `local[2]` mode inside its own driver pod, so worker replica count doesn't actually factor into this job's execution; the memory fix alone resolved it.

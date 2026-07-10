@@ -1,0 +1,52 @@
+[precondition:crdb_env_ready:preconditionUnits[0] 'crdb_env_ready':probe] $ /bin/sh -c 'kubectl -n cockroachdb get statefulset crdb-cluster >/dev/null 2>&1 || kubectl -n cockroachdb get pods 2>/dev/null | grep -q Running'
+
+[precondition:crdb_monitoring_stack:preconditionUnits[1] 'crdb_monitoring_stack':probe] $ /bin/sh -c 'kubectl -n monitoring get pod -l prometheus=crdb -o jsonpath="{.items[*].status.conditions[?(@.type==\"Ready\")].status}" 2>/dev/null | grep -q True && kubectl -n cockroachdb get pod curl-test -o jsonpath="{.status.conditions[?(@.type==\"Ready\")].status}" 2>/dev/null | grep -q True'
+
+[precondition:crdb_monitoring_stack:preconditionUnits[1] 'crdb_monitoring_stack':apply] $ /bin/sh -c 'kubectl create namespace monitoring --dry-run=client -o yaml | kubectl apply -f -'
+namespace/monitoring created
+
+[precondition:crdb_monitoring_stack:preconditionUnits[1] 'crdb_monitoring_stack':apply] $ /bin/sh -c 'kubectl apply -f cases/cockroachdb/monitoring-integration/resource/monitoring-crds.yaml || true'
+customresourcedefinition.apiextensions.k8s.io/servicemonitors.monitoring.coreos.com unchanged
+customresourcedefinition.apiextensions.k8s.io/podmonitors.monitoring.coreos.com unchanged
+customresourcedefinition.apiextensions.k8s.io/prometheuses.monitoring.coreos.com unchanged
+customresourcedefinition.apiextensions.k8s.io/prometheusrules.monitoring.coreos.com unchanged
+customresourcedefinition.apiextensions.k8s.io/probes.monitoring.coreos.com unchanged
+
+[precondition:crdb_monitoring_stack:preconditionUnits[1] 'crdb_monitoring_stack':apply] $ /bin/sh -c 'kubectl -n monitoring apply -f cases/cockroachdb/monitoring-integration/resource/prometheus-operator.yaml || true'
+serviceaccount/prometheus-operator created
+clusterrole.rbac.authorization.k8s.io/prometheus-operator unchanged
+clusterrolebinding.rbac.authorization.k8s.io/prometheus-operator unchanged
+deployment.apps/prometheus-operator created
+
+[precondition:crdb_monitoring_stack:preconditionUnits[1] 'crdb_monitoring_stack':apply] $ /bin/sh -c 'kubectl -n monitoring apply -f cases/cockroachdb/monitoring-integration/resource/prometheus-rbac.yaml || true'
+serviceaccount/prometheus created
+clusterrole.rbac.authorization.k8s.io/prometheus configured
+clusterrolebinding.rbac.authorization.k8s.io/prometheus unchanged
+
+[precondition:crdb_monitoring_stack:preconditionUnits[1] 'crdb_monitoring_stack':apply] $ kubectl -n monitoring apply -f cases/cockroachdb/monitoring-integration/resource/prometheus.yaml
+prometheus.monitoring.coreos.com/crdb created
+service/prometheus created
+
+[precondition:crdb_monitoring_stack:preconditionUnits[1] 'crdb_monitoring_stack':apply] $ kubectl -n monitoring wait --for=condition=ready pod -l app=prometheus-operator --timeout=300s
+pod/prometheus-operator-586788fdf6-c4jmk condition met
+
+[precondition:crdb_monitoring_stack:preconditionUnits[1] 'crdb_monitoring_stack':apply] $ /bin/sh -c 'for i in $(seq 1 60); do count=$(kubectl -n monitoring get pod -l prometheus=crdb --no-headers 2>/dev/null | wc -l | tr -d " "); if [ "${count}" -ge 1 ]; then kubectl -n monitoring wait --for=condition=ready pod -l prometheus=crdb --timeout=300s && exit 0; fi; sleep 2; done; exit 1'
+pod/prometheus-crdb-0 condition met
+
+[precondition:crdb_monitoring_stack:preconditionUnits[1] 'crdb_monitoring_stack':apply] $ kubectl -n cockroachdb apply -f cases/cockroachdb/monitoring-integration/resource/rbac.yaml
+serviceaccount/crdb-cluster-sa unchanged
+role.rbac.authorization.k8s.io/crdb-cluster-role unchanged
+rolebinding.rbac.authorization.k8s.io/crdb-cluster-rolebinding unchanged
+
+[precondition:crdb_monitoring_stack:preconditionUnits[1] 'crdb_monitoring_stack':apply] $ kubectl -n cockroachdb apply -f cases/cockroachdb/monitoring-integration/resource/services.yaml
+service/crdb-cluster configured
+service/crdb-cluster-public configured
+
+[precondition:crdb_monitoring_stack:preconditionUnits[1] 'crdb_monitoring_stack':apply] $ /bin/sh -c 'kubectl -n cockroachdb get pod curl-test >/dev/null 2>&1 || kubectl -n cockroachdb apply -f cases/cockroachdb/monitoring-integration/resource/curl-test.yaml'
+pod/curl-test created
+
+[precondition:crdb_monitoring_stack:preconditionUnits[1] 'crdb_monitoring_stack':apply] $ kubectl -n cockroachdb wait --for=condition=ready pod/curl-test --timeout=120s
+pod/curl-test condition met
+
+[precondition:crdb_monitoring_stack:preconditionUnits[1] 'crdb_monitoring_stack':verify] $ kubectl -n cockroachdb get pod curl-test -o jsonpath='{.status.conditions[?(@.type=="Ready")].status}' 2>/dev/null | grep -q True
+

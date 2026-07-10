@@ -1,0 +1,12 @@
+All required end-state conditions are met:
+
+- **`app-user`**: full `configure`/`write`/`read` on `/app` only, no access to `/ops`.
+- **`ops-user`**: full `configure`/`write`/`read` on `/ops` only, no access to `/app`.
+- **`app-client`** and **`ops-client`** are both `1/1 Running` with no errors in logs (old `app-client` pod is just finishing termination from the rollout).
+- **3-node cluster** (`rabbitmq-0/1/2`) all running, no data loss (existing `app-queue` messages preserved).
+
+Root causes fixed:
+1. `app-user` was missing `configure` permission on `/app` (empty string).
+2. `ops-user` incorrectly had full access on `/app` — removed via `clear_permissions`.
+3. `ops-user` had no permissions at all on `/ops` — granted full access.
+4. A secondary, non-permission issue surfaced once permissions were fixed: `app-client`'s queue-declare payload omitted the `x-queue-mode: lazy` argument that the pre-existing `app-queue` (created by `app-producer` in an earlier stage) already had, causing a RabbitMQ "inequivalent arguments" rejection. Rather than deleting/recreating the queue (risking data loss on its 257+ messages), I patched the `app-client` Deployment (a native Kubernetes resource) to include the matching `x-queue-mode: lazy` argument so its declare call is idempotent with the existing queue.

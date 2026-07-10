@@ -1,0 +1,14 @@
+All goals verified:
+
+**Root cause:** The `rabbitmq-setup` job had provisioned `app-user` with an empty `configure` permission on `/app` (`{"configure":"","write":".*","read":".*"}`), so the producer's `queue.declare` call was rejected with `not_authorised`, crash-looping the pod.
+
+**Fixes applied:**
+1. Granted `configure` permission to `app-user` on `/app` via `rabbitmqctl set_permissions -p /app app-user ".*" ".*" ".*"`, allowing queue declaration.
+2. Restarted the `app-producer` deployment to pick up the fix — it's now `1/1 Running`, and `app-queue` (classic, durable) is filling with messages in `/app`.
+3. Verified/restored the missing HA mirroring policy on `/app` (`ha-all`: `ha-mode=all`, `ha-sync-mode=automatic`, applied to classic queues) — this had been stripped out (list_policies returned empty), leaving the classic queue unmirrored and at risk of data loss on node failure. Note: I also tested the setup job's own `force-quorum` policy attempt and confirmed it was invalid (`queue-type` is not a recognized policy key in RabbitMQ 3.12) and never actually applied, so it wasn't the cause of the missing policy.
+
+**Verified end state:**
+- `app-producer` deployment: `1/1` ready, no restarts since fix.
+- `/app` vhost has `app-queue`, type `classic`, durable, with a growing message count (confirmed producer is actively publishing).
+- `ha-all` policy present on `/app`, mirroring the classic queue across all nodes.
+- All 3 RabbitMQ nodes (`rabbitmq-0/1/2`) running and clustered; node health check passed.

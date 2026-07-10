@@ -1,0 +1,13 @@
+Full membership restored and stable. Summary of what was wrong and what I fixed:
+
+**Root cause (two bugs in the `es-config` ConfigMap):**
+1. `discovery.seed_hosts` pointed to `.default.svc.cluster.local`, but the `es-cluster` headless service actually lives in the `elasticsearch` namespace — so any node needing to rediscover peers via fresh DNS (e.g. after a restart with a new pod IP) could never resolve them.
+2. `node.name:` was set to a YAML null, which crashes Elasticsearch's settings parser on startup (`ElasticsearchParseException: null-valued setting`). The only reason `es-cluster-0` was still running was that it started before this got broken and never needed to reparse the config — any node that restarted or was recreated would crash-loop forever.
+
+**Fix applied:**
+- Corrected the seed-hosts to use the `elasticsearch` namespace.
+- Removed the invalid null `node.name` key (defaults to hostname, which is correct for a StatefulSet pod).
+- Verified the live StatefulSet replica count (1, due to the external scaling process) against the expected topology (3, evidenced by 3 retained PVCs and a 3-node `cluster.initial_master_nodes` list), then scaled back to 3.
+- Recreated the two crash-looping pods so they'd pick up the corrected config.
+
+**Verified:** cluster status `green`, all 3 nodes (`es-cluster-0/1/2`) present in `_cat/nodes`, and the `app-data` index is readable with its document intact.

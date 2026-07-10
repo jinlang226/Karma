@@ -1,0 +1,15 @@
+Debug pods are cleaned up. Final state:
+
+**Root causes found:**
+1. `es-config` ConfigMap had `node.name:` set to a null/empty value — Elasticsearch refuses to parse settings with a null value, so any pod that (re)read this config on startup would crash-loop. `es-cluster-0`/`-1` were already running from before the bad edit; only the restarted `es-cluster-2` hit it.
+2. The same ConfigMap's `discovery.seed_hosts` pointed at `*.default.svc.cluster.local`, but the cluster actually runs in the `elasticsearch` namespace — DNS resolution for peer discovery failed.
+3. `es-cluster-2`'s PVC had already been deleted and recreated (storage class `reclaimPolicy: Delete`) before I started, permanently wiping the only copy of the `app-data` primary shard (confirmed by checking the host-path provisioner's backing directory — no trace of the old volume remained).
+
+**Fix applied:**
+- Corrected `node.name` to `${POD_NAME}` and the seed host DNS suffix to `elasticsearch.svc.cluster.local` in the ConfigMap, then recycled only the failed `es-cluster-2` pod (left the two healthy pods untouched).
+- Since the `app-data` primary's only copy was unrecoverably gone (no snapshot repo, no surviving replica), used `_cluster/reroute` with `allocate_empty_primary`/`accept_data_loss` to unblock the stuck shard — the only way to bring the cluster out of `red` given no backup exists.
+
+**Verified:**
+- `_cluster/health`: `green`, `number_of_nodes: 3`
+- `_cat/nodes`: `es-cluster-0`, `-1`, `-2` all present
+- `app-data` index responds to `_count` (200, empty but readable/writable going forward)

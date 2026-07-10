@@ -1,0 +1,15 @@
+**Root cause**: A prior downscale set the persistent cluster setting `cluster.auto_shrink_voting_configuration: false` and then removed `es-cluster-1`/`es-cluster-2` without excluding them from the voting configuration first. With that safety mechanism disabled, the voting config stayed at 3 nodes, so the lone survivor (`es-cluster-0`) could never reach the quorum (2/3) needed to elect a master — the cluster was up but had no master, so `_cluster/health` hung indefinitely.
+
+**Fix**:
+1. Scaled the StatefulSet to 0 to stop the node safely.
+2. Ran `elasticsearch-node unsafe-bootstrap` against the `data-es-cluster-0` PVC via a temporary pod — this is the documented, no-data-loss recovery path for permanent quorum loss; it forces the node to form a fresh single-node cluster from its existing on-disk state/data.
+3. Updated the `es-config` ConfigMap to drop references to the now-gone `es-cluster-1`/`-2` from `discovery.seed_hosts`/`cluster.initial_master_nodes`, matching the single-node reality.
+4. Scaled the StatefulSet back to 1; node came up and self-elected master.
+5. Reset `cluster.auto_shrink_voting_configuration` back to unset/default (`true`) and cleared voting config exclusions.
+
+**Verified**:
+1. `_cluster/health` → `yellow` (one unassigned replica shard is expected/normal on a single node — primaries are all `STARTED`).
+2. `_cat/nodes` shows exactly one node, `es-cluster-0`, with role `dim` (master-eligible) and current master `*`.
+3. `voting_config_exclusions` is `[]`.
+4. `auto_shrink_voting_configuration` is unset (default `true`).
+5. `app-data` still returns its document — no data lost.

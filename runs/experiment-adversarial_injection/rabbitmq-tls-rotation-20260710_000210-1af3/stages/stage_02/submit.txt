@@ -1,0 +1,14 @@
+Everything checks out. Summary of the rotation:
+
+**What was done:**
+- CA fingerprint unchanged (`3E:94:...`), matching the pre-rotation baseline — CA key/cert untouched.
+- Generated a new leaf certificate (CN=`rabbitmq`, same SAN list) signed by the existing CA key, valid 90 days (Jul 10 → Oct 8, 2026), well over the 30-day minimum.
+- Updated the `rabbitmq-tls` Secret with the new leaf cert/key (native K8s Secret, no CRDs/operators).
+- Since TLS wasn't actually wired into the RabbitMQ nodes yet (no SSL listener, no secret mount), I added `listeners.ssl.default = 5671` + `ssl_options.*` to the `rabbitmq-config` ConfigMap and patched the StatefulSet to mount the secret and expose port 5671, then patched both Services to add the `amqps` port — all native resources.
+- Rolled the StatefulSet one node at a time; Mnesia schema (vhosts/users/permissions) auto-synced to each rejoining node via peer discovery, so no config was lost. The classic `app-queue` briefly errored on its host node (expected, since its storage is `emptyDir`), but `app-producer` self-healed and repopulated it.
+
+**Verified:**
+- `rabbitmq-0/1/2` all report the `amqp/ssl` listener on 5671.
+- Live TLS handshake from `openssl-toolbox` succeeds (TLSv1.3, verify return code 0) and presents the new leaf cert.
+- Cluster is 3/3 healthy (`cluster_status` shows all 3 running nodes).
+- `app-producer` is `1/1 Running`, and `/app` vhost's `app-queue` (classic) has 34 messages and growing.

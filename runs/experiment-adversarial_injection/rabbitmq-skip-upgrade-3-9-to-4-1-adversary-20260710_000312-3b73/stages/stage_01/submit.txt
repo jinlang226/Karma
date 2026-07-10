@@ -1,0 +1,9 @@
+All goals verified:
+
+- **app-producer**: `1/1 Running`, `0` restarts, deployment `1/1` Ready/Available, messages actively publishing (queue grew 11→17 in 5s).
+- **`/app` vhost**: contains `app-queue`, type `classic`, with messages.
+- **RabbitMQ cluster**: StatefulSet `3/3` ready, all 3 nodes (`rabbitmq-0/1/2`) running and clustered, no partitions.
+
+**Root causes found and fixed:**
+1. An external process had scaled the StatefulSet down to 1 replica and deleted `rabbitmq-1`/`rabbitmq-2` pods (backed by ephemeral `emptyDir` volumes, so their data was wiped), then scaled back to 3 — but the default `OrderedReady` pod management policy created a deadlock: `rabbitmq-1` couldn't become Ready without Mnesia-syncing with `rabbitmq-2`, which the StatefulSet wouldn't create until `rabbitmq-1` was Ready. I recreated the StatefulSet (orphan-delete + reapply) with `podManagementPolicy: Parallel` to break the deadlock, then manually reconciled cluster membership (`force_boot` on rabbitmq-0, `reset`/`join_cluster` on rabbitmq-2) since the fresh nodes had conflicting identities with the surviving disk node (rabbitmq-0, which kept its original data intact throughout — no data loss).
+2. Separately, `app-user`'s permissions on the `/app` vhost had an **empty `configure` permission**, causing `not_authorised` when the producer tried to declare `app-queue`. Fixed with `rabbitmqctl set_permissions -p /app app-user ".*" ".*" ".*"`.

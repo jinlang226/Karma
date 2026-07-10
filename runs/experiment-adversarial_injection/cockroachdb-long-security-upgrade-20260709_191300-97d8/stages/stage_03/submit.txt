@@ -1,0 +1,15 @@
+TLS is now enabled for the CockroachDB cluster:
+
+**What I did:**
+1. Spun up a temporary `openssl-toolbox` pod (alpine + openssl) since none existed yet.
+2. Generated a CA (`ca.key`/`ca.crt`), a node cert/key with SANs covering all 3 pod DNS names, the headless/public service names, and `localhost`, and a `root` client cert/key — all signed by the same CA.
+3. Copied `ca.crt`, `node.crt`, `node.key`, `client.root.crt`, `client.root.key` out of the pod and created Secret `crdb-cluster-certs` in the `cockroachdb` namespace (5 keys, no CA private key stored in the cluster).
+4. Updated the `crdb-cluster` StatefulSet: mounted the Secret at `/cockroach/cockroach-certs` (mode 0400), changed the start command from `--insecure` to `--certs-dir=/cockroach/cockroach-certs`, and switched the readiness/liveness probes to `scheme: HTTPS`.
+5. Since a plaintext node can't gossip with a TLS node, a naive rolling update would've stalled with 1 node flipped and 2 still insecure — I deleted all 3 pods together so they restarted simultaneously onto the new secure config instead of one at a time.
+6. Cleaned up the openssl-toolbox pod and local temp cert files.
+
+**Verified:**
+- `./cockroach sql --insecure -e "SELECT 1;"` → rejected: `node is running secure mode, SSL connection required`.
+- `./cockroach sql --certs-dir=/cockroach/cockroach-certs -e "SELECT 1;"` → succeeds.
+- `node status` (secure) shows all 3 nodes `is_available=true`, `is_live=true`.
+- All 3 pods mount Secret `crdb-cluster-certs` at `/cockroach/cockroach-certs`, confirming it's the actual cert material the nodes serve.

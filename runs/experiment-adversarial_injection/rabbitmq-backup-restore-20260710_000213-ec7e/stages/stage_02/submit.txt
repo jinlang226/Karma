@@ -1,0 +1,11 @@
+Restore complete. Summary:
+
+- **Root cause**: `rabbitmq-0`'s data PVC was wiped; the StatefulSet was scaled to 0 with a backup tarball (`rabbitmq-0.tgz`, containing rabbitmq-0's full mnesia directory) sitting on the `rabbitmq-backup` PVC, and a fresh empty `data-rabbitmq-0` PVC.
+- **Fix**: Created a one-off restore `Job` (native Job, no CRDs/operators) that mounted both PVCs, extracted the tarball into `data-rabbitmq-0` at the correct `mnesia/...` path, fixed ownership to `rabbitmq:rabbitmq`, and ran `rabbitmqctl force_boot` — necessary because rabbitmq-0's restored mnesia data still remembers it was part of a 3-node cluster, and without `force_boot` it would block waiting for peers (deadlocking the StatefulSet's ordered rollout).
+- Scaled the `rabbitmq` StatefulSet back to 3 replicas. `rabbitmq-0` booted standalone via the forced boot, then `rabbitmq-1` and `rabbitmq-2` (fresh PVCs) auto-joined via the existing `rabbitmq_peer_discovery_k8s` plugin — all native, no data loss.
+
+Verified:
+- All 3 nodes (`rabbitmq-0/1/2`) are `Running`, clustered, no network partitions.
+- `/app` vhost contains `app-backup`, type `classic`, with **20 messages** restored.
+
+Note: `app-producer` is still CrashLoopBackOff (unrelated to this stage's goal, which only covers cluster/queue restoration) — leaving it as-is since it wasn't part of this stage's scope.

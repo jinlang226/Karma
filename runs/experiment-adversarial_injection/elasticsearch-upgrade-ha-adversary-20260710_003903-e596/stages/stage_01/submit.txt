@@ -1,0 +1,15 @@
+Everything is deployed and verified successfully. Summary:
+
+**Deployed** (native K8s resources only, `docker.elastic.co/elasticsearch/elasticsearch:8.11.0`):
+- `ConfigMap/es-config` — `elasticsearch.yml` with security/TLS enabled (reusing `es-http-tls` for both HTTP and transport, `verification_mode: certificate` for transport since the cert's SAN only covers single-label wildcards)
+- `Service/es-transport` (headless) — peer discovery/transport
+- `Service/es-http` (ClusterIP) — port 9200 HTTPS
+- `PodDisruptionBudget/es-pdb` — minAvailable 2
+- `StatefulSet/es` — 3 replicas with init containers to set `vm.max_map_count`, seed the config dir, and inject `bootstrap.password` (from the `elastic-password` secret) into the ES keystore so the `elastic` user password matches the existing secret
+
+**Verified:**
+- All 3 pods `es-0/1/2` are `1/1 Running`
+- `_cluster/health` via `es-http` service: `status: green`, `number_of_nodes: 3`
+- Write (`POST _doc`) and read (`GET _doc`) both succeeded over HTTPS through `es-http:9200` using the `elastic` / `elastic-password` secret credentials
+
+One implementation note: I hit and fixed two init-container issues along the way — `cp -a` failed trying to preserve ownership/timestamps as a non-root user, and an explicit `chown` also failed for the same reason — solved by dropping `-a`/`chown` and relying on the image's default non-root permissions.

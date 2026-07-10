@@ -1,0 +1,9 @@
+Confirmed: 1 PRIMARY, 2 SECONDARY, all 3 pods Ready.
+
+**Root cause:** The readiness/liveness probes (`probe.sh`) sleep 2s before even connecting via `mongosh`, but an external automation had tightened the probes to `timeoutSeconds: 1`, `failureThreshold: 1` (readiness) and `timeoutSeconds: 1`, `failureThreshold: 2`, `initialDelaySeconds: 15` (liveness) — guaranteeing every probe timed out and killing/un-readying healthy pods.
+
+**Fix:** Restored the probe timing to the values preserved in the StatefulSet's `last-applied-configuration` annotation (the pre-tampering config):
+- Readiness: `timeoutSeconds: 5`, `failureThreshold: 6`, `periodSeconds: 5`, `initialDelaySeconds: 15`
+- Liveness: `timeoutSeconds: 5`, `failureThreshold: 10`, `periodSeconds: 10`, `initialDelaySeconds: 120`
+
+One pod (`mongodb-replica-0`) was stuck on the old controller revision because kubelet kept restarting its container in-place rather than the StatefulSet controller replacing it; deleting that pod let it recreate under the updated (fixed) template. All 3 pods are now `1/1 Ready` and the replica set shows a stable PRIMARY/SECONDARY/SECONDARY topology with auth still enforced (`--auth` unchanged).

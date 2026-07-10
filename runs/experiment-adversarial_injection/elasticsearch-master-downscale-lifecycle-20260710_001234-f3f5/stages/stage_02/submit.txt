@@ -1,0 +1,10 @@
+Root cause and fix:
+
+- **Root cause**: The `es-config` ConfigMap had `node.name:` set to a blank value (invalid — ES requires a non-null value) and `discovery.seed_hosts` pointed at the wrong namespace (`.default.svc` instead of `.elasticsearch.svc`). Because it's mounted via `subPath`, already-running pods (`es-cluster-0/1`) kept their original good copy in memory, but `es-cluster-2`'s PVC and pod had been wiped and recreated, so it mounted the broken config fresh and crashed on startup (`ElasticsearchParseException: null-valued setting for node.name`).
+- **Fix applied**: Patched the ConfigMap — `node.name: ${POD_NAME}` (using the existing `POD_NAME` env var) and corrected the seed-host FQDNs to the `elasticsearch` namespace — then deleted the crashing pod so it restarted with the fixed config and rejoined.
+- **Data recovery**: `es-cluster-2`'s fresh PVC had no data, so `app-data`'s primary shard had no valid copy (only a stale one on `es-cluster-0`). Used `_cluster/reroute` with `allocate_stale_primary` (`accept_data_loss: true`) to restore it from the stale copy, then it re-replicated to `es-cluster-2`.
+
+Verified:
+1. `_cluster/health` → `green`, 3/3 nodes.
+2. `_cat/nodes` shows `es-cluster-0`, `es-cluster-1`, `es-cluster-2`.
+3. `app-data` is searchable and returns its document (`"msg": "seed"`).

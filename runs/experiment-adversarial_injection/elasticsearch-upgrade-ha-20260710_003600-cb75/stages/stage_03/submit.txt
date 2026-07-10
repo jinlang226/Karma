@@ -1,0 +1,11 @@
+HTTP CA/leaf certificate rotation complete, with **zero pod restarts** (RESTARTS: 0 on all three nodes throughout):
+
+**Approach** (trust-then-cutover, to avoid any window where clients distrust the server):
+1. Generated a new CA (`es-ca-v2`) and a new leaf cert for `es-http` (same SAN set: `localhost`, `*.elasticsearch.svc`, `*.elasticsearch.svc.cluster.local`), both valid ~1 year (2026-07-10 → 2027-07-10).
+2. **Phase 1**: Updated the `es-http-tls` Secret's `ca.crt` to a bundle of old+new CA while still serving the old leaf — let clients pick up trust for the new CA first.
+3. **Phase 2**: Swapped `tls.crt`/`tls.key` to the new leaf (still bundled `ca.crt`). Elasticsearch's built-in TLS file-watcher hot-reloaded the HTTP SSL context on all 3 pods without restarts — confirmed via `openssl s_client` showing `issuer=CN=es-ca-v2` on every pod IP.
+4. **Phase 3**: Trimmed `ca.crt` down to just the new CA once cutover was confirmed.
+
+Since the Secret is mounted as a full volume (no `subPath`), Kubernetes propagated each update to the pods automatically, and Elasticsearch reloaded the certs in place.
+
+**Verification**: cluster stayed `green` with 3 nodes throughout; a client trusting *only* the new CA can connect over HTTPS; the seeded `app-data` index (3 docs) is untouched.

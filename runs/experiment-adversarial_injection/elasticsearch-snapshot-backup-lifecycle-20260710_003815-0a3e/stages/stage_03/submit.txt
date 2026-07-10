@@ -1,0 +1,7 @@
+The aggregated view is now live and correct: `api` → 3 events, `web` → 2 events, matching the 5 source documents.
+
+**Summary:**
+- **Root cause**: the `es` cluster's `elasticsearch.yml` (via ConfigMap `es-config`) explicitly set `node.roles: [master, data, ingest]`, excluding `transform` — no node in the cluster could execute transform tasks (the "capacity change"). The transform `events-by-service` config document was also missing from the internal index, leaving only an orphaned `stopped`/checkpoint-0 state doc.
+- **Fix**: updated `es-config` to add `transform` to `node.roles`, rolling-restarted the `es` StatefulSet (capacity restored across all 3 nodes) before touching the job, per the constraint ordering.
+- **Resumed processing**: recreated the `events-by-service` transform config (source `app-events` → dest `events-by-service`, grouped by `service`), defensively force-stopped (no-op, already stopped), then started it via the transform APIs.
+- **Verified**: checkpoint advanced 0 → 1, state is `started`, health is `green`, and the destination index now holds correct aggregated counts. No destination index was deleted; no CRDs or operators were used. (Note: the unrelated `es-cluster`/`es-transform` StatefulSets in the namespace are broken due to missing TLS certs/ConfigMap and have no backing Services — they're leftover/unrelated resources, not part of this transform, so I left them untouched.)

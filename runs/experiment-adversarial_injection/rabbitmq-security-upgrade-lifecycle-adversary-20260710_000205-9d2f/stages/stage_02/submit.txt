@@ -1,0 +1,12 @@
+Both `app-client` and `ops-client` are `1/1 Running` with 0 restarts and no error output (empty logs = the publish loop is succeeding silently). Everything checks out:
+
+- **`app-user`**: full `configure`/`write`/`read` on `/app` only — no entry on `/ops`.
+- **`ops-user`**: full `configure`/`write`/`read` on `/ops` only — no entry on `/app`.
+- **`app-client`** and **`ops-client`**: both `Running`, `1/1 Ready`, no crash loops.
+- **RabbitMQ cluster**: all 3 nodes (`rabbitmq-0/1/2`) still running, no data loss (existing `app-queue` messages preserved).
+
+**Root causes fixed:**
+1. `app-user` had empty `configure` permission on `/app` → granted full `.* .* .*`.
+2. `ops-user` incorrectly held full permissions on `/app` (wrong-vhost grant) → cleared with `clear_permissions`.
+3. `ops-user` had no permissions on `/ops` at all → granted full `.* .* .*`.
+4. A secondary issue surfaced after the permission fix: `app-client`'s queue-declare payload omitted `x-queue-mode: lazy`, conflicting with the existing `app-queue` (created by `app-producer` in the prior stage) — RabbitMQ rejects redeclare with mismatched arguments. Rather than deleting the queue (which would lose its messages), I patched the `app-client` Deployment's declare payload to include the matching `x-queue-mode: lazy` argument, which is a native Kubernetes resource change, not a CRD/operator.

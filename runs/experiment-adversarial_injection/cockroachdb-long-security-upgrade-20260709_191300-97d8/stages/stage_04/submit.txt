@@ -1,0 +1,13 @@
+TLS certificate rotation complete:
+
+**What I did:**
+1. Used the existing CA (`ca.key`/`ca.crt`) in the `openssl-toolbox` pod at `/tmp/certs/` — reused the existing `node.cnf` SAN config so the new node cert covers the same DNS names/IPs as before.
+2. Generated new node key/cert and new root client key/cert, both signed by the existing CA, valid for 365 days.
+3. Updated the `crdb-cluster-certs` Secret in place with the new material (same key names: `ca.crt`, `node.crt`, `node.key`, `client.root.crt`, `client.root.key`) — CA itself unchanged.
+4. Since the CA didn't change, old and new node certs remain mutually trusted, so I did a safe rolling restart (one pod at a time, waiting for each to become Ready) to force each node to pick up the new cert from the freshly-synced secret volume, rather than relying solely on CockroachDB's hot-reload.
+
+**Verified:**
+- Secure SQL: `SELECT 1;` via `--certs-dir=/cockroach/cockroach-certs` succeeds.
+- Node cert fingerprint changed from `D0:34:F9:87...` to `19:58:E9:3B...` — confirms rotation.
+- New cert `notAfter=Jul 9 19:34:18 2027 GMT` — ~365 days from now (2026-07-09), matching the ~1 year requirement.
+- `node status` shows all 3 nodes `is_available=true`, `is_live=true` post-rotation.

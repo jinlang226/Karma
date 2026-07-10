@@ -1,0 +1,11 @@
+All three verification checks pass:
+
+1. **Secure SQL works** — `SELECT 1;` succeeded against `crdb-cluster-0` using the mounted certs.
+2. **Node cert rotated** — new fingerprint `73:E3:8B:9A:...` (matches the newly generated cert, differs from the old `7F:C9:20:09:...`).
+3. **Validity ~1 year** — `notBefore=2026-07-09` → `notAfter=2027-07-09`, exactly 365 days.
+
+Summary of what was done:
+- Found the `crdb-cluster-certs` Secret was missing entirely (deleted by the external process noted in the task), even though pods still had old certs cached in their tmpfs mounts (expiring 2026-07-11).
+- Generated new `node` and `client.root` certs/keys in the `openssl-toolbox` pod, signed by the existing CA (`ca.key`/`ca.crt`), reusing the same SAN config (`node.cnf`) for the node cert and `CN=root` with `clientAuth` EKU for the client cert — both valid 365 days.
+- Copied the new cert/key material out of the toolbox pod and recreated the `crdb-cluster-certs` Secret with all 5 required keys (`ca.crt`, `node.crt`, `node.key`, `client.root.crt`, `client.root.key`).
+- Rolled the `crdb-cluster` StatefulSet (`kubectl rollout restart`) so all 3 pods remounted the new secret; rollout completed cleanly with all pods healthy.

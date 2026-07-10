@@ -1,0 +1,15 @@
+All requirements are met. Summary:
+
+**Upgrade path taken**: 3.12.14 → 3.13.7 → 4.1.8 (stepping through 3.13 was mandatory — jumping straight to 4.1 failed at boot with `stream_filtering: required feature flag not enabled`, since that flag is introduced in 3.13 and is a hard prerequisite for 4.x).
+
+**Key engineering steps**:
+1. Discovered the `data` volume was `emptyDir`, which does not survive StatefulSet-triggered Pod recreation — migrated it to a `hostPath` volume (`/var/lib/rabbitmq-pv-data`) with per-pod isolation via `subPathExpr: $(POD_NAME)`, copying existing Mnesia data into place first (fixed an `.erlang.cookie` permission bug along the way — Erlang requires strict 400 perms).
+2. For each major-version jump, used the officially-supported **full cluster stop → swap image → start** method rather than a live rolling upgrade, avoiding any period where incompatible major versions coexist in the same cluster.
+3. Hit a second issue: `OrderedReady` pod management deadlocks a full cold-cluster-start (node 0 waits for Mnesia sync from nodes 1/2, which never start because node 0 isn't Ready yet). Recreated the StatefulSet with `podManagementPolicy: Parallel` so all 3 nodes boot concurrently and can find each other.
+4. Enabled all RabbitMQ feature flags at each stage before upgrading further.
+
+**Final state**:
+- All 3 nodes report **RabbitMQ 4.1.8** (Erlang 27.3.4.14), cluster shows all 3 as Running Nodes.
+- `/app`, `/ops`, and `/` vhosts all present; `app-queue` still `classic` type with the `ha-all` policy attached, and message count preserved exactly through the version stop/start (264 messages before and after), now growing again (378) as producers resumed.
+- `app-client`, `app-producer`, and `ops-client` all recovered to `1/1 Running` after reconnecting.
+- All changes used only native Kubernetes resources (StatefulSet, Secret, ConfigMap, Pod) — no CRDs or operators.

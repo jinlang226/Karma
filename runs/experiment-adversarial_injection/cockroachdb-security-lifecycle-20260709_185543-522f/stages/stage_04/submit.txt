@@ -1,0 +1,13 @@
+Certificate rotation complete and verified:
+
+**What was done:**
+- Used the existing CA (`/tmp/certs/ca.key` + `ca.crt` in the `openssl-toolbox` pod, same CA already trusted cluster-wide) to issue a fresh `node` cert (same SAN list, reused `node.cnf`) and a fresh `client.root` cert, both valid 365 days.
+- Updated the `crdb-cluster-certs` Secret in place with the new `node.crt`/`node.key`/`client.root.crt`/`client.root.key`.
+- Discovered CockroachDB v24.1.0 does **not** hot-reload the node cert from an updated secret volume mount — after ~90s the gRPC listener was still serving the old (soon-to-expire) cert. Confirmed via `openssl s_client` against port 26257.
+- Performed a one-pod-at-a-time rolling restart (`crdb-cluster-0` → `-1` → `-2`, each waited to become Ready before touching the next) to force each node to pick up the new cert. This was safe here — unlike the earlier insecure→TLS migration — because all nodes still share the same trusted CA, so mixed old/new leaf certs during the rollout don't break mutual trust or quorum.
+
+**Verification results:**
+1. `SELECT 1` over `--certs-dir` succeeds.
+2. New node cert fingerprint: `B5:35:17:40:...` (rotated from the old `D6:A9:2F:DC:...`).
+3. Validity: `2026-07-09` → `2027-07-09` (exactly 365 days).
+4. All 3 nodes now serve the new cert on the wire (checked live via TLS handshake), and `cockroach node status` shows all 3 nodes live/available.

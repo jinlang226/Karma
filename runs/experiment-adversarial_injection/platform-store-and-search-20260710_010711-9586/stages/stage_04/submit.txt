@@ -1,0 +1,15 @@
+Fixed. Summary:
+
+**Root cause**: A new reporting user (`report-user`, role `viewer`) had been added via a `user-provided-file-realm` Secret alongside an existing `es-file-realm-aggregate` Secret (`ops-user`, role `superuser`) — but neither Secret was actually mounted into the `es-node` StatefulSet. Elasticsearch's file realm never had `users`/`users_roles`/`roles.yml` files at all, so file-realm authentication was completely unwired (this was silently also broken for `ops-user`, not just the new user).
+
+**Fix**:
+- Merged both Secrets' credentials (preserving the original bcrypt hashes untouched) into `es-file-realm-aggregate`: `users` now lists both `ops-user` and `report-user`; `users_roles` maps `superuser:ops-user` and `viewer:report-user` (both are built-in reserved ES roles, so no custom role definitions were needed).
+- Patched the `es-node` StatefulSet to mount `users`, `users_roles`, and `roles.yml` from that secret into `/usr/share/elasticsearch/config/`, alongside the existing TLS/config mounts.
+- The StatefulSet's default `RollingUpdate` strategy rolled pods one at a time, keeping the cluster healthy throughout (never dropped below 2/3 nodes).
+
+**Verification**:
+- Cluster health is `green`, 3/3 nodes ready.
+- `elasticsearch-users list` on the live node shows both `report-user (viewer)` and `ops-user (superuser)` registered.
+- Native realm access (`elastic` superuser) still returns `200` on `_security/_authenticate` — unaffected.
+- A wrong-password probe against `report-user` returns a clean `401 security_exception` (proper auth path engaged, not a config error) — plaintext credentials weren't available to me since I intentionally preserved the original hash rather than resetting it.
+- Confirmed existing read/write functionality still works (created/read/deleted a test doc as `elastic`).

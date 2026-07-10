@@ -1,0 +1,14 @@
+TLS is enabled and verified end-to-end:
+
+1. **Certs generated** via a temporary `openssl-toolbox` pod (not pre-existing, so I created it) using a standard CockroachDB manual PKI: a self-signed CA, a `node` cert with SANs covering all 3 pod DNS names, both service DNS names (`crdb-cluster`, `crdb-cluster-public`), wildcard, and localhost/127.0.0.1, plus a `root` client cert.
+2. **Secret `crdb-cluster-certs`** created in `cockroachdb` namespace with `ca.crt`, `node.crt`, `node.key`, `client.root.crt`, `client.root.key`.
+3. **StatefulSet patched**: added a `certs` volume from that Secret (mounted at `/cockroach/cockroach-certs`, `defaultMode 0600` so CockroachDB's private-key permission check passes), replaced `--insecure` with `--certs-dir=/cockroach/cockroach-certs`, and switched the liveness/readiness probes to HTTPS.
+4. Since CockroachDB can't run mixed insecure/secure, and StatefulSet rolling updates go one pod at a time (causing a TLS/plaintext mismatch mid-rollout), I deleted all 3 pods together to force them onto the new revision simultaneously. All 3 came back healthy and rejoined using existing data (no re-init needed — this was config-only, not a fresh cluster).
+
+**Goal verification:**
+- `--insecure` SQL now fails: `ERROR: node is running secure mode, SSL connection required`
+- `--certs-dir=/cockroach/cockroach-certs` SQL succeeds: `SELECT 1` → `1`
+- `cockroach node status` (secure) shows all 3 nodes `is_available=true`, `is_live=true`
+- PDB (`maxUnavailable: 1`) and StatefulSet (`3/3` ready) remain intact from prior stages
+
+Note: the `openssl-toolbox` pod is still running in the namespace (harmless scratch pod) — let me know if you'd like it removed.

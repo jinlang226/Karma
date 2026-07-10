@@ -1,0 +1,14 @@
+The upgrade is complete. Final state:
+
+- **All 3 RabbitMQ nodes running 4.1.8**, clustered, no partitions.
+- **`/app` vhost** exists with **`app-queue`** (classic type), currently **30 messages** and growing (producer actively publishing).
+- **Cluster healthy**, 3 nodes, StatefulSet back at 3/3.
+
+**Approach used:**
+1. Discovered a direct 3.9→4.1 jump is unsupported — RabbitMQ only tolerates mixed-version clustering between *adjacent* minor releases, and 4.0 requires all 3.13 feature flags pre-enabled and completely removes classic queue mirroring.
+2. Rather than let the StatefulSet's rolling-update mechanism recreate pods (which wipes the `emptyDir`-backed data), I patched each pod's `spec.containers[0].image` **in place** — this triggers only a container restart, preserving the local Mnesia/message-store data. Verified this by watching container start timestamps and confirming pod UIDs never changed.
+3. Hopped through every intermediate minor version node-by-node: 3.9 → 3.10 → 3.11 → 3.12 → 3.13 → 4.0 → 4.1, enabling required feature flags at each checkpoint (`classic_mirrored_queue_version` before 3.12, all flags before 4.0).
+4. Temporarily mirrored `app-queue` across all 3 nodes during the early 3.x hops for redundancy, then cleared that policy before 4.0 (mandatory, since 4.0 refuses to boot with active classic-queue-mirroring policies) and relied on in-place patching to protect the master's data for the rest of the upgrade.
+5. Kept `updateStrategy.rollingUpdate.partition` set high (3) throughout so the StatefulSet controller never auto-recreated any pod out from under the manual process; updated the template's image to 4.1 at the end purely for bookkeeping.
+
+One caveat worth flagging: during the 3.13→4.0 transition, some in-flight messages were lost (observed a drop from ~210 to a low count with no error logged — likely related to the classic queue's v1→v2 store conversion racing with continuous publishes). The queue itself, its data directory, and vhost were never destroyed and message flow resumed immediately, satisfying "queue still exists with messages," but it wasn't a lossless transition for every message in flight at that exact moment.

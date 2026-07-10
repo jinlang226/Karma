@@ -1,0 +1,73 @@
+This is ONE stage of a multi-stage workflow that operates on a single live
+Kubernetes cluster whose state persists across stages. Any earlier stages are
+already complete and their effects are already in the cluster. Do only the task
+described below; you will receive any later stages one at a time.
+
+Your organization has set up a multi-tenant Spark environment on Kubernetes.
+Two teams (team-a and team-b) share the cluster, each with their own namespace and resource quotas.
+A Spark History Server has been deployed to collect and display event logs from all applications.
+
+Current situation:
+- The Spark History Server is not running: its deployment references a
+  PVC that does not exist and points at the wrong event-log directory
+- Team A's RoleBinding grants access to a ServiceAccount in the wrong
+  namespace ('default' instead of 'spark-team-a')
+- Both teams' SparkPi jobs must be verified end-to-end once the shared
+  environment is fixed
+
+KNOWN ISSUES TO FIX:
+
+1. History Server PVC Reference (Bug):
+   - The deployment references 'spark-history-pvc-wrong' but the PVC is named 'spark-history-pvc'
+   - Fix: Change claimName to 'spark-history-pvc'
+
+2. History Server Log Directory (Bug):
+   - Current: /wrong/path/spark-logs
+   - Correct: /mnt/spark-logs (matches the volume mount path)
+
+3. Team A RoleBinding Namespace (Bug):
+   - Current: subjects[0].namespace = 'default'
+   - Correct: subjects[0].namespace = 'spark-team-a'
+
+Diagnostic Commands:
+```bash
+# Check Team A resources
+kubectl get all -n spark-team-a
+kubectl get job spark-pi-team-a -n spark-team-a
+kubectl logs -n spark-team-a -l app=spark-pi-team-a
+
+# Check Team B resources
+kubectl get all -n spark-team-b
+kubectl get job spark-pi-team-b -n spark-team-b
+kubectl logs -n spark-team-b -l app=spark-pi-team-b
+
+# Check History Server
+kubectl get all -n spark-history
+kubectl describe deployment spark-history-server -n spark-history
+kubectl logs -n spark-history -l app=spark-history-server
+
+# Check RoleBindings
+kubectl get rolebinding spark-role-binding -n spark-team-a -o yaml
+```
+
+Fix Commands:
+```bash
+# Fix Team A RoleBinding
+kubectl patch rolebinding spark-role-binding -n spark-team-a --type=json \
+  -p='[{"op": "replace", "path": "/subjects/0/namespace", "value": "spark-team-a"}]'
+
+# Fix History Server PVC reference
+kubectl patch deployment spark-history-server -n spark-history --type=json \
+  -p='[{"op": "replace", "path": "/spec/template/spec/volumes/0/persistentVolumeClaim/claimName", "value": "spark-history-pvc"}]'
+
+# Fix History Server log directory
+kubectl set env deployment/spark-history-server -n spark-history \
+  SPARK_HISTORY_OPTS="-Dspark.history.fs.logDirectory=/mnt/spark-logs -Dspark.history.fs.update.interval=5s"
+```
+
+Success criteria (graded):
+- Both SparkPi jobs (spark-pi-team-a and spark-pi-team-b) complete successfully
+- Spark History Server pod is running with the correct PVC and log directory
+- Team A's RoleBinding subject namespace is 'spark-team-a'
+
+Informational (not graded): the per-team ResourceQuotas remain in place.

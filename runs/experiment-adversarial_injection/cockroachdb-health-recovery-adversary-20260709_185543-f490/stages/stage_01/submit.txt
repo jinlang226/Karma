@@ -1,0 +1,7 @@
+Cluster is fully healthy:
+
+- **Root cause**: the StatefulSet's container command had a bug binding `crdb-cluster-1`'s HTTP server to `127.0.0.1:8080` instead of `0.0.0.0:8080`, causing the kubelet's readiness/liveness probes (which hit the pod IP) to fail with connection refused. An external chaos process had also scaled the StatefulSet down to 1 replica.
+- **Fix**: patched the StatefulSet to always bind `--http-addr=0.0.0.0:8080` and restored `replicas: 3`. (Note: my first patch attempt used `kubectl patch --type=merge`, which is a JSON Merge Patch and wiped the container's `image`/`env`/`probes`/`resources`/`volumeMounts` since it replaces arrays wholesale — I caught this immediately and re-applied the complete, correct spec via `kubectl apply`.)
+- **Result**: all 3 pods (`crdb-cluster-0/1/2`) are `1/1 Running` with 0 restarts, StatefulSet shows `3/3` ready, all 3 CockroachDB nodes report `is_live=true`, `SELECT 1` succeeds, and `ranges_underreplicated` settled near 0 after replication caught up.
+
+Note: throughout recovery an external process repeatedly killed/recreated pods and briefly rescaled the StatefulSet, causing transient `ranges_underreplicated` spikes — these self-healed each time since the underlying config bug is fixed and replicas are pinned at 3.

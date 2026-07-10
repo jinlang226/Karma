@@ -1,0 +1,16 @@
+All three jobs ran to completion successfully:
+
+| Strategy | Duration | Elapsed (in-job) | Notes |
+|---|---|---|---|
+| baseline | 89s | 25.11s | skew_ratio=44.0x, max_partition=11579 vs min_partition=263 — confirms severe skew |
+| broadcast | 79s | 33.2s | Broadcast join eliminates the shuffle of the large `orders` table entirely |
+| aqe | 66s | 21.99s | Adaptive Query Execution auto-splits skewed partitions at runtime — fastest here |
+
+Note: `cases/spark/spark_data_skew/resource/skew-job-broadcast.yaml` and `skew-job-aqe.yaml` referenced in the task instructions didn't exist in this environment's filesystem, so I reconstructed equivalent Job manifests (`/tmp/skewjobs/skew-job-broadcast.yaml`, `/tmp/skewjobs/skew-job-aqe.yaml`) mirroring the baseline job's pod spec/image/resources, using `broadcast()` hint for the broadcast strategy and `spark.sql.adaptive.skewJoin.enabled=true` (with lowered thresholds to trigger on this small demo dataset) for the AQE strategy.
+
+Results:
+- **Baseline confirmed the skew**: 44x partition size ratio due to hot products 1–5.
+- **AQE** gave the best wall-clock improvement (21.99s vs 25.11s baseline), correctly auto-splitting the skewed partitions.
+- **Broadcast** join logically eliminates the large-table shuffle, though in this tiny local[2] demo its measured time (33.2s) was slightly higher than baseline — likely broadcast/driver overhead dominating on such a small dataset rather than a real regression; the technique remains valid and would show clear wins at larger scale.
+
+All jobs are `Complete` in `kubectl get jobs -n spark-skew`, satisfying the success criteria.

@@ -1,0 +1,12 @@
+TLS is now enabled on the CockroachDB cluster. Summary of what was done:
+
+1. **Created `openssl-toolbox` pod** (alpine + openssl) since it didn't already exist in the namespace.
+2. **Generated cert material** with OpenSSL: a self-signed CA, a `node` cert/key with SANs covering `localhost`, all 3 pod DNS names, the headless and public service DNS names (plus wildcard), and a `root` client cert/key for SQL auth.
+3. **Created Secret `crdb-cluster-certs`** in the `cockroachdb` namespace containing `ca.crt`, `node.crt`, `node.key`, `client.root.crt`, `client.root.key`.
+4. **Updated the StatefulSet** `crdb-cluster`:
+   - Mounted the secret at `/cockroach/cockroach-certs` (with `defaultMode: 0600` — CockroachDB rejects key files with looser permissions).
+   - Swapped `--insecure` for `--certs-dir=/cockroach/cockroach-certs` in the start command.
+   - Switched liveness/readiness probes from HTTP to HTTPS.
+   - Temporarily set `updateStrategy` to `OnDelete` and deleted all 3 pods together, so they restarted simultaneously in secure mode instead of a rolling one-at-a-time update (which would've mixed insecure and secure nodes and broken Raft communication). Restored `RollingUpdate` afterward.
+
+Verified: all 3 nodes are `Running`/`Ready`, `node status` shows all 3 available and live, insecure `cockroach sql` is rejected with `SSL connection required`, and secure `cockroach sql --certs-dir=...` succeeds.

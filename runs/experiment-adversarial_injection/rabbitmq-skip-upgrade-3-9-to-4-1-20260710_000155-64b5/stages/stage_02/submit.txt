@@ -1,0 +1,15 @@
+## Summary
+
+Successfully upgraded the RabbitMQ cluster from 3.9 → 4.1 using only native Kubernetes resources.
+
+**Key steps:**
+1. **Fixed the storage architecture first**: the StatefulSet used `emptyDir` for `/var/lib/rabbitmq`, meaning any pod recreation (required for an image upgrade) would wipe each node's identity and durable data. Migrated to PVC-backed storage (`data-rabbitmq-0/1/2` via the `standard` local-path StorageClass) by orphan-deleting the StatefulSet, copying live data into new PVCs via helper pods, and recreating the StatefulSet with `volumeClaimTemplates`.
+2. **Stepped through every minor version**: RabbitMQ 4.0+ requires feature flags that don't exist in 3.9 (e.g. `classic_mirrored_queue_version`) — a direct 3.9→4.1 jump fails to boot with `failed_to_initialize_feature_flags_registry`. Rolled the image through 3.9 → 3.10 → 3.11 → 3.12 → 3.13 → 4.0 → 4.1, one node at a time, enabling all feature flags at each stop (left the experimental `khepri_db` flag disabled — not required and risky to force).
+3. Hit and resolved an OrderedReady deadlock (switched to `Parallel` pod management policy) when two nodes ended up simultaneously waiting on Mnesia sync from a not-yet-recreated peer.
+
+**Result:**
+- All 3 nodes: RabbitMQ 4.1.8, cluster healthy, 3 disk/running nodes.
+- `/app` vhost and `app-queue` (classic) intact, actively accumulating messages (30 and growing).
+- `app-producer` running and publishing successfully.
+
+**Caveat worth flagging:** the queue's messages were published as non-persistent (producer sends `"properties":{}` with no `delivery_mode:2`), so message *content* is lost on any restart of the node hosting the queue — this is inherent AMQP behavior, not a gap in the migration approach, and it reset a couple of times during the required rolling restarts. All durable state (vhost, queue definition, users, permissions) survived every hop intact.

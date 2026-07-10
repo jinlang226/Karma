@@ -1,0 +1,20 @@
+Task complete. Summary:
+
+**Findings**: The `rabbitmq-tls` secret held a leaf cert expiring in ~1 day (near-expiry baseline) signed by CA `rabbitmq-ca` (valid until 2028). However, the RabbitMQ broker itself had no TLS listener wired up at all — no `listeners.ssl`, no secret mounted, no `5671` port — so simply rotating the secret's bytes wouldn't have satisfied "TLS connections still succeed."
+
+**Actions taken** (all native Kubernetes resources, no CRDs/operators):
+1. Generated a new 2048-bit RSA leaf key/cert (CN=`rabbitmq`, same SAN list as the original) signed by the existing CA key (`rabbitmq-tls-ca` secret), valid 90 days.
+2. Updated the `rabbitmq-tls` secret with the new `tls.crt`/`tls.key`, keeping `ca.crt` identical.
+3. Added `listeners.ssl.default = 5671` and `ssl_options.*` (cert/key/ca paths) to the `rabbitmq-config` ConfigMap.
+4. Patched the `rabbitmq` StatefulSet to mount the `rabbitmq-tls` secret at `/etc/rabbitmq/tls` and expose container port 5671.
+5. Added the `amqps` (5671) port to both the `rabbitmq` and `rabbitmq-headless` Services.
+6. The StatefulSet rolling-updated all 3 pods one at a time (ordinal 2→1→0), preserving quorum throughout.
+
+**Verification**:
+- All 3 nodes (`rabbitmq-0/1/2`) are `Running` and appear in `cluster_status` as running nodes.
+- TLS handshakes succeed against all 3 pods and the ClusterIP service on port 5671, each serving the identical new leaf cert (SHA-256 fingerprint `60:43:97:D6...`).
+- CA fingerprint served (`7C:7B:37:3B...`) exactly matches the pre-rotation baseline recorded in `rabbitmq-tls-old` — CA unchanged.
+- New leaf fingerprint differs from the old baseline (`39:82:32:BB...`) — rotation confirmed.
+- `openssl x509 -checkend 2592000` confirms the new cert is valid for ≥ 30 days (actual validity: through Oct 8, 2026, ~90 days).
+
+`app-client` and `app-producer` each show 1 restart from the brief connection blip during the rolling restart, but both are back to `1/1 Running` and healthy.

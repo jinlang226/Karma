@@ -1,0 +1,16 @@
+CA and leaf certificate rotation is complete with zero downtime. Summary:
+
+**Rotation approach (3-phase, secret mounted without `subPath` so files hot-reload without pod restarts):**
+1. **Trust bundle first** — updated `es-http-tls`'s `ca.crt` to contain both old + new CA, keeping the old leaf cert live. Waited for all 3 pods to pick up the new trust bundle.
+2. **Leaf swap** — replaced `tls.crt`/`tls.key` with the new CA-signed leaf (same SANs: `localhost`, `*.elasticsearch.svc`, `*.elasticsearch.svc.cluster.local`), while nodes still trusted both CAs — confirmed live TLS handshake served the new cert.
+3. **Trim** — reduced `ca.crt` back down to just the new CA, completing the cutover.
+
+Cluster health stayed `green` with 3/3 nodes throughout every phase — no restarts, no downtime.
+
+**Client trust:** updated the `es-http-ca` ConfigMap with the new CA cert; verified a client using it with strict TLS validation (`curl --cacert`, no `-k`) can reach the cluster successfully.
+
+**Verification:**
+- New CA (`D0:C9:30...`) and leaf (`C5:E7:CE...`) fingerprints differ from the pre-rotation snapshot in `es-http-old`.
+- Both new certs valid for 1 year (2026-07-10 → 2027-07-10).
+- All 3 nodes on `8.11.1`, cluster green.
+- Seeded data intact (`app-data` count = 3).

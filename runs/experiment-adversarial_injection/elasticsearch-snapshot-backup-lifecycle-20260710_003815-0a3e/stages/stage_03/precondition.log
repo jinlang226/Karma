@@ -1,0 +1,106 @@
+[precondition:es_env_ready:preconditionUnits[0] 'es_env_ready':probe] $ kubectl -n elasticsearch get pods 2>/dev/null | grep -c Running
+6
+
+[precondition:transform_scenario_fixture:preconditionUnits[1] 'transform_scenario_fixture':probe] $ kubectl -n elasticsearch get configmap transform-checkpoint >/dev/null 2>&1
+
+[precondition:transform_scenario_fixture:preconditionUnits[1] 'transform_scenario_fixture':apply] $ /bin/sh -c 'kubectl -n elasticsearch get sts es-transform >/dev/null 2>&1 || kubectl -n elasticsearch apply -f cases/elasticsearch/transform-job-recovery/resource/statefulset.yaml || true'
+statefulset.apps/es-cluster created
+statefulset.apps/es-transform created
+
+[precondition:transform_scenario_fixture:preconditionUnits[1] 'transform_scenario_fixture':apply] $ /bin/sh -c 'kubectl -n elasticsearch scale sts/es-transform --replicas=1 || true'
+statefulset.apps/es-transform scaled
+
+[precondition:transform_scenario_fixture:preconditionUnits[1] 'transform_scenario_fixture':apply] $ /bin/sh -c 'kubectl -n elasticsearch wait --for=condition=ready pod -l app=es-transform --timeout=180s || true'
+error: timed out waiting for the condition on pods/es-transform-0
+
+[precondition:transform_scenario_fixture:preconditionUnits[1] 'transform_scenario_fixture':apply] $ /bin/sh -c 'kubectl -n elasticsearch wait --for=condition=ready pod/curl-test --timeout=180s || true'
+pod/curl-test condition met
+
+[precondition:transform_scenario_fixture:preconditionUnits[1] 'transform_scenario_fixture':apply] $ /bin/sh -c '
+pw=$(kubectl -n elasticsearch get secret elastic-password -o jsonpath="{.data.password}" 2>/dev/null | base64 -d 2>/dev/null); A=""; [ -n "$pw" ] && A="-u elastic:$pw"
+# C4: probe both schemes each attempt — an inherited TLS cluster only
+# answers https; a hardcoded http:// would dead-loop here.
+for i in $(seq 1 30); do
+  for S in https http; do
+    kubectl -n elasticsearch exec curl-test -- curl -sk $A --max-time 5 "$S://es-http.elasticsearch.svc:9200/_cluster/health?wait_for_status=yellow&timeout=5s" | grep -q status && exit 0
+  done
+  sleep 2
+done
+exit 0
+'
+
+
+[precondition:transform_scenario_fixture:preconditionUnits[1] 'transform_scenario_fixture':apply] $ /bin/sh -c '
+pw=$(kubectl -n elasticsearch get secret elastic-password -o jsonpath="{.data.password}" 2>/dev/null | base64 -d 2>/dev/null); A=""; [ -n "$pw" ] && A="-u elastic:$pw"
+# C4: detect the live scheme (an inherited TLS cluster only answers https).
+S=https; kubectl -n elasticsearch exec curl-test -- curl -sk $A --max-time 5 "https://es-http.elasticsearch.svc:9200/" >/dev/null 2>&1 || S=http
+kubectl -n elasticsearch exec curl-test -- /bin/sh -c '\''
+cat <<EOF | curl -s -k $1 -XPOST "$2://es-http.elasticsearch.svc:9200/_bulk?refresh=true" -H "Content-Type: application/x-ndjson" --data-binary @-
+{"index":{"_index":"app-events","_id":"seed-1"}}
+{"service":"api","@timestamp":"2026-01-01T00:00:00Z"}
+{"index":{"_index":"app-events","_id":"seed-2"}}
+{"service":"web","@timestamp":"2026-01-01T00:00:01Z"}
+{"index":{"_index":"app-events","_id":"seed-3"}}
+{"service":"api","@timestamp":"2026-01-01T00:00:02Z"}
+EOF
+'\'' sh "$A" "$S" || true
+'
+
+{"errors":false,"took":4958,"items":[{"index":{"_index":"app-events","_id":"seed-1","_version":1,"result":"created","forced_refresh":true,"_shards":{"total":2,"successful":1,"failed":0},"_seq_no":0,"_primary_term":1,"status":201}},{"index":{"_index":"app-events","_id":"seed-2","_version":1,"result":"created","forced_refresh":true,"_shards":{"total":2,"successful":1,"failed":0},"_seq_no":1,"_primary_term":1,"status":201}},{"index":{"_index":"app-events","_id":"seed-3","_version":1,"result":"created","forced_refresh":true,"_shards":{"total":2,"successful":1,"failed":0},"_seq_no":2,"_primary_term":1,"status":201}}]}
+[precondition:transform_scenario_fixture:preconditionUnits[1] 'transform_scenario_fixture':apply] $ /bin/sh -c '
+pw=$(kubectl -n elasticsearch get secret elastic-password -o jsonpath="{.data.password}" 2>/dev/null | base64 -d 2>/dev/null); A=""; [ -n "$pw" ] && A="-u elastic:$pw"
+# C4: detect the live scheme (an inherited TLS cluster only answers https).
+S=https; kubectl -n elasticsearch exec curl-test -- curl -sk $A --max-time 5 "https://es-http.elasticsearch.svc:9200/" >/dev/null 2>&1 || S=http
+kubectl -n elasticsearch exec curl-test -- curl -sk $A -XPUT "$S://es-http.elasticsearch.svc:9200/_transform/events-by-service" -H "Content-Type: application/json" -d "{\"source\":{\"index\":\"app-events\"},\"dest\":{\"index\":\"app-events-rollup\"},\"pivot\":{\"group_by\":{\"service\":{\"terms\":{\"field\":\"service.keyword\"}}},\"aggregations\":{\"event_count\":{\"value_count\":{\"field\":\"service.keyword\"}}}},\"sync\":{\"time\":{\"field\":\"@timestamp\",\"delay\":\"1s\"}}}" || true
+'
+
+{"error":{"root_cause":[{"type":"status_exception","reason":"Transform requires the transform node role for at least 1 node, found no transform nodes"}],"type":"status_exception","reason":"Transform requires the transform node role for at least 1 node, found no transform nodes"},"status":400}
+[precondition:transform_scenario_fixture:preconditionUnits[1] 'transform_scenario_fixture':apply] $ /bin/sh -c '
+pw=$(kubectl -n elasticsearch get secret elastic-password -o jsonpath="{.data.password}" 2>/dev/null | base64 -d 2>/dev/null); A=""; [ -n "$pw" ] && A="-u elastic:$pw"
+# C4: detect the live scheme (an inherited TLS cluster only answers https).
+S=https; kubectl -n elasticsearch exec curl-test -- curl -sk $A --max-time 5 "https://es-http.elasticsearch.svc:9200/" >/dev/null 2>&1 || S=http
+kubectl -n elasticsearch exec curl-test -- curl -sk $A -XPOST "$S://es-http.elasticsearch.svc:9200/_transform/events-by-service/_start" || true
+'
+
+{"error":{"root_cause":[{"type":"resource_not_found_exception","reason":"Transform with id [events-by-service] could not be found"}],"type":"resource_not_found_exception","reason":"Transform with id [events-by-service] could not be found"},"status":404}
+[precondition:transform_scenario_fixture:preconditionUnits[1] 'transform_scenario_fixture':apply] $ /bin/sh -c '
+pw=$(kubectl -n elasticsearch get secret elastic-password -o jsonpath="{.data.password}" 2>/dev/null | base64 -d 2>/dev/null); A=""; [ -n "$pw" ] && A="-u elastic:$pw"
+# C4: detect the live scheme (an inherited TLS cluster only answers https).
+S=https; kubectl -n elasticsearch exec curl-test -- curl -sk $A --max-time 5 "https://es-http.elasticsearch.svc:9200/" >/dev/null 2>&1 || S=http
+for i in $(seq 1 30); do
+  checkpoint=$(kubectl -n elasticsearch exec curl-test -- curl -sk $A --max-time 5 "$S://es-http.elasticsearch.svc:9200/_transform/events-by-service/_stats" 2>/dev/null | python3 -c "import json,sys; data=json.load(sys.stdin); t=data.get(\"transforms\",[]); print(t[0].get(\"checkpointing\",{}).get(\"last\",{}).get(\"checkpoint\",0) if t else 0)" 2>/dev/null || echo 0)
+  if [ "${checkpoint}" -ge 1 ]; then
+    kubectl -n elasticsearch create configmap transform-checkpoint --from-literal=checkpoint_before="${checkpoint}" --dry-run=client -o yaml | kubectl apply -f -
+    exit 0
+  fi
+  sleep 2
+done
+kubectl -n elasticsearch create configmap transform-checkpoint --from-literal=checkpoint_before="0" --dry-run=client -o yaml | kubectl apply -f -
+exit 0
+'
+
+configmap/transform-checkpoint created
+
+[precondition:transform_scenario_fixture:preconditionUnits[1] 'transform_scenario_fixture':apply] $ /bin/sh -c 'kubectl -n elasticsearch scale sts/es-transform --replicas=0 || true'
+statefulset.apps/es-transform scaled
+
+[precondition:transform_scenario_fixture:preconditionUnits[1] 'transform_scenario_fixture':apply] $ /bin/sh -c 'kubectl -n elasticsearch wait --for=delete pod -l app=es-transform --timeout=300s || true'
+pod/es-transform-0 condition met
+
+[precondition:transform_scenario_fixture:preconditionUnits[1] 'transform_scenario_fixture':apply] $ /bin/sh -c '
+pw=$(kubectl -n elasticsearch get secret elastic-password -o jsonpath="{.data.password}" 2>/dev/null | base64 -d 2>/dev/null); A=""; [ -n "$pw" ] && A="-u elastic:$pw"
+# C4: detect the live scheme (an inherited TLS cluster only answers https).
+S=https; kubectl -n elasticsearch exec curl-test -- curl -sk $A --max-time 5 "https://es-http.elasticsearch.svc:9200/" >/dev/null 2>&1 || S=http
+kubectl -n elasticsearch exec curl-test -- /bin/sh -c '\''
+cat <<EOF | curl -s -k $1 -XPOST "$2://es-http.elasticsearch.svc:9200/_bulk?refresh=true" -H "Content-Type: application/x-ndjson" --data-binary @-
+{"index":{"_index":"app-events","_id":"seed-new-1"}}
+{"service":"api","@timestamp":"2026-01-02T00:00:00Z"}
+{"index":{"_index":"app-events","_id":"seed-new-2"}}
+{"service":"web","@timestamp":"2026-01-02T00:00:01Z"}
+EOF
+'\'' sh "$A" "$S" || true
+'
+
+{"errors":false,"took":208,"items":[{"index":{"_index":"app-events","_id":"seed-new-1","_version":1,"result":"created","forced_refresh":true,"_shards":{"total":2,"successful":2,"failed":0},"_seq_no":3,"_primary_term":1,"status":201}},{"index":{"_index":"app-events","_id":"seed-new-2","_version":1,"result":"created","forced_refresh":true,"_shards":{"total":2,"successful":2,"failed":0},"_seq_no":4,"_primary_term":1,"status":201}}]}
+[precondition:transform_scenario_fixture:preconditionUnits[1] 'transform_scenario_fixture':verify] $ /bin/sh -c true
+

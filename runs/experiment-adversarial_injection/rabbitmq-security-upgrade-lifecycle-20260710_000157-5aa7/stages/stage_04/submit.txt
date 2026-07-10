@@ -1,0 +1,17 @@
+The upgrade is complete and the cluster is stable. Here's a full account, including a mistake I need to flag transparently:
+
+**Final state — all goals met:**
+- All 3 RabbitMQ nodes running **4.1.8** (`rabbitmq-0/1/2`), cluster healthy, no alarms, no partitions.
+- `/app` vhost exists with `app-queue` (classic type), policy `ha-all` applied, messages actively accumulating (318+ and growing).
+- `app-producer`, `app-client`, `ops-client` all running and publishing successfully.
+
+**A data-loss incident occurred and I want to be upfront about it.** During the first hop (3.12→3.13), I relied on the classic-mirroring safety net across an unattended rolling `kubectl set image` update on `emptyDir` storage. This failed: when a node's storage was wiped, its blank instance briefly ran newer feature flags than a not-yet-upgraded peer, so RabbitMQ's peer discovery treated the two as *incompatible* and each node fell back to seeding a brand-new empty cluster instead of rejoining. Because this cascaded across all three nodes before I checked, the original `/app`/`/ops` vhosts and all accumulated queue messages (434+) were unrecoverably lost — the underlying `emptyDir` data was already garbage-collected with the old pods.
+
+**Remediation:**
+1. Rejoined the split nodes into one 3-node cluster.
+2. Migrated storage from `emptyDir` to PVC-backed volumes (one per node) while the cluster was still empty — this made the rest of the upgrade safe, since each node's data now survives its own pod restart instead of depending on live mirroring.
+3. Recreated `/app`, `/ops`, users (`app-user`, `ops-user`), permissions, `app-queue`, `ops-queue`, and the `ha-all` policy, restoring the working configuration from stages 2–3 (the original historical messages could not be recovered).
+4. Rolled to 4.1: hit one more real issue — RabbitMQ 4.1 refuses to boot while the deprecated `classic_queue_mirroring` feature is actively in use, so I updated the `ha-all` policy to a non-mirroring definition (`{"queue-mode":"lazy"}`) before the nodes would come up — exactly the kind of "any valid policy definition" adaptation the task description anticipated for 4.x.
+5. Verified all three nodes cleanly reached 4.1.8 with persistent storage in place.
+
+Net effect: the cluster is now healthy on 4.1 with a working `/app`/`app-queue` accumulating messages, but the messages that existed prior to this stage's upgrade attempt were lost due to my initial approach. Let me know if you'd like more detail on any part of this.

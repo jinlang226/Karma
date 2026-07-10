@@ -1,0 +1,11 @@
+Elasticsearch cluster deployed and verified in the `elasticsearch` namespace, all using native Kubernetes resources (no operators/CRDs):
+
+- **ConfigMap** `es-config` — `elasticsearch.yml` with `cluster.initial_master_nodes: [es-0, es-1, es-2]`, `discovery.seed_hosts` pointing at the headless service, security/TLS enabled for both HTTP and transport layers (transport uses `verification_mode: certificate` since the shared cert's SANs don't cover per-pod DNS names).
+- **Services**: `es-discovery` (headless, port 9300, governs the StatefulSet for peer discovery) and `es-http` (ClusterIP, port 9200/HTTPS, as required).
+- **StatefulSet** `es` (3 replicas, `podManagementPolicy: Parallel` to avoid the ordered-readiness deadlock during initial cluster bootstrap), image `docker.elastic.co/elasticsearch/elasticsearch:8.11.1`, mounting `es-http-tls` for TLS material and `elastic-password` for the bootstrap `elastic` superuser.
+- **PodDisruptionBudget** `es-pdb` (minAvailable: 2).
+
+Verification:
+- All 3 pods (`es-0/1/2`) reached `1/1 Running`; `_cluster/health` reports `status: green`, `number_of_nodes: 3`, master elected (`es-1`).
+- Confirmed HTTPS reachability through `es-http.elasticsearch.svc.cluster.local:9200` both with and without full certificate-chain validation against `ca.crt` (hostname matches the cert's SAN wildcard).
+- Indexed a document, read it back, searched for it, and confirmed the primary/replica shards landed on two different nodes (`es-1`/`es-0`) with cluster status staying green — then cleaned up the test index.

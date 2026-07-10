@@ -1,0 +1,12 @@
+Restore complete and verified:
+
+- **3-node cluster back online**: `rabbitmq-0/1/2` all `1/1 Running`, `cluster_status` shows all 3 nodes as Running Nodes.
+- **`/app` vhost** contains `app-backup`, type `classic`, with **20 messages** — matching the pre-loss data.
+
+Approach:
+1. Inspected the `rabbitmq-backup` PVC — it held `rabbitmq-0.tgz`, a raw tarball of rabbitmq-0's `/var/lib/rabbitmq` data dir (mnesia + message store).
+2. Ran a restore `Job` mounting both `rabbitmq-backup` (read-only) and the empty `data-rabbitmq-0` PVC, extracting the tarball into the new PVC and `chown`ing it to uid/gid `999` (the image's `rabbitmq` user).
+3. The StatefulSet was scaled to 0 with `podManagementPolicy: OrderedReady` — recreated it (PVCs untouched via `--cascade=orphan`) with `podManagementPolicy: Parallel` and `replicas: 3`. This was necessary because `cluster_partition_handling = pause_minority` would otherwise deadlock startup: node 0 alone is a minority of 3 and would pause, so `OrderedReady` could never get pod 0 "Ready" to progress to pods 1/2.
+4. Nodes 1 and 2 came up fresh and auto-joined the cluster via the existing `rabbitmq_peer_discovery_k8s` config/RBAC, syncing with restored node 0.
+
+No CRDs/operators used — only native StatefulSet/Service/PVC/Secret/ConfigMap/Job resources, and no data was lost (only 1 node's backup existed and it held the queue data, which is now fully recovered).

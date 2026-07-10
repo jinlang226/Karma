@@ -1,0 +1,121 @@
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: es
+  namespace: elasticsearch
+  labels:
+    app: elasticsearch
+spec:
+  persistentVolumeClaimRetentionPolicy:
+    whenDeleted: Retain
+    whenScaled: Retain
+  podManagementPolicy: Parallel
+  replicas: 3
+  selector:
+    matchLabels:
+      app: elasticsearch
+  serviceName: es-discovery
+  template:
+    metadata:
+      labels:
+        app: elasticsearch
+    spec:
+      initContainers:
+        - name: fix-permissions
+          image: docker.elastic.co/elasticsearch/elasticsearch:8.11.1
+          command: ["sh", "-c", "chown -R 1000:1000 /usr/share/elasticsearch/data"]
+          securityContext:
+            runAsUser: 0
+          volumeMounts:
+            - name: data
+              mountPath: /usr/share/elasticsearch/data
+        - name: init-keystore
+          image: docker.elastic.co/elasticsearch/elasticsearch:8.11.1
+          securityContext:
+            runAsUser: 0
+          command:
+            - sh
+            - -c
+            - |
+              set -e
+              mkdir -p /mnt/config-dir
+              cp -a /usr/share/elasticsearch/config/. /mnt/config-dir/
+              export ES_PATH_CONF=/mnt/config-dir
+              /usr/share/elasticsearch/bin/elasticsearch-keystore create
+              /usr/share/elasticsearch/bin/elasticsearch-keystore add-file s3.client.default.access_key /secure-settings/access_key
+              /usr/share/elasticsearch/bin/elasticsearch-keystore add-file s3.client.default.secret_key /secure-settings/secret_key
+              chown -R 1000:1000 /mnt/config-dir
+          volumeMounts:
+            - name: config-dir
+              mountPath: /mnt/config-dir
+            - name: secure-settings
+              mountPath: /secure-settings
+              readOnly: true
+      containers:
+        - name: elasticsearch
+          image: docker.elastic.co/elasticsearch/elasticsearch:8.11.1
+          resources:
+            requests:
+              cpu: 500m
+              memory: 1Gi
+            limits:
+              memory: 2Gi
+          env:
+            - name: ELASTIC_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: elastic-password
+                  key: password
+            - name: ES_JAVA_OPTS
+              value: "-Xms512m -Xmx512m"
+          ports:
+            - name: http
+              containerPort: 9200
+            - name: transport
+              containerPort: 9300
+          volumeMounts:
+            - name: data
+              mountPath: /usr/share/elasticsearch/data
+            - name: config-dir
+              mountPath: /usr/share/elasticsearch/config
+            - name: config
+              mountPath: /usr/share/elasticsearch/config/elasticsearch.yml
+              subPath: elasticsearch.yml
+            - name: certs
+              mountPath: /usr/share/elasticsearch/config/certs
+              readOnly: true
+          readinessProbe:
+            exec:
+              command:
+                - sh
+                - -c
+                - |
+                  curl -s -k -u elastic:${ELASTIC_PASSWORD} https://localhost:9200/_cluster/health | grep -Eq '"status":"(green|yellow)"'
+            initialDelaySeconds: 30
+            periodSeconds: 10
+            timeoutSeconds: 5
+          livenessProbe:
+            tcpSocket:
+              port: 9200
+            initialDelaySeconds: 60
+            periodSeconds: 20
+      volumes:
+        - name: config
+          configMap:
+            name: es-config
+        - name: certs
+          secret:
+            secretName: es-http-tls
+        - name: config-dir
+          emptyDir: {}
+        - name: secure-settings
+          secret:
+            secretName: es-secure-settings
+  volumeClaimTemplates:
+    - metadata:
+        name: data
+      spec:
+        accessModes: ["ReadWriteOnce"]
+        resources:
+          requests:
+            storage: 5Gi
