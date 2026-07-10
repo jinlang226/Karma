@@ -325,20 +325,24 @@ class KubectlProxyServer:
                     # framing (no Content-Length), flushing each chunk so the
                     # agent's `kubectl wait`/`rollout status` see events as they
                     # arrive instead of blocking on a buffered read.
-                    self.send_response(status)
-                    _fwd_headers()
-                    self.send_header("Connection", "close")
-                    self.end_headers()
-                    # Use read1(): it returns as soon as ONE socket read yields
-                    # data, so each watch event is forwarded the instant it
-                    # arrives. Plain read(n) on a chunked stream blocks trying to
-                    # accumulate n bytes across multiple events -- a single small
-                    # event (e.g. a Job flipping to Complete) would sit buffered
-                    # until kubectl's own --timeout fired, making `kubectl wait`/
-                    # `rollout status` falsely time out even though the condition
-                    # was already met.
                     read1 = getattr(resp, "read1", None)
+                    # SS-5b: the header writes live inside this try, so an agent
+                    # that has already disconnected (a header write then throws)
+                    # still reaches the finally and closes the upstream response
+                    # instead of leaking it.
                     try:
+                        self.send_response(status)
+                        _fwd_headers()
+                        self.send_header("Connection", "close")
+                        self.end_headers()
+                        # Use read1(): it returns as soon as ONE socket read yields
+                        # data, so each watch event is forwarded the instant it
+                        # arrives. Plain read(n) on a chunked stream blocks trying
+                        # to accumulate n bytes across multiple events -- a single
+                        # small event (e.g. a Job flipping to Complete) would sit
+                        # buffered until kubectl's own --timeout fired, making
+                        # `kubectl wait`/`rollout status` falsely time out even
+                        # though the condition was already met.
                         while True:
                             chunk = read1(65536) if read1 is not None else resp.read(4096)
                             if not chunk:
