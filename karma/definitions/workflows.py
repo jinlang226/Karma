@@ -152,8 +152,10 @@ def _resolve_stage_param_overrides(
     """Resolve ``${stages.<id>.params.<n>}`` references in a stage's ``param_overrides``.
 
     References to the current or a future stage raise :class:`ValueError`.
-    A reference to a param name that is absent from the referenced stage's
-    resolved ``param_overrides`` produces a warning and resolves to ``None``.
+    A reference resolves to the referenced stage's EFFECTIVE value for that
+    param -- its override if set, else the case default (SS-7). A param name
+    absent from the referenced stage's effective params (neither overridden nor
+    declared by its case) produces a warning and resolves to ``None``.
 
     Parameters
     ----------
@@ -164,7 +166,8 @@ def _resolve_stage_param_overrides(
     all_stages:
         Ordered list of all stage dicts in the workflow.
     prior_stage_params:
-        Map of stage ID to resolved params for all preceding stages.
+        Map of stage ID to each preceding stage's effective params (case
+        defaults merged with resolved overrides).
 
     Returns
     -------
@@ -327,6 +330,8 @@ def normalize_workflow(
 
     normalized_stages: list[dict[str, Any]] = []
     prior_stage_params: dict[str, dict[str, Any]] = {}
+    # Local import: cases <-> workflows would be a circular top-level import.
+    from .cases import load_case_file, resolve_case_params
 
     for i, s in enumerate(raw_stages):
         stage_id = str(s.get("id") or f"stage_{i + 1}")
@@ -355,7 +360,21 @@ def normalize_workflow(
             "_warnings": w,
         }
         normalized_stages.append(stage_dict)
-        prior_stage_params[stage_id] = resolved_overrides
+        # Record this stage's EFFECTIVE params (case defaults + overrides) so a
+        # later stage's ${stages.X.params.Y} resolves to the real value even when
+        # X left Y at its case default -- not None (SS-7). Best-effort: on any case
+        # load/validation failure fall back to overrides-only (the prior behavior);
+        # the definitive case load + validation happens in resolve_workflow_rows.
+        effective_params = dict(resolved_overrides)
+        svc, cn = str(s.get("service") or ""), str(s.get("case") or "")
+        if svc and cn:
+            try:
+                effective_params, _ = resolve_case_params(
+                    load_case_file(resources_dir, svc, cn), resolved_overrides
+                )
+            except Exception:
+                effective_params = dict(resolved_overrides)
+        prior_stage_params[stage_id] = effective_params
 
     return {
         "id": str(meta.get("id") or ""),
