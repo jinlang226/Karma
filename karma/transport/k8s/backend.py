@@ -24,6 +24,7 @@ import urllib.request
 from pathlib import Path
 
 from ... import protocol
+from ...settings import settings
 
 
 class ProxyHandle:
@@ -205,6 +206,7 @@ def launch_proxy(
             "--port", str(proxy_port),
             "--control-port", str(control_port),
             "--bind-host", bind_host,
+            "--request-timeout", str(settings.command_timeout_sec),
             *auth_args,
         ]
         proc = subprocess.Popen(
