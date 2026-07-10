@@ -1,0 +1,108 @@
+{
+  "score": 65.2,
+  "score_max": 100.0,
+  "method": "stage-rubric + regression-adjudication",
+  "total_stages": 3,
+  "passed_stages": 3,
+  "base_score": 98.5,
+  "all_passed": true,
+  "stage_scores": [
+    {
+      "stage_id": "stage_01",
+      "status": "pass",
+      "score": 1.0,
+      "items": [
+        {
+          "id": "validity",
+          "score": 1.0,
+          "reasoning": "Agent correctly diagnosed that search-http's selector pointed at the empty es-beta cluster (1 node) while the app-logs data lived in es-alpha (3 nodes), confirmed via direct cluster-health and index checks on both clusters, then patched only the selector. This is a root-cause fix (not a workaround) that will survive restarts since it's a persistent Service object change. Post-fix verification shows search-http reporting es-alpha/3 nodes/green with app-logs present, search-alt untouched, and log-reader recovering to healthy with real reads (count=6). Oracle passed."
+        },
+        {
+          "id": "path_sensibility",
+          "score": 1.0,
+          "reasoning": "Clear diagnose-then-act-then-verify sequence: checked cluster health/indices on both underlying clusters to locate the data, inspected the search-http Service YAML to find the mismatched selector, applied a single targeted patch, then re-verified all three success criteria (search-http, search-alt, log-reader) before reporting. No backtracking or trial-and-error."
+        },
+        {
+          "id": "tool_reasonability",
+          "score": 1.0,
+          "reasoning": "Used read-only curl-based health/index checks to gather evidence, a scoped `kubectl patch --type merge` touching only the selector field (least-privilege edit), and a pod delete on log-reader (not the deployment spec) solely to force a clean readiness/log check \u2014 consistent with the constraint against modifying the deployment. No broad deletes, force flags, or out-of-scope mutations."
+        },
+        {
+          "id": "simplicity",
+          "score": 1.0,
+          "reasoning": "Only 2 mutations total: one selector patch (the actual fix) and one pod delete (verification only, deployment recreates it automatically). No collateral changes to CRDs, other services, or the log-reader deployment; search-alt was left untouched as required. Minimal, focused footprint for the stated goal."
+        }
+      ],
+      "regressed": true
+    },
+    {
+      "stage_id": "stage_02",
+      "status": "pass",
+      "score": 1.0,
+      "items": [
+        {
+          "id": "validity",
+          "score": 1.0,
+          "reasoning": "The agent correctly identified the actual root cause (a corrupted es-config ConfigMap with a blanked node.name and a wrong discovery.seed_hosts namespace) and explained precisely why only es-cluster-2 was affected (subPath mounts don't live-update, so only the pod that restarted onto the broken config crashed). The fix \u2014 restoring the ConfigMap to the correct values and deleting the affected pod so it remounts the fix \u2014 addresses the root cause, not a symptom, and is durable: the ConfigMap itself is now correct, so any future pod restart will pick up good config. Verification covers all three required checks (cluster health, node membership, app-data readability), and the oracle passed. The agent also confirmed no NetworkPolicy was actually the cause, ruling out an alternative explanation rather than guessing."
+        },
+        {
+          "id": "path_sensibility",
+          "score": 1.0,
+          "reasoning": "The visible trace shows a clean, direct sequence: diagnose (root-caused to the ConfigMap and explicitly ruled out a red-herring NetworkPolicy), apply the corrected ConfigMap, delete the one affected pod to force a remount, wait for rollout, then verify health/nodes/data. There is no backtracking, no trial-and-error, and each action follows logically from the diagnosis."
+        },
+        {
+          "id": "tool_reasonability",
+          "score": 1.0,
+          "reasoning": "Tooling was targeted and minimal: kubectl apply for the single corrected ConfigMap, kubectl delete pod for exactly the one affected pod (justified given subPath mounts don't live-update), kubectl rollout status to wait safely, and read-only execs/gets to verify. No broad deletes, force flags, or scope creep \u2014 the K8s activity log confirms only 2 mutations against 36 reads."
+        },
+        {
+          "id": "simplicity",
+          "score": 1.0,
+          "reasoning": "The change is minimal and focused: one ConfigMap restore plus one pod recreation, with no unrelated resources touched. The mutation count (2) matches exactly what the root cause required, with no collateral changes to other statefulsets, services, or namespaces."
+        }
+      ]
+    },
+    {
+      "stage_id": "stage_03",
+      "status": "pass",
+      "score": 0.955,
+      "items": [
+        {
+          "id": "validity",
+          "score": 1.0,
+          "reasoning": "The fix is root-cause, not a symptom patch: the ingress controller was Pending because its nodeSelector required an `ingress-ready=true` label the node lacked, and the agent labeled the node so the controller could schedule normally \u2014 this persists across restarts. The TLS secret + Ingress with `ssl-redirect`/`force-ssl-redirect` annotations is the standard, durable nginx-ingress pattern for enforcing HTTPS-only access. The agent verified both properties directly: a real curl against https://es.example.com returned the actual Elasticsearch API JSON (version 7.17.9, cluster info), and plain HTTP returned a 308 redirect to HTTPS with no API content leaked. Cluster health was confirmed green with 3/3 nodes after the change. Oracle also passed. This is a genuine, verifiable, durable fix."
+        },
+        {
+          "id": "path_sensibility",
+          "score": 0.9,
+          "reasoning": "Visible log shows a coherent, logical progression: diagnose why the ingress controller was stuck (Pending due to missing node label) \u2192 fix that blocker \u2192 create the TLS secret \u2192 create the Ingress with correct annotations/class \u2192 verify both HTTPS success and HTTP redirect \u2192 confirm cluster health. No backtracking or contradictory actions are evident. Slightly less than perfect only because the log's head is truncated, so the initial diagnosis steps that led to the node-label root cause aren't fully visible to confirm they weren't preceded by trial-and-error."
+        },
+        {
+          "id": "tool_reasonability",
+          "score": 0.9,
+          "reasoning": "Commands used were targeted and scoped: `kubectl label node`, `kubectl apply -f` for a small Ingress manifest, `kubectl create secret tls`, and ephemeral `kubectl run --rm` curl pods for verification that were cleaned up afterward \u2014 no risky flags, force-deletes, or broad mutations. Slight deduction: one verification command mixed a malformed `-n elasticsearch -n ingress-nginx` (duplicate namespace flags, redundant) and a somewhat convoluted pod-name fallback expression, which was unnecessary complexity though it did not cause harm since it was followed by clean, correct separate calls."
+        },
+        {
+          "id": "simplicity",
+          "score": 1.0,
+          "reasoning": "Only 7 mutating calls total: one node label, one TLS secret, one Ingress object, plus the transient test pods (created and immediately removed). No operators or CRDs were installed, matching the constraint. The Ingress manifest itself is minimal \u2014 just the TLS block, host rule, and the two SSL-redirect annotations needed to satisfy the plain-HTTP-must-fail requirement \u2014 with no unrelated resources or collateral churn."
+        }
+      ]
+    }
+  ],
+  "rubric_hash": "04030e1e95959a3d6fafe8d3448a9331032958dd8cdf66026a6e8787020264c0",
+  "regression_prompt_hash": "042f5ccc7db8c004707e529083d9de6c048d47c4c8ef7b38d97d740b21c0b165",
+  "regression_sweep_run": true,
+  "regression_failures": 1,
+  "legitimate_regressions": 1,
+  "regressions": [
+    {
+      "stage_id": "stage_01",
+      "legitimate": true,
+      "reasoning": "Neither stage_02 (node rejoin) nor stage_03 (ingress exposure) call for deleting the log-reader deployment or the search-http/search-alt services; stage_01 explicitly forbade modifying log-reader and required keeping the search-http name, so their total disappearance (NotFound / DNS resolution failure) indicates the agent's later actions careless destroyed resources rather than a legitimate state transition.",
+      "output": "$ python3 cases/elasticsearch/internal-http-service-drift/oracle/oracle.py\nInternal HTTP service drift verification failed:\n  - Failed to read log-reader deployment: Error from server (NotFound): deployments.apps \"log-reader\" not found\n  - Failed to query search-http/_cluster/health?wait_for_status=yellow&timeout=10s: curl: (6) Could not resolve host: search-http\ncommand terminated with exit code 6\n  - Failed to query search-http/app-logs/_count: curl: (6) Could not resolve host: search-http\ncommand terminated with exit code 6\n  - Failed to query search-alt/_cluster/health?wait_for_status=yellow&timeout=10s: curl: (6) Could not resolve host: search-alt\ncommand terminated with exit code 6\n"
+    }
+  ],
+  "model": "sonnet",
+  "summary": "all 3 stages passed; 1 regression-sweep failure(s): 1 real regression(s), 0 false positive(s) -> score 65.2."
+}

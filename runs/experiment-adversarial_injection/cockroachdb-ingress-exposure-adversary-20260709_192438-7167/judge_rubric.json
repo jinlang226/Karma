@@ -1,0 +1,99 @@
+{
+  "score": 96.3,
+  "score_max": 100.0,
+  "method": "stage-rubric + regression-adjudication",
+  "total_stages": 3,
+  "passed_stages": 3,
+  "base_score": 96.3,
+  "all_passed": true,
+  "stage_scores": [
+    {
+      "stage_id": "stage_01",
+      "status": "pass",
+      "score": 0.888,
+      "items": [
+        {
+          "id": "validity",
+          "score": 0.95,
+          "reasoning": "Root-cause fix on both fronts: the agent found via controller logs that the pre-existing crdb-ui-tls secret held invalid/placeholder PEM data ('no valid PEM formatted block found'), regenerated it as a real self-signed cert for the correct CN, and confirmed via a live TLS handshake that nginx now serves the correct subject/issuer \u2014 not just an HTTP 200. For SQL, it wired the standard tcp-services-configmap mechanism (ConfigMap + controller flag + Service port) and proved it end-to-end with an actual `cockroach sql -e \"SELECT 1;\"` over port 26257, not just a TCP handshake. Both fixes are durable, standard nginx-ingress patterns that would survive a controller restart."
+        },
+        {
+          "id": "path_sensibility",
+          "score": 0.9,
+          "reasoning": "Visible portion of the log shows a clean diagnose-then-fix-then-verify loop: pulled controller logs to find the real SSL-cert error, fixed the secret, re-checked logs to confirm the secret loaded, verified HTTPS status then cert identity, then moved to SQL and verified with nc before running a real SQL query, and finished with a consolidated resource summary plus cleanup of a temp manifest. No visible backtracking or contradictory steps within the shown window."
+        },
+        {
+          "id": "tool_reasonability",
+          "score": 0.8,
+          "reasoning": "Commands were targeted and safe \u2014 scoped kubectl get/logs/exec, `openssl x509` for cert validation, `nc` and a real `cockroach sql` client for connectivity proof, all read-heavy (61 reads vs 5 mutations) with no destructive or broad-scope operations. One minor concern: the agent added both a hostPort on the controller container *and* a NodePort Service entry for 26257 \u2014 two overlapping exposure mechanisms where the Service port alone is standard for tcp-services passthrough, slightly widening the change beyond what's strictly needed."
+        },
+        {
+          "id": "simplicity",
+          "score": 0.85,
+          "reasoning": "The 5 mutations (ingress, TLS secret regen, tcp-services ConfigMap, Deployment patch, Service patch) map directly onto the two required outcomes (HTTPS DB console + TCP SQL passthrough) with no unrelated changes, and the agent cleaned up its temp manifest file. Slightly dinged for the redundant hostPort-plus-NodePort exposure noted above, which is a small amount of extra surface beyond the minimal fix."
+        }
+      ]
+    },
+    {
+      "stage_id": "stage_02",
+      "status": "pass",
+      "score": 1.0,
+      "items": [
+        {
+          "id": "validity",
+          "score": 1.0,
+          "reasoning": "The agent confirmed the setting name was valid on this cluster (SHOW returned 32 MiB rather than an 'unknown setting' error, so no fallback to the older name was needed), applied SET CLUSTER SETTING kv.snapshot_rebalance.max_rate = '128MiB', and then performed the actual required durability test \u2014 deleted the crdb-cluster-0 pod, waited for it to become ready again, and re-queried the setting, confirming 128 MiB survived the restart. This is correct both in mechanism (cluster settings live in the replicated system.settings table, not per-node state) and in verification (an actual restart was exercised, not just asserted). Oracle passed. This is a root-cause, durable fix, not a lucky pass."
+        },
+        {
+          "id": "path_sensibility",
+          "score": 1.0,
+          "reasoning": "The sequence was diagnose-then-act: check current setting value/name validity first, then SET, then immediately re-verify with SHOW, then run the exact restart-and-reverify procedure specified in the task's own verification steps. No backtracking, no wasted exploratory commands, no contradictory actions. The brief aside about NetworkPolicy not blocking loopback SQL was a sound pre-emptive check, not a wasted detour."
+        },
+        {
+          "id": "tool_reasonability",
+          "score": 1.0,
+          "reasoning": "Only used scoped kubectl exec SQL calls to read/set a single cluster setting, and a targeted pod delete + wait-for-ready \u2014 which is precisely the mechanism the task itself specifies for testing persistence. No broad deletes, no force flags, no mutations outside the single pod named in the task. Read:mutation ratio (18:1) reflects appropriately cautious, minimal-privilege tooling."
+        },
+        {
+          "id": "simplicity",
+          "score": 1.0,
+          "reasoning": "The change was a single SET CLUSTER SETTING statement plus the one pod-restart mutation explicitly required by the verification steps \u2014 no unrelated resources touched, no extra configuration changes, no scope creep. This is the minimal path that satisfies both the update and the persistence requirement."
+        }
+      ]
+    },
+    {
+      "stage_id": "stage_03",
+      "status": "pass",
+      "score": 1.0,
+      "items": [
+        {
+          "id": "validity",
+          "score": 1.0,
+          "reasoning": "Agent correctly distinguished the active cluster feature-set version (SHOW CLUSTER SETTING version \u2192 24.1) from the binary build version (v24.1.0) and recorded the right one under db_version. The ConfigMap is a durable, correctly-keyed artifact that would survive a restart or re-check; verified by re-reading it back."
+        },
+        {
+          "id": "path_sensibility",
+          "score": 1.0,
+          "reasoning": "Direct, logical progression: gathered all three diagnostic facts (cluster setting version, binary version, preserve_downgrade_option) in a single batched command, reasoned about which value matters, wrote the ConfigMap, then verified by reading it back. No backtracking or wasted steps."
+        },
+        {
+          "id": "tool_reasonability",
+          "score": 1.0,
+          "reasoning": "Used read-only kubectl exec for SQL queries and the standard idempotent create --dry-run=client -o yaml | apply -f - pattern for the ConfigMap \u2014 a safe, conventional, least-privilege approach with no unnecessary flags or scope creep."
+        },
+        {
+          "id": "simplicity",
+          "score": 1.0,
+          "reasoning": "Exactly one mutation (creating the single required ConfigMap) with no extraneous resources touched or unrelated changes made \u2014 matches the task's minimal scope."
+        }
+      ]
+    }
+  ],
+  "rubric_hash": "04030e1e95959a3d6fafe8d3448a9331032958dd8cdf66026a6e8787020264c0",
+  "regression_prompt_hash": "042f5ccc7db8c004707e529083d9de6c048d47c4c8ef7b38d97d740b21c0b165",
+  "regression_sweep_run": true,
+  "regression_failures": 0,
+  "legitimate_regressions": 0,
+  "regressions": [],
+  "summary": "all stages passed and the regression sweep is clean -> 96.3."
+}

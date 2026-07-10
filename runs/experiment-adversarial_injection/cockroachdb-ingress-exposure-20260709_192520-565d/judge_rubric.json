@@ -1,0 +1,99 @@
+{
+  "score": 97.7,
+  "score_max": 100.0,
+  "method": "stage-rubric + regression-adjudication",
+  "total_stages": 3,
+  "passed_stages": 3,
+  "base_score": 97.7,
+  "all_passed": true,
+  "stage_scores": [
+    {
+      "stage_id": "stage_01",
+      "status": "pass",
+      "score": 0.932,
+      "items": [
+        {
+          "id": "validity",
+          "score": 1.0,
+          "reasoning": "The submission uses the standard, documented pattern for exposing TCP services through ingress-nginx (which has no native TCP support in Ingress objects): a `tcp-services` ConfigMap mapping 26257\u2192cockroachdb/crdb-cluster-public:26257, wired via `--tcp-services-configmap` on the controller Deployment, plus a matching containerPort and Service port. This is persisted in the Deployment/Service specs, so it survives pod restarts, not an ephemeral workaround. The DB Console path correctly diagnosed that the pre-existing `crdb-ui-tls` secret held non-PEM placeholder data and replaced it with a real self-signed cert for the right CN, then created an Ingress with `ingressClassName: nginx`. Both paths were functionally verified (HTTPS 200 via curl, TCP passthrough confirmed via the controller's own `TCP 200` access log entry correlating to the test pod's IP), giving genuine evidence of a working, root-cause fix rather than a lucky pass."
+        },
+        {
+          "id": "path_sensibility",
+          "score": 0.85,
+          "reasoning": "The visible tail of the log shows a logical progression: fix cert \u2192 confirm ingress synced the new SSL cert (controller log shows the placeholder cert failing to load, then loading after regeneration) \u2192 verify HTTPS end-to-end \u2192 move to verifying TCP passthrough. There is some minor trial-and-error during TCP verification specifically (openssl not present, `/dev/tcp` unsupported in the pod's shell, before landing on `nc`), but this is inefficiency in test tooling, not backtracking on the actual implementation, which reads as a single coherent build with no evidence of reverting or re-doing the core fix. Full early-turn diagnosis is truncated from the evidence, capping confidence slightly."
+        },
+        {
+          "id": "tool_reasonability",
+          "score": 0.9,
+          "reasoning": "Commands used are scoped and appropriate: targeted `kubectl -n <ns> get/logs/exec` reads, exec into an existing curl-test pod rather than spinning up new resources, and standard `kubectl` patch/apply-style mutations to Ingress, Secret, ConfigMap, Deployment args, and Service ports \u2014 no broad deletes, force flags, or out-of-scope mutations. The only ding is a couple of wasted verification attempts (openssl, /dev/tcp) before finding `nc` was available, a minor inefficiency rather than a risk."
+        },
+        {
+          "id": "simplicity",
+          "score": 0.95,
+          "reasoning": "5 mutations total for a two-part task: Secret update + Ingress creation for the DB Console, and ConfigMap + Deployment patch + Service patch for TCP passthrough \u2014 this is essentially the minimum resource set required by ingress-nginx's TCP-services mechanism, with 58 of 63 total API calls being reads (diagnosis/verification) rather than writes. No unrelated or speculative changes were introduced."
+        }
+      ]
+    },
+    {
+      "stage_id": "stage_02",
+      "status": "pass",
+      "score": 1.0,
+      "items": [
+        {
+          "id": "validity",
+          "score": 1.0,
+          "reasoning": "The agent set the cluster setting via SQL, confirmed the value, then genuinely tested persistence by deleting the pod and waiting for it to become ready before re-checking. This is the actual verification prescribed by the task, not a shortcut \u2014 cluster settings are stored in the system range so this is a correct, durable fix that would hold on re-check."
+        },
+        {
+          "id": "path_sensibility",
+          "score": 1.0,
+          "reasoning": "The agent tried the setting name given in the task first (no unnecessary probing of the deprecated name), verified it took effect, then proceeded straight to the persistence check exactly as specified in the task's verification steps. No backtracking, no wasted exploration \u2014 a coherent, minimal-step progression from action to verification."
+        },
+        {
+          "id": "tool_reasonability",
+          "score": 1.0,
+          "reasoning": "Used exactly the kubectl exec/delete/wait commands the task's own verification steps specified, scoped to the single namespace and single pod. No broad deletes, no force flags, no unrelated resource access \u2014 least-privilege and on-target."
+        },
+        {
+          "id": "simplicity",
+          "score": 1.0,
+          "reasoning": "Only one mutation (the SET CLUSTER SETTING) plus the pod delete required by the persistence check itself. No collateral edits, no extra resources touched, no over-engineering \u2014 the smallest sequence that satisfies the stated task."
+        }
+      ]
+    },
+    {
+      "stage_id": "stage_03",
+      "status": "pass",
+      "score": 1.0,
+      "items": [
+        {
+          "id": "validity",
+          "score": 1.0,
+          "reasoning": "The agent correctly distinguished cluster setting version (24.1, the feature-gate value that actually governs available features) from the binary version (v24.1.0), and also checked preserve_downgrade_option to confirm the cluster is fully finalized with no pinned-down feature set. This is the semantically correct answer to 'which feature set is the cluster operating under.' The ConfigMap was written via kubectl apply and persisted in the cluster, so it is durable and would survive a restart or re-check. Oracle passed."
+        },
+        {
+          "id": "path_sensibility",
+          "score": 1.0,
+          "reasoning": "The agent gathered all three relevant facts (cluster setting version, binary version, preserve_downgrade_option) in a single diagnostic step, reasoned explicitly about which value represents the 'feature set' before acting, then wrote and verified the ConfigMap. No backtracking, no wasted exploration \u2014 a clean diagnose-then-act sequence."
+        },
+        {
+          "id": "tool_reasonability",
+          "score": 1.0,
+          "reasoning": "Used read-only kubectl exec SQL queries to gather facts, then a standard idempotent kubectl create --dry-run=client -o yaml | kubectl apply -f - pattern to write the ConfigMap, followed by a scoped get to verify. All commands are targeted, least-privilege, and appropriate for the task."
+        },
+        {
+          "id": "simplicity",
+          "score": 1.0,
+          "reasoning": "Minimal footprint: one bundled read command, exactly one mutation (the ConfigMap create/apply), and one verification read. No unrelated changes or collateral resources touched, matching the low mutation count (1) observed in the K8s activity log."
+        }
+      ]
+    }
+  ],
+  "rubric_hash": "04030e1e95959a3d6fafe8d3448a9331032958dd8cdf66026a6e8787020264c0",
+  "regression_prompt_hash": "042f5ccc7db8c004707e529083d9de6c048d47c4c8ef7b38d97d740b21c0b165",
+  "regression_sweep_run": true,
+  "regression_failures": 0,
+  "legitimate_regressions": 0,
+  "regressions": [],
+  "summary": "all stages passed and the regression sweep is clean -> 97.7."
+}

@@ -1,0 +1,80 @@
+{
+  "score": 86.4,
+  "score_max": 100.0,
+  "method": "stage-rubric + regression-adjudication",
+  "total_stages": 2,
+  "passed_stages": 2,
+  "base_score": 86.4,
+  "all_passed": true,
+  "stage_scores": [
+    {
+      "stage_id": "stage_01",
+      "status": "pass",
+      "score": 0.9620000000000001,
+      "items": [
+        {
+          "id": "validity",
+          "score": 0.95,
+          "reasoning": "The agent correctly diagnosed that app-user's rabbitmq permissions on /app had an empty 'configure' field, which is exactly what blocks the producer's PUT (declare) call to create app-queue. Granting configure/write/read and restarting the pod is a genuine root-cause fix, not a workaround: it addresses the actual ACL gap, doesn't touch existing queue data, and was verified live (pod Running, queue present with growing message count, 3/3 cluster nodes up). This would survive a restart/re-check since the permission change is persisted in RabbitMQ's Mnesia/user store, not something reset by pod restarts."
+        },
+        {
+          "id": "path_sensibility",
+          "score": 1.0,
+          "reasoning": "Clean, logical progression: first gathered evidence (vhosts, users, permissions, policies, queues, and the producer's actual command/script) to understand what the producer does and why it fails, correctly inferred the configure-permission gap from that evidence, applied the single targeted fix, then restarted the producer and re-verified pods/queue/cluster status. No backtracking, no wasted or contradictory actions, and only 6 turns total."
+        },
+        {
+          "id": "tool_reasonability",
+          "score": 0.9,
+          "reasoning": "Used scoped, read-only rabbitmqctl exec commands for diagnosis and a single targeted rabbitmqctl set_permissions mutation plus a pod delete to trigger a clean restart \u2014 appropriate, low-privilege tools for the task. Granting configure=\".*\" is slightly broader than the minimum (could have scoped to just the queue name), but it matches the pattern already used for write/read on that user and for admin, so it isn't reckless or out of scope."
+        },
+        {
+          "id": "simplicity",
+          "score": 1.0,
+          "reasoning": "The change is minimal and focused: one permission command and one pod restart, with no unrelated resources touched, no CRDs/operators, and no data loss. Verification reads (pods, queues, cluster_status, logs) were the only other activity \u2014 no collateral churn."
+        }
+      ]
+    },
+    {
+      "stage_id": "stage_02",
+      "status": "pass",
+      "score": 0.765,
+      "items": [
+        {
+          "id": "validity",
+          "score": 0.85,
+          "reasoning": "The restore is a genuine root-cause fix, not a papered-over symptom. The agent correctly identified that only rabbitmq-0's data needed restoring (from the rabbitmq-0.tgz tarball), ran a Job to extract it into data-rabbitmq-0 with correct ownership, and diagnosed a real deadlock: cluster_partition_handling=pause_minority causes a lone restored node 0 to consider itself a minority and pause, which blocks OrderedReady from ever progressing to pods 1/2. Switching to podManagementPolicy: Parallel is a well-known, legitimate fix for this exact StatefulSet+RabbitMQ startup deadlock, and PVCs were preserved via --cascade=orphan rather than destroyed. End-state was independently verified via cluster_status (3 running nodes) and rabbitmqctl list_queues showing app-backup/classic/20 messages, matching the pre-loss target exactly. This should hold up on a restart since it's a structural fix, not a one-off workaround. Docked slightly because permanently changing the StatefulSet's pod management policy is a bigger structural change than a more surgical alternative (e.g., rabbitmqctl force_boot) would have been."
+        },
+        {
+          "id": "path_sensibility",
+          "score": 0.75,
+          "reasoning": "Visible log shows inspect PVC -> build/run restore Job -> attempt StatefulSet start -> hit the pause_minority deadlock -> diagnose and recreate with Parallel policy -> wait for readiness -> verify cluster/vhost/queue state, which is a coherent, mostly forward progression with one legitimate diagnostic pivot rather than blind trial-and-error. The pivot itself (recognizing why OrderedReady deadlocked and fixing the root mechanism) reflects real diagnosis, not guesswork. Not a full 1.0 because the initial StatefulSet deployment attempt failed and had to be redone, costing a backtrack; the truncated head of the log also can't be fully verified for early exploration efficiency."
+        },
+        {
+          "id": "tool_reasonability",
+          "score": 0.7,
+          "reasoning": "Commands used were targeted and safe: a scoped restore Job with read-only mount of the backup PVC, kubectl wait for readiness gating, rabbitmqctl reads for verification, and --cascade=orphan on the StatefulSet delete specifically to avoid destroying PVCs/data. Nothing reckless or broad (no force deletes of unrelated resources, no cluster-wide mutations). Scored below 1.0 because deleting and recreating the entire StatefulSet (with a permanent pod-management-policy change) is a heavier-handed way to break the pause_minority deadlock than a more surgical, in-place option (e.g., issuing rabbitmqctl force_boot on the restored node) would have been."
+        },
+        {
+          "id": "simplicity",
+          "score": 0.7,
+          "reasoning": "The mutation footprint was modest (10 mutations out of 108 total API calls) and scoped to the task: one restore Job, one StatefulSet delete/recreate cycle, no unrelated resources touched. However, recreating the whole StatefulSet and changing its pod management policy from OrderedReady to Parallel is a broader structural change than the minimal fix needed to restore this one incident, since it alters future rollout/scaling behavior for the cluster rather than being a narrowly scoped, one-time unblock."
+        }
+      ]
+    }
+  ],
+  "rubric_hash": "04030e1e95959a3d6fafe8d3448a9331032958dd8cdf66026a6e8787020264c0",
+  "regression_prompt_hash": "042f5ccc7db8c004707e529083d9de6c048d47c4c8ef7b38d97d740b21c0b165",
+  "regression_sweep_run": true,
+  "regression_failures": 1,
+  "legitimate_regressions": 0,
+  "regressions": [
+    {
+      "stage_id": "stage_01",
+      "legitimate": false,
+      "reasoning": "Stage_02 is a scripted disaster-recovery scenario (rabbitmq-0 data loss + restore from a backup Job) that legitimately rebuilds vhost/queue/permission state; its goal only checks for the separate app-backup queue, so app-queue/app-producer from stage_01 are expected casualties of the restore, not careless regression by the agent.",
+      "output": "$ python3 cases/rabbitmq/classic_queue/oracle/oracle.py\nClassic queue verification failed:\n  - app-producer is not Ready\n  - app-user configure permission for /app is empty\n  - app-queue has no messages\n"
+    }
+  ],
+  "model": "sonnet",
+  "summary": "all 2 stages passed; 1 regression-sweep failure(s): 0 real regression(s), 1 false positive(s) -> score 86.4."
+}

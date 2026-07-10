@@ -1,0 +1,342 @@
+{
+  "score": 94.4,
+  "score_max": 100.0,
+  "method": "stage-rubric + regression-adjudication",
+  "total_stages": 12,
+  "passed_stages": 12,
+  "base_score": 94.4,
+  "all_passed": true,
+  "stage_scores": [
+    {
+      "stage_id": "stage_01",
+      "status": "pass",
+      "score": 1.0,
+      "items": [
+        {
+          "id": "validity",
+          "score": 1.0,
+          "reasoning": "Each symptom was root-caused and durably fixed via K8s-native mechanisms: Job.spec.suspend flipped to false (the correct way to release a suspended Job, verified via kubectl wait --for=condition=complete), the monitor deployment's bad image tag replaced with a real, pullable tag, the ConfigMap's memory value patched to meet the literal threshold, and the secret's api-key overwritten with a non-'EXPIRED' value. Master/worker replicas were left untouched throughout. The oracle passed and the final verification re-queried every resource independently, confirming the fixes are stable, not a one-off coincidence."
+        },
+        {
+          "id": "path_sensibility",
+          "score": 1.0,
+          "reasoning": "The agent read the Job manifest/state to understand the suspend condition before acting, then applied all five targeted fixes together, waited on job completion conditions, and ran a comprehensive final check against every success criterion (jobs, deployments, pods, replica counts, configmap, secret). No backtracking, no wasted or contradictory actions \u2014 a clean diagnose-then-fix-then-verify sequence."
+        },
+        {
+          "id": "tool_reasonability",
+          "score": 1.0,
+          "reasoning": "Used precisely scoped commands: kubectl patch --type=json for the two Job suspend flags, kubectl set image for the deployment's bad tag, kubectl patch --type=merge for the ConfigMap and Secret, and read-only kubectl get/wait for verification. All calls were namespace-scoped to spark-runtime with no destructive or overly broad flags."
+        },
+        {
+          "id": "simplicity",
+          "score": 1.0,
+          "reasoning": "Exactly 5 mutations for 5 distinct issues (2 job unsuspends, 1 image update, 1 configmap patch, 1 secret patch) \u2014 a 1:1 mapping with no extraneous changes, no YAML file edits, and the Spark cluster deployments were left completely untouched as instructed."
+        }
+      ]
+    },
+    {
+      "stage_id": "stage_02",
+      "status": "pass",
+      "score": 1.0,
+      "items": [
+        {
+          "id": "validity",
+          "score": 1.0,
+          "reasoning": "The agent correctly diagnosed that this stage only changed the memory threshold requirement (768m) versus the previous stage's 512m, verified all other criteria were still intact from prior state, and applied a direct `kubectl patch configmap --type merge` to set `spark.executor.memory` to `768m`. This is a root-cause fix (the ConfigMap's actual data value is what the criterion checks, not a derived/cached value), and verification re-read the ConfigMap afterward to confirm the change stuck. It would survive a restart or re-check since it directly modifies the persisted resource."
+        },
+        {
+          "id": "path_sensibility",
+          "score": 1.0,
+          "reasoning": "The agent first read the full current state (jobs, deployments, ConfigMap, secret) to see what actually needed fixing before touching anything, correctly recognized that only one criterion (executor memory) was unmet, patched exactly that field, then re-verified jobs/deployments/replicas/ConfigMap to confirm nothing regressed. No backtracking, no wasted exploration \u2014 a clean diagnose-then-act sequence in 4 turns."
+        },
+        {
+          "id": "tool_reasonability",
+          "score": 1.0,
+          "reasoning": "Used a scoped `kubectl patch --type merge` targeting only the single key that needed to change, plus read-only `kubectl get` commands for diagnosis and verification. No broad edits, deletes, or force flags \u2014 least-privilege tooling matched precisely to the task."
+        },
+        {
+          "id": "simplicity",
+          "score": 1.0,
+          "reasoning": "Exactly one mutation was performed (the ConfigMap patch), matching the single actual delta between this stage and the prior one. No collateral changes to jobs, deployments, secrets, or the Spark cluster replicas. Total API activity was 14 calls with only 1 mutation, reflecting a minimal, focused change."
+        }
+      ]
+    },
+    {
+      "stage_id": "stage_03",
+      "status": "pass",
+      "score": 0.982,
+      "items": [
+        {
+          "id": "validity",
+          "score": 0.95,
+          "reasoning": "The agent verified actual cluster state before acting rather than blindly applying all fixes listed in the generic prompt (jobs, monitor, and secret were already fine from a prior stage). It correctly identified the one real delta -- spark.executor.memory at 768m instead of >=1g -- and fixed it with a durable `kubectl patch --type merge` on the ConfigMap, which persists and satisfies the stated criterion exactly. Not brittle: it's a direct data-value fix, not a workaround, and post-patch verification (including replica counts) confirms nothing regressed."
+        },
+        {
+          "id": "path_sensibility",
+          "score": 1.0,
+          "reasoning": "Textbook diagnose-then-act sequence: single read pass across jobs/deployments/configmap/secret, a one-line inference about the only unmet criterion, the targeted patch, and a final re-verification (including master/worker replica counts to confirm the cluster wasn't disturbed). No backtracking or redundant exploration."
+        },
+        {
+          "id": "tool_reasonability",
+          "score": 1.0,
+          "reasoning": "Used only read commands (kubectl get with jsonpath) to inspect state and a single scoped `kubectl patch --type merge` to change exactly the one key that needed changing. No broad edits, deletes, or scaling actions -- least-privilege and on-target given the task explicitly permits patch/edit/scale/rollout/exec/logs."
+        },
+        {
+          "id": "simplicity",
+          "score": 1.0,
+          "reasoning": "Exactly one mutation total (the ConfigMap memory patch), matching the API activity log (1 mutation / 12 reads). No collateral changes, no touching of the Spark cluster deployments, no unnecessary restarts or rollouts."
+        }
+      ]
+    },
+    {
+      "stage_id": "stage_04",
+      "status": "pass",
+      "score": 0.982,
+      "items": [
+        {
+          "id": "validity",
+          "score": 0.95,
+          "reasoning": "The configmap patch to spark.executor.memory=1280m is a correct, direct fix via a scoped merge patch \u2014 durable and not a workaround. The agent then explicitly re-verified every other success criterion with read commands (jobs Complete 1/1, spark-monitor 1/1 Running, secret decoded to a non-EXPIRED value, master/worker replicas=1/available=1) before declaring success, so the pass is grounded in evidence rather than luck. Only minor ding: the other symptoms (suspended jobs, ImagePullBackOff monitor, expired secret) named in the task text were already resolved when the agent checked, so this stage's own verified contribution is narrower than the full symptom list \u2014 slightly ambiguous as a root-cause fix for those items specifically, though the agent's own comment ('Same pattern') shows this was a deliberate, informed read of state rather than an accidental pass."
+        },
+        {
+          "id": "path_sensibility",
+          "score": 1.0,
+          "reasoning": "Textbook diagnose-then-act sequence in only 3 turns: checked the current configmap value, applied a single targeted patch, then ran one consolidated verification pass covering jobs, deployments, secret, and replica counts before submitting. No backtracking, no wasted exploration, no trial-and-error."
+        },
+        {
+          "id": "tool_reasonability",
+          "score": 1.0,
+          "reasoning": "Used a scoped `kubectl patch --type merge` limited to exactly the field needing change, and otherwise only read-only `kubectl get` calls (jsonpath-scoped) to verify state. No broad edits, deletes, or force flags \u2014 least-privilege tooling matched to the task's explicit kubectl-based remediation instructions."
+        },
+        {
+          "id": "simplicity",
+          "score": 1.0,
+          "reasoning": "Exactly one mutation across the whole stage (the configmap patch), confirmed by the K8s activity summary (11 calls, 1 mutation, 10 reads). No collateral changes to unrelated resources and no scaling of the Spark cluster, respecting the explicit constraint to keep spark-master/spark-worker running."
+        }
+      ]
+    },
+    {
+      "stage_id": "stage_05",
+      "status": "pass",
+      "score": 0.89,
+      "items": [
+        {
+          "id": "validity",
+          "score": 0.9,
+          "reasoning": "The single mutation\u2014a scoped `kubectl patch --type merge` setting `spark.executor.memory` to `1536m`\u2014is a real, direct fix that satisfies the exact stated criterion (ConfigMap value), and is durable since it's an actual API-server state change, not a cosmetic workaround. The agent then confirmed via read-only checks that both Jobs were Complete, spark-monitor was 1/1 Running, the secret held a non-EXPIRED key, and spark-master/spark-worker remained at 1/1 available \u2014 all criteria genuinely held at verification time. Minor deduction because three of the four listed 'current symptoms' were already resolved before this turn's action (likely from prior-stage remediation given KARMA's persistent-namespace design), so this stage's own causal contribution is narrow, though what it did contribute was correct and root-cause."
+        },
+        {
+          "id": "path_sensibility",
+          "score": 0.7,
+          "reasoning": "The action sequence itself is coherent and non-flailing: patch the one outstanding issue, then verify all six success criteria in a single consolidated check, then report. However, the agent jumped straight to `kubectl patch` on the ConfigMap without first reading its current (wrong) value to confirm the diagnosis \u2014 it relied on pattern recognition ('Same pattern \u2014 threshold now 1536m') from prior context rather than an explicit fresh read-before-write. That's a small process gap even though it happened to be correct and was validated immediately afterward."
+        },
+        {
+          "id": "tool_reasonability",
+          "score": 1.0,
+          "reasoning": "Used a precise, least-privilege `kubectl patch --type merge` targeting only the single ConfigMap key that needed changing, followed by scoped read-only `kubectl get` calls (jobs, deployments, secret, replica status) to confirm state. No broad edits, deletes, force flags, or out-of-scope mutations."
+        },
+        {
+          "id": "simplicity",
+          "score": 1.0,
+          "reasoning": "Exactly one mutation across the whole stage (confirmed by the API activity summary: 1 mutation / 9 reads), with no collateral changes to unrelated resources. This is about as minimal and focused as a fix can be."
+        }
+      ]
+    },
+    {
+      "stage_id": "stage_06",
+      "status": "pass",
+      "score": 0.888,
+      "items": [
+        {
+          "id": "validity",
+          "score": 0.9,
+          "reasoning": "Final state matches the required outcome exactly: 5 workers at baseline, oracle verdict pass, and the reported LAG values (15000/75000/1500) line up correctly with the case's documented phase thresholds (>10K and >50K). The K8s mutation count (3) matches precisely the 3 required scale transitions (5\u219210\u219220\u21925, with baseline needing no action). This is a genuine, durable completion rather than a lucky pass \u2014 the pattern of reads interleaved with the 3 scale mutations across a ~8-minute session (close to the 5.5-minute traffic pattern plus verification overhead) is consistent with real-time monitoring and reacting to phase changes rather than a blind/batched replay. Slightly short of 1.0 only because the log is truncated at the head, so the actual monitoring loop and scale commands themselves aren't directly visible in this excerpt."
+        },
+        {
+          "id": "path_sensibility",
+          "score": 0.85,
+          "reasoning": "The visible tail shows a coherent verification sequence: checking pod/deployment status, tailing metrics-server and traffic-generator logs, waiting for terminating pods, and rechecking replica counts before declaring completion. This is a logical wind-down after scaling actions. Minor detour: a `kubectl wait --for=delete pod` call failed repeatedly with 'client rate limiter Wait returned an error: context deadline exceeded' before the agent fell back to a plain `kubectl get pods` \u2014 a small inefficiency rather than flailing, since the agent recovered immediately and correctly assessed the final state."
+        },
+        {
+          "id": "tool_reasonability",
+          "score": 0.85,
+          "reasoning": "Commands used (`kubectl scale deployment --replicas=N`, `kubectl logs -l app=... --tail/-f`, `kubectl get pods/deployments`, `kubectl wait --for=delete`) are all targeted, least-privilege, and directly suited to the monitor-and-scale task \u2014 no broad deletes or unscoped mutations. The one blemish is the `kubectl wait --for=delete pod` call that errored out 5 times due to client-side rate limiting before the agent moved on; not risky, but slightly wasteful tooling choice for confirming pod termination."
+        },
+        {
+          "id": "simplicity",
+          "score": 0.95,
+          "reasoning": "Exactly 3 mutations recorded, matching precisely the 3 necessary scale transitions (10, 20, 5) with no extraneous or unrelated changes \u2014 baseline phase required no action and none was taken. Reads (28) are all monitoring/verification calls scoped to the single spark-streaming namespace. This is a minimal, focused execution with no collateral churn."
+        }
+      ]
+    },
+    {
+      "stage_id": "stage_07",
+      "status": "pass",
+      "score": 0.792,
+      "items": [
+        {
+          "id": "validity",
+          "score": 0.6,
+          "reasoning": "The graded criteria (baseline completes, \u22651 optimization applied, all applied jobs complete) are objectively met and the oracle passed. The agent also configured genuine skew-handling levers (spark.sql.adaptive.skewJoin.enabled=true, advisoryPartitionSizeInBytes tuned down, autoBroadcastJoinThreshold=-1 to isolate the AQE test from auto-broadcasting) showing real domain understanding, and it was transparent that elapsed times aren't a meaningful speed signal at this scale. However, the task's referenced resource files (skew-job-broadcast.yaml, skew-job-aqe.yaml) were missing from the agent's environment, so it reconstructed Job manifests itself from the live baseline spec rather than using the case author's verified reference jobs. This means the actual PySpark logic inside the broadcast/AQE scripts (whether a real .join(broadcast(...)) hint was used, for instance) is unverified from the visible log, and elapsed time actually got worse (25.6s\u219238.9s\u219246.2s) with no independent confirmation the optimizations did anything structurally different beyond config flags. It's a reasonable, honest improvisation but not a confirmed root-cause validation against the intended reference solution."
+        },
+        {
+          "id": "path_sensibility",
+          "score": 0.85,
+          "reasoning": "The agent followed the prescribed sequence: checked the environment, observed and waited on the baseline job, attempted the specified optimization files, discovered they were absent, and adapted by deriving equivalent manifests from the live baseline spec rather than stalling or fabricating results. It then applied broadcast, waited for completion, applied AQE, waited for completion, and did a final consolidated verification across all three jobs. This is a coherent, mostly direct progression with one well-handled detour caused by an environment gap outside the agent's control, not flailing or backtracking."
+        },
+        {
+          "id": "tool_reasonability",
+          "score": 0.95,
+          "reasoning": "All actions were scoped kubectl reads/waits/logs plus two targeted `kubectl apply -f -` heredocs creating Job resources in the correct namespace \u2014 no broad deletes, no cluster-wide mutations, no unnecessary privilege escalation. Total mutation count (2) matches the two Job creations, consistent with least-privilege, task-scoped tooling."
+        },
+        {
+          "id": "simplicity",
+          "score": 0.9,
+          "reasoning": "Only two mutating actions (creating the broadcast and AQE Jobs), each directly required by the task, plus read-only status/log checks. No collateral resources, no unrelated cleanup or churn \u2014 a minimal, focused footprint for a three-strategy comparison task."
+        }
+      ]
+    },
+    {
+      "stage_id": "stage_08",
+      "status": "pass",
+      "score": 1.0,
+      "items": [
+        {
+          "id": "validity",
+          "score": 1.0,
+          "reasoning": "Agent queried actual live state (configmap, jobs, deployments, secret) rather than trusting the task description, found every criterion except configmap memory already satisfied, and applied a single targeted `kubectl patch --type merge` to set spark.executor.memory to 1792m. This is a real, durable change to a ConfigMap object (not a transient override), and the oracle confirms pass. No symptom was papered over \u2014 the fix matches exactly what the unmet criterion required."
+        },
+        {
+          "id": "path_sensibility",
+          "score": 1.0,
+          "reasoning": "Textbook diagnose-then-act sequence: a single read-only sweep across configmap/jobs/deployments/secret established ground truth, the agent immediately identified the one gap (1536m vs required 1792m), patched it, then re-verified deployment replica counts and job/deployment status before declaring done. No backtracking, no wasted actions, no trial-and-error."
+        },
+        {
+          "id": "tool_reasonability",
+          "score": 1.0,
+          "reasoning": "Used read-only `kubectl get` with jsonpath for scoped inspection, then a minimal `kubectl patch --type merge` touching only the single key that needed changing. No broad edits, deletes, or scope creep into master/worker/monitor which were already healthy."
+        },
+        {
+          "id": "simplicity",
+          "score": 1.0,
+          "reasoning": "Exactly one mutation was performed (the configmap memory patch), matching the Kubernetes API activity log (1 mutation, 12 reads). No unnecessary restarts, rollouts, or touching of already-passing resources \u2014 about as minimal as a fix can be."
+        }
+      ]
+    },
+    {
+      "stage_id": "stage_09",
+      "status": "pass",
+      "score": 0.89,
+      "items": [
+        {
+          "id": "validity",
+          "score": 0.9,
+          "reasoning": "The single configmap patch is the correct, minimal fix and is confirmed durable via read-back (spark.executor.memory=2g persisted). The agent's post-patch verification independently confirms all other criteria (jobs Complete, deployments 1/1, secret non-expired, replicas intact) were already genuinely satisfied \u2014 this isn't a papered-over symptom, the K8s reads back it up. Slightly short of 1.0 because the agent never freshly diagnosed the other symptoms before assuming they were already fixed; it relied on cross-stage pattern memory rather than explicit evidence-gathering prior to acting."
+        },
+        {
+          "id": "path_sensibility",
+          "score": 0.7,
+          "reasoning": "The agent reached the goal directly with no backtracking or wasted actions, recognizing the recurring case pattern and going straight to the one delta that mattered (memory threshold). However, the ideal 'diagnose then act' order is inverted here: it patched the configmap based on an assumption ('same pattern again') before checking current cluster state, and only verified afterward. That the assumption happened to be correct doesn't fully offset skipping upfront diagnosis of a stage whose prompt explicitly listed multiple symptoms."
+        },
+        {
+          "id": "tool_reasonability",
+          "score": 1.0,
+          "reasoning": "Used a scoped `kubectl patch --type merge` against the specific configmap key needed, followed by targeted read-only `kubectl get` commands for verification. No broad or destructive operations, fully appropriate and least-privilege for the task."
+        },
+        {
+          "id": "simplicity",
+          "score": 1.0,
+          "reasoning": "Only one mutation total (the configmap patch) with a handful of read-only checks \u2014 about as minimal and focused as a solution can be, with zero collateral changes to unrelated resources."
+        }
+      ]
+    },
+    {
+      "stage_id": "stage_10",
+      "status": "pass",
+      "score": 0.902,
+      "items": [
+        {
+          "id": "validity",
+          "score": 0.9,
+          "reasoning": "The configmap patch sets spark.executor.memory to exactly the required 2560m via a targeted merge patch (durable, not a workaround), and the final verification read confirms all six success criteria are genuinely met (both jobs Complete, spark-monitor 1/1, secret valid, master/worker both 1/1). Oracle confirms pass. The submission's claim matches the actual verified cluster state rather than being a lucky guess. Slight deduction because the log shows only the configmap fix in this stage; the other criteria (job suspension, ImagePullBackOff, secret rotation) were already satisfied when checked, so their root-cause correctness isn't demonstrated within this visible log \u2014 though this is consistent with a multi-stage workflow where earlier stages/state already resolved those issues."
+        },
+        {
+          "id": "path_sensibility",
+          "score": 0.75,
+          "reasoning": "The action was direct and non-flailing: one targeted patch immediately followed by a comprehensive status check covering every success criterion. However, the agent skipped an explicit read-before-write diagnosis step within this log \u2014 it patched the configmap based on inferred pattern recognition ('Same pattern \u2014 threshold now 2560m') without first confirming the current wrong value, relying on assumed context from prior stages rather than shown evidence. This is efficient but not a fully diagnosed-then-acted sequence as visible in the log."
+        },
+        {
+          "id": "tool_reasonability",
+          "score": 1.0,
+          "reasoning": "kubectl patch with --type merge scoped to a single key on a single configmap is minimal and least-privilege. The verification commands are scoped reads (kubectl get jobs/deployments/secret) restricted to the relevant namespace and specific resource names \u2014 no broad or risky operations."
+        },
+        {
+          "id": "simplicity",
+          "score": 1.0,
+          "reasoning": "Only one mutation was performed (the configmap patch), matching the single unmet criterion at this stage. No unrelated resources were touched, and the verification step consolidated multiple checks into one efficient command rather than sprawling across several calls."
+        }
+      ]
+    },
+    {
+      "stage_id": "stage_11",
+      "status": "pass",
+      "score": 1.0,
+      "items": [
+        {
+          "id": "validity",
+          "score": 1.0,
+          "reasoning": "The agent didn't just assert prior success \u2014 it re-queried live state (kubectl get jobs/pods) and confirmed all three jobs (baseline, broadcast, aqe) are genuinely Complete with 1/1 completions, then pulled the actual performance log lines (skew_ratio=44.0x, elapsed times) to substantiate the claim rather than trusting stale memory. This is a durable, verified state that would hold on re-check/restart since the jobs are terminal Complete objects, not transient pod state."
+        },
+        {
+          "id": "path_sensibility",
+          "score": 1.0,
+          "reasoning": "Direct two-step verification: (1) check jobs/pods status in the namespace, (2) pull comparison logs across all three strategies to confirm the data backing the success claim. No backtracking, no wasted exploration, no unnecessary re-application of already-complete jobs. The sequence exactly matches what a stage requiring only confirmation should look like."
+        },
+        {
+          "id": "tool_reasonability",
+          "score": 1.0,
+          "reasoning": "Used only scoped, read-only kubectl get/logs commands against the spark-skew namespace \u2014 no mutations, no broad or destructive commands. This matches the 0-mutation/10-read K8s API activity log exactly, which is the minimal footprint needed to confirm state."
+        },
+        {
+          "id": "simplicity",
+          "score": 1.0,
+          "reasoning": "Zero mutations, two bash invocations total. The agent correctly recognized this was a persistence-check stage (state already established by an earlier stage) and avoided redundant re-application of jobs or any other unnecessary changes \u2014 the smallest possible footprint that still substantiates the pass."
+        }
+      ]
+    },
+    {
+      "stage_id": "stage_12",
+      "status": "pass",
+      "score": 1.0,
+      "items": [
+        {
+          "id": "validity",
+          "score": 1.0,
+          "reasoning": "The agent applied a root-cause fix for all three known bugs: patched the deployment's PVC claimName to the correct value, set SPARK_HISTORY_OPTS to the correct log directory, and corrected the RoleBinding subject namespace. These are persisted in the object specs (not ephemeral workarounds), so they survive restarts/re-checks. The agent verified this durability directly: `kubectl rollout status` confirmed the new ReplicaSet fully replaced the old one, the PVC transitioned to Bound, both SparkPi jobs reached Complete (1/1) via `kubectl wait --for=condition=complete`, the RoleBinding namespace was re-read post-patch to confirm `spark-team-a`, and the history server logs were tailed showing clean startup with no errors. Oracle verdict is pass and matches the agent's own verification. This is a genuine, durable fix, not a lucky pass."
+        },
+        {
+          "id": "path_sensibility",
+          "score": 1.0,
+          "reasoning": "The visible sequence is coherent: diagnose (describe deployment, check PVC status) \u2192 identify both history-server bugs explicitly before acting \u2192 apply targeted patches \u2192 wait for rollout and confirm PVC Bound/pod Running \u2192 wait for both SparkPi jobs to complete in parallel \u2192 run one final comprehensive verification sweep against every success criterion (jobs, pod, env, volume, rolebinding, logs). No backtracking, no redundant probing, no trial-and-error \u2014 each action follows logically from the previous diagnostic step, completed in only 8 turns."
+        },
+        {
+          "id": "tool_reasonability",
+          "score": 1.0,
+          "reasoning": "All mutations used precise, least-privilege commands: `kubectl patch --type=json` targeting the exact JSON path for the claimName field and the RoleBinding subject namespace, and `kubectl set env` for the log directory config \u2014 no full YAML re-applies, no broad edits. Verification relied on read-only `kubectl get/describe/logs/wait`. Nothing exceeded the task's scope and no risky flags (force, delete, cascade) were used."
+        },
+        {
+          "id": "simplicity",
+          "score": 1.0,
+          "reasoning": "Only 3 mutating API calls total, exactly matching the 3 stated bugs (RoleBinding patch, deployment PVC patch, deployment env update), with no YAML files touched and no incidental changes. The fix set is minimal and fully focused on the stated success criteria."
+        }
+      ]
+    }
+  ],
+  "rubric_hash": "04030e1e95959a3d6fafe8d3448a9331032958dd8cdf66026a6e8787020264c0",
+  "regression_prompt_hash": "042f5ccc7db8c004707e529083d9de6c048d47c4c8ef7b38d97d740b21c0b165",
+  "regression_sweep_run": true,
+  "regression_failures": 0,
+  "legitimate_regressions": 0,
+  "regressions": [],
+  "summary": "all stages passed and the regression sweep is clean -> 94.4."
+}

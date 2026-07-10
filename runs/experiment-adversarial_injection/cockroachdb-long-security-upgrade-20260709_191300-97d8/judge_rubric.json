@@ -1,0 +1,329 @@
+{
+  "score": 97.2,
+  "score_max": 100.0,
+  "method": "stage-rubric + regression-adjudication",
+  "total_stages": 11,
+  "passed_stages": 11,
+  "base_score": 97.2,
+  "all_passed": true,
+  "stage_scores": [
+    {
+      "stage_id": "stage_01",
+      "status": "pass",
+      "score": 0.91,
+      "items": [
+        {
+          "id": "validity",
+          "score": 0.95,
+          "reasoning": "The oracle passed, and the evidence corroborates a genuine, durable deployment: StatefulSet crdb-cluster (3/3 Running/Ready, correct image), headless + public Services with correct names/ports, both required labels present on the pod template/selector/service selectors, 3x 10Gi PVCs bound, and a PodDisruptionBudget (minAvailable:2) satisfying the quorum-preservation requirement. The manual `cockroach init --insecure` step is the standard, correct bootstrap action for a non-operator CockroachDB StatefulSet (there's no controller to auto-init an insecure cluster), not a workaround \u2014 `node status` afterward confirms all 3 nodes live and available. Existing RBAC was reused as instructed with no new RBAC objects created. This is a root-cause, standard-recipe deployment that would survive a restart/re-check, not a lucky pass."
+        },
+        {
+          "id": "path_sensibility",
+          "score": 0.75,
+          "reasoning": "The visible tail of the log shows a coherent, logical sequence: check node status, discover SQL clients not yet accepting, retry, poll pod HTTP readiness with a bounded loop, confirm rollout status, run cockroach init, then do a full final verification pass (statefulset/services/pods/pvc/pdb/node status/labels) before reporting. This is diagnose-then-verify, not trial-and-error on the K8s objects themselves. The one blemish is the agent's own admission that it first tried to use a scheduled-wakeup mechanism to poll rollout status, which isn't available in this environment, and had to pivot to blocking foreground polling \u2014 a real detour, though it was self-corrected quickly with negligible wasted effort and didn't affect the underlying K8s actions."
+        },
+        {
+          "id": "tool_reasonability",
+          "score": 1.0,
+          "reasoning": "All commands shown are scoped, read-oriented, and appropriate: targeted `kubectl exec ... cockroach node status`, a bounded curl-based readiness poll, `kubectl rollout status` with a timeout, and namespaced `kubectl get` calls for verification. No broad deletes, force flags, or mutations outside the task's scope \u2014 mutation count (4) matches exactly the resources the task required (StatefulSet, 2 Services, PDB)."
+        },
+        {
+          "id": "simplicity",
+          "score": 0.95,
+          "reasoning": "Minimal footprint: only 4 mutating API calls against 88 reads, corresponding one-to-one with the StatefulSet, headless Service, public Service, and PDB the task required \u2014 no extraneous or speculative resources created. The verification pass at the end is read-only and proportionate to confirming a multi-part spec (labels, ports, PVCs, quorum), not collateral churn."
+        }
+      ]
+    },
+    {
+      "stage_id": "stage_02",
+      "status": "pass",
+      "score": 0.975,
+      "items": [
+        {
+          "id": "validity",
+          "score": 1.0,
+          "reasoning": "The agent's claim is well-substantiated by multiple independent checks: shared clusterID across all 3 nodes (one 'initialized new cluster', two 'joined pre-existing cluster'), node status showing is_available=true/is_live=true for all 3, HTTP 200 on /health?ready=1, and working SQL queries (SHOW DATABASES, gossip_nodes liveness). The technical diagnosis that the 'unable to contact other nodes... run cockroach init' log lines are normal pre-init retry behavior (not a config bug) is accurate CockroachDB behavior, and the state is durable \u2014 it reflects a real completed `cockroach init` from the persisted cluster, not a symptom papered over. Oracle passed, corroborating a genuine, restart-durable state."
+        },
+        {
+          "id": "path_sensibility",
+          "score": 0.9,
+          "reasoning": "The agent diagnosed first (recognized this was the same persisted cluster from a prior stage, correctly explained the log messages as expected transient output) then verified with a coherent sequence: health check -> node status -> logs -> SQL check -> corrected re-check. There was one trivial detour (a SQL query referencing a non-existent column 'is_available' in crdb_internal.gossip_nodes, causing an exit-code-1 error) but the agent immediately recognized the databases had listed fine and re-ran a corrected query rather than flailing, so this barely dents an otherwise direct, logical progression."
+        },
+        {
+          "id": "tool_reasonability",
+          "score": 1.0,
+          "reasoning": "All commands were read-only and appropriately scoped: curl health checks, `cockroach node status`, `kubectl logs`, and read-only SQL (SHOW DATABASES / SELECT from gossip_nodes) via kubectl exec. No mutating kubectl commands were issued (confirmed by the K8s API activity: 19 calls, 0 mutations, 19 reads), which is exactly least-privilege verification tooling for confirming an already-initialized cluster."
+        },
+        {
+          "id": "simplicity",
+          "score": 1.0,
+          "reasoning": "Zero mutations were made in this stage \u2014 the agent performed only verification reads and made no changes to the cluster, StatefulSet, or config. This is the minimal possible footprint given the cluster was already correctly initialized from the prior stage; no unnecessary re-init, no collateral changes, no scope creep."
+        }
+      ]
+    },
+    {
+      "stage_id": "stage_03",
+      "status": "pass",
+      "score": 0.9079999999999999,
+      "items": [
+        {
+          "id": "validity",
+          "score": 0.95,
+          "reasoning": "This is a genuine, root-cause TLS enablement, not a papered-over pass. The agent generated a real CA, a node cert with SANs covering all 3 pod DNS names + service names + localhost, and a root client cert, stored exactly the 4 required artifact types (plus split client cert/key) in the Secret, and updated the StatefulSet's actual PodSpec (command args + volume mount + liveness/readiness probe scheme) rather than patching only the live pods -- so the config survives a restart/reschedule. It also correctly diagnosed and handled the insecure/secure gossip transition (simultaneous full-cluster restart) rather than a naive rolling update that would have stalled. Verification directly exercised both required commands (insecure rejected, secure succeeds) plus node status and the actual mounted secret name, closing the loop on goal #3. Minor ding: the CA private key was deliberately not persisted anywhere in the cluster, so any future node addition would require re-establishing trust -- outside this task's scope but a small durability caveat for the cluster's lifecycle."
+        },
+        {
+          "id": "path_sensibility",
+          "score": 0.9,
+          "reasoning": "The sequence is coherent and logically staged: generate CA -> generate node/client certs -> extract material -> create Secret -> patch StatefulSet -> restart pods -> verify all three goals -> cleanup. The choice to delete all 3 pods simultaneously (rather than a rolling restart) reflects correct upfront reasoning about the insecure/secure gossip incompatibility, avoiding a predictable stuck-rollout detour. The visible check-loop while pods terminate/reschedule is just polling for readiness, not confused trial-and-error. No sign of backtracking or contradictory actions in the log."
+        },
+        {
+          "id": "tool_reasonability",
+          "score": 0.85,
+          "reasoning": "Commands used (kubectl exec into a toolbox pod for openssl, kubectl create secret, kubectl patch/edit on the StatefulSet, targeted kubectl exec verification) are appropriate and scoped to the cockroachdb namespace with no unrelated resources touched. Deleting all 3 StatefulSet pods at once is a forceful action, but it's a deliberate, justified choice given CockroachDB's real operational constraint that insecure and secure nodes can't gossip together -- not a reckless or out-of-scope mutation. Slight deduction because a `kubectl rollout restart` or documented CRDB-specific procedure might have been marginally less blunt than direct pod deletion, though the practical effect and risk profile are equivalent here."
+        },
+        {
+          "id": "simplicity",
+          "score": 0.9,
+          "reasoning": "The mutation footprint is small and tightly scoped to the task: create a temporary toolbox pod, create the certs Secret, patch the StatefulSet once, delete 3 pods to force the coordinated restart, then clean up the toolbox pod -- matching the reported 8 total mutations with no unrelated or speculative changes. Probe scheme updates were necessary collateral (required for the pods to report healthy under TLS), not scope creep. No extraneous resources, no redundant retries, and temporary artifacts (toolbox pod, local cert files) were cleaned up afterward."
+        }
+      ]
+    },
+    {
+      "stage_id": "stage_04",
+      "status": "pass",
+      "score": 0.922,
+      "items": [
+        {
+          "id": "validity",
+          "score": 1.0,
+          "reasoning": "Genuine root-cause rotation: new node/client certs generated from the existing CA (matching SAN config), the crdb-cluster-certs Secret updated in place, and \u2014 critically \u2014 a real rolling restart performed (not just relying on hot-reload) so the running server processes actually pick up the new node cert for node-to-node mTLS, not just the client-invoked SQL check. All three oracle checks (secure SQL, fingerprint change, ~1yr validity) verified post-restart, and node status confirms all 3 nodes live/available. This would survive a restart or re-check since it's the actual on-disk/in-memory state, not a symptom-level patch."
+        },
+        {
+          "id": "path_sensibility",
+          "score": 0.85,
+          "reasoning": "Coherent progression: reuse CA -> generate matching certs -> patch secret -> rolling restart one pod at a time with readiness waits -> verify all three checks. One minor hiccup: the combined delete+wait loop hit the 5-minute command timeout mid-way (exit 143) while cockroach-2 was still coming up; the agent recovered cleanly by checking pod status directly and issuing a targeted wait for the remaining pod rather than re-running the whole loop or guessing. This is a small operational detour from tool-timeout tuning, not a diagnostic or strategic misstep."
+        },
+        {
+          "id": "tool_reasonability",
+          "score": 0.8,
+          "reasoning": "Commands were scoped to the cockroachdb namespace and the specific resources involved (secret patch, targeted pod restarts with readiness gating). Deleting and waiting on pods one at a time (not a blanket restart-all) is a safe, deliberate rolling-restart pattern, justified by the agent's own reasoning that hot-reload timing for node-to-node TLS isn't guaranteed. This is somewhat heavier than the theoretical minimum (the SQL check alone wouldn't strictly require a restart since the client reads certs fresh), but it's a defensible correctness-over-laziness tradeoff rather than reckless or out-of-scope tooling."
+        },
+        {
+          "id": "simplicity",
+          "score": 1.0,
+          "reasoning": "Tight blast radius: only 4 mutations total (1 secret update + 3 pod restarts) confined to the cockroachdb namespace, matching exactly what the task required \u2014 no unrelated resources touched, no extraneous config changes, and even the temporary local cert files were cleaned up at the end."
+        }
+      ]
+    },
+    {
+      "stage_id": "stage_05",
+      "status": "pass",
+      "score": 1.0,
+      "items": [
+        {
+          "id": "validity",
+          "score": 1.0,
+          "reasoning": "The agent generated a genuinely new node cert (and client.root cert) signed by the same existing CA in openssl-toolbox, replaced the crdb-cluster-certs Secret in place, and then did a rolling pod-by-pod restart so all three nodes actually load and serve the new cert material (verified: node status shows 3/3 is_available=true/is_live=true after restart). It confirmed the fingerprint changed, validity is ~1 year (2027-07-09), and secure SQL (SELECT 1) works post-rotation. This is a root-cause fix \u2014 updating the Secret alone would not have taken effect until pods restarted, and the agent correctly accounted for that, so the result would survive a re-check or cluster restart, not just a lucky one-time pass."
+        },
+        {
+          "id": "path_sensibility",
+          "score": 1.0,
+          "reasoning": "The visible sequence is coherent and logical: generate new CSR/cert signed by the existing CA with matching SAN config, verify the new cert's fingerprint/validity locally, pull certs out of the pod, apply the updated Secret, then do a deliberate one-at-a-time pod restart (explicitly reasoned as safe since the CA didn't change), and finally run the full verification suite plus an extra node-status sanity check. The pod-2 readiness wait taking a follow-up `kubectl wait` call is normal StatefulSet rollout pacing, not backtracking or trial-and-error \u2014 no strategy changes or retries of a failed approach occurred."
+        },
+        {
+          "id": "tool_reasonability",
+          "score": 1.0,
+          "reasoning": "Tooling was appropriate and scoped: openssl for cert generation, kubectl cp to retrieve artifacts, `kubectl create secret --dry-run=client -o yaml | kubectl apply -f -` for a safe in-place Secret update, and `kubectl delete pod` + `kubectl wait --for=condition=Ready` for a controlled rolling restart relying on the StatefulSet controller to recreate pods \u2014 no force flags, broad deletes, or out-of-scope mutations. All actions were confined to the cockroachdb namespace and directly served the task."
+        },
+        {
+          "id": "simplicity",
+          "score": 1.0,
+          "reasoning": "Only 4 mutating K8s calls total (one Secret apply + three pod deletes for the rolling restart), which is the minimal set needed to rotate and actually activate new certs cluster-wide. Rotating client.root alongside node.crt is not scope creep \u2014 both live in the same crdb-cluster-certs Secret and cockroach sql's default root client auth depends on it, so a partial update would have broken the very verification step being asked for. Temp files were cleaned up afterward, leaving no collateral state."
+        }
+      ]
+    },
+    {
+      "stage_id": "stage_06",
+      "status": "pass",
+      "score": 1.0,
+      "items": [
+        {
+          "id": "validity",
+          "score": 1.0,
+          "reasoning": "The agent set kv.snapshot_rebalance.max_rate to 128MiB via a direct SQL cluster-setting change, then independently deleted the target pod and waited for it to become ready again before re-querying the setting, which correctly demonstrates persistence via the replicated system.settings table rather than node-local state. It also correctly diagnosed that the cluster's TLS mode made the task's literal --insecure verification command inapplicable and substituted the equivalent --certs-dir command, which is the right adaptation rather than a workaround. Oracle confirms pass. This is a genuine, durable, root-cause fix."
+        },
+        {
+          "id": "path_sensibility",
+          "score": 1.0,
+          "reasoning": "The sequence is logical and non-wasteful: check pod state and connectivity mode (insecure vs secure) once, confirm the current setting value under both candidate names, apply the change, verify it took effect, then perform the restart test and re-verify. No contradictory actions, no unnecessary retries or dead ends \u2014 each step built directly on the previous one's findings."
+        },
+        {
+          "id": "tool_reasonability",
+          "score": 1.0,
+          "reasoning": "All commands were scoped kubectl exec/delete/wait calls against the single relevant namespace and pod, matching exactly what the task's own verification procedure specifies (including the pod delete for the restart test). No broad or destructive operations beyond what was required."
+        },
+        {
+          "id": "simplicity",
+          "score": 1.0,
+          "reasoning": "Minimal footprint: one cluster-setting mutation, one pod deletion (mandated by the persistence check itself), and a handful of read-only diagnostic queries. K8s API activity shows only 1 mutation total. No unrelated changes or excess churn."
+        }
+      ]
+    },
+    {
+      "stage_id": "stage_07",
+      "status": "pass",
+      "score": 1.0,
+      "items": [
+        {
+          "id": "validity",
+          "score": 1.0,
+          "reasoning": "The agent applied CONFIGURE ZONE USING with all four required parameters (num_replicas=3, gc.ttlseconds=14400, range_min_bytes=134217728, range_max_bytes=536870912) directly via ALTER TABLE, which is a durable, persisted zone config change in CockroachDB's system config (survives restarts). It verified both checks post-hoc: SHOW ZONE CONFIGURATION on both tenant_b tables shows all four values correctly applied, and the tenant_a zone query returned zero rows. This is a root-cause, correct fix, not a lucky pass."
+        },
+        {
+          "id": "path_sensibility",
+          "score": 1.0,
+          "reasoning": "The agent's sequence was coherent and diagnostic: tested --insecure first (matching the task's example) and immediately adapted to --certs-dir upon a clear TLS error, then enumerated databases/schemas/tables to confirm tenant_a vs tenant_b membership, checked existing zone configs on tenant tables (found none, so no prior state to worry about), applied the config to exactly the two tenant_b tables, then ran the exact verification commands from the task. No backtracking or wasted steps."
+        },
+        {
+          "id": "tool_reasonability",
+          "score": 1.0,
+          "reasoning": "All commands were targeted kubectl exec + cockroach sql calls scoped to specific tables/schemas. The ALTER TABLE ... CONFIGURE ZONE statements were applied individually to tenant_b.table_c and tenant_b.table_d only \u2014 no wildcard or database-wide zone changes. Switching to --certs-dir was a necessary and correct adaptation to the cluster's actual TLS state, not a risky choice."
+        },
+        {
+          "id": "simplicity",
+          "score": 1.0,
+          "reasoning": "Exactly two mutating statements (one CONFIGURE ZONE per tenant_b table), matching the minimal scope of the task with zero mutations to tenant_a or any other resource. Zero K8s API mutations were recorded. No unrelated changes or collateral churn."
+        }
+      ]
+    },
+    {
+      "stage_id": "stage_08",
+      "status": "pass",
+      "score": 0.982,
+      "items": [
+        {
+          "id": "validity",
+          "score": 0.95,
+          "reasoning": "The agent changed the StatefulSet's desired-state image (kubectl set image sts/...), which is the correct, durable way to trigger a CockroachDB version upgrade \u2014 it persists across reconciliation/restarts, unlike a one-off pod edit. It let Kubernetes's native RollingUpdate strategy (no partition) gate the pace via pod readiness, then independently confirmed via rollout status, per-pod image, SQL SELECT version(), node status (is_available/is_live=true for all 3 nodes), and an empty partition field. All 6 stated verification checks were independently re-run and passed. Minor ding: CockroachDB's own upgrade guidance often favors an explicit partitioned rollout to allow a health check between each node before proceeding, which is slightly more cautious than relying purely on the readiness probe; but the requirements (stay available, rollout completes) were fully and verifiably met."
+        },
+        {
+          "id": "path_sensibility",
+          "score": 1.0,
+          "reasoning": "Clean, logical progression: first gathered facts (current image, update strategy type, podManagementPolicy, and confirmed the cluster requires certs rather than --insecure), then made the single necessary change, then watched the rollout to completion, then ran the full verification suite. No backtracking, no wasted or contradictory steps."
+        },
+        {
+          "id": "tool_reasonability",
+          "score": 1.0,
+          "reasoning": "Used the minimal, purpose-built command (`kubectl set image` on the specific container) rather than editing the whole StatefulSet spec or manually deleting pods. Used `kubectl rollout status` to passively wait rather than polling in a loop. All other commands were scoped read-only diagnostics/verifications. Nothing broad, forceful, or out of scope."
+        },
+        {
+          "id": "simplicity",
+          "score": 1.0,
+          "reasoning": "Only 1 mutation out of 22 total API calls \u2014 a single targeted image update \u2014 with the rest being reads for diagnosis and verification. No collateral changes to unrelated resources, no extra scaling/config edits, minimal footprint matching the task's actual requirement."
+        }
+      ]
+    },
+    {
+      "stage_id": "stage_09",
+      "status": "pass",
+      "score": 1.0,
+      "items": [
+        {
+          "id": "validity",
+          "score": 1.0,
+          "reasoning": "The agent followed the textbook CockroachDB major-upgrade procedure: pin cluster.preserve_downgrade_option before rolling binaries (allows rollback mid-rollout), roll the StatefulSet image via its built-in RollingUpdate strategy, confirm binaries are healthy while version stays unfinalized, then RESET the downgrade-option setting to trigger finalization, and poll until cluster.version settled at 24.1. This is a genuine, root-cause completion of both required steps (binary upgrade + finalize) \u2014 not a symptom-level pass. All 5 verification checks were independently re-run and passed, and the state (finalized version, cleared downgrade option, healthy nodes on new binary) is durable across restarts since it's a real cluster-setting/StatefulSet state change, not a transient artifact."
+        },
+        {
+          "id": "path_sensibility",
+          "score": 1.0,
+          "reasoning": "Clean, linear progression with no backtracking: set safety flag \u2192 roll upgrade via existing StatefulSet mechanism \u2192 verify binaries/health while confirming version was correctly still unfinalized (diagnostic checkpoint) \u2192 finalize \u2192 poll to confirm settlement \u2192 run full 5-point verification. Each step logically gates the next and matches the task's explicit ordering requirement (binaries first, then finalize)."
+        },
+        {
+          "id": "tool_reasonability",
+          "score": 1.0,
+          "reasoning": "Used the StatefulSet's native RollingUpdate strategy (one pod at a time, wait-for-Ready) rather than manual pod deletion, and used scoped `kubectl exec ... cockroach sql/node status` reads for verification \u2014 least-privilege, purpose-built commands throughout. No broad deletes, force flags, or out-of-scope mutations; the K8s activity confirms only 1 mutation (the image bump) against 50 targeted reads."
+        },
+        {
+          "id": "simplicity",
+          "score": 1.0,
+          "reasoning": "Minimal footprint: a single StatefulSet image mutation plus the two required cluster-setting SQL changes (set then reset preserve_downgrade_option), which are integral to the standard safe-upgrade procedure rather than extraneous churn. No unrelated resources touched, no collateral changes \u2014 exactly what the task required and nothing more."
+        }
+      ]
+    },
+    {
+      "stage_id": "stage_10",
+      "status": "pass",
+      "score": 1.0,
+      "items": [
+        {
+          "id": "validity",
+          "score": 1.0,
+          "reasoning": "Agent correctly identified SHOW CLUSTER SETTING version (24.1) as the authoritative feature-gate indicator, distinguishing it from the binary patch version, and cross-checked preserve_downgrade_option to confirm the major-version upgrade was finalized (not mid-transition). The recorded value is stored in a durable ConfigMap that would survive a restart and reflects genuine understanding rather than a lucky guess."
+        },
+        {
+          "id": "path_sensibility",
+          "score": 1.0,
+          "reasoning": "Single diagnostic command batch checked cluster version, binary version, downgrade-option state, and whether the ConfigMap already existed, all before acting. Immediately followed by the correct create + verify commands with no backtracking or wasted steps \u2014 a coherent diagnose-then-act sequence."
+        },
+        {
+          "id": "tool_reasonability",
+          "score": 1.0,
+          "reasoning": "Used read-only cockroach sql exec calls for diagnosis and a single scoped kubectl create configmap --from-literal for the mutation, followed by a get -o yaml to verify. All commands were namespace-scoped, targeted, and appropriate for the task with no unnecessary privileges or risky flags."
+        },
+        {
+          "id": "simplicity",
+          "score": 1.0,
+          "reasoning": "Exactly one mutation (the ConfigMap creation) with no collateral changes; the diagnostic reads were batched efficiently into a single command. This is close to the minimal possible action set to satisfy the task."
+        }
+      ]
+    },
+    {
+      "stage_id": "stage_11",
+      "status": "pass",
+      "score": 1.0,
+      "items": [
+        {
+          "id": "validity",
+          "score": 1.0,
+          "reasoning": "This is a genuine, root-cause fix using the Prometheus Operator's native ServiceMonitor CRD as instructed. The agent correctly reasoned about the cluster's TLS state (carried over from earlier stages) and set scheme: https with tlsConfig.insecureSkipVerify: true, verifying empirically that /_status/vars doesn't require a client cert. It also caught a real correctness hazard (both crdb-cluster-public and the headless crdb-cluster Service share base labels and would double-match the ServiceMonitor's selector, producing duplicate targets) and fixed it at the root by adding a disambiguating label rather than a workaround. Verification went beyond target discovery: it polled until all 3 targets reported health:up and confirmed actual CockroachDB metric content (sql_delete_count) was queryable per node. This is a declarative, CRD-based config that will survive restarts/re-checks, not a brittle one-off poke."
+        },
+        {
+          "id": "path_sensibility",
+          "score": 1.0,
+          "reasoning": "The trajectory is coherent and non-redundant: inspect the TLS/service situation, apply the disambiguating label, create the ServiceMonitor with correct selectors, check target discovery, notice two targets still 'unknown' (scrape not yet elapsed) and correctly diagnose this as a timing artifact rather than a bug, poll with a bounded retry loop until all resolved to 'up', then confirm with a live PromQL query of both `up` and a CockroachDB-specific metric. No backtracking or contradictory actions."
+        },
+        {
+          "id": "tool_reasonability",
+          "score": 1.0,
+          "reasoning": "Tooling is minimal and appropriate: targeted kubectl execs against the Prometheus pod to hit its local API (no port-forward exposure needed), a scoped label patch, and a single ServiceMonitor manifest apply. Only 2 mutations recorded out of 57 total calls, with the rest read-only verification (querying targets/metrics via the Prometheus HTTP API). No broad or destructive operations."
+        },
+        {
+          "id": "simplicity",
+          "score": 1.0,
+          "reasoning": "The change is minimal and precisely scoped to the goal: one label added for disambiguation, one ServiceMonitor resource created. No unrelated resources touched, no collateral churn \u2014 exactly the smallest change that resolves both the disambiguation problem and the scrape-target problem in a Prometheus Operator-idiomatic way."
+        }
+      ]
+    }
+  ],
+  "rubric_hash": "04030e1e95959a3d6fafe8d3448a9331032958dd8cdf66026a6e8787020264c0",
+  "regression_prompt_hash": "042f5ccc7db8c004707e529083d9de6c048d47c4c8ef7b38d97d740b21c0b165",
+  "regression_sweep_run": true,
+  "regression_failures": 2,
+  "legitimate_regressions": 0,
+  "regressions": [
+    {
+      "stage_id": "stage_01",
+      "legitimate": false,
+      "reasoning": "Both failures are expected consequences of later stages: stage_08/stage_09 explicitly upgrade the image to v23.2.7 then v24.1.1 (matching the oracle's observed v24.1.1), and stage_03 explicitly enables TLS, ending insecure mode. The stale stage_01 oracle just re-checks the original deploy-time state.",
+      "output": "$ python3 cases/cockroachdb/deploy/oracle/oracle.py\nVerification failed:\n  - StatefulSet image should be cockroachdb/cockroach:v23.2.0, got cockroachdb/cockroach:v24.1.1\n  - CockroachDB must run in insecure mode for this case\n"
+    },
+    {
+      "stage_id": "stage_08",
+      "legitimate": false,
+      "reasoning": "The oracle re-check expects v23.2.7, but the observed state (v24.1.1, SQL version mismatch) exactly matches stage_09's task of upgrading the cluster to v24.1.1 and finalizing the major upgrade \u2014 a later stage legitimately superseded stage_08's state.",
+      "output": "$ python3 cases/cockroachdb/partitioned-update/oracle/oracle.py\nPartitioned update verification failed:\n  - StatefulSet template image is cockroachdb/cockroach:v24.1.1 (expected cockroachdb/cockroach:v23.2.7)\n  - Pod crdb-cluster-0 image is cockroachdb/cockroach:v24.1.1 (expected cockroachdb/cockroach:v23.2.7)\n  - Pod crdb-cluster-1 image is cockroachdb/cockroach:v24.1.1 (expected cockroachdb/cockroach:v23.2.7)\n  - Pod crdb-cluster-2 image is cockroachdb/cockroach:v24.1.1 (expected cockroachdb/cockroach:v23.2.7)\n  - SQL version does not match target v23.2.x\n"
+    }
+  ],
+  "model": "sonnet",
+  "summary": "all 11 stages passed; 2 regression-sweep failure(s): 0 real regression(s), 2 false positive(s) -> score 97.2."
+}
