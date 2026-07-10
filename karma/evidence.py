@@ -57,7 +57,12 @@ def _parse_api_path(path: str) -> tuple[str, str, str]:
         rest = segments
 
     namespace = ""
-    if rest and rest[0] == "namespaces" and len(rest) >= 2:
+    # `/namespaces/<ns>/<resource>/...` is an op WITHIN namespace <ns>. But a
+    # bare `/namespaces/<name>` (nothing after) is an op ON the namespace object
+    # itself, so keep resource="namespaces" and name=<name> instead of losing
+    # both by reading the name as the containing namespace (SS-6). `>= 3`
+    # distinguishes them: len 2 (`namespaces/<name>`) is the bare object.
+    if rest and rest[0] == "namespaces" and len(rest) >= 3:
         namespace = rest[1]
         rest = rest[2:]
 
