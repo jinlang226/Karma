@@ -194,6 +194,12 @@ class KubectlProxyServer:
                     raw = ("\r\n".join(lines) + "\r\n\r\n").encode()
 
                     sock = _socket.create_connection((host, port), timeout=30)
+                    # create_connection leaves the 30s CONNECT timeout on the
+                    # socket, where it would become a per-recv IDLE timeout in
+                    # the _pump loop and tear down a healthy exec/attach/port-
+                    # forward tunnel after 30s of silence (e.g. a slow `cockroach
+                    # init`). Clear it so 30s bounds only connect(). (SW-2)
+                    sock.settimeout(None)
                     if up.scheme == "https":
                         ctx = _ssl.create_default_context()
                         ctx.check_hostname = False
