@@ -53,6 +53,26 @@ class TestJudgeBatchDir:
         batch.judge_batch_dir(tmp_path, on_run_complete=lambda *a: seen.append(a))
         assert seen == [("run-a", 100.0, 1, 1)]
 
+    def test_one_failing_run_does_not_abort_the_batch(self, tmp_path, monkeypatch):
+        # SW-3: a run whose score_run raises (e.g. JudgeLLMUnavailable) is recorded
+        # with an error and skipped; the mean is still computed over the rest.
+        _make_run(tmp_path / "run-a", [1.0])
+        _make_run(tmp_path / "run-b", [1.0])
+
+        def _score(run_dir, **kw):
+            if run_dir.name == "run-a":
+                raise RuntimeError("judge LLM unreachable")
+            return {"score": 80.0, "summary": "x"}
+        monkeypatch.setattr("karma.judge.run_score.score_run", _score)
+
+        result = batch.judge_batch_dir(tmp_path)
+        assert result["run_count"] == 2
+        assert result["judged_count"] == 1             # only run-b scored
+        assert result["average_final_score"] == 80.0   # mean over survivors
+        by_id = {r["run_id"]: r for r in result["runs"]}
+        assert by_id["run-a"]["score"] is None and "error" in by_id["run-a"]
+        assert by_id["run-b"]["score"] == 80.0
+
     def test_dry_run_has_no_scores(self, tmp_path, monkeypatch):
         _make_run(tmp_path / "run-a", [1.0])
         monkeypatch.setattr(
