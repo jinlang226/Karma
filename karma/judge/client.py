@@ -3,9 +3,11 @@ OpenAI-compatible LLM client for judge evaluation calls.
 
 This is the only module in KARMA that calls an external LLM API.
 It renders the judge prompt via ``judge.input_builder.render_judge_prompt``,
-submits it to either an OpenAI-compatible chat completions endpoint or the
-``claude`` CLI (auto-selected by credential availability), and returns the raw
-response dict for ``judge.scoring`` to parse.
+submits it to an OpenAI-compatible chat completions endpoint, the ``claude``
+CLI, or the GitHub ``copilot`` CLI, and returns the raw response dict for
+``judge.scoring`` to parse. The openai/claude backends are auto-selected by
+credential availability; ``copilot_cli`` is opt-in via ``KARMA_JUDGE_BACKEND``
+(or mirrored from a copilot run).
 
 Configuration is read from environment variables when not supplied
 explicitly:
@@ -17,7 +19,8 @@ explicitly:
 ``KARMA_JUDGE_MODEL``
     Default model name override.
 ``KARMA_JUDGE_BACKEND``
-    Force the backend (``openai`` or ``claude_cli``); auto-detected otherwise.
+    Force the backend (``openai``, ``claude_cli``, or ``copilot_cli``);
+    openai/claude_cli are auto-detected, copilot_cli must be requested explicitly.
 
 These are read at call time (not via the ``settings`` singleton) because the
 backend and credentials are resolved per call and tests override them at runtime.
@@ -31,6 +34,10 @@ from typing import Any
 
 _DEFAULT_MODEL = "gpt-4o"
 _DEFAULT_CLAUDE_MODEL = "sonnet"
+# The copilot CLI picks its own default model when ``--model`` is omitted (the
+# copilot agent relies on this too), so the judge's default is "unset": pass no
+# ``--model`` and let the CLI decide, rather than hardcode a name that may drift.
+_DEFAULT_COPILOT_MODEL = None
 _DEFAULT_MAX_TOKENS = 2048
 _DEFAULT_TEMPERATURE = 0.0
 _DEFAULT_TIMEOUT_SEC = 120
@@ -50,14 +57,16 @@ class JudgeLLMUnavailable(RuntimeError):
 
 
 def _resolve_backend(backend: str | None, api_key: str | None) -> str:
-    """Pick the judge backend: 'openai' or 'claude_cli'.
+    """Pick the judge backend: 'openai', 'claude_cli', or 'copilot_cli'.
 
-    Explicit arg wins, then ``KARMA_JUDGE_BACKEND``; otherwise auto -- use the
-    ``claude`` CLI (ambient Claude auth, like the agent) when no
-    OpenAI-compatible key is available, so judging works without an API key.
+    Explicit arg wins, then ``KARMA_JUDGE_BACKEND``. Auto-selection only ever
+    chooses between ``openai`` (when an OpenAI-compatible key is available) and
+    ``claude_cli`` (ambient Claude auth, like the agent) so judging works with no
+    API key. ``copilot_cli`` is never auto-picked -- it must be requested
+    explicitly (or mirrored from a copilot run via ``agent_defaults``).
     """
     chosen = (backend or os.environ.get("KARMA_JUDGE_BACKEND") or "").strip().lower()
-    if chosen in ("openai", "claude_cli"):
+    if chosen in ("openai", "claude_cli", "copilot_cli"):
         return chosen
     has_key = (
         api_key
@@ -102,6 +111,63 @@ def _call_claude_cli(
     if not content:
         raise RuntimeError("claude CLI judge returned empty output")
     return {"content": content, "model": model, "usage": {}, "finish_reason": "stop"}
+
+
+def _call_copilot_cli(
+    prompt: str, model: str | None, timeout_sec: int
+) -> dict[str, Any]:
+    """Run the judge prompt through the GitHub ``copilot`` CLI and return a response.
+
+    Uses the native Copilot/gh login (a host ``copilot``/``gh`` login, or
+    ``GITHUB_TOKEN`` in the env) -- no API key -- the same auth the copilot AGENT
+    uses. Security mirrors :func:`_call_claude_cli`: the judge only needs text,
+    and its prompt embeds agent-authored artifacts (submit.txt, agent.log, oracle
+    output), so we deliberately do **not** pass ``--allow-all``. Without it the
+    CLI will not auto-run its shell/tool calls in non-interactive ``--prompt``
+    mode (a tool needing approval is denied with no TTY, or at worst blocks until
+    *timeout_sec* -- never executed), so a benchmarked agent cannot inject a
+    command the judge would run with the operator's host credentials.
+
+    ``--output-format json`` emits JSONL events; the final answer is the last
+    ``assistant.message`` event's ``data.content`` (the same schema the agent
+    entrypoint parses for submit.txt). ``model`` is passed as ``--model`` only
+    when set; ``None`` lets the CLI pick its default. Returns the OpenAI-path
+    shape so scoring stays backend-agnostic.
+    """
+    import json as _json
+    import subprocess
+
+    cmd = ["copilot", "--prompt", prompt, "--output-format", "json"]
+    if model:
+        cmd += ["--model", model]
+    proc = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout_sec)
+    if proc.returncode != 0:
+        raise RuntimeError(
+            f"copilot CLI judge failed (exit {proc.returncode}): "
+            f"{(proc.stderr or '').strip()[:300]}"
+        )
+    # Copilot is agentic: its JSONL is turn-by-turn, not a single completion.
+    # Keep the LAST assistant.message content (stderr is merged in defensively
+    # since the CLI may stream the structured events there).
+    content = ""
+    stream = (proc.stdout or "") + "\n" + (proc.stderr or "")
+    for line in stream.splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            obj = _json.loads(line)
+        except Exception:
+            continue
+        if (isinstance(obj, dict) and obj.get("type") == "assistant.message"
+                and isinstance(obj.get("data"), dict)
+                and isinstance(obj["data"].get("content"), str)
+                and obj["data"]["content"].strip()):
+            content = obj["data"]["content"]
+    content = content.strip()
+    if not content:
+        raise RuntimeError("copilot CLI judge returned no assistant message")
+    return {"content": content, "model": model or "copilot", "usage": {}, "finish_reason": "stop"}
 
 
 def _build_client(
@@ -170,14 +236,17 @@ def call_judge_llm(
         *judge_input*.
     model:
         Model name override. Falls back to ``KARMA_JUDGE_MODEL`` then the
-        backend default (``"gpt-4o"`` for openai, ``"sonnet"`` for claude_cli).
+        backend default (``"gpt-4o"`` for openai, ``"sonnet"`` for claude_cli;
+        copilot_cli additionally falls back to ``KARMA_COPILOT_AGENT_MODEL``,
+        then lets the CLI pick).
     base_url:
         Base URL override for OpenAI-compatible endpoints.
     api_key:
         API key override.
     backend:
-        Force ``"openai"`` or ``"claude_cli"``; auto-detected from the API key
-        when ``None``.
+        Force ``"openai"``, ``"claude_cli"``, or ``"copilot_cli"``; openai and
+        claude_cli are auto-detected from the API key when ``None`` (copilot_cli
+        is never auto-picked -- request it explicitly or via agent_defaults).
     max_tokens:
         Maximum tokens in the completion.
     temperature:
@@ -205,7 +274,20 @@ def call_judge_llm(
         prompt = render_judge_prompt(judge_input)
     resolved_backend = _resolve_backend(backend, api_key)
 
-    if resolved_backend == "claude_cli":
+    if resolved_backend == "copilot_cli":
+        # Native GitHub Copilot login (the copilot CLI), no API key -- same as the
+        # copilot agent. Model precedence: arg -> KARMA_JUDGE_MODEL ->
+        # KARMA_COPILOT_AGENT_MODEL -> default (None = let the CLI pick).
+        resolved_model = (
+            model
+            or os.environ.get("KARMA_JUDGE_MODEL")
+            or os.environ.get("KARMA_COPILOT_AGENT_MODEL")
+            or _DEFAULT_COPILOT_MODEL
+        )
+
+        def _call() -> dict[str, Any]:
+            return _call_copilot_cli(prompt, resolved_model, timeout_sec)
+    elif resolved_backend == "claude_cli":
         # Ambient Claude auth (the claude CLI), no API key -- same as the agent.
         resolved_model = model or os.environ.get("KARMA_JUDGE_MODEL") or _DEFAULT_CLAUDE_MODEL
         if resolved_model.startswith("gpt-"):  # an OpenAI default carried over

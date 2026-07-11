@@ -70,7 +70,12 @@ def resolve_agent_judge_defaults(run_dir: Path) -> dict[str, Any]:
         model = os.environ.get("CODEX_MODEL")
         return {"model": model} if model else {}
     if agent == "copilot":
-        # GitHub Copilot CLI; only the model name is knowable from env.
+        # GitHub Copilot CLI; mirror it via the copilot CLI judge backend (native
+        # Copilot/gh login, no API key) -- see judge.client. Model from the same
+        # env var the agent reads; omit it when unset so the CLI picks its default.
+        out: dict[str, Any] = {"backend": "copilot_cli"}
         model = os.environ.get("KARMA_COPILOT_AGENT_MODEL")
-        return {"model": model} if model else {}
+        if model:
+            out["model"] = model
+        return out
     return {}
