@@ -11,6 +11,8 @@
 Modular Framework for Evaluating AI Agents in
 Kubernetes
 
+📺 <a href="https://youtu.be/_KY-T6U31Is"><b>Watch the 2-minute demo screencast</b></a>
+
 <p align="center">
   <a href="#about"><b>About</b></a> |
   <a href="#why-karma"><b>Why KARMA</b></a> |
@@ -32,7 +34,7 @@ Instead of treating each benchmark as a one-off script, KARMA models tasks as re
 
 The point is simple: isolated tasks only tell part of the story. Real operations work is stateful. Changes stack up. Fixes in one step can quietly break something earlier. KARMA is built to evaluate agents in that setting.
 
-Today the repo includes workflow-ready cases across RabbitMQ, MongoDB, CockroachDB, Elasticsearch, Nginx, Ray, and Spark.
+The suite ships **92 composable cases** and **38 reversible adversary scenarios** across **eight systems** — RabbitMQ, MongoDB, CockroachDB, Elasticsearch, Nginx, Ray, Spark, and a demo service — which recombine into hundreds of example workflows.
 
 ## Why KARMA
 
@@ -68,7 +70,7 @@ That is the next direction for KARMA:
 ### Install and launch the web UI
 
 ```bash
-pip install -r requirements.txt
+pip install -e .
 python3 main.py
 ```
 
