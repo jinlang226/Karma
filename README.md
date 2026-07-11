@@ -119,6 +119,7 @@ python3 orchestrator.py info --agents
 ### Run the tests
 
 ```bash
+pip install -e ".[dev]"    # installs pytest and the test dependencies
 pytest tests/unit          # fast, no cluster required
 pytest tests/integration   # requires a reachable cluster
 ```
