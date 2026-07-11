@@ -41,7 +41,7 @@
     clear(container);
 
     const hero = el("div", { class: "panel hero" },
-      el("div", { class: "eyebrow" }, "Kubernetes Agent Reliability & Microservice Assessment"),
+      el("div", { class: "eyebrow" }, "Kubernetes Agent Runtime Measurement Architecture"),
       el("h1", { class: "hero-title" }, "KARMA"),
       el("p", { class: "lead" },
         "KARMA benchmarks AI agents on real Kubernetes microservice tasks. Each task " +
