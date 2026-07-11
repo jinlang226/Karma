@@ -132,7 +132,7 @@ pytest tests/integration   # requires a reachable cluster
   Headless CLI entrypoint for `run-case`, `run-workflow`, `run-batch`, `judge`, and `info`.
 
 - `karma/`
-  The framework package: case/workflow/prompt **definitions**, the Kubernetes **environment** and **transport** (kubectl proxy), the **adversary** lifecycle, the **runtime** execution core, the **oracle** and **evidence** collection, and the LLM-as-**judge** pipeline. See `CLAUDE.md` for the layering rules.
+  The framework package: case/workflow/prompt **definitions**, the Kubernetes **environment** and **transport** (kubectl proxy), the **adversary** lifecycle, the **runtime** execution core, the **oracle** and **evidence** collection, and the LLM-as-**judge** pipeline.
 
 - `karma/agents/`
   Agent adapters and container definitions (`cli_runner`, `react`, `claude_code`, `codex`, `copilot`, `api`).
@@ -170,9 +170,6 @@ Note: the LLM-as-Judge also uses rubric overlays (e.g. `judge_base.yaml`), which
 
 If you want to understand or extend the repo, start here:
 
-- `CLAUDE.md`
-  Architecture, layering rules, common commands, and the code map.
-
 - `docs/developer/adding-a-test-case.md`
   How to author reusable, workflow-safe testcases.
 
@@ -187,7 +184,7 @@ If you want to understand or extend the repo, start here:
 
 If you are new to the codebase, a good path is:
 
-1. Read `CLAUDE.md`.
+1. Skim the Repo Map above and the guides in `docs/developer/`.
 2. Open a workflow in `workflows/` and a testcase in `cases/<service>/<case>/test.yaml`.
 3. Trace `orchestrator.py` into `karma/interfaces/cli/main.py` and `karma/runtime/workflow.py`.
 4. Run a workflow and inspect the artifacts under `runs/`.
