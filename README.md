@@ -201,12 +201,13 @@ KARMA is released under the [MIT License](LICENSE).
 If you use KARMA in your research, please cite:
 
 ```bibtex
-@inproceedings{karma2026,
-  title     = {KARMA: Kubernetes Agent Runtime Measurement Architecture},
-  booktitle = {Proceedings of the 2026 Conference on Empirical Methods in
-               Natural Language Processing: System Demonstrations},
-  year      = {2026}
+@unpublished{karma2026,
+  title  = {KARMA: A Composable Framework for Evaluating LLM Agents on
+            Stateful Kubernetes Operations},
+  author = {Ouyang, Junhan and Liu, Shaw and Wang, Jinlang and Zhou, Jiawei},
+  year   = {2026},
+  note   = {Under review at EMNLP 2026 System Demonstrations}
 }
 ```
 
-<!-- TODO: replace with the final citation (authors, pages, DOI) once the paper is published. -->
+<!-- TODO: swap to the published @inproceedings entry (venue, pages, DOI) once the paper is accepted. -->
