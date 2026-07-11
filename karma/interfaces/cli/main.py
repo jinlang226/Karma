@@ -164,8 +164,9 @@ def _build_sandbox_options(args: argparse.Namespace) -> dict[str, Any] | None:
 
 def _build_parser() -> argparse.ArgumentParser:
     """Return the top-level argument parser with all subcommands registered."""
+    # No explicit prog: argparse derives it from argv[0], so help/usage text
+    # reflects however the CLI was invoked (e.g. `orchestrator.py`).
     parser = argparse.ArgumentParser(
-        prog="karma",
         description="KARMA Kubernetes microservice agent benchmark framework.",
     )
     sub = parser.add_subparsers(dest="command")
