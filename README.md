@@ -98,7 +98,7 @@ python3 orchestrator.py run-case demo configmap-update \
 Run a multi-stage workflow:
 
 ```bash
-python3 orchestrator.py run-workflow workflows/demo/workflow-demo.yaml \
+python3 orchestrator.py run-workflow workflows/suite/workflow-demo.yaml \
   --agent cli_runner
 ```
 
@@ -158,7 +158,7 @@ pytest tests/integration   # requires a reachable cluster
 A **profile** is a reusable YAML preset of run flags (agent, sandbox, timeout, params, …) so you don't have to repeat them on every invocation. Pass one with `--profile` to `run-case`, `run-workflow`, or `run-batch`:
 
 ```bash
-python3 orchestrator.py run-workflow workflows/demo/workflow-demo.yaml \
+python3 orchestrator.py run-workflow workflows/suite/workflow-demo.yaml \
   --profile my-profile.yaml
 ```
 
